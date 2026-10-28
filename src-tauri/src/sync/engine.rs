@@ -46,6 +46,7 @@ pub trait SyncHost: Send + Sync {
     fn device_uuid(&self) -> String;
     fn device_name(&self) -> String;
     fn app_version(&self) -> String;
+    fn history_retention_days(&self) -> Option<i64> { None }
     fn settings_payload(&self) -> Result<Vec<SettingRecord>>;
     fn apply_remote_setting(&self, key: &str, value: &serde_json::Value) -> Result<(), String>;
     fn apply_remote_settings(
@@ -323,6 +324,10 @@ pub struct TranscriptionRow {
     #[serde(default)]
     pub context_uuid: Option<String>,
     pub created_at: String,
+    #[serde(default)]
+    pub activity_day: Option<String>,
+    #[serde(default)]
+    pub activity_hour: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -339,6 +344,8 @@ pub struct ApiCallRow {
     #[serde(default)]
     pub output_chars: i64,
     pub created_at: String,
+    #[serde(default)]
+    pub activity_day: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -533,8 +540,9 @@ row_payloads! {
     };
     transcription_payload, TranscriptionRow, "serialize transcription row",
     "SELECT t.raw_text, t.clean_text, t.words, t.spoken_words, t.duration_ms, t.api_used,
-            t.app_name, c.uuid, t.created_at
+            t.app_name, COALESCE(c.uuid, p.context_uuid), t.created_at, t.activity_day, t.activity_hour
      FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id
+     LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid = t.uuid
      WHERE t.uuid = ?1",
     |r| {
         raw_text: r.get(0)?,
@@ -546,9 +554,11 @@ row_payloads! {
         app_name: r.get(6)?,
         context_uuid: r.get(7)?,
         created_at: r.get(8)?,
+        activity_day: r.get(9)?,
+        activity_hour: r.get(10)?,
     };
     api_call_payload, ApiCallRow, "serialize api call row",
-    "SELECT t.uuid, a.model, a.provider, a.task, a.audio_ms, a.input_chars, a.output_chars, a.created_at
+    "SELECT t.uuid, a.model, a.provider, a.task, a.audio_ms, a.input_chars, a.output_chars, a.created_at, a.activity_day
      FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
      WHERE a.uuid = ?1",
     |r| {
@@ -560,6 +570,7 @@ row_payloads! {
         input_chars: r.get(5)?,
         output_chars: r.get(6)?,
         created_at: r.get(7)?,
+        activity_day: r.get(8)?,
     };
 }
 
@@ -657,15 +668,48 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
 }
 
 fn row_payload(conn: &Connection, table: &str, uuid: &str) -> Result<Option<serde_json::Value>> {
-    match table {
+    let mut payload = match table {
         "dictionary" => dictionary_payload(conn, uuid),
         "dictionary_corrections" => dictionary_correction_payload(conn, uuid),
         "snippets" => snippet_payload(conn, uuid),
         "contexts" => context_aggregate(conn, uuid),
         "context_sub_apps" => sub_app_payload(conn, uuid),
-        "transcriptions" => transcription_payload(conn, uuid),
-        "api_calls" => api_call_payload(conn, uuid),
+        "transcriptions" | "held_transcriptions" | "held_hourly_transcriptions" => transcription_payload(conn, uuid),
+        "api_calls" | "held_api_calls" => api_call_payload(conn, uuid),
+        "transcription_receipts" => conn.query_row("SELECT day, hour, context_uuid, words, spoken_words, duration_ms, counted, NOT EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid=transcription_receipts.uuid) FROM transcription_receipts WHERE uuid=?1 AND counted=1", [uuid], |r| Ok(serde_json::json!({"uuid":uuid, "day":r.get::<_, String>(0)?, "hour":r.get::<_, i64>(1)?, "context_uuid":r.get::<_, Option<String>>(2)?, "words":r.get::<_, i64>(3)?, "spoken_words":r.get::<_, Option<i64>>(4)?, "duration_ms":r.get::<_, i64>(5)?, "counted":r.get::<_, bool>(6)?, "hourly_counted":r.get::<_, bool>(7)?}))).optional().map_err(Into::into),
+        "call_receipts" => conn.query_row("SELECT transcription_uuid, day, context_uuid, model, provider, task, audio_ms, input_chars, output_chars, counted FROM call_receipts WHERE uuid=?1 AND counted=1", [uuid], |r| Ok(serde_json::json!({"uuid":uuid, "transcription_uuid":r.get::<_, Option<String>>(0)?, "day":r.get::<_, String>(1)?, "context_uuid":r.get::<_, Option<String>>(2)?, "model":r.get::<_, String>(3)?, "provider":r.get::<_, String>(4)?, "task":r.get::<_, String>(5)?, "audio_ms":r.get::<_, i64>(6)?, "input_chars":r.get::<_, i64>(7)?, "output_chars":r.get::<_, i64>(8)?, "counted":r.get::<_, bool>(9)?}))).optional().map_err(Into::into),
         _ => Ok(None),
+    }?;
+    if matches!(table, "transcriptions" | "held_transcriptions" | "held_hourly_transcriptions" | "transcription_receipts" | "call_receipts") {
+        if let Some(value) = payload.as_mut() {
+            let parent = if table == "call_receipts" { value.get("transcription_uuid").and_then(|v| v.as_str()) } else { Some(uuid) };
+            if let Some(parent) = parent {
+                let mut stmt = conn.prepare("SELECT source_uuid FROM backup_context_event_sources WHERE transcription_uuid=?1 AND local_uuid IS ?2 ORDER BY source_uuid")?;
+                let sources = stmt.query_map(params![parent,value.get("context_uuid").and_then(|v| v.as_str())], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                if !sources.is_empty() { value["context_sources"] = serde_json::json!(sources); }
+            }
+        }
+    }
+    Ok(payload)
+}
+
+fn sync_history_table<'a>(conn: &Connection, table: &'a str, uuid: &str) -> Result<&'a str> {
+    let table = match table {
+        "held_transcriptions" | "held_hourly_transcriptions" => "transcriptions",
+        "held_api_calls" => "api_calls",
+        other => other,
+    };
+    let query = match table {
+        "transcriptions" => "SELECT EXISTS(SELECT 1 FROM backup_held_history WHERE uuid=?1 UNION ALL SELECT 1 FROM backup_preupgrade_history WHERE uuid=?1)",
+        "api_calls" => "SELECT EXISTS(SELECT 1 FROM backup_held_calls WHERE uuid=?1 UNION ALL SELECT 1 FROM api_calls a JOIN transcriptions t ON t.id=a.transcription_id JOIN backup_preupgrade_history h ON h.uuid=t.uuid WHERE a.uuid=?1)",
+        _ => return Ok(table),
+    };
+    if conn.query_row(query, [uuid], |r| r.get::<_, bool>(0))? {
+        Ok(if table == "transcriptions" { "held_transcriptions" } else { "held_api_calls" })
+    } else if table == "transcriptions" && conn.query_row("SELECT EXISTS(SELECT 1 FROM backup_held_hourly_receipts WHERE uuid=?1)", [uuid], |r| r.get::<_, bool>(0))? {
+        Ok("held_hourly_transcriptions")
+    } else {
+        Ok(table)
     }
 }
 
@@ -673,13 +717,14 @@ fn resolve_entry(conn: &Connection, entry: sync_store::LogEntry) -> Result<Optio
     if entry.table_name == "transcriptions" && entry.op == "delete" {
         return Ok(None);
     }
+    let table = if entry.op == "upsert" { sync_history_table(conn, &entry.table_name, &entry.row_uuid)? } else { &entry.table_name };
     let payload = if entry.op == "upsert" {
-        row_payload(conn, &entry.table_name, &entry.row_uuid)?
+        row_payload(conn, table, &entry.row_uuid)?
     } else {
         None
     };
     let op = if entry.op == "upsert" && payload.is_none() {
-        if entry.table_name == "transcriptions" {
+        if matches!(entry.table_name.as_str(), "transcriptions" | "held_transcriptions" | "held_hourly_transcriptions" | "api_calls" | "held_api_calls" | "transcription_receipts" | "call_receipts") {
             return Ok(None);
         }
         "delete".to_string()
@@ -687,7 +732,7 @@ fn resolve_entry(conn: &Connection, entry: sync_store::LogEntry) -> Result<Optio
         entry.op
     };
     Ok(Some(SyncOp {
-        table: entry.table_name,
+        table: table.to_string(),
         row_uuid: entry.row_uuid,
         op,
         ts_ms: entry.ts_ms,
@@ -752,7 +797,7 @@ pub fn collect_ops(
             });
         };
 
-        while (ops.len() as i64) < limit && progress.stage <= 7 {
+        while (ops.len() as i64) < limit && progress.stage <= 9 {
             let capacity = limit - ops.len() as i64;
             let chunk = capacity.min(SNAPSHOT_ROW_CHUNK);
             let stage = progress.stage;
@@ -763,11 +808,13 @@ pub fn collect_ops(
                 3 => "context_sub_apps",
                 4 => "dictionary_corrections",
                 5 => "transcriptions",
-                6 => "api_calls",
-                7 => "tombstones",
+                6 => "transcription_receipts",
+                7 => "api_calls",
+                8 => "call_receipts",
+                9 => "tombstones",
                 _ => unreachable!("snapshot stage is complete"),
             };
-            if stage == 7 {
+            if stage == 9 {
                 let mut stmt = conn.prepare_cached(
                     "SELECT seq, table_name, row_uuid, ts_ms, origin, origin_seq
                      FROM sync_log AS current
@@ -802,14 +849,16 @@ pub fn collect_ops(
                 }
                 ops.extend(rows.into_iter().map(|(_, op)| op));
                 if fetched < chunk {
-                    progress.stage = 8;
+                    progress.stage = 10;
                     progress.origin_seq = Some(origin_seq);
                     return Ok((ops, start_cursor, true));
                 }
                 progress.origin_seq = Some(origin_seq);
                 return Ok((ops, 0, false));
             }
-            let row_query = if table == "dictionary_corrections" {
+            let row_query = if matches!(table, "transcription_receipts" | "call_receipts") {
+                format!("SELECT rowid, uuid FROM {table} WHERE rowid > ?1 AND counted=1 ORDER BY rowid LIMIT ?2")
+            } else if table == "dictionary_corrections" {
                 format!(
                     "SELECT id, uuid FROM {table}
                       WHERE id > ?1 AND uuid IS NOT NULL
@@ -827,14 +876,16 @@ pub fn collect_ops(
             let fetched = rows.len() as i64;
             for (id, uuid) in rows {
                 progress.last_id = id;
-                let payload = row_payload(conn, table, &uuid)?;
+                let wire_table = sync_history_table(conn, table, &uuid)?;
+                let payload = row_payload(conn, wire_table, &uuid)?;
+                if payload.is_none() { continue; }
                 let stamp = latest_stamp(conn, table, &uuid)?;
-                push(table, uuid, payload, stamp, &mut ops);
+                push(wire_table, uuid, payload, stamp, &mut ops);
             }
             if fetched < chunk {
                 progress.stage += 1;
                 progress.last_id = 0;
-                if progress.stage > 7 {
+                if progress.stage > 9 {
                     progress.origin_seq = Some(origin_seq);
                     return Ok((ops, start_cursor, true));
                 }
@@ -843,7 +894,7 @@ pub fn collect_ops(
                 return Ok((ops, 0, false));
             }
         }
-        if progress.stage <= 7 {
+        if progress.stage <= 9 {
             progress.origin_seq = Some(origin_seq);
             return Ok((ops, 0, false));
         }
@@ -887,22 +938,69 @@ fn apply_rank(op: &SyncOp) -> u8 {
         ("context_sub_apps", false) => 25,
         ("dictionary_corrections", _) => 30,
         ("transcriptions", false) => 40,
+        ("held_transcriptions", false) => 40,
+        ("held_hourly_transcriptions", false) => 40,
+        ("transcription_receipts", false) => 40,
         ("api_calls", false) => 41,
+        ("held_api_calls", false) => 41,
+        ("call_receipts", false) => 41,
         ("transcriptions", true) | ("api_calls", true) => 50,
         _ => 60,
     }
 }
 
+#[cfg(test)]
 pub fn apply_ops(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
-    with_sync_savepoint(conn, |conn| apply_ops_inner(conn, ops))
+    apply_ops_with_retention(conn, ops, None)
 }
 
-fn apply_ops_inner(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
+fn apply_ops_with_retention(conn: &Connection, ops: &[SyncOp], days: Option<i64>) -> Result<ApplySummary> {
+    let cutoff = days.map(|days| (chrono::Utc::now().naive_utc() - chrono::Duration::days(days.max(1))).format("%Y-%m-%d %H:%M:%S").to_string());
+    with_sync_savepoint(conn, |conn| {
+        let summary = apply_ops_inner(conn, ops, cutoff.as_deref())?;
+        if summary.history || summary.contexts { crate::commands::settings::validate_totals(conn)?; }
+        Ok(summary)
+    })
+}
+
+fn apply_ops_inner(conn: &Connection, ops: &[SyncOp], cutoff: Option<&str>) -> Result<ApplySummary> {
     let _guard = ApplyingGuard::new(conn)?;
     let mut summary = ApplySummary::default();
     let mut ordered: Vec<&SyncOp> = ops.iter().collect();
     ordered.sort_by_key(|op| apply_rank(op));
-    for op in ordered {
+    for original in ordered {
+        let mut normalized = None;
+        if matches!(original.table.as_str(), "transcriptions" | "held_transcriptions" | "held_hourly_transcriptions" | "transcription_receipts" | "call_receipts") && !original.is_delete() {
+            if let Some(uuid) = original.payload.as_ref().and_then(|payload| payload.get("context_uuid")).and_then(|value| value.as_str()) {
+                let everywhere_alias: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_everywhere_aliases WHERE uuid=?1)", [uuid], |r| r.get(0))?;
+                let imported_alias: Option<String> = conn.query_row("SELECT c.uuid FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE a.source_uuid=?1 AND NOT EXISTS(SELECT 1 FROM contexts WHERE uuid=?1)", [uuid], |r| r.get(0)).optional()?;
+                let context_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM contexts WHERE uuid=?1)", [uuid], |r| r.get(0))?;
+                let local_everywhere: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM contexts WHERE uuid=?1 AND is_everywhere=1)", [uuid], |r| r.get(0))?;
+                let parent = if original.table == "call_receipts" { original.payload.as_ref().and_then(|p| p.get("transcription_uuid")).and_then(|v| v.as_str()) } else { Some(original.row_uuid.as_str()) };
+                let historical: Option<String> = if parent.is_some() {
+                    conn.query_row("SELECT c.uuid FROM backup_context_event_sources e JOIN contexts c ON c.uuid=e.local_uuid WHERE e.transcription_uuid=?1 AND e.source_uuid=?2 AND (EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1 AND context_id=c.id) OR EXISTS(SELECT 1 FROM transcription_receipts WHERE uuid=?1 AND context_uuid=c.uuid) OR EXISTS(SELECT 1 FROM call_receipts WHERE transcription_uuid=?1 AND context_uuid=c.uuid))", params![parent,uuid], |r| r.get(0)).optional()?
+                } else { None };
+                let mut mapped_event = None;
+                if (everywhere_alias || local_everywhere) && parent.is_some() {
+                    let mut stmt = conn.prepare("SELECT e.source_uuid,c.uuid FROM backup_context_event_sources e JOIN contexts c ON c.uuid=e.local_uuid WHERE e.transcription_uuid=?1 AND NOT EXISTS(SELECT 1 FROM contexts WHERE uuid=e.source_uuid) AND (EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1 AND context_id=c.id) OR EXISTS(SELECT 1 FROM transcription_receipts WHERE uuid=?1 AND context_uuid=c.uuid) OR EXISTS(SELECT 1 FROM call_receipts WHERE transcription_uuid=?1 AND context_uuid=c.uuid)) ORDER BY e.source_uuid")?;
+                    let rows = stmt.query_map([parent], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?;
+                    for row in rows {
+                        let (source,target) = row?;
+                        if latest_is_delete(conn, "contexts", &source)? { mapped_event = Some(target); break; }
+                    }
+                }
+                if historical.is_some() || imported_alias.is_some() || mapped_event.is_some() || everywhere_alias || (!context_exists && latest_is_delete(conn, "contexts", uuid)?) {
+                    let target = if let Some(alias) = historical.or(imported_alias).or(mapped_event) { alias } else {
+                        let id = db::ensure_everywhere_context_conn(conn)?;
+                        conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?
+                    };
+                    let mut copy = original.clone();
+                    if let Some(payload) = copy.payload.as_mut() { payload["context_uuid"] = serde_json::Value::String(target); }
+                    normalized = Some(copy);
+                }
+            }
+        }
+        let op = normalized.as_ref().unwrap_or(original);
         let (applied, touched) = match op.table.as_str() {
             "dictionary" | NATURAL_KEY_TOMBSTONE_TABLE => {
                 (apply_dictionary_op(conn, op)?, &mut summary.dictionary)
@@ -919,8 +1017,10 @@ fn apply_ops_inner(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
                 }
                 (applied, &mut summary.dictionary_corrections)
             }
-            "transcriptions" => (apply_transcription_op(conn, op)?, &mut summary.history),
+            "transcriptions" | "held_transcriptions" | "held_hourly_transcriptions" => (apply_history_with_retention(conn, op, cutoff)?, &mut summary.history),
             "api_calls" => (apply_api_call_op(conn, op)?, &mut summary.history),
+            "held_api_calls" => (apply_api_call_op(conn, op)?, &mut summary.history),
+            "transcription_receipts" | "call_receipts" => (apply_receipt_op(conn, op)?, &mut summary.history),
             other => {
                 log::warn!("sync: ignoring op for unknown table {other:?}");
                 summary.skipped += 1;
@@ -929,6 +1029,16 @@ fn apply_ops_inner(conn: &Connection, ops: &[SyncOp]) -> Result<ApplySummary> {
         };
         match applied {
             Applied::Yes => {
+                if matches!(original.table.as_str(), "transcriptions" | "held_transcriptions" | "held_hourly_transcriptions" | "transcription_receipts") && !original.is_delete() {
+                    if let Some(source) = original.payload.as_ref().and_then(|p| p.get("context_uuid")).and_then(|v| v.as_str()) {
+                        conn.execute("INSERT OR IGNORE INTO backup_context_event_sources(transcription_uuid,source_uuid,local_uuid,source_name) SELECT ?1,a.source_uuid,a.local_uuid,a.source_name FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE a.source_uuid=?2 AND (EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1 AND context_id=c.id) OR EXISTS(SELECT 1 FROM transcription_receipts WHERE uuid=?1 AND context_uuid=c.uuid))", params![original.row_uuid,source])?;
+                    }
+                }
+                if original.table == "call_receipts" && !original.is_delete() {
+                    if let (Some(parent), Some(source)) = (original.payload.as_ref().and_then(|p| p.get("transcription_uuid")).and_then(|v| v.as_str()), original.payload.as_ref().and_then(|p| p.get("context_uuid")).and_then(|v| v.as_str())) {
+                        conn.execute("INSERT OR IGNORE INTO backup_context_event_sources(transcription_uuid,source_uuid,local_uuid,source_name) SELECT ?1,a.source_uuid,a.local_uuid,a.source_name FROM backup_context_aliases a JOIN call_receipts r ON r.context_uuid=a.local_uuid WHERE a.source_uuid=?2 AND r.uuid=?3 AND r.transcription_uuid=?1", params![parent,source,original.row_uuid])?;
+                    }
+                }
                 *touched = true;
                 summary.applied += 1;
             }
@@ -1867,17 +1977,28 @@ fn apply_dictionary_natural_key_delete(conn: &Connection, op: &SyncOp) -> Result
     apply_simple_delete(conn, op, "dictionary", NATURAL_KEY_TOMBSTONE_TABLE)
 }
 
+fn learn_everywhere_alias(conn: &Connection, uuid: &str) -> Result<bool> {
+    let conflicts: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM contexts WHERE uuid=?1 AND is_everywhere=0)", [uuid], |r| r.get(0))?;
+    anyhow::ensure!(!conflicts, "Everywhere identity conflicts with a local Context");
+    let id = db::ensure_everywhere_context_conn(conn)?;
+    let local_uuid: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?;
+    let inserted = conn.execute("INSERT OR IGNORE INTO sync_everywhere_aliases(uuid) VALUES (?1)", [uuid])?;
+    let pending: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pending_transcription_contexts WHERE context_uuid=?1)", [uuid], |r| r.get(0))?;
+    db::resolve_pending_contexts(conn, uuid, id, &local_uuid)?;
+    Ok(inserted > 0 || pending)
+}
+
 fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     if op.is_delete() {
         return apply_context_delete(conn, op);
     }
+    let aggregate: ContextAggregate = op_payload(op, "context", "context")?;
+    let resolved_alias = if aggregate.is_everywhere { learn_everywhere_alias(conn, &op.row_uuid)? } else { false };
     if let Some(stamp) = latest_stamp(conn, "contexts", &op.row_uuid)? {
         if !op.newer_than(&stamp) {
-            return Ok(Applied::Skipped);
+            return Ok(if resolved_alias { Applied::Yes } else { Applied::Skipped });
         }
     }
-    let aggregate: ContextAggregate = op_payload(op, "context", "context")?;
-
     if context_has_missing_members(conn, &aggregate)? {
         return Ok(Applied::Deferred);
     }
@@ -1886,6 +2007,16 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         apply_everywhere_aggregate(conn, &aggregate)?;
         log_applied(conn, op)?;
         return Ok(Applied::Yes);
+    }
+
+    let alias: Option<(i64, String, Option<String>)> = conn.query_row("SELECT c.id,c.uuid,a.source_name FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE a.source_uuid=?1 AND NOT EXISTS(SELECT 1 FROM contexts WHERE uuid=?1)", [&op.row_uuid], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+    if let Some((id, target, original_name)) = alias {
+        if original_name.as_deref().is_none_or(|name| name.eq_ignore_ascii_case(aggregate.name.trim())) {
+            db::resolve_pending_contexts(conn, &op.row_uuid, id, &target)?;
+            log_anti_entropy_delete(conn, "contexts", &op.row_uuid)?;
+            return Ok(Applied::Yes);
+        }
+        conn.execute("DELETE FROM backup_context_aliases WHERE source_uuid=?1", [&op.row_uuid])?;
     }
 
     let formatting_override = aggregate
@@ -1939,12 +2070,18 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             };
             let conflict_stamp =
                 latest_stamp(conn, "contexts", &conflict_uuid)?.unwrap_or((0, String::new(), 0));
-            if op.newer_than(&conflict_stamp) {
+            let alias: Option<(i64, String)> = conn.query_row("SELECT c.id,c.uuid FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE a.source_uuid=?1 AND c.uuid=?2 AND NOT EXISTS(SELECT 1 FROM contexts WHERE uuid=?1)", params![op.row_uuid,conflict_uuid], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            if let Some((id, uuid)) = alias {
+                db::resolve_pending_contexts(conn, &op.row_uuid, id, &uuid)?;
+                log_anti_entropy_delete(conn, "contexts", &op.row_uuid)?;
+                return Ok(Applied::Yes);
+            } else if op.newer_than(&conflict_stamp) {
                 delete_context_by_uuid(conn, &conflict_uuid)?;
                 insert(conn).map_err(|e| anyhow!("sync: context retry insert failed: {e}"))?;
             } else {
+                delete_context_by_uuid(conn, &op.row_uuid)?;
                 log_anti_entropy_delete(conn, "contexts", &op.row_uuid)?;
-                return Ok(Applied::Skipped);
+                return Ok(Applied::Yes);
             }
         }
         Err(err) => return Err(anyhow!("sync: context upsert failed: {err}")),
@@ -1955,19 +2092,14 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         params![op.row_uuid],
         |r| r.get(0),
     )?;
-    conn.execute(
-        "UPDATE transcriptions
-            SET context_id = ?1
-          WHERE uuid IN (
-            SELECT transcription_uuid FROM pending_transcription_contexts
-             WHERE context_uuid = ?2
-          )",
-        params![context_id, op.row_uuid],
-    )?;
-    conn.execute(
-        "DELETE FROM pending_transcription_contexts WHERE context_uuid = ?1",
-        params![op.row_uuid],
-    )?;
+    let pending: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT transcription_uuid FROM pending_transcription_contexts WHERE context_uuid = ?1")?;
+        let rows = stmt.query_map([&op.row_uuid], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for uuid in pending {
+        db::resolve_pending_context(conn, &uuid, context_id, &op.row_uuid)?;
+    }
     reconcile_context_children(conn, context_id, &aggregate)?;
     log_applied(conn, op)?;
     Ok(Applied::Yes)
@@ -2018,6 +2150,14 @@ fn delete_context_by_uuid(conn: &Connection, uuid: &str) -> Result<()> {
         )
         .optional()?
     else {
+        let alias: Option<(i64, String)> = conn.query_row("SELECT c.id,c.uuid FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE a.source_uuid=?1", [uuid], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if let Some((id, target)) = alias {
+            db::resolve_pending_contexts(conn, uuid, id, &target)?;
+            return Ok(());
+        }
+        let everywhere_id = db::ensure_everywhere_context_conn(conn)?;
+        let everywhere_uuid: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [everywhere_id], |r| r.get(0))?;
+        db::resolve_pending_contexts(conn, uuid, everywhere_id, &everywhere_uuid)?;
         return Ok(());
     };
     let is_everywhere: bool = conn.query_row(
@@ -2349,16 +2489,138 @@ fn normalize_domain(domain: &str) -> String {
         .to_string()
 }
 
+fn awaiting_pending_context(conn: &Connection, parent: &str, context: Option<&str>) -> Result<bool> {
+    let Some(context) = context else { return Ok(false); };
+    Ok(conn.query_row("SELECT (NOT EXISTS(SELECT 1 FROM contexts WHERE uuid=?2) OR EXISTS(SELECT 1 FROM contexts WHERE uuid=?2 AND is_everywhere=1)) AND (EXISTS(SELECT 1 FROM pending_transcription_contexts WHERE transcription_uuid=?1 AND context_uuid<>?2) OR EXISTS(SELECT 1 FROM transcriptions t LEFT JOIN contexts c ON c.id=t.context_id WHERE t.uuid=?1 AND c.uuid IS NOT ?2) OR EXISTS(SELECT 1 FROM transcription_receipts WHERE uuid=?1 AND context_uuid IS NOT ?2) OR EXISTS(SELECT 1 FROM call_receipts WHERE transcription_uuid=?1 AND context_uuid IS NOT ?2))", params![parent,context], |r| r.get(0))?)
+}
+
+fn apply_receipt_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if op.is_delete() { return Ok(Applied::Skipped); }
+    let payload = op.payload.as_ref().ok_or_else(|| anyhow!("Missing receipt payload"))?;
+    anyhow::ensure!(payload.get("uuid").and_then(|v| v.as_str()) == Some(&op.row_uuid), "Receipt identity mismatch");
+    let parent = if op.table == "call_receipts" { payload.get("transcription_uuid").and_then(|v| v.as_str()) } else { Some(op.row_uuid.as_str()) };
+    if let Some(parent) = parent {
+        if let (Some(target), Some(sources)) = (payload.get("context_uuid").and_then(|v| v.as_str()), payload.get("context_sources").and_then(|v| v.as_array())) {
+            let pending: Option<String> = conn.query_row("SELECT context_uuid FROM pending_transcription_contexts WHERE transcription_uuid=?1", [parent], |r| r.get(0)).optional()?;
+            if let Some(source) = pending.filter(|source| sources.iter().any(|value| value.as_str() == Some(source))) {
+                let target_id: Option<i64> = conn.query_row("SELECT id FROM contexts WHERE uuid=?1", [target], |r| r.get(0)).optional()?;
+                let matching = if op.table == "transcription_receipts" {
+                    conn.query_row("SELECT EXISTS(SELECT 1 FROM transcription_receipts WHERE uuid=?1 AND day=?2 AND hour=?3 AND words=?4 AND spoken_words IS ?5 AND duration_ms=?6 UNION ALL SELECT 1 FROM transcriptions WHERE uuid=?1 AND activity_day=?2 AND activity_hour=?3 AND words=?4 AND spoken_words IS ?5 AND duration_ms=?6)", params![op.row_uuid,payload.get("day").and_then(|v| v.as_str()),payload.get("hour").and_then(|v| v.as_i64()),payload.get("words").and_then(|v| v.as_i64()),payload.get("spoken_words").and_then(|v| v.as_i64()),payload.get("duration_ms").and_then(|v| v.as_i64())], |r| r.get::<_,bool>(0))?
+                } else {
+                    conn.query_row("SELECT EXISTS(SELECT 1 FROM call_receipts WHERE uuid=?1 AND transcription_uuid=?2 AND day=?3 AND model=?4 AND provider=?5 AND task=?6 AND audio_ms=?7 AND input_chars=?8 AND output_chars=?9 UNION ALL SELECT 1 FROM api_calls a JOIN transcriptions t ON t.id=a.transcription_id WHERE a.uuid=?1 AND t.uuid=?2 AND a.activity_day=?3 AND a.model=?4 AND a.provider=?5 AND a.task=?6 AND a.audio_ms=?7 AND a.input_chars=?8 AND a.output_chars=?9)", params![op.row_uuid,parent,payload.get("day").and_then(|v| v.as_str()),payload.get("model").and_then(|v| v.as_str()),payload.get("provider").and_then(|v| v.as_str()),payload.get("task").and_then(|v| v.as_str()),payload.get("audio_ms").and_then(|v| v.as_i64()),payload.get("input_chars").and_then(|v| v.as_i64()),payload.get("output_chars").and_then(|v| v.as_i64())], |r| r.get::<_,bool>(0))?
+                };
+                if let (Some(id), true) = (target_id, matching) {
+                    db::resolve_pending_context(conn, parent, id, target)?;
+                    conn.execute("INSERT OR IGNORE INTO backup_context_event_sources(transcription_uuid,source_uuid,local_uuid) VALUES (?1,?2,?3)", params![parent,source,target])?;
+                }
+            }
+        }
+        if awaiting_pending_context(conn, parent, payload.get("context_uuid").and_then(|v| v.as_str()))? { return Ok(Applied::Deferred); }
+    }
+    if op.table == "transcription_receipts" {
+        let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1 UNION ALL SELECT 1 FROM transcription_receipts WHERE uuid=?1)", [&op.row_uuid], |r| r.get(0))?;
+        if !exists && db::has_conflicting_call_context(conn, &op.row_uuid, payload.get("context_uuid").and_then(|v| v.as_str()))? {
+            conn.execute("INSERT OR IGNORE INTO sync_rejected_history VALUES (?1)", [&op.row_uuid])?;
+            log::warn!("sync: compacted history conflicts with an existing provider call Context");
+            return Ok(Applied::Skipped);
+        }
+    }
+    let exists: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE uuid=?1)", op.table), [&op.row_uuid], |r| r.get(0))?;
+    let conflicts = crate::commands::settings::import_sync_receipt(conn, &op.table, payload.clone())?;
+    if conflicts > 0 { log::warn!("sync: compacted activity has an ambiguous or conflicting contribution"); }
+    if exists { return Ok(if conflicts == 0 { Applied::Yes } else { Applied::Skipped }); }
+    let inserted: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {} WHERE uuid=?1)", op.table), [&op.row_uuid], |r| r.get(0))?;
+    if inserted {
+        if op.table == "transcription_receipts" { conn.execute("DELETE FROM sync_rejected_history WHERE uuid=?1", [&op.row_uuid])?; }
+        log_applied(conn, op)?;
+        Ok(Applied::Yes)
+    } else {
+        Ok(Applied::Skipped)
+    }
+}
+
+fn resolve_replayed_receipt(conn: &Connection, op: &SyncOp) -> Result<bool> {
+    let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM transcription_receipts WHERE uuid=?1)", [&op.row_uuid], |r| r.get(0))?;
+    if !exists { return Ok(false); }
+    let row: TranscriptionRow = op_payload(op, "transcription", "transcription")?;
+    let matched: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM transcription_receipts r JOIN pending_transcription_contexts p ON p.transcription_uuid=r.uuid WHERE r.uuid=?1 AND p.context_uuid IS ?2 AND r.words=?3 AND r.spoken_words IS ?4 AND r.duration_ms=?5 AND r.day=COALESCE(?6,date(?8,'localtime')) AND r.hour=COALESCE(?7,CAST(strftime('%H',?8,'localtime') AS INTEGER)))", params![op.row_uuid,row.context_uuid,row.words,row.spoken_words,row.duration_ms,row.activity_day,row.activity_hour,row.created_at], |r| r.get(0))?;
+    if matched {
+        if let Some(uuid) = row.context_uuid.as_deref() {
+            let id: Option<i64> = conn.query_row("SELECT id FROM contexts WHERE uuid=?1", [uuid], |r| r.get(0)).optional()?;
+            if let Some(id) = id { db::resolve_pending_context(conn, &op.row_uuid, id, uuid)?; }
+        }
+    } else if conn.query_row("SELECT EXISTS(SELECT 1 FROM pending_transcription_contexts WHERE transcription_uuid=?1)", [&op.row_uuid], |r| r.get::<_, bool>(0))? {
+        log::warn!("sync: retained history does not match its pending compacted receipt");
+    }
+    Ok(true)
+}
+
+fn apply_history_with_retention(conn: &Connection, op: &SyncOp, cutoff: Option<&str>) -> Result<Applied> {
+    if op.is_delete() { return Ok(Applied::Skipped); }
+    if let Some(payload) = op.payload.as_ref() {
+        if let (Some(target), Some(sources)) = (payload.get("context_uuid").and_then(|v| v.as_str()), payload.get("context_sources").and_then(|v| v.as_array())) {
+            let pending: Option<String> = conn.query_row("SELECT context_uuid FROM pending_transcription_contexts WHERE transcription_uuid=?1", [&op.row_uuid], |r| r.get(0)).optional()?;
+            if let Some(source) = pending.filter(|source| sources.iter().any(|value| value.as_str() == Some(source))) {
+                let row: TranscriptionRow = op_payload(op, "transcription", "transcription")?;
+                let id: Option<i64> = conn.query_row("SELECT id FROM contexts WHERE uuid=?1", [target], |r| r.get(0)).optional()?;
+                let matched: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1 AND raw_text=?2 AND clean_text=?3 AND words=?4 AND spoken_words IS ?5 AND duration_ms=?6 AND api_used=?7 AND app_name IS ?8 AND created_at=?9 AND (?10 IS NULL OR activity_day=?10) AND (?11 IS NULL OR activity_hour=?11) UNION ALL SELECT 1 FROM transcription_receipts WHERE uuid=?1 AND words=?4 AND spoken_words IS ?5 AND duration_ms=?6 AND day=COALESCE(?10,date(?9,'localtime')) AND hour=COALESCE(?11,CAST(strftime('%H',?9,'localtime') AS INTEGER)))", params![op.row_uuid,row.raw_text,row.clean_text,row.words,row.spoken_words,row.duration_ms,row.api_used,row.app_name,row.created_at,row.activity_day,row.activity_hour], |r| r.get(0))?;
+                if let (Some(id), true) = (id, matched) {
+                    db::resolve_pending_context(conn, &op.row_uuid, id, target)?;
+                    conn.execute("INSERT OR IGNORE INTO backup_context_event_sources(transcription_uuid,source_uuid,local_uuid) VALUES (?1,?2,?3)", params![op.row_uuid,source,target])?;
+                }
+            }
+        }
+    }
+    if awaiting_pending_context(conn, &op.row_uuid, op.payload.as_ref().and_then(|p| p.get("context_uuid")).and_then(|v| v.as_str()))? { return Ok(Applied::Deferred); }
+    if resolve_replayed_receipt(conn, op)? { return Ok(Applied::Skipped); }
+    if let Some(cutoff) = cutoff {
+        let row: TranscriptionRow = op_payload(op, "transcription", "transcription")?;
+        let expired: bool = conn.query_row("SELECT datetime(?1) < datetime(?2)", params![row.created_at, cutoff], |r| r.get(0))?;
+        if expired {
+            let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1 UNION ALL SELECT 1 FROM transcription_receipts WHERE uuid=?1)", [&op.row_uuid], |r| r.get(0))?;
+            if exists { return Ok(Applied::Skipped); }
+            let (day, hour): (String, i64) = conn.query_row("SELECT COALESCE(?1, date(?3, 'localtime')), COALESCE(?2, CAST(strftime('%H', ?3, 'localtime') AS INTEGER))", params![row.activity_day, row.activity_hour, row.created_at], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let counted = op.table != "held_transcriptions";
+            let payload = serde_json::json!({"uuid":op.row_uuid, "day":day, "hour":hour, "context_uuid":row.context_uuid, "words":row.words, "spoken_words":row.spoken_words, "duration_ms":row.duration_ms, "counted":counted, "hourly_counted":op.table != "held_hourly_transcriptions"});
+            let conflicts = crate::commands::settings::import_sync_receipt(conn, "transcription_receipts", payload)?;
+            if conflicts > 0 { log::warn!("sync: expired history has an uncertain historical summary overlap"); }
+            let counted: Option<bool> = conn.query_row("SELECT counted FROM transcription_receipts WHERE uuid=?1", [&op.row_uuid], |r| r.get(0)).optional()?;
+            let Some(counted) = counted else {
+                if conflicts > 0 { conn.execute("INSERT OR IGNORE INTO sync_rejected_history VALUES (?1)", [&op.row_uuid])?; }
+                return Ok(Applied::Skipped);
+            };
+            conn.execute("DELETE FROM sync_rejected_history WHERE uuid=?1", [&op.row_uuid])?;
+            if counted { append_self_log(conn, "transcription_receipts", &op.row_uuid, "upsert")?; }
+            return Ok(Applied::Yes);
+        }
+    }
+    if op.table == "held_transcriptions" { apply_held_transcription_op(conn, op) } else { apply_transcription_op(conn, op) }
+}
+
+fn apply_held_transcription_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if op.is_delete() { return Ok(Applied::Skipped); }
+    let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1 UNION ALL SELECT 1 FROM transcription_receipts WHERE uuid=?1)", [&op.row_uuid], |r| r.get(0))?;
+    if exists { return Ok(Applied::Skipped); }
+    conn.execute("INSERT OR IGNORE INTO backup_held_history(uuid) VALUES (?1)", [&op.row_uuid])?;
+    let applied = apply_transcription_op(conn, op)?;
+    if applied != Applied::Yes {
+        conn.execute("DELETE FROM backup_held_history WHERE uuid=?1 AND NOT EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1)", [&op.row_uuid])?;
+    }
+    Ok(applied)
+}
+
 fn apply_transcription_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     if op.is_delete() {
         return Ok(Applied::Skipped);
     }
+    if resolve_replayed_receipt(conn, op)? { return Ok(Applied::Skipped); }
     if let Some(stamp) = latest_stamp(conn, "transcriptions", &op.row_uuid)? {
         if !op.newer_than(&stamp) {
             return Ok(Applied::Skipped);
         }
     }
     let row: TranscriptionRow = op_payload(op, "transcription", "transcription")?;
+    anyhow::ensure!(row.activity_day.as_ref().is_none_or(|day| chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok()) && row.activity_hour.is_none_or(|hour| (0..24).contains(&hour)), "Invalid transcription calendar bucket");
     let context_id: Option<i64> = match &row.context_uuid {
         Some(context_uuid) => conn
             .query_row(
@@ -2369,10 +2631,32 @@ fn apply_transcription_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             .optional()?,
         None => None,
     };
+    if db::has_conflicting_call_context(conn, &op.row_uuid, row.context_uuid.as_deref())? {
+        conn.execute("INSERT OR IGNORE INTO sync_rejected_history VALUES (?1)", [&op.row_uuid])?;
+        log::warn!("sync: history conflicts with an existing provider call Context");
+        return Ok(Applied::Skipped);
+    }
+    let pending_context: Option<String> = conn.query_row("SELECT context_uuid FROM pending_transcription_contexts WHERE transcription_uuid=?1", [&op.row_uuid], |r| r.get(0)).optional()?;
+    if let Some(pending) = pending_context.as_deref() {
+        if row.context_uuid.as_deref() != Some(pending) {
+            conn.execute("INSERT OR IGNORE INTO sync_rejected_history VALUES (?1)", [&op.row_uuid])?;
+            log::warn!("sync: history has a conflicting pending Context identity");
+            return Ok(Applied::Skipped);
+        }
+        let parent_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1 UNION ALL SELECT 1 FROM transcription_receipts WHERE uuid=?1)", [&op.row_uuid], |r| r.get(0))?;
+        if !parent_exists {
+            if let Some(id) = context_id { db::resolve_pending_context(conn, &op.row_uuid, id, pending)?; }
+        }
+    }
+    let uncertain: bool = conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM transcriptions WHERE uuid = ?1) AND EXISTS(SELECT 1 FROM legacy_pruned_days WHERE day = COALESCE(?2, date(?3, 'localtime')))", params![op.row_uuid, row.activity_day, row.created_at], |r| r.get(0))?;
+    if uncertain {
+        conn.execute("INSERT OR IGNORE INTO backup_held_history(uuid) VALUES (?1)", [&op.row_uuid])?;
+        log::warn!("sync: retained a transcription with uncertain historical summary overlap");
+    }
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO transcriptions
-           (uuid, raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+           (uuid, raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, created_at, activity_day, activity_hour)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             op.row_uuid,
             row.raw_text,
@@ -2383,10 +2667,19 @@ fn apply_transcription_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             row.api_used,
             row.app_name,
             context_id,
-            row.created_at
+            row.created_at,
+            row.activity_day,
+            row.activity_hour
         ],
     )?;
     if inserted > 0 {
+        conn.execute("DELETE FROM sync_rejected_history WHERE uuid=?1", [&op.row_uuid])?;
+        if op.table == "held_hourly_transcriptions" {
+            conn.execute("INSERT OR IGNORE INTO backup_held_hourly_receipts(uuid) VALUES (?1)", [&op.row_uuid])?;
+        }
+        if !uncertain && (context_id.is_some() || row.context_uuid.is_none()) && db::hold_ambiguous_retained_hour(conn, &op.row_uuid, op.table == "held_hourly_transcriptions")? {
+            log::warn!("sync: retained a transcription with uncertain hourly overlap");
+        }
         if context_id.is_none() {
             if let Some(context_uuid) = row.context_uuid.as_deref() {
                 conn.execute(
@@ -2407,18 +2700,30 @@ fn apply_api_call_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     if op.is_delete() {
         return apply_simple_delete(conn, op, "api_calls", "api_calls");
     }
+    if conn.query_row("SELECT EXISTS(SELECT 1 FROM call_receipts WHERE uuid = ?1)", [&op.row_uuid], |r| r.get::<_, bool>(0))? {
+        return Ok(Applied::Skipped);
+    }
     if let Some(stamp) = latest_stamp(conn, "api_calls", &op.row_uuid)? {
         if !op.newer_than(&stamp) {
             return Ok(Applied::Skipped);
         }
     }
     let row: ApiCallRow = op_payload(op, "api_call", "api call")?;
-    let Some(transcription_uuid) = row.transcription_uuid.as_deref() else {
-        log::warn!(
-            "sync: skipping api call {} without a transcription",
-            op.row_uuid
-        );
+    anyhow::ensure!(row.activity_day.as_ref().is_none_or(|day| chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok()), "Invalid provider calendar bucket");
+    anyhow::ensure!(row.audio_ms >= 0 && row.input_chars >= 0 && row.output_chars >= 0, "Invalid provider usage");
+    if conn.query_row("SELECT EXISTS(SELECT 1 FROM api_calls WHERE uuid=?1)", [&op.row_uuid], |r| r.get::<_, bool>(0))? {
+        log::warn!("sync: retained provider call already exists; preserving the local record");
         return Ok(Applied::Skipped);
+    }
+    let Some(transcription_uuid) = row.transcription_uuid.as_deref() else {
+        let day: String = conn.query_row("SELECT COALESCE(?1, date(?2, 'localtime'))", params![row.activity_day, row.created_at], |r| r.get(0))?;
+        let mut call = db::CompactedCall { uuid: &op.row_uuid, transcription_uuid: None, day: &day, context_uuid: None, context_id: None, model: &row.model, provider: &row.provider, task: &row.task, audio_ms: row.audio_ms, input_chars: row.input_chars, output_chars: row.output_chars, counted: op.table != "held_api_calls" };
+        call.counted &= !db::has_legacy_provider(conn, &call)?;
+        return match db::insert_compacted_call(conn, &call)? {
+            db::ReceiptOutcome::Inserted => { if call.counted { append_self_log(conn, "call_receipts", &op.row_uuid, "upsert")?; } Ok(Applied::Yes) },
+            db::ReceiptOutcome::Existing => Ok(Applied::Skipped),
+            db::ReceiptOutcome::Conflict => anyhow::bail!("Conflicting provider receipt"),
+        };
     };
     let Some(transcription_id) = conn
         .query_row(
@@ -2428,17 +2733,35 @@ fn apply_api_call_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         )
         .optional()?
     else {
-        log::warn!(
-            "sync: skipping api call {} with missing transcription {}",
-            op.row_uuid,
-            transcription_uuid
-        );
-        return Ok(Applied::Skipped);
+        let parent: Option<(Option<String>, bool)> = conn.query_row("SELECT context_uuid, counted FROM transcription_receipts WHERE uuid = ?1", [transcription_uuid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some((context_uuid, _parent_counted)) = parent {
+            let day: String = conn.query_row("SELECT COALESCE(?1, date(?2, 'localtime'))", params![row.activity_day, row.created_at], |r| r.get(0))?;
+            let context_id: Option<i64> = conn.query_row("SELECT id FROM contexts WHERE uuid = ?1", [context_uuid.as_deref()], |r| r.get(0)).optional()?;
+            if let (Some(id), Some(uuid)) = (context_id, context_uuid.as_deref()) {
+                let pending: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pending_transcription_contexts WHERE transcription_uuid=?1 AND context_uuid=?2)", params![transcription_uuid,uuid], |r| r.get(0))?;
+                if pending { db::resolve_pending_context(conn, transcription_uuid, id, uuid)?; }
+            }
+            let effective_context = if context_id.is_some() { context_uuid.as_deref() } else { None };
+            let mut call = db::CompactedCall { uuid: &op.row_uuid, transcription_uuid: Some(transcription_uuid), day: &day, context_uuid: effective_context, context_id, model: &row.model, provider: &row.provider, task: &row.task, audio_ms: row.audio_ms, input_chars: row.input_chars, output_chars: row.output_chars, counted: op.table != "held_api_calls" };
+            call.counted &= !db::has_legacy_provider(conn, &call)?;
+            call.context_uuid = context_uuid.as_deref();
+            match db::insert_compacted_call(conn, &call)? {
+                db::ReceiptOutcome::Inserted => { if call.counted { append_self_log(conn, "call_receipts", &op.row_uuid, "upsert")?; } return Ok(Applied::Yes); },
+                db::ReceiptOutcome::Existing => return Ok(Applied::Skipped),
+                db::ReceiptOutcome::Conflict => anyhow::bail!("Conflicting provider receipt"),
+            }
+        }
+        let rejected: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_rejected_history WHERE uuid=?1)", [transcription_uuid], |r| r.get(0))?;
+        if rejected {
+            log::warn!("sync: skipping provider call for rejected history");
+            return Ok(Applied::Skipped);
+        }
+        return Ok(Applied::Deferred);
     };
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO api_calls
-           (uuid, transcription_id, model, provider, task, audio_ms, input_chars, output_chars, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+           (uuid, transcription_id, model, provider, task, audio_ms, input_chars, output_chars, created_at, activity_day)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             op.row_uuid,
             transcription_id,
@@ -2448,10 +2771,18 @@ fn apply_api_call_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             row.audio_ms,
             row.input_chars,
             row.output_chars,
-            row.created_at
+            row.created_at,
+            row.activity_day
         ],
     )?;
     if inserted > 0 {
+        let pending: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pending_transcription_contexts WHERE transcription_uuid = ?1)", [transcription_uuid], |r| r.get(0))?;
+        if pending && op.table == "held_api_calls" {
+            conn.execute("INSERT OR IGNORE INTO backup_held_calls(uuid) VALUES (?1)", [&op.row_uuid])?;
+        }
+        if !pending && db::hold_ambiguous_retained_call(conn, &op.row_uuid, op.table == "held_api_calls")? {
+            log::warn!("sync: retained a provider call with uncertain historical usage overlap");
+        }
         log_applied(conn, op)?;
         Ok(Applied::Yes)
     } else {
@@ -2572,7 +2903,17 @@ fn hello(uuid: &str, name: &str, app_version: &str) -> Hello {
         device_name: name.to_string(),
         protocol: PROTOCOL_VERSION,
         app_version: app_version.to_string(),
+        activity_receipts: true,
     }
+}
+
+fn note_receipt_capability(conn: &Connection, peer: &str, supported: bool) -> Result<()> {
+    let previous: Option<bool> = conn.query_row("SELECT activity_receipts FROM sync_peer_capabilities WHERE device_uuid=?1", [peer], |r| r.get(0)).optional()?;
+    if supported && previous != Some(true) {
+        conn.execute("UPDATE sync_peers SET needs_snapshot=1 WHERE device_uuid=?1", [peer])?;
+    }
+    conn.execute("INSERT INTO sync_peer_capabilities(device_uuid, activity_receipts) VALUES (?1, ?2) ON CONFLICT(device_uuid) DO UPDATE SET activity_receipts=excluded.activity_receipts", params![peer, supported])?;
+    Ok(())
 }
 
 pub async fn run_session<S>(
@@ -2601,7 +2942,7 @@ where
 {
     use super::protocol::{read_message, send_message};
 
-    if initiator {
+    let remote = if initiator {
         send_message(
             stream,
             &Message::Hello(hello(
@@ -2612,20 +2953,21 @@ where
         )
         .await?;
         match read_message(stream).await? {
-            Message::HelloAck(remote) => check_hello(&remote, &peer.device_uuid)?,
+            Message::HelloAck(remote) => { check_hello(&remote, &peer.device_uuid)?; remote },
             Message::Error { message } => return Err(anyhow!("peer error: {message}")),
             _ => return Err(anyhow!("expected HelloAck")),
         }
     } else {
-        if let Some(remote) = remote_hello {
+        let remote = if let Some(remote) = remote_hello {
             check_hello(&remote, &peer.device_uuid)?;
+            remote
         } else {
             match read_message(stream).await? {
-                Message::Hello(remote) => check_hello(&remote, &peer.device_uuid)?,
+                Message::Hello(remote) => { check_hello(&remote, &peer.device_uuid)?; remote },
                 Message::Error { message } => return Err(anyhow!("peer error: {message}")),
                 _ => return Err(anyhow!("expected Hello")),
             }
-        }
+        };
         send_message(
             stream,
             &Message::HelloAck(hello(
@@ -2635,6 +2977,11 @@ where
             )),
         )
         .await?;
+        remote
+    };
+    {
+        let conn = lock(db)?;
+        note_receipt_capability(&conn, &peer.device_uuid, remote.activity_receipts)?;
     }
 
     let mut summary = SessionSummary::default();
@@ -2745,7 +3092,7 @@ where
                 let resolved_ops = resolve_context_targets_in_ops(host, ops);
                 let applied = {
                     let conn = lock(db)?;
-                    apply_ops(&conn, &resolved_ops)?
+                    apply_ops_with_retention(&conn, &resolved_ops, host.history_retention_days())?
                 };
                 summary.merge(applied);
                 let acked = cursor;
@@ -2871,12 +3218,643 @@ mod payload_tests {
     use serde_json::json;
 
     #[test]
+    fn pending_history_sync_payload_keeps_context_identity() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','a','a',5,1000,'test','2020-01-01 10:00:00')", []).unwrap();
+        conn.execute("INSERT INTO pending_transcription_contexts VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')", []).unwrap();
+        let payload = transcription_payload(&conn, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap().unwrap();
+        assert_eq!(payload["context_uuid"], "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    }
+
+    #[test]
+    fn unresolved_receipts_sync_without_blocking_the_batch() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        let receipt = json!({"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","hour":10,"context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","words":5,"spoken_words":null,"duration_ms":1000});
+        crate::commands::settings::import_sync_receipt(&source.lock().unwrap(), "transcription_receipts", receipt).unwrap();
+        let (ops, _, _) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        let conn = dest.lock().unwrap();
+        assert!(!apply_ops(&conn, &ops).unwrap().deferred);
+        assert_eq!(conn.query_row("SELECT context_uuid FROM pending_transcription_contexts", [], |r| r.get::<_, String>(0)).unwrap(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        assert_eq!(conn.query_row("SELECT total_words FROM transcription_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+    }
+
+    #[test]
+    fn deleting_missing_context_rehomes_pending_activity_once() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        let mut parent = json!({"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","hour":10,"context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","words":5,"spoken_words":null,"duration_ms":1000});
+        let mut call = json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","transcription_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","model":"model","provider":"provider","task":"stt","audio_ms":0,"input_chars":0,"output_chars":0});
+        crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", parent.clone()).unwrap();
+        crate::commands::settings::import_sync_receipt(&conn, "call_receipts", call.clone()).unwrap();
+        let op = SyncOp { table:"contexts".into(), row_uuid:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(), op:"delete".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:1, payload:None };
+        apply_ops(&conn, &[op.clone()]).unwrap();
+        apply_ops(&conn, &[op.clone()]).unwrap();
+        let everywhere: String = conn.query_row("SELECT uuid FROM contexts WHERE is_everywhere=1", [], |r| r.get(0)).unwrap();
+        parent["context_uuid"] = json!(everywhere);
+        call["context_uuid"] = parent["context_uuid"].clone();
+        assert_eq!(crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", parent.clone()).unwrap(), 0);
+        assert_eq!(crate::commands::settings::import_sync_receipt(&conn, "call_receipts", call.clone()).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_hourly_stats WHERE context_id=(SELECT id FROM contexts WHERE is_everywhere=1)", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats WHERE context_id=(SELECT id FROM contexts WHERE is_everywhere=1)", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        let later = db::open(":memory:").unwrap();
+        let later_conn = later.lock().unwrap();
+        apply_ops(&later_conn, &[op]).unwrap();
+        let original_context = json!("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        parent["context_uuid"] = original_context.clone();
+        call["context_uuid"] = original_context;
+        let parent_op = SyncOp { table:"transcription_receipts".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:2, payload:Some(parent) };
+        let call_op = SyncOp { table:"call_receipts".into(), row_uuid:"cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:3, payload:Some(call) };
+        assert!(!apply_ops(&later_conn, &[parent_op, call_op]).unwrap().deferred);
+        assert_eq!(later_conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(later_conn.query_row("SELECT SUM(calls) FROM provider_daily_stats WHERE context_id=(SELECT id FROM contexts WHERE is_everywhere=1)", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn resolved_pending_receipts_relay_to_existing_peer() {
+      for (sender_retained, retained) in [(false,false),(false,true),(true,false),(true,true)] {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        for (database, identity) in [(&source,"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),(&dest,"ffffffff-ffff-4fff-8fff-ffffffffffff")] {
+            let conn = database.lock().unwrap();
+            sync_store::ensure_self_identity(&conn, identity, "test").unwrap();
+            conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+            if (retained && identity.starts_with('f')) || (sender_retained && identity.starts_with('e')) {
+                conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at,activity_day,activity_hour) VALUES ('cccccccc-cccc-4ccc-8ccc-cccccccccccc','a','a',5,1000,'test','2020-01-01 10:00:00','2020-01-01',10)", []).unwrap();
+                conn.execute("INSERT INTO pending_transcription_contexts VALUES ('cccccccc-cccc-4ccc-8ccc-cccccccccccc','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')", []).unwrap();
+                conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,audio_ms,input_chars,output_chars,created_at,activity_day) SELECT 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',id,'model','provider','stt',1,0,0,'2020-01-01 10:00:00','2020-01-01' FROM transcriptions WHERE uuid='cccccccc-cccc-4ccc-8ccc-cccccccccccc'", []).unwrap();
+            } else {
+                crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","hour":10,"context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","words":5,"spoken_words":null,"duration_ms":1000})).unwrap();
+                crate::commands::settings::import_sync_receipt(&conn, "call_receipts", json!({"uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","transcription_uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"model","provider":"provider","task":"stt","audio_ms":1,"input_chars":0,"output_chars":0})).unwrap();
+            }
+        }
+        let conn = source.lock().unwrap();
+        let before = sync_store::max_log_seq(&conn).unwrap();
+        conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid,source_name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        let id: i64 = conn.query_row("SELECT id FROM contexts WHERE name='Work'", [], |r| r.get(0)).unwrap();
+        db::resolve_pending_contexts(&conn, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+        let (ops, _, _) = collect_ops(&conn, before, false, 1000, &mut SnapshotProgress::default()).unwrap();
+        drop(conn);
+        let conn = dest.lock().unwrap();
+        assert!(!apply_ops(&conn, &ops).unwrap().deferred);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT total_words FROM transcription_context_daily_stats WHERE context_uuid='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'", [], |r| r.get::<_,i64>(0)).unwrap(), 5);
+        assert_eq!(conn.query_row("SELECT (SELECT COUNT(*) FROM api_calls)+(SELECT COALESCE(SUM(calls),0) FROM provider_daily_stats)", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+      }
+    }
+
+    #[test]
+    fn pending_receipt_resolution_records_mapped_context() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        let receipt = json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","hour":10,"context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","words":5,"spoken_words":null,"duration_ms":1000});
+        crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", receipt.clone()).unwrap();
+        conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid,source_name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        let context = SyncOp { table:"contexts".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(json!({"name":"Work","created_at":"2020-01-01","updated_at":"2020-01-01"})) };
+        apply_ops(&conn, &[context]).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_context_event_sources WHERE transcription_uuid='cccccccc-cccc-4ccc-8ccc-cccccccccccc'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        let deletion = SyncOp { table:"contexts".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"delete".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:2, payload:None };
+        apply_ops(&conn, &[deletion]).unwrap();
+        let everywhere_id = db::ensure_everywhere_context_conn(&conn).unwrap();
+        let everywhere: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [everywhere_id], |r| r.get(0)).unwrap();
+        let mut moved = receipt;
+        moved["context_uuid"] = json!(everywhere);
+        let op = SyncOp { table:"transcription_receipts".into(), row_uuid:"cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:3, payload:Some(moved) };
+        assert!(!apply_ops(&conn, &[op]).unwrap().deferred);
+    }
+
+    #[test]
+    fn matching_existing_call_receipt_records_source_context() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        let mut call = json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","transcription_uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","day":"2020-01-01","context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","model":"model","provider":"provider","task":"stt","audio_ms":1,"input_chars":0,"output_chars":0});
+        crate::commands::settings::import_sync_receipt(&conn, "call_receipts", call.clone()).unwrap();
+        conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid,source_name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Work')", []).unwrap();
+        call["context_uuid"] = json!("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let mut op = SyncOp { table:"call_receipts".into(), row_uuid:"cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(call) };
+        assert!(!apply_ops(&conn, &[op.clone()]).unwrap().deferred);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_context_event_sources WHERE transcription_uuid='dddddddd-dddd-4ddd-8ddd-dddddddddddd'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        let deletion = SyncOp { table:"contexts".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"delete".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:2, payload:None };
+        apply_ops(&conn, &[deletion]).unwrap();
+        let everywhere_id = db::ensure_everywhere_context_conn(&conn).unwrap();
+        let everywhere: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [everywhere_id], |r| r.get(0)).unwrap();
+        op.payload.as_mut().unwrap()["context_uuid"] = json!(everywhere);
+        assert!(!apply_ops(&conn, &[op]).unwrap().deferred);
+    }
+
+    #[test]
+    fn rejected_context_collision_resolves_pending_receipts() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Work')", []).unwrap();
+        let receipt = json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","day":"2020-01-01","hour":10,"context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","words":5,"spoken_words":null,"duration_ms":1000});
+        crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", receipt.clone()).unwrap();
+        let context = SyncOp { table:"contexts".into(), row_uuid:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(json!({"name":"Work","created_at":"2020-01-01","updated_at":"2020-01-01"})) };
+        apply_ops(&conn, &[context]).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        let replay = SyncOp { table:"transcription_receipts".into(), row_uuid:"cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:2, payload:Some(receipt) };
+        assert!(!apply_ops(&conn, &[replay]).unwrap().deferred);
+        assert_eq!(conn.query_row("SELECT total_words FROM transcription_context_daily_stats WHERE context_uuid=(SELECT uuid FROM contexts WHERE is_everywhere=1)", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+    }
+
+    #[test]
+    fn synced_provider_overflow_rolls_back() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','a','a',1,1000,'test','2020-01-01 10:00:00')", []).unwrap();
+        conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,audio_ms,input_chars,output_chars,created_at) SELECT 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',id,'model','provider','stt',?1,0,0,'2020-01-01 10:00:00' FROM transcriptions", [i64::MAX]).unwrap();
+        let call = SyncOp { table:"api_calls".into(), row_uuid:"cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(json!({"transcription_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"model","provider":"provider","task":"stt","audio_ms":1,"input_chars":0,"output_chars":0,"created_at":"2020-01-01 10:00:00"})) };
+        assert!(apply_ops(&conn, &[call]).is_err());
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM api_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM sync_log WHERE row_uuid='cccccccc-cccc-4ccc-8ccc-cccccccccccc'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn moved_call_waits_for_known_parent_context_deletion() {
+        for retained in [false, true] {
+            let db = db::open(":memory:").unwrap();
+            let conn = db.lock().unwrap();
+            conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Synthetic')", []).unwrap();
+            if retained {
+                conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,context_id,created_at,activity_day,activity_hour) SELECT 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','a','a',5,1000,'test',id,'2020-01-01 10:00:00','2020-01-01',10 FROM contexts WHERE name='Synthetic'", []).unwrap();
+            } else {
+                crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", json!({"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","hour":10,"context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","words":5,"spoken_words":null,"duration_ms":1000})).unwrap();
+            }
+            let everywhere_id = db::ensure_everywhere_context_conn(&conn).unwrap();
+            let everywhere: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [everywhere_id], |r| r.get(0)).unwrap();
+            let call = SyncOp { table:"call_receipts".into(), row_uuid:"cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","transcription_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","context_uuid":everywhere,"model":"model","provider":"provider","task":"stt","audio_ms":0,"input_chars":0,"output_chars":0})) };
+            assert!(apply_ops(&conn, &[call.clone()]).unwrap().deferred);
+            let deletion = SyncOp { table:"contexts".into(), row_uuid:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(), op:"delete".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:2, payload:None };
+            apply_ops(&conn, &[deletion]).unwrap();
+            assert!(!apply_ops(&conn, &[call.clone()]).unwrap().deferred);
+            assert!(!apply_ops(&conn, &[call]).unwrap().deferred);
+            assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn moved_call_before_context_tombstone_retries_after_reconciliation() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        let parent = json!({"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","hour":10,"context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","words":5,"spoken_words":null,"duration_ms":1000});
+        let first = json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","transcription_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","model":"model","provider":"provider","task":"stt","audio_ms":0,"input_chars":0,"output_chars":0});
+        crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", parent).unwrap();
+        crate::commands::settings::import_sync_receipt(&conn, "call_receipts", first).unwrap();
+        let second = SyncOp { table:"call_receipts".into(), row_uuid:"dddddddd-dddd-4ddd-8ddd-dddddddddddd".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(json!({"uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","transcription_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","context_uuid":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee","model":"model","provider":"provider","task":"stt","audio_ms":0,"input_chars":0,"output_chars":0})) };
+        assert!(apply_ops(&conn, &[second.clone()]).unwrap().deferred);
+        conn.execute("INSERT INTO sync_everywhere_aliases VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')", []).unwrap();
+        assert!(apply_ops(&conn, &[second.clone()]).unwrap().deferred);
+        let deletion = SyncOp { table:"contexts".into(), row_uuid:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(), op:"delete".into(), ts_ms:2, origin:"peer".into(), origin_seq:2, payload:None };
+        apply_ops(&conn, &[deletion]).unwrap();
+        assert!(!apply_ops(&conn, &[second]).unwrap().deferred);
+        assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn replayed_everywhere_alias_resolves_existing_pending_activity() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        let (ops, _, _) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        let everywhere = ops.into_iter().find(|op| op.table == "contexts" && op.payload.as_ref().is_some_and(|p| p.get("is_everywhere") == Some(&json!(true)))).unwrap();
+        let conn = dest.lock().unwrap();
+        apply_ops(&conn, &[everywhere.clone()]).unwrap();
+        conn.execute("DELETE FROM sync_everywhere_aliases WHERE uuid=?1", [&everywhere.row_uuid]).unwrap();
+        let receipt = json!({"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","hour":10,"context_uuid":everywhere.row_uuid,"words":5,"spoken_words":null,"duration_ms":1000});
+        crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", receipt).unwrap();
+        apply_ops(&conn, &[everywhere.clone()]).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM sync_everywhere_aliases WHERE uuid=?1", [&everywhere.row_uuid], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT total_words FROM transcription_context_daily_stats WHERE context_uuid=(SELECT uuid FROM contexts WHERE is_everywhere=1)", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+    }
+
+    #[test]
+    fn moved_parent_before_tombstone_retries_without_losing_history() {
+        for retained in [false, true] {
+            let db = db::open(":memory:").unwrap();
+            let conn = db.lock().unwrap();
+            let call = json!({"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","transcription_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","day":"2020-01-01","context_uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","model":"model","provider":"provider","task":"stt","audio_ms":0,"input_chars":0,"output_chars":0});
+            crate::commands::settings::import_sync_receipt(&conn, "call_receipts", call).unwrap();
+            let id = db::ensure_everywhere_context_conn(&conn).unwrap();
+            let everywhere: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0)).unwrap();
+            let (table,payload) = if retained {
+                ("transcriptions", json!({"raw_text":"a","clean_text":"a","words":5,"duration_ms":1000,"api_used":"test","context_uuid":everywhere,"created_at":"2020-01-01 10:00:00","activity_day":"2020-01-01","activity_hour":10}))
+            } else {
+                ("transcription_receipts", json!({"uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","day":"2020-01-01","hour":10,"context_uuid":everywhere,"words":5,"spoken_words":null,"duration_ms":1000}))
+            };
+            let parent = SyncOp { table:table.into(), row_uuid:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(payload) };
+            assert!(apply_ops(&conn, &[parent.clone()]).unwrap().deferred);
+            let deletion = SyncOp { table:"contexts".into(), row_uuid:"cccccccc-cccc-4ccc-8ccc-cccccccccccc".into(), op:"delete".into(), ts_ms:2, origin:"peer".into(), origin_seq:2, payload:None };
+            apply_ops(&conn, &[deletion]).unwrap();
+            assert!(!apply_ops(&conn, &[parent]).unwrap().deferred);
+            assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+            assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn raw_replay_resolves_pending_compacted_history_without_restoring_text() {
+        for retention in [None, Some(7)] {
+            let db = db::open(":memory:").unwrap();
+            let conn = db.lock().unwrap();
+            let receipt = json!({"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","hour":10,"context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","words":5,"spoken_words":null,"duration_ms":1000});
+            crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", receipt).unwrap();
+            conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Recovered')", []).unwrap();
+            let op = SyncOp { table:"transcriptions".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"upsert".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:1, payload:Some(json!({"raw_text":"a","clean_text":"a","words":5,"duration_ms":1000,"api_used":"test","context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","created_at":"2020-01-01 10:00:00","activity_day":"2020-01-01","activity_hour":10})) };
+            apply_ops_with_retention(&conn, &[op.clone()], retention).unwrap();
+            apply_ops_with_retention(&conn, &[op], retention).unwrap();
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcriptions", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+            assert_eq!(conn.query_row("SELECT total_words FROM transcription_context_daily_stats WHERE context_uuid='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        }
+    }
+
+    #[test]
+    fn expired_history_and_call_sync_with_missing_context() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        {
+            let conn = source.lock().unwrap();
+            conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','a','a',5,1000,'test',datetime('now','-40 days'))", []).unwrap();
+            conn.execute("INSERT INTO pending_transcription_contexts VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')", []).unwrap();
+            conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,created_at) SELECT 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',id,'model','provider','stt',datetime('now','-40 days') FROM transcriptions", []).unwrap();
+        }
+        let (ops, _, _) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        let conn = dest.lock().unwrap();
+        assert!(!apply_ops_with_retention(&conn, &ops, Some(30)).unwrap().deferred);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcription_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM call_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn sync_parent_resolves_call_only_pending_context_before_pruning() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        {
+            let conn = source.lock().unwrap();
+            conn.execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Synthetic')", []).unwrap();
+            conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,context_id,created_at,activity_day,activity_hour) SELECT 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','a','a',5,1000,'test',id,'2020-01-01 10:00:00','2020-01-01',10 FROM contexts WHERE name='Synthetic'", []).unwrap();
+        }
+        let call = json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","transcription_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","day":"2020-01-01","context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"model","provider":"provider","task":"stt","audio_ms":0,"input_chars":0,"output_chars":0});
+        {
+            let conn = dest.lock().unwrap();
+            crate::commands::settings::import_sync_receipt(&conn, "call_receipts", call.clone()).unwrap();
+            conn.execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Synthetic')", []).unwrap();
+        }
+        let (ops, _, _) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        let history: Vec<_> = ops.into_iter().filter(|op| op.table == "transcriptions").collect();
+        apply_ops(&dest.lock().unwrap(), &history).unwrap();
+        db::prune_transcriptions_older_than(&dest, 7).unwrap();
+        let conn = dest.lock().unwrap();
+        crate::commands::settings::import_sync_receipt(&conn, "call_receipts", call).unwrap();
+        assert_eq!(conn.query_row("SELECT total_words FROM transcription_context_daily_stats WHERE context_uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn compacted_held_calls_do_not_become_sync_deletions() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        let entry = sync_store::LogEntry { seq: 1, table_name: "held_api_calls".into(), row_uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op: "upsert".into(), ts_ms: 1, origin: "peer".into(), origin_seq: 1 };
+        assert!(resolve_entry(&conn, entry).unwrap().is_none());
+    }
+
+    #[test]
+    fn forwarded_history_uses_the_strongest_local_hold() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO backup_held_history VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')", []).unwrap();
+        conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','a','a',5,1000,'test','2020-01-01 10:00:00')", []).unwrap();
+        let entry = sync_store::LogEntry { seq: 1, table_name: "held_hourly_transcriptions".into(), row_uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op: "upsert".into(), ts_ms: 1, origin: "peer".into(), origin_seq: 1 };
+        assert_eq!(resolve_entry(&conn, entry).unwrap().unwrap().table, "held_transcriptions");
+    }
+
+    #[test]
+    fn delayed_context_preserves_hourly_hold_and_checks_provider_overlap() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        {
+            let conn = source.lock().unwrap();
+            conn.execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Synthetic')", []).unwrap();
+            conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,context_id,created_at,activity_day,activity_hour) SELECT 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','a','a',5,1000,'test',id,'2020-01-01 10:00:00','2020-01-01',10 FROM contexts WHERE name='Synthetic'", []).unwrap();
+            conn.execute("INSERT INTO backup_held_hourly_receipts VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')", []).unwrap();
+            conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,created_at,activity_day) SELECT 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',id,'model','provider','stt','2020-01-01 10:00:00','2020-01-01' FROM transcriptions", []).unwrap();
+        }
+        let (ops, _, _) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        let history: Vec<_> = ops.iter().filter(|op| matches!(op.table.as_str(), "held_hourly_transcriptions" | "api_calls")).cloned().collect();
+        let contexts: Vec<_> = ops.iter().filter(|op| op.table == "contexts").cloned().collect();
+        assert_eq!(history.len(), 2);
+        let conn = dest.lock().unwrap();
+        assert!(!apply_ops(&conn, &history).unwrap().deferred);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcriptions", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        sync_store::set_sync_applying(&conn, true).unwrap();
+        conn.execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Synthetic')", []).unwrap();
+        sync_store::set_sync_applying(&conn, false).unwrap();
+        conn.execute("INSERT INTO provider_daily_stats SELECT '2020-01-01',id,'model','provider','stt',1,0,0,0 FROM contexts WHERE name='Synthetic'", []).unwrap();
+        apply_ops(&conn, &contexts).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_held_hourly_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_held_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn pending_context_survives_retention_and_moves_compacted_usage() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        source.lock().unwrap().execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Synthetic')", []).unwrap();
+        {
+            let conn = dest.lock().unwrap();
+            conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at,activity_day,activity_hour) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','a','a',5,1000,'test','2020-01-01 10:00:00','2020-01-01',10)", []).unwrap();
+            conn.execute("INSERT INTO pending_transcription_contexts VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')", []).unwrap();
+            conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,created_at,activity_day) SELECT 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',id,'model','provider','stt','2020-01-01 10:00:00','2020-01-01' FROM transcriptions", []).unwrap();
+            conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,created_at,activity_day) SELECT 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',id,'model','provider','stt','2020-01-01 10:00:00','2020-01-01' FROM transcriptions", []).unwrap();
+        }
+        db::compact_api_calls_older_than(&dest, 7).unwrap();
+        db::prune_transcriptions_older_than(&dest, 7).unwrap();
+        let (ops, _, _) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        let contexts: Vec<_> = ops.into_iter().filter(|op| op.table == "contexts").collect();
+        let conn = dest.lock().unwrap();
+        assert_eq!(conn.query_row("SELECT context_uuid FROM transcription_receipts", [], |r| r.get::<_, String>(0)).unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM call_receipts WHERE context_uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", json!({"uuid":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee","day":"2020-01-01","hour":10,"context_uuid":null,"words":7,"spoken_words":null,"duration_ms":1000})).unwrap(), 0);
+        assert_eq!(crate::commands::settings::import_sync_receipt(&conn, "call_receipts", json!({"uuid":"ffffffff-ffff-4fff-8fff-ffffffffffff","transcription_uuid":null,"day":"2020-01-01","context_uuid":null,"model":"model","provider":"provider","task":"stt","audio_ms":0,"input_chars":0,"output_chars":0})).unwrap(), 0);
+        apply_ops(&conn, &contexts).unwrap();
+        assert_eq!(conn.query_row("SELECT total_words FROM transcription_context_daily_stats WHERE context_uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        assert_eq!(conn.query_row("SELECT total_words FROM transcription_hourly_stats WHERE context_id=(SELECT id FROM contexts WHERE name='Synthetic')", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        assert_eq!(conn.query_row("SELECT calls FROM provider_daily_stats WHERE context_id=(SELECT id FROM contexts WHERE name='Synthetic')", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(conn.query_row("SELECT total_words FROM transcription_hourly_stats WHERE context_id=0", [], |r| r.get::<_, i64>(0)).unwrap(), 7);
+        assert_eq!(conn.query_row("SELECT calls FROM provider_daily_stats WHERE context_id=0", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM pending_transcription_contexts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn pending_retained_call_is_not_held_after_sibling_compaction() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        source.lock().unwrap().execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','Synthetic')", []).unwrap();
+        {
+            let conn = dest.lock().unwrap();
+            conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','a','a',5,1000,'test','2020-01-01 10:00:00')", []).unwrap();
+            conn.execute("INSERT INTO pending_transcription_contexts VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')", []).unwrap();
+            conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,created_at,activity_day) SELECT 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',id,'model','provider','stt','2020-01-01 10:00:00','2020-01-01' FROM transcriptions", []).unwrap();
+            conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,created_at,activity_day) SELECT 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',id,'model','provider','stt','2099-01-01 10:00:00','2020-01-01' FROM transcriptions", []).unwrap();
+        }
+        db::compact_api_calls_older_than(&dest, 7).unwrap();
+        let (ops, _, _) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        let contexts: Vec<_> = ops.into_iter().filter(|op| op.table == "contexts").collect();
+        let conn = dest.lock().unwrap();
+        apply_ops(&conn, &contexts).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_held_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT calls FROM provider_daily_stats WHERE context_id=(SELECT id FROM contexts WHERE name='Synthetic')", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM api_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn held_history_is_excluded_when_best_wpm_is_recomputed() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO backup_held_history VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')", []).unwrap();
+        conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','a','a',100,1000,'test','2020-01-01 10:00:00'),('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','b','b',2,1000,'test','2020-01-01 10:00:00'),('cccccccc-cccc-4ccc-8ccc-cccccccccccc','c','c',1,1000,'test','2020-01-01 10:00:00')", []).unwrap();
+        conn.execute("DELETE FROM transcriptions WHERE uuid='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'", []).unwrap();
+        let best: f64 = conn.query_row("SELECT best_wpm FROM transcription_daily_stats WHERE day='2020-01-01'", [], |r| r.get(0)).unwrap();
+        assert_eq!(best, 60.0);
+    }
+
+    #[test]
+    fn preupgrade_ambiguous_history_and_calls_sync_as_held() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        let conn = source.lock().unwrap();
+        sync_store::ensure_self_identity(&conn, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source").unwrap();
+        conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at,activity_day,activity_hour) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','a','a',5,1000,'test','2020-01-01 01:00:00','2020-01-01',1)", []).unwrap();
+        conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,created_at,activity_day) SELECT 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',id,'model','provider','stt','2020-01-01 01:00:00','2020-01-01' FROM transcriptions", []).unwrap();
+        conn.execute("INSERT INTO backup_preupgrade_history VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')", []).unwrap();
+        let (ops, _, _) = collect_ops(&conn, 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        assert!(ops.iter().any(|op| op.table == "held_transcriptions"));
+        assert!(ops.iter().any(|op| op.table == "held_api_calls"));
+        drop(conn);
+        let conn = dest.lock().unwrap();
+        apply_ops(&conn, &ops).unwrap();
+        assert_eq!(conn.query_row("SELECT COALESCE(SUM(total_words),0) FROM transcription_daily_stats", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_held_calls", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn held_history_and_calls_sync_without_inflating_statistics() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        crate::sync::store::ensure_self_identity(&source.lock().unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source").unwrap();
+        {
+            let conn = source.lock().unwrap();
+            conn.execute("INSERT INTO backup_held_history VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')", []).unwrap();
+            conn.execute("INSERT INTO transcriptions(uuid, raw_text, clean_text, words, duration_ms, api_used, created_at) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'synthetic', 'synthetic', 5, 1000, 'test', '2020-01-01 12:00:00')", []).unwrap();
+            conn.execute("INSERT INTO api_calls(uuid, transcription_id, model, provider, task, created_at) SELECT 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', id, 'model', 'test', 'stt', '2020-01-01 12:00:00' FROM transcriptions", []).unwrap();
+            conn.execute("INSERT INTO backup_held_calls VALUES ('cccccccc-cccc-4ccc-8ccc-cccccccccccc')", []).unwrap();
+        }
+        let (ops, _, done) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        assert!(done);
+        assert!(ops.iter().any(|op| op.table == "held_transcriptions"));
+        assert!(ops.iter().any(|op| op.table == "held_api_calls"));
+        let conn = dest.lock().unwrap();
+        apply_ops(&conn, &ops).unwrap();
+        apply_ops(&conn, &ops).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcriptions", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM api_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COALESCE(SUM(total_words),0) FROM transcription_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        drop(conn);
+        let expired = db::open(":memory:").unwrap();
+        let conn = expired.lock().unwrap();
+        apply_ops_with_retention(&conn, &ops, Some(7)).unwrap();
+        assert_eq!(conn.query_row("SELECT counted FROM call_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT COALESCE(SUM(calls),0) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn sync_compacts_incoming_history_outside_destination_retention() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        crate::sync::store::ensure_self_identity(&source.lock().unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source").unwrap();
+        source.lock().unwrap().execute("INSERT INTO transcriptions(uuid, raw_text, clean_text, words, duration_ms, api_used, created_at) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'synthetic', 'synthetic', 5, 1000, 'test', '2020-01-01 12:00:00')", []).unwrap();
+        let (ops, _, _) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        let conn = dest.lock().unwrap();
+        apply_ops_with_retention(&conn, &ops, Some(7)).unwrap();
+        apply_ops_with_retention(&conn, &ops, Some(7)).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcriptions", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcription_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+    }
+
+    #[test]
+    fn retained_sync_keeps_legacy_provider_and_hourly_overlaps_uncounted() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        {
+            let conn = source.lock().unwrap();
+            conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used,created_at,activity_day,activity_hour) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','a','a',5,1000,'test','2020-01-01 10:00:00','2020-01-01',10)", []).unwrap();
+            conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task,created_at,activity_day) SELECT 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',id,'model','provider','stt','2020-01-01 10:00:00','2020-01-01' FROM transcriptions", []).unwrap();
+        }
+        {
+            let conn = dest.lock().unwrap();
+            conn.execute("INSERT INTO transcription_hourly_stats VALUES ('2020-01-01',10,0,5)", []).unwrap();
+            conn.execute("INSERT INTO provider_daily_stats VALUES ('2020-01-01',0,'model','provider','stt',1,0,0,0)", []).unwrap();
+        }
+        let (ops, _, _) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut SnapshotProgress::default()).unwrap();
+        let conn = dest.lock().unwrap();
+        apply_ops(&conn, &ops).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_held_hourly_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_held_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT total_words FROM transcription_daily_stats WHERE day='2020-01-01'", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+    }
+
+    #[test]
+    fn upgrading_a_peer_requests_one_new_snapshot() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        sync_store::upsert_peer(&conn, "peer", "peer", "fingerprint").unwrap();
+        sync_store::set_peer_send_position(&conn, "peer", 42, false).unwrap();
+        note_receipt_capability(&conn, "peer", false).unwrap();
+        assert!(!sync_store::peer_send_position(&conn, "peer").unwrap().1);
+        note_receipt_capability(&conn, "peer", true).unwrap();
+        assert!(sync_store::peer_send_position(&conn, "peer").unwrap().1);
+        sync_store::set_peer_send_position(&conn, "peer", 42, false).unwrap();
+        note_receipt_capability(&conn, "peer", true).unwrap();
+        assert!(!sync_store::peer_send_position(&conn, "peer").unwrap().1);
+    }
+
+    #[test]
+    fn compacted_activity_syncs_in_snapshot_and_incremental_exchange() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        crate::sync::store::ensure_self_identity(&source.lock().unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source").unwrap();
+        crate::sync::store::ensure_self_identity(&dest.lock().unwrap(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "dest").unwrap();
+        let entry = db::insert_transcription_returning(&source, "one two", "one two", 2, 1000, "test", None, None).unwrap();
+        source.lock().unwrap().execute("UPDATE transcriptions SET created_at='2020-01-01 12:00:00' WHERE id=?1", [entry.id]).unwrap();
+        db::insert_api_calls(&source, &[db::ApiCall { transcription_id:entry.id, model:"synthetic".into(), provider:"test".into(), task:"stt".into(), audio_ms:1000, input_chars:0, output_chars:1, created_at:"2020-01-01 12:00:00".into() }]).unwrap();
+        db::prune_transcriptions_older_than(&source, 7).unwrap();
+        let mut progress = SnapshotProgress::default();
+        let (ops, _, done) = collect_ops(&source.lock().unwrap(), 0, true, 1000, &mut progress).unwrap();
+        assert!(done);
+        assert!(ops.iter().any(|op| op.table == "transcription_receipts"));
+        assert!(ops.iter().any(|op| op.table == "call_receipts"));
+        let conn = dest.lock().unwrap();
+        apply_ops(&conn, &ops).unwrap();
+        apply_ops(&conn, &ops).unwrap();
+        assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_hourly_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        drop(conn);
+        let (incremental, _, _) = collect_ops(&source.lock().unwrap(), 0, false, 1000, &mut SnapshotProgress::default()).unwrap();
+        apply_ops(&dest.lock().unwrap(), &incremental).unwrap();
+        assert_eq!(dest.lock().unwrap().query_row("SELECT SUM(total_words) FROM transcription_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn sync_does_not_restore_a_pruned_transcription() {
+        let db = db::open(":memory:").unwrap();
+        let entry = db::insert_transcription_returning(&db, "synthetic", "synthetic", 1, 1000, "test", None, None).unwrap();
+        let (uuid, payload) = {
+            let conn = db.lock().unwrap();
+            conn.execute("UPDATE transcriptions SET created_at='2020-01-01 12:00:00' WHERE id=?1", [entry.id]).unwrap();
+            let uuid: String = conn.query_row("SELECT uuid FROM transcriptions WHERE id=?1", [entry.id], |r| r.get(0)).unwrap();
+            let payload = row_payload(&conn, "transcriptions", &uuid).unwrap();
+            (uuid, payload)
+        };
+        db::prune_transcriptions_older_than(&db, 7).unwrap();
+        let conn = db.lock().unwrap();
+        let op = SyncOp { table:"transcriptions".into(), row_uuid:uuid, op:"upsert".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:1, payload };
+        assert!(matches!(apply_transcription_op(&conn, &op).unwrap(), Applied::Skipped));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcriptions", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT SUM(total_words) FROM transcription_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn sync_keeps_usage_for_a_call_arriving_after_its_parent_was_pruned() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        let entry = db::insert_transcription_returning(&source, "synthetic", "synthetic", 1, 1000, "test", None, None).unwrap();
+        source.lock().unwrap().execute("UPDATE transcriptions SET created_at='2020-01-01 12:00:00' WHERE id=?1", [entry.id]).unwrap();
+        db::insert_api_calls(&source, &[db::ApiCall { transcription_id:entry.id, model:"synthetic".into(), provider:"test".into(), task:"stt".into(), audio_ms:1000, input_chars:0, output_chars:1, created_at:"2020-01-01 12:00:00".into() }]).unwrap();
+        let (transcription, call) = {
+            let conn = source.lock().unwrap();
+            let id: String = conn.query_row("SELECT uuid FROM transcriptions WHERE id=?1", [entry.id], |r| r.get(0)).unwrap();
+            let call_id: String = conn.query_row("SELECT uuid FROM api_calls LIMIT 1", [], |r| r.get(0)).unwrap();
+            let make_op = |table: &str, uuid: String| SyncOp { table:table.into(), payload:row_payload(&conn, table, &uuid).unwrap(), row_uuid:uuid, op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1 };
+            (make_op("transcriptions", id), make_op("api_calls", call_id))
+        };
+        apply_transcription_op(&dest.lock().unwrap(), &transcription).unwrap();
+        db::prune_transcriptions_older_than(&dest, 7).unwrap();
+        let conn = dest.lock().unwrap();
+        assert!(matches!(apply_api_call_op(&conn, &call).unwrap(), Applied::Yes));
+        assert!(matches!(apply_api_call_op(&conn, &call).unwrap(), Applied::Skipped));
+        assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn sync_defers_calls_until_their_parent_arrives() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        let op = SyncOp { table:"api_calls".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(json!({"transcription_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "model":"synthetic", "provider":"test", "task":"stt", "created_at":"2020-01-01 12:00:00"})) };
+        assert!(matches!(apply_api_call_op(&conn, &op).unwrap(), Applied::Deferred));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM call_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn raw_call_resolves_compacted_parent_context_before_counting() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        let parent = json!({"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","hour":10,"context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","words":5,"spoken_words":null,"duration_ms":1000});
+        let first = json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","transcription_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","day":"2020-01-01","context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","model":"synthetic","provider":"test","task":"stt","audio_ms":0,"input_chars":0,"output_chars":0});
+        crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", parent.clone()).unwrap();
+        crate::commands::settings::import_sync_receipt(&conn, "call_receipts", first).unwrap();
+        conn.execute("INSERT INTO contexts(uuid,name) VALUES ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Recovered')", []).unwrap();
+        let op = SyncOp { table:"api_calls".into(), row_uuid:"dddddddd-dddd-4ddd-8ddd-dddddddddddd".into(), op:"upsert".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:1, payload:Some(json!({"transcription_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"synthetic","provider":"test","task":"stt","created_at":"2020-01-01 10:00:00","activity_day":"2020-01-01"})) };
+        assert!(matches!(apply_api_call_op(&conn, &op).unwrap(), Applied::Yes));
+        crate::commands::settings::import_sync_receipt(&conn, "transcription_receipts", parent).unwrap();
+        assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM call_receipts WHERE counted=1", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn raw_call_does_not_duplicate_a_retained_uuid() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO transcriptions(uuid,raw_text,clean_text,words,duration_ms,api_used) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','a','a',1,1000,'test')", []).unwrap();
+        conn.execute("INSERT INTO api_calls(uuid,transcription_id,model,provider,task) SELECT 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',id,'synthetic','test','stt' FROM transcriptions", []).unwrap();
+        let op = SyncOp { table:"api_calls".into(), row_uuid:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(), op:"upsert".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:1, payload:Some(json!({"transcription_uuid":null,"model":"synthetic","provider":"test","task":"stt","created_at":"2020-01-01 10:00:00"})) };
+        assert!(matches!(apply_api_call_op(&conn, &op).unwrap(), Applied::Skipped));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM call_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM api_calls", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn retained_parent_rejects_context_conflicting_with_orphan_call() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO contexts(uuid,name) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','First'),('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','Second')", []).unwrap();
+        let call = json!({"uuid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","transcription_uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","day":"2020-01-01","context_uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","model":"model","provider":"provider","task":"stt","audio_ms":0,"input_chars":0,"output_chars":0});
+        crate::commands::settings::import_sync_receipt(&conn, "call_receipts", call).unwrap();
+        let mut op = SyncOp { table:"transcriptions".into(), row_uuid:"dddddddd-dddd-4ddd-8ddd-dddddddddddd".into(), op:"upsert".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:1, payload:Some(json!({"raw_text":"a","clean_text":"a","words":5,"duration_ms":1000,"api_used":"test","context_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","created_at":"2020-01-01 10:00:00"})) };
+        assert!(matches!(apply_transcription_op(&conn, &op).unwrap(), Applied::Skipped));
+        let dependent = SyncOp { table:"api_calls".into(), row_uuid:"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into(), op:"upsert".into(), ts_ms:i64::MAX, origin:"peer".into(), origin_seq:2, payload:Some(json!({"transcription_uuid":"dddddddd-dddd-4ddd-8ddd-dddddddddddd","model":"model","provider":"provider","task":"stt","created_at":"2020-01-01 10:00:00"})) };
+        assert!(!apply_ops(&conn, &[dependent]).unwrap().deferred);
+        op.payload.as_mut().unwrap()["context_uuid"] = json!("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        assert!(matches!(apply_transcription_op(&conn, &op).unwrap(), Applied::Yes));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM sync_rejected_history", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
     fn peers_without_nullable_formatting_overrides_are_rejected() {
         let mut hello = Hello {
             device_uuid: "peer".into(),
             device_name: "Peer".into(),
             protocol: 2,
             app_version: "0.0.0".into(),
+            activity_receipts: false,
         };
         assert!(check_hello(&hello, "peer").is_err());
         hello.protocol = PROTOCOL_VERSION;
@@ -2910,11 +3888,11 @@ mod payload_tests {
                 label, icon, title_pattern, match_mode, created_at)
              VALUES ('subapp', 2, 'editor', NULL, 'Editor', 'Work tabs', NULL, 'Work', 'contains', '2026-01-01');
              INSERT INTO transcriptions (id, uuid, context_id, raw_text, clean_text, words,
-                spoken_words, duration_ms, api_used, app_name, created_at)
-             VALUES (1, 'transcription', 2, 'raw café', 'Clean café.', 2, 3, 1234, 'provider/model', NULL, '2026-01-01');
+                spoken_words, duration_ms, api_used, app_name, created_at, activity_day, activity_hour)
+             VALUES (1, 'transcription', 2, 'raw café', 'Clean café.', 2, 3, 1234, 'provider/model', NULL, '2026-01-01', '2026-01-01', 0);
              INSERT INTO api_calls (uuid, transcription_id, model, provider, task, audio_ms,
-                input_chars, output_chars, created_at)
-             VALUES ('call', 1, 'model', 'provider', 'cleanup', 1234, 8, 11, '2026-01-01');",
+                input_chars, output_chars, created_at, activity_day)
+             VALUES ('call', 1, 'model', 'provider', 'cleanup', 1234, 8, 11, '2026-01-01', '2026-01-01');",
         ).unwrap();
         let cases = [
             (
@@ -2972,7 +3950,7 @@ mod payload_tests {
                 json!({
                     "raw_text": "raw café", "clean_text": "Clean café.", "words": 2, "spoken_words": 3,
                     "duration_ms": 1234, "api_used": "provider/model", "app_name": null,
-                    "context_uuid": "context", "created_at": "2026-01-01"
+                    "context_uuid": "context", "created_at": "2026-01-01", "activity_day": "2026-01-01", "activity_hour": 0
                 }),
             ),
             (
@@ -2981,7 +3959,7 @@ mod payload_tests {
                 json!({
                     "transcription_uuid": "transcription", "model": "model", "provider": "provider",
                     "task": "cleanup", "audio_ms": 1234, "input_chars": 8, "output_chars": 11,
-                    "created_at": "2026-01-01"
+                    "created_at": "2026-01-01", "activity_day": "2026-01-01"
                 }),
             ),
         ];

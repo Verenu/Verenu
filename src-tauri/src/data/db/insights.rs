@@ -465,7 +465,7 @@ fn query_totals(
     let total_words: i64 = if context_id.is_none() {
         conn.query_row(
             "SELECT COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
-                  + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0)",
+                  + COALESCE((SELECT SUM(total_words) FROM combined_device_counters), 0)",
             [],
             |r| r.get(0),
         )?
@@ -601,13 +601,15 @@ fn compact_streak_daily(lifetime_daily: &[InsightsDay]) -> Vec<InsightsDay> {
 fn query_hourly(conn: &Connection, range: &DateRange, context_id: Option<i64>) -> Result<Vec<i64>> {
     let mut hourly = vec![0i64; 24];
     let mut stmt = conn.prepare(
-        "SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER), SUM(words)
+        "SELECT COALESCE(activity_hour, CAST(strftime('%H', created_at, 'localtime') AS INTEGER)), SUM(words)
          FROM transcriptions
-         WHERE created_at >= ?1 AND created_at < ?2
+         WHERE COALESCE(activity_day, date(created_at, 'localtime')) >= ?1 AND COALESCE(activity_day, date(created_at, 'localtime')) <= ?2
+           AND NOT EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid)
+           AND NOT EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid = transcriptions.uuid)
            AND (?3 IS NULL OR context_id = ?3)
          GROUP BY 1",
     )?;
-    let rows = stmt.query_map(params![range.start, range.end, context_id], |r| {
+    let rows = stmt.query_map(params![range.start_day.to_string(), range.end_day.to_string(), context_id], |r| {
         Ok((r.get::<_, usize>(0)?, r.get::<_, i64>(1)?))
     })?;
     for row in rows {
@@ -652,13 +654,14 @@ fn query_providers(
                 COALESCE(SUM(a.output_chars), 0)
          FROM api_calls a
          LEFT JOIN transcriptions t ON t.id = a.transcription_id
-         WHERE a.created_at >= ?1 AND a.created_at < ?2
+         WHERE COALESCE(a.activity_day, date(a.created_at, 'localtime')) >= ?1 AND COALESCE(a.activity_day, date(a.created_at, 'localtime')) <= ?2
+           AND NOT EXISTS(SELECT 1 FROM backup_held_calls h WHERE h.uuid = a.uuid)
            AND (?3 IS NULL OR t.context_id = ?3)
          GROUP BY a.model, a.provider, a.task
          ORDER BY COUNT(*) DESC, a.model ASC",
     )?;
     let rows = stmt.query_map(
-        params![range.start, range.end, context_id],
+        params![range.start_day.to_string(), range.end_day.to_string(), context_id],
         provider_usage_from_row,
     )?;
     let mut by_key: HashMap<(String, String, String), InsightsProviderUsage> = HashMap::new();
@@ -725,7 +728,7 @@ fn query_cleanup_lifetime(conn: &Connection, context_id: Option<i64>) -> Result<
     let dictionary_fixes: i64 = match context_id {
         None => conn.query_row(
             "SELECT COALESCE((SELECT dictionary_fixes FROM lifetime_stats WHERE id = 1), 0)
-                  + COALESCE((SELECT SUM(dictionary_fixes) FROM sync_remote_stats), 0)",
+                  + COALESCE((SELECT SUM(dictionary_fixes) FROM combined_device_counters), 0)",
             [],
             |r| r.get(0),
         )?,

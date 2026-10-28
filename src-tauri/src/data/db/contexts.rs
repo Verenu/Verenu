@@ -552,10 +552,6 @@ fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
          SELECT ?1, snippet_id FROM snippet_contexts WHERE context_id = ?2",
         params![everywhere_id, context_id],
     )?;
-    tx.execute(
-        "UPDATE transcriptions SET context_id = ?1 WHERE context_id = ?2",
-        params![everywhere_id, context_id],
-    )?;
     let everywhere_uuid: String = tx.query_row(
         "SELECT uuid FROM contexts WHERE id = ?1",
         params![everywhere_id],
@@ -566,6 +562,15 @@ fn delete_context_contents(tx: &Connection, context_id: i64) -> Result<()> {
         params![context_id],
         |r| r.get(0),
     )?;
+    resolve_pending_contexts(tx, &deleted_uuid, context_id, &deleted_uuid)?;
+    tx.execute(
+        "UPDATE transcriptions SET context_id = ?1 WHERE context_id = ?2",
+        params![everywhere_id, context_id],
+    )?;
+    tx.execute("UPDATE transcription_receipts SET context_uuid = ?1 WHERE context_uuid = ?2", params![everywhere_uuid, deleted_uuid])?;
+    tx.execute("UPDATE call_receipts SET context_uuid = ?1 WHERE context_uuid = ?2", params![everywhere_uuid, deleted_uuid])?;
+    tx.execute("UPDATE backup_context_event_sources SET local_uuid=?1 WHERE local_uuid=?2", params![everywhere_uuid,deleted_uuid])?;
+    tx.execute("UPDATE backup_context_aliases SET local_uuid=?1 WHERE local_uuid=?2", params![everywhere_uuid,deleted_uuid])?;
     tx.execute(
         "INSERT INTO transcription_context_daily_stats
            (day, context_uuid, total_words, total_transcriptions, speaking_ms, wpm_sum, wpm_count, best_wpm)
