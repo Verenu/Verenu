@@ -31,6 +31,7 @@ Stored locally in app storage and SQLite:
 - Custom provider definitions, including base URLs, task-specific model IDs, and non-secret request options. Definitions are included in settings backups; their API keys are not. Custom definitions are device-local and do not participate in LAN settings sync.
 - Context groups, their app/website targets, per-context tone/cleanup overrides, vocabulary, and snippets
 - Transcription history
+- When available, the hostname of the browser page active at the start of a dictation is stored with that history entry. Full URLs, paths and query strings are not stored as website metadata. Detection can be unavailable; older entries are not inferred. This hostname follows history retention, backup and device sync.
 - An optional metadata-only agent failure journal. It is off by default and
   stores daily UTC counts, fixed subsystem/category labels, and diagnostic
   fingerprints for up to 365 calendar days, including today. It has no history

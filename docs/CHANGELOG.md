@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- New browser dictations include the detected website hostname in history when available, and history search matches websites. Earlier entries remain unchanged.
+
 - Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
 - Adjusted microphone gain automatically during detected speech to help keep the voice level consistent as its volume changes. The microphone gain setting sets the target level; the default is recommended for most microphones.
 - Smoothed the dictation pill's error animation. The native window now finishes growing before the error pill animates into the new space, so a message or card is never painted into a window that is still catching up (the flicker when the pill resized to fit an error, most visible on Linux/Hyprland). With reduced motion enabled, pill states now cross-fade without sliding, scaling, or width morphs.
