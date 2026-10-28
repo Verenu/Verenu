@@ -322,6 +322,17 @@ fn load_audio_config_pause_media_default_and_override() {
 }
 
 #[test]
+fn echo_cancellation_defaults_off_and_can_be_enabled_independently() {
+    let empty = SettingsSnapshot::from_pairs([]);
+    assert!(!load_audio_config(&empty).echo_cancellation);
+    let enabled = SettingsSnapshot::from_pairs([(ECHO_CANCELLATION.to_string(), json!(true))]);
+    let audio = load_audio_config(&enabled);
+    assert!(audio.echo_cancellation);
+    assert!(!audio.mute_audio);
+    assert!(!audio.pause_media_during_dictation);
+}
+
+#[test]
 fn setting_audit_empty_store_resolves_to_documented_defaults() {
     let empty = SettingsSnapshot::from_pairs([]);
     let cfg = load_pipeline_config(&empty);

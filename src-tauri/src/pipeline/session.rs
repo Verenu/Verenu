@@ -109,10 +109,19 @@ pub fn start_recording_session_ex_with_context(
     let device = audio_config.device;
     let use_default_input_device = device.is_none();
     let noise_reduction = audio_config.noise_reduction;
+    let echo_cancellation = cfg!(target_os = "linux") && audio_config.echo_cancellation;
     let mute_audio = audio_config.mute_audio;
     let exclusive_mic = audio_config.exclusive_mic;
     let pause_media = audio_config.pause_media_during_dictation;
     let mic_gain = audio_config.mic_gain;
+    #[cfg(target_os = "linux")]
+    let duck_settings = audio_config.duck_audio.then_some(crate::system::output_duck::DuckSettings {
+        target: audio_config.duck_target,
+        down: std::time::Duration::from_millis(audio_config.duck_fade_down_ms),
+        up: std::time::Duration::from_millis(audio_config.duck_fade_up_ms),
+        smooth_down: audio_config.duck_fade_down_smooth,
+        smooth_up: audio_config.duck_fade_up_smooth,
+    });
     let exclusive_mic_session_id =
         if cfg!(target_os = "macos") && exclusive_mic && use_default_input_device {
             Some(crate::system::volume::register_session())
@@ -218,11 +227,19 @@ pub fn start_recording_session_ex_with_context(
                 mic_gain,
                 durable_sink,
                 max_output_samples,
+                echo_cancellation,
             )
         },
     );
     match started {
-        Ok(session) => {
+        #[allow(unused_mut)]
+        Ok(mut session) => {
+            #[cfg(target_os = "linux")]
+            if let Some(settings) = duck_settings {
+                if let Err(error) = session.start_output_duck(settings) {
+                    log::warn!("Unable to lower output volume: {error}");
+                }
+            }
             let analytics_run_id: Option<String> = {
                 #[cfg(desktop)]
                 {

@@ -558,6 +558,13 @@ pub const DEFAULT_SOUND_EFFECTS_VOLUME: f32 = 1.0;
 pub struct AudioConfig {
     pub device: Option<String>,
     pub noise_reduction: bool,
+    pub echo_cancellation: bool,
+    pub duck_audio: bool,
+    pub duck_target: u8,
+    pub duck_fade_down_ms: u64,
+    pub duck_fade_up_ms: u64,
+    pub duck_fade_down_smooth: bool,
+    pub duck_fade_up_smooth: bool,
     pub mic_gain: f32,
     pub mute_audio: bool,
     pub exclusive_mic: bool,
@@ -570,6 +577,13 @@ impl Default for AudioConfig {
         Self {
             device: None,
             noise_reduction: true,
+            echo_cancellation: false,
+            duck_audio: false,
+            duck_target: 25,
+            duck_fade_down_ms: 250,
+            duck_fade_up_ms: 150,
+            duck_fade_down_smooth: true,
+            duck_fade_up_smooth: true,
             mic_gain: default_mic_gain(),
             mute_audio: false,
             exclusive_mic: false,
@@ -587,6 +601,14 @@ pub fn load_audio_config(store: &SettingsSnapshot) -> AudioConfig {
         .get(NOISE_REDUCTION)
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    let echo_cancellation = store.get(ECHO_CANCELLATION)
+        .and_then(|v| v.as_bool()).unwrap_or(false);
+    let duck_audio = store.get(DUCK_AUDIO).and_then(|v| v.as_bool()).unwrap_or(false);
+    let duck_target = store.get(DUCK_TARGET).and_then(|v| v.as_u64()).unwrap_or(25).min(100) as u8;
+    let duck_fade_down_ms = store.get(DUCK_FADE_DOWN_MS).and_then(|v| v.as_u64()).unwrap_or(250).min(5000);
+    let duck_fade_up_ms = store.get(DUCK_FADE_UP_MS).and_then(|v| v.as_u64()).unwrap_or(150).min(5000);
+    let duck_fade_down_smooth = store.get(DUCK_FADE_DOWN_CURVE).and_then(|v| v.as_str()).unwrap_or("smooth") != "linear";
+    let duck_fade_up_smooth = store.get(DUCK_FADE_UP_CURVE).and_then(|v| v.as_str()).unwrap_or("smooth") != "linear";
     let mic_gain = store
         .get(MIC_GAIN)
         .and_then(|v| v.as_f64())
@@ -620,6 +642,13 @@ pub fn load_audio_config(store: &SettingsSnapshot) -> AudioConfig {
     AudioConfig {
         device,
         noise_reduction,
+        echo_cancellation,
+        duck_audio,
+        duck_target,
+        duck_fade_down_ms,
+        duck_fade_up_ms,
+        duck_fade_down_smooth,
+        duck_fade_up_smooth,
         mic_gain,
         mute_audio,
         exclusive_mic,
