@@ -4,9 +4,27 @@ inputs:
   report-prefix:
     description: Report and artifact name prefix
     required: true
+  profile:
+    description: all (local/release parity), fast, or owned
+    default: all
+  suite:
+    description: all, node, or browser owned tests
+    default: all
+  shard:
+    description: Node shard index/count
+    default: 1/1
+  project:
+    description: all, desktop, or phone browser project
+    default: all
 runs:
   using: composite
   steps:
+    - name: Validate regression profile
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+      run: |
+        case "$PROFILE" in all|fast|owned) ;; *) exit 1 ;; esac
     - uses: actions/setup-node@v6
       with:
         node-version: 24
@@ -18,10 +36,15 @@ runs:
     - name: Install Linux build and fixture tools
       shell: bash
       run: |
+        # A slow Azure archive route can dominate the entire gate.
+        sudo sed -i \
+          -e 's|mirror+file:/etc/apt/apt-mirrors\.txt|https://archive.ubuntu.com/ubuntu|g' \
+          -e 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+          /etc/apt/sources.list.d/ubuntu.sources
         sudo apt-get update
-        sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
           libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev \
-          espeak-ng ffmpeg xvfb dbus-x11 gnome-keyring lua5.4
+          espeak-ng ffmpeg xvfb xauth dbus-x11 gnome-keyring lua5.4
     - name: Install dependencies
       shell: bash
       run: npm ci
@@ -29,6 +52,7 @@ runs:
       shell: bash
       run: npx playwright install --with-deps chromium
     - name: Run deterministic contracts
+      if: inputs.profile != 'owned'
       shell: bash
       env:
         REPORT_PREFIX: ${{ inputs.report-prefix }}
@@ -36,20 +60,27 @@ runs:
         mkdir -p tests/reports
         npm test -- --strict --json-report "tests/reports/$REPORT_PREFIX-fast.json" --junit-report "tests/reports/$REPORT_PREFIX-fast.xml"
     - name: Lint Linux Rust including dev-session code
+      if: inputs.profile != 'owned'
       shell: bash
       run: cargo clippy --manifest-path src-tauri/Cargo.toml --features dev-session -- -D warnings
     - name: Verify generated compositor gestures
+      if: inputs.profile != 'owned'
       shell: bash
       run: |
         cargo test --manifest-path src-tauri/Cargo.toml core::hyprland::tests --lib -- --include-ignored
         cargo test --manifest-path src-tauri/Cargo.toml core::hotkey::linux --lib
     - name: Stress native runtime handle ownership
+      if: inputs.profile != 'owned'
       shell: bash
       run: dbus-run-session -- xvfb-run -a cargo run --manifest-path src-tauri/Cargo.toml --example runtime-handle-stress
     - name: Run every owned-session and browser regression
+      if: inputs.profile != 'fast'
       shell: bash
       env:
         REPORT_PREFIX: ${{ inputs.report-prefix }}
+        SESSION_SUITE: ${{ inputs.suite }}
+        SESSION_SHARD: ${{ inputs.shard }}
+        SESSION_PROJECT: ${{ inputs.project }}
       run: |
         test_home="$(mktemp -d "${RUNNER_TEMP}/verenu-session-home.XXXXXX")"
         runtime_dir="$(mktemp -d "${RUNNER_TEMP}/verenu-xdg-runtime.XXXXXX")"
@@ -72,7 +103,7 @@ runs:
               exit 1
             fi
             unset passphrase
-            npm run test:session:owned -- --report "tests/reports/$REPORT_PREFIX-session.json"
+            npm run test:session:owned -- --suite "$SESSION_SUITE" --shard "$SESSION_SHARD" --project "$SESSION_PROJECT" --report "tests/reports/$REPORT_PREFIX-session.json"
           '
     - name: Upload safe regression reports
       if: always()

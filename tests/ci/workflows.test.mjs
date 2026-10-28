@@ -7,13 +7,48 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { root } from '../../scripts/verification/identity.mjs';
 import { requiredCiContextDiff, requiredCiRulesetPayload } from '../../scripts/ci/ruleset-payload.mjs';
+import { sessionPartition, partitionFiles } from '../../scripts/verification/session-partition.mjs';
 
 const workflow = name => YAML.parse(fs.readFileSync(path.join(root, '.github/workflows', name), 'utf8'));
 
+test('master builds seed caches accessible to new PRs without running on task-branch pushes', () => {
+  const checks = workflow('pr-checks.yml');
+  assert.deepEqual(checks.on.push.branches, ['master']);
+  assert.deepEqual(checks.on.pull_request.branches, ['master']);
+  const guard = checks.jobs['blob-size-guard'].steps.find(step => step.env?.PR_BASE_SHA);
+  assert.equal(guard.env.PR_BASE_SHA, '${{ github.event.pull_request.base.sha || github.event.before }}');
+});
+
+test('Linux setup replaces only the slow Azure mirror and installs explicit fixture tools', () => {
+  const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
+  const setup = shared.runs.steps.find(step => step.name === 'Install Linux build and fixture tools').run;
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'verenu-apt-'));
+  try {
+    const source = path.join(directory, 'ubuntu.sources');
+    const calls = path.join(directory, 'calls');
+    fs.writeFileSync(source, 'URIs: mirror+file:/etc/apt/apt-mirrors.txt\nURIs: http://azure.archive.ubuntu.com/ubuntu\nURIs: http://security.ubuntu.com/ubuntu\nSuites: noble noble-updates\n');
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', `
+      sudo() {
+        if [ "$1" = sed ]; then "$@"; else printf '%s\\n' "$*" >> "$APT_CALLS"; fi
+      }
+      ${setup.replace('/etc/apt/sources.list.d/ubuntu.sources', '"$APT_SOURCE_FIXTURE"')}
+    `], { encoding: 'utf8', env: { ...process.env, APT_SOURCE_FIXTURE: source, APT_CALLS: calls } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(source, 'utf8'), 'URIs: https://archive.ubuntu.com/ubuntu\nURIs: https://archive.ubuntu.com/ubuntu\nURIs: http://security.ubuntu.com/ubuntu\nSuites: noble noble-updates\n');
+    const [update, install] = fs.readFileSync(calls, 'utf8').trim().split('\n');
+    assert.equal(update, 'apt-get update');
+    assert.ok(install.includes('--no-install-recommends'));
+    for (const tool of ['xvfb', 'xauth', 'ffmpeg', 'espeak-ng', 'gnome-keyring', 'lua5.4']) assert.ok(install.split(' ').includes(tool));
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('required CI aggregate cannot pass when a job fails, skips or is cancelled', () => {
-  const gate = workflow('pr-checks.yml').jobs.required;
+  const jobs = workflow('pr-checks.yml').jobs;
+  // Existing branch protection requires this exact context name.
+  assert.equal(jobs['all-in-one-fast'].name, 'All-in-one fast profile');
+  const gate = jobs.required;
   assert.equal(gate.if, 'always()');
-  for (const job of ['frontend', 'dependency-audits', 'rust', 'all-in-one-fast', 'workflow-tests', 'android', 'native']) assert.ok(gate.needs.includes(job));
+  for (const job of ['frontend', 'dependency-audits', 'rust', 'all-in-one-fast', 'owned-sessions', 'workflow-tests', 'android', 'native']) assert.ok(gate.needs.includes(job));
   const step = gate.steps[0];
   const source = step.run.match(/node -e '([\s\S]+)'/)?.[1];
   assert.ok(source);
@@ -23,6 +58,32 @@ test('required CI aggregate cannot pass when a job fails, skips or is cancelled'
     evaluate({ env: { RESULTS: JSON.stringify({ test: { result } }) }, exit: value => { code = value; } }, { error() {} });
     assert.equal(code, 1);
   }
+});
+
+test('free GitHub runners execute every owned file once and both full browser projects independently', () => {
+  const jobs = workflow('pr-checks.yml').jobs;
+  const owned = jobs['owned-sessions'];
+  assert.equal(owned['runs-on'], 'ubuntu-24.04');
+  assert.equal(owned.needs, undefined);
+  assert.equal(owned.strategy['fail-fast'], false);
+  const matrix = owned.strategy.matrix.include;
+  const files = fs.readdirSync(path.join(root, 'tests/dev-session')).filter(file => file.endsWith('.test.mjs')).sort();
+  const executed = matrix.filter(row => row.suite === 'node').flatMap(row => partitionFiles(files, sessionPartition(['--suite', row.suite, '--shard', row.shard, '--project', row.project])));
+  assert.deepEqual(executed.sort(), files);
+  assert.deepEqual(matrix.filter(row => row.suite === 'browser').map(row => sessionPartition(['--suite', row.suite, '--shard', row.shard, '--project', row.project]).project).sort(), ['desktop', 'phone']);
+  assert.equal(new Set(matrix.map(row => row.label)).size, matrix.length);
+  const step = owned.steps.find(step => step.uses === './.github/actions/regression-checks');
+  assert.equal(step.with.profile, 'owned');
+  for (const key of ['suite', 'shard', 'project']) assert.equal(step.with[key], '${{ matrix.' + key + ' }}');
+  assert.equal(step.with['report-prefix'], 'pr-${{ matrix.label }}');
+  assert.equal(jobs['all-in-one-fast'].steps.find(step => step.uses === './.github/actions/regression-checks').with.profile, 'fast');
+  const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
+  assert.equal(shared.inputs.profile.default, 'all');
+  // Some Node transport files also launch Chromium internally.
+  assert.equal(shared.runs.steps.find(step => step.name === 'Install browser').if, undefined);
+  assert.deepEqual(workflow('pr-checks.yml').env, { CARGO_PROFILE_DEV_DEBUG: '0', CARGO_PROFILE_TEST_DEBUG: '0' });
+  assert.equal(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).if, "inputs.profile != 'fast'");
+  assert.equal(shared.runs.steps.find(step => step.name === 'Run deterministic contracts').if, "inputs.profile != 'owned'");
 });
 
 test('nightly publication requires exact-source regression verification', () => {
