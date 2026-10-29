@@ -140,6 +140,10 @@ export function devInsights(days: number, contextId: number | null): unknown {
       edits_applied: Math.round(wordsInRange * 0.031),
       dictionary_fixes: Math.round(wordsInRange * 0.009),
       auto_learned_terms: 24,
+      vocabulary_replacements: Math.round(wordsInRange * 0.009),
+      snippet_expansions: 12,
+      activity_incomplete: false,
+      activity_tracked_dictations: transcriptions,
     },
     words: {
       top: [
