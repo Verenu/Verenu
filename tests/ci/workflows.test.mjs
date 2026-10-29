@@ -48,7 +48,10 @@ test('required CI aggregate cannot pass when a job fails, skips or is cancelled'
   assert.equal(jobs['all-in-one-fast'].name, 'All-in-one fast profile');
   const gate = jobs.required;
   assert.equal(gate.if, 'always()');
-  for (const job of ['frontend', 'dependency-audits', 'rust', 'all-in-one-fast', 'owned-sessions', 'workflow-tests', 'android', 'native']) assert.ok(gate.needs.includes(job));
+  for (const job of ['frontend', 'dependency-audits', 'rust', 'all-in-one-fast', 'owned-sessions', 'workflow-tests', 'android', 'native', 'linux-arm64']) assert.ok(gate.needs.includes(job));
+  assert.equal(jobs['linux-arm64']['runs-on'], 'ubuntu-24.04-arm');
+  assert.ok(jobs['linux-arm64'].steps.some(step => step.run?.includes('tauri build -- --bundles deb')));
+  assert.match(jobs['linux-arm64'].steps.find(step => step.uses === 'actions/upload-artifact@v4').with.path, /_arm64\.deb/);
   for (const aggregate of [gate, jobs['all-in-one-fast']]) {
     assert.equal(aggregate.if, 'always()');
     const source = aggregate.steps[0].run.match(/node -e '([\s\S]+)'/)?.[1];
