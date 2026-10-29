@@ -1,4 +1,14 @@
-use super::cache::{cleanup_cache_plan, cleanup_context_fingerprint};
+use super::cache::{cleanup_cache_plan, cleanup_cache_plan_for_context, cleanup_context_fingerprint};
+
+#[test]
+fn cleanup_cache_key_uses_shared_context_identity() {
+    let key = |context| cleanup_cache_plan_for_context(
+        "Synthetic input", "casual", "medium", "", None, None, Some(context),
+    ).key;
+    assert_eq!(key("shared-context"), key("shared-context"));
+    assert_ne!(key("shared-context"), key("another-context"));
+    assert_ne!(key("everywhere"), key("shared-context"));
+}
 #[path = "apple_cleanup_tests.rs"]
 mod apple_cleanup_tests;
 use super::gates::strip_provider_artifacts;
@@ -320,8 +330,8 @@ fn cleanup_cache_keys_preserve_exact_input_and_field_boundaries() {
     }
     assert_ne!(key("hello", "first\nsecond"), key("hello", "firstsecond"));
     let opaque = key("private synthetic phrase", "");
-    assert!(opaque.starts_with("cleanup-v2:"));
-    assert_eq!(opaque.len(), "cleanup-v2:".len() + 64);
+    assert!(opaque.starts_with("cleanup-v3:"));
+    assert_eq!(opaque.len(), "cleanup-v3:".len() + 64);
     assert!(!opaque.contains("private"));
 }
 
@@ -2226,7 +2236,7 @@ fn cleanup_cache_rejects_fabrication_and_preserves_cached_style() {
     crate::data::db::cleanup_cache_insert_new(&db, "key", raw, "2999-01-01 00:00:00", false)
         .unwrap();
     assert_eq!(
-        super::cache::cleanup_cache_hit_text(&db, "key", "light", "", raw, None).as_deref(),
+        super::cache::cleanup_cache_hit_text(&db, "key", "light", "", raw, None).as_ref().map(|(text, _)| text.as_str()),
         Some(raw)
     );
     assert!(super::cache::cleanup_cache_hit_text(

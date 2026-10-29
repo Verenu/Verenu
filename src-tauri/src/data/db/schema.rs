@@ -1094,6 +1094,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
              FROM sync_identity WHERE (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
          END;",
     )?;
+    ensure_table_column(&conn, "sync_peer_capabilities", "cleanup_cache", "ALTER TABLE sync_peer_capabilities ADD COLUMN cleanup_cache INTEGER NOT NULL DEFAULT 0;")?;
     ensure_cleanup_cache_schema(&conn)?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_api_calls_transcription_id
@@ -2092,8 +2093,9 @@ fn ensure_table_column(
 }
 
 fn ensure_cleanup_cache_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS cleanup_cache_gate (id INTEGER PRIMARY KEY CHECK(id = 1), enabled INTEGER NOT NULL CHECK(enabled IN (0, 1))); INSERT OR IGNORE INTO cleanup_cache_gate VALUES (1, 1);")?;
     conn.execute(
-        "DELETE FROM cleanup_cache WHERE key NOT LIKE 'cleanup-v2:%'",
+        "DELETE FROM cleanup_cache WHERE key NOT LIKE 'cleanup-v2:%' AND key NOT LIKE 'cleanup-v3:%'",
         [],
     )?;
     let mut repaired = false;

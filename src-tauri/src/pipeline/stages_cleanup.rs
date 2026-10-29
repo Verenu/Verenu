@@ -401,7 +401,7 @@ pub(super) async fn run_cleanup_and_snippets(
     protected_instruction: Option<&str>,
     gen: u64,
     telemetry: &PipelineTelemetry,
-) -> Option<(String, Vec<db::DictionaryEntry>, String, String)> {
+) -> Option<(String, Vec<db::DictionaryEntry>, String, String, String)> {
     let db_handle = app.state::<DbHandle>();
     match run_cleanup_and_snippets_for_db(
         db_handle.inner(),
@@ -448,7 +448,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     app: Option<&AppHandle>,
     gen: u64,
     telemetry: Option<&PipelineTelemetry>,
-) -> anyhow::Result<(String, Vec<db::DictionaryEntry>, String, String)> {
+) -> anyhow::Result<(String, Vec<db::DictionaryEntry>, String, String, String)> {
     let mut db_snippets =
         db::query_effective_snippets_for_context(db_handle, context_id).unwrap_or_default();
     let dict_entries =
@@ -503,7 +503,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         }
     });
     if cfg.cleanup_intensity == "rules" || (commands_active && expanded.trim().is_empty()) {
-        return Ok((expanded, dict_entries, String::new(), String::new()));
+        return Ok((expanded, dict_entries, String::new(), String::new(), String::new()));
     }
     log::debug!(
         "pipeline: snippets expanded pure_fast_path={} expanded_chars={}",
@@ -595,6 +595,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     );
 
     let mut used_cache_key = String::new();
+    let mut used_cache_result_hash = String::new();
     let mut cleanup_api_used = String::new();
     let needs_transcript_fusion = cfg.cleanup_intensity == "none" && alternate.is_some();
     let final_text = if should_run_cleanup_llm(
@@ -613,6 +614,9 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             prompt_context.push_str(&dictionary_evidence);
         }
         let context_fingerprint = cleanup_context_fingerprint(cfg, &prompt_context, app_context);
+        let cache_context = db::cleanup_cache_context_identity(db_handle, context_id)
+            .ok()
+            .flatten();
         let cache_plan = cleanup_cache_plan_for_context(
             &expanded,
             profile,
@@ -620,16 +624,16 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             &snippet_instructions,
             alternate.map(|candidate| candidate.text.as_str()),
             Some(context_fingerprint),
-            Some(context_id),
+            cache_context.as_deref(),
         );
-        let cache_key = if protected_instruction.is_some() || !cfg.cleanup_cache_enabled {
+        let cache_key = if protected_instruction.is_some() || !cfg.cleanup_cache_enabled || cache_context.is_none() {
             String::new()
         } else {
             cache_plan.key.clone()
         };
         if protected_instruction.is_none() && !cache_key.is_empty() {
             used_cache_key = cache_key.clone();
-            if let Some(overridden) = cleanup_cache_hit_text(
+            if let Some((overridden, result_hash)) = cleanup_cache_hit_text(
                 db_handle,
                 &cache_key,
                 &cfg.cleanup_intensity,
@@ -638,7 +642,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 alternate.map(|candidate| candidate.text.as_str()),
             ) {
                 record_lookup(true);
-                return Ok((overridden, dict_entries, cache_key, String::new()));
+                return Ok((overridden, dict_entries, cache_key, result_hash, String::new()));
             }
             record_lookup(false);
         }
@@ -747,6 +751,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 let overridden =
                     snippets::apply_cleanup_instruction_overrides(&cleaned, &snippet_instructions);
                 if !cache_key.is_empty() {
+                    used_cache_result_hash = db::cleanup_cache_result_hash(&cleaned);
                     let expires = sqlite_utc_plus(db::CLEANUP_CACHE_IDLE_DAYS);
                     match db::cleanup_cache_insert_if(
                         db_handle,
@@ -822,5 +827,5 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         }
     };
 
-    Ok((final_text, dict_entries, used_cache_key, cleanup_api_used))
+    Ok((final_text, dict_entries, used_cache_key, used_cache_result_hash, cleanup_api_used))
 }

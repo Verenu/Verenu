@@ -336,6 +336,10 @@ pub fn run() {
             );
             let settings = crate::data::store::SettingsHandle::open(app.handle())
                 .map_err(std::io::Error::other)?;
+            let cache_enabled = settings.get(crate::data::store::CLEANUP_CACHE_ENABLED)
+                .and_then(|value| value.as_bool()).unwrap_or(true);
+            db::cleanup_cache_set_enabled(app.state::<DbHandle>().inner(), cache_enabled)
+                .map_err(std::io::Error::other)?;
             if !is_dev_session() {
                 crate::data::credentials::migrate_from_store(app.handle(), &settings);
             }

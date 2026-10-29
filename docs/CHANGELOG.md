@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Paired devices can share cleanup cache results through sync, reducing repeated cleanup requests when the same configuration is used. The cache privacy setting remains local.
+
 - Redesigned the Sync page. Paired and nearby devices share one Devices list with icon actions, the Tailscale setup is two steps, synchronous muting no longer has its own heading, and the pairing and remove dialogs use shorter text.
 - New browser dictations include the detected website hostname in history when available, and history search matches websites. Earlier entries remain unchanged.
 - Added optional Linux PipeWire echo cancellation and a dictation audio volume control: 0% mutes, 100% leaves playback unchanged, and intermediate levels fade smoothly. Fade timing is available under advanced controls. Partial volume reduction requires PipeWire's PulseAudio service and `pactl`; echo cancellation uses the default microphone and PipeWire's echo-cancel module.
