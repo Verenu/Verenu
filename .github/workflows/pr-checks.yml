@@ -326,6 +326,41 @@ jobs:
           path: src-tauri/gen/android/app/build/test-results/
           if-no-files-found: ignore
 
+  linux-arm64:
+    name: Linux ARM64 Rust tests
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: src-tauri
+          shared-key: pr-linux-arm64
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev cmake libwebkit2gtk-4.1-dev librsvg2-dev libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev libasound2-dev patchelf fuse3
+      - name: Run native ARM64 Rust tests
+        # The Tauri build embeds the frontend assets.
+        run: |
+          npm ci
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Build ARM64 Debian package
+        run: npm run tauri build -- --bundles deb
+      - name: Upload ARM64 Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Verenu-Linux-ARM64-deb
+          path: src-tauri/target/release/bundle/deb/*_arm64.deb
+          if-no-files-found: error
+
   native:
     name: Native WebView (${{ matrix.os }})
     strategy:
@@ -370,7 +405,7 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [frontend, dependency-audits, rust, blob-size-guard, all-in-one-fast, owned-sessions, workflow-tests, android, native]
+    needs: [frontend, dependency-audits, rust, blob-size-guard, all-in-one-fast, owned-sessions, workflow-tests, android, native, linux-arm64]
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI job to succeed
