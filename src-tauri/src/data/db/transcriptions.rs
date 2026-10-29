@@ -36,6 +36,7 @@ fn recent_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentEntr
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn insert_transcription_returning(
     db: &Db,
     raw: &str,
@@ -50,9 +51,19 @@ pub fn insert_transcription_returning(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn insert_transcription_with_website(
     db: &Db, raw: &str, clean: &str, words: i64, duration_ms: i64,
     api_used: &str, app_name: Option<&str>, context_id: Option<i64>, website_domain: Option<&str>,
+) -> Result<RecentEntry> {
+    insert_transcription_with_metrics(db, raw, clean, words, duration_ms, api_used, app_name, context_id, website_domain, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn insert_transcription_with_metrics(
+    db: &Db, raw: &str, clean: &str, words: i64, duration_ms: i64,
+    api_used: &str, app_name: Option<&str>, context_id: Option<i64>, website_domain: Option<&str>,
+    metrics: Option<(i64, i64)>,
 ) -> Result<RecentEntry> {
     let spoken_words = compute_spoken_words(db, raw)?;
     let _ = words;
@@ -60,10 +71,10 @@ pub fn insert_transcription_with_website(
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
     let entry = tx.query_row(
-        "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, website_domain) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+        "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, website_domain, vocabulary_replacements, snippet_expansions) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
          RETURNING id, clean_text, words, duration_ms, app_name, created_at, website_domain",
-        params![raw, clean, words, spoken_words, duration_ms, api_used, app_name, context_id, website_domain],
+        params![raw, clean, words, spoken_words, duration_ms, api_used, app_name, context_id, website_domain, metrics.map(|m| m.0), metrics.map(|m| m.1)],
         recent_entry_from_row,
     )?;
     tx.execute(

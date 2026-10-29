@@ -120,6 +120,79 @@ fn agent_context_patch_preserves_omitted_fields_and_rejects_stale_input() {
 }
 
 #[test]
+fn agent_tables_migrate_from_master_version_36() {
+    let path = temp_db_path("agent_from_v36");
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("DROP TABLE agent_library_changes; DROP TABLE agent_change_audit; DROP TABLE library_usage_daily; DROP TABLE library_usage_coverage; PRAGMA user_version = 36;").unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        assert!(query_library_usage(&db).is_ok());
+        let id = begin_agent_change(&db, "edit_snippet", None, "grant").unwrap();
+        finish_agent_change(&db, id, true).unwrap();
+        let conn = db.lock().unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, 39);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn agent_schema_upgrades_preserve_existing_usage_and_audit() {
+    for version in 36..=38 {
+        let path = temp_db_path(&format!("agent_from_v{version}"));
+        {
+            let db = open(&path).unwrap();
+            let term = insert_dictionary_entry_returning(&db, "Synthetic", Some("Synthitik"), None).unwrap();
+            record_dictionary_usage(&db, &[term.id]).unwrap();
+            let id = begin_agent_change(&db, "edit_snippet", None, "grant").unwrap();
+            finish_agent_change(&db, id, true).unwrap();
+            insert_transcription_returning(&db, "synthetic raw", "synthetic clean", 0, 1000, "test", None, None).unwrap();
+            let conn = db.lock().unwrap();
+            conn.execute_batch("ALTER TABLE transcriptions DROP COLUMN vocabulary_replacements; ALTER TABLE transcriptions DROP COLUMN snippet_expansions;").unwrap();
+            if version < 38 {
+                conn.execute_batch("ALTER TABLE agent_change_audit DROP COLUMN actor_id;").unwrap();
+            }
+            if version < 37 {
+                conn.execute_batch("DROP TABLE agent_library_changes;").unwrap();
+            }
+            conn.execute_batch(&format!("PRAGMA user_version = {version};")).unwrap();
+        }
+        {
+            let db = open(&path).unwrap();
+            assert_eq!(query_library_usage(&db).unwrap()["items"][0]["matches"], 1);
+            assert_eq!(query_agent_changes(&db, 10).unwrap()["entries"][0]["status"], "succeeded");
+            let conn = db.lock().unwrap();
+            let row: (Option<i64>, Option<i64>) = conn.query_row("SELECT vocabulary_replacements, snippet_expansions FROM transcriptions", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!(row, (None, None));
+            let current: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+            assert_eq!(current, 39);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn cleanup_activity_migration_preserves_history_as_untracked() {
+    let path = temp_db_path("cleanup_activity_v35");
+    {
+        let db = open(&path).unwrap();
+        insert_transcription_returning(&db, "synthetic raw", "synthetic clean", 0, 1000, "test", None, None).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("ALTER TABLE transcriptions DROP COLUMN vocabulary_replacements; ALTER TABLE transcriptions DROP COLUMN snippet_expansions; PRAGMA user_version = 35;").unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        let row: (String, String, Option<i64>, Option<i64>) = conn.query_row("SELECT raw_text, clean_text, vocabulary_replacements, snippet_expansions FROM transcriptions", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(row, ("synthetic raw".into(), "synthetic clean".into(), None, None));
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn t3_skill_opt_out_migrates_defaults_and_survives_reopen_and_duplicate() {
     let path = temp_db_path("t3_skills_v31");
     let context_id;
@@ -765,7 +838,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 38);
+    assert_eq!(version, 39);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
