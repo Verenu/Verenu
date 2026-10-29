@@ -44,6 +44,14 @@ mod pipeline;
 mod single_instance;
 mod sync;
 mod system;
+#[cfg(target_os = "linux")]
+pub fn run_internal_output_guardian() -> bool {
+    system::output_duck::internal_entry()
+}
+#[cfg(target_os = "linux")]
+pub fn recover_output_volume() {
+    system::output_duck::start_recovery();
+}
 #[cfg(any(test, debug_assertions))]
 mod testing;
 
