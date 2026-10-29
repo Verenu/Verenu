@@ -9,11 +9,10 @@
 
   let noiseReduction = $state(true);
   let echoCancellation = $state(false);
-  let duckAudio = $state(false);
-  let duckTarget = $state(25);
+  let duckTarget = $state(100);
+  let savedDuckTarget = 100;
   let duckFadeDown = $state(250);
   let duckFadeUp = $state(150);
-  let duckDownSmooth = $state(true);
   let duckUpSmooth = $state(true);
   let muteAudio = $state(false);
   let exclusiveMic = $state(false);
@@ -33,14 +32,13 @@
         play_start_stop_sounds: legacySounds, sound_effects_volume: savedVolume,
         mic_gain: savedGain, duck_audio: duck, duck_target: target,
         duck_fade_down_ms: fadeDown, duck_fade_up_ms: fadeUp,
-        duck_fade_down_curve: downCurve, duck_fade_up_curve: upCurve } = await loadSettingsSnapshot();
+        duck_fade_up_curve: upCurve } = await loadSettingsSnapshot();
       noiseReduction = nr ?? true;
       echoCancellation = echo ?? false;
-      duckAudio = duck ?? false;
-      duckTarget = target ?? 25;
+      duckTarget = isLinux && !isAndroid && mute ? 0 : duck ? target ?? 25 : 100;
+      savedDuckTarget = duckTarget;
       duckFadeDown = fadeDown ?? 250;
       duckFadeUp = fadeUp ?? 150;
-      duckDownSmooth = downCurve !== 'linear';
       duckUpSmooth = upCurve !== 'linear';
       muteAudio = mute ?? false;
       exclusiveMic = exclusive ?? false;
@@ -62,8 +60,6 @@
 
   let noiseReductionError = $state(false);
   let echoCancellationError = $state(false);
-  let duckAudioError = $state(false);
-  let duckDownCurveError = $state(false);
   let duckUpCurveError = $state(false);
   let duckSettingError = $state(false);
   let muteAudioError = $state(false);
@@ -73,19 +69,17 @@
 
   const handleNoiseReduction = booleanSettingHandler('noise_reduction', value => noiseReduction = value, () => noiseReductionError = true);
   const handleEchoCancellation = booleanSettingHandler('echo_cancellation', value => echoCancellation = value, () => echoCancellationError = true);
-  const handleDuckAudio = booleanSettingHandler('duck_audio', value => duckAudio = value, () => duckAudioError = true);
   async function saveDuckSetting(key: 'duck_target' | 'duck_fade_down_ms' | 'duck_fade_up_ms', value: number) {
-    try { await saveSetting(key, value); duckSettingError = false; }
-    catch (err) { duckSettingError = true; console.error(`Saving ${key} failed:`, err); }
+    try { await saveSetting(key, value); if (key === 'duck_target') { muteAudio = false; savedDuckTarget = value; } duckSettingError = false; }
+    catch (err) { if (key === 'duck_target') duckTarget = savedDuckTarget; duckSettingError = true; console.error(`Saving ${key} failed:`, err); }
   }
-  async function setDuckCurve(direction: 'down' | 'up', smooth: boolean) {
-    const key = direction === 'down' ? 'duck_fade_down_curve' : 'duck_fade_up_curve';
+  async function setDuckCurve(smooth: boolean) {
     try {
-      await saveSetting(key, smooth ? 'smooth' : 'linear');
-      if (direction === 'down') duckDownSmooth = smooth; else duckUpSmooth = smooth;
+      await saveSetting('duck_fade_up_curve', smooth ? 'smooth' : 'linear');
+      duckUpSmooth = smooth;
     } catch (err) {
-      if (direction === 'down') duckDownCurveError = true; else duckUpCurveError = true;
-      console.error(`Saving ${key} failed:`, err);
+      duckUpCurveError = true;
+      console.error('Saving fade curve failed:', err);
     }
   }
   const handleMuteAudio = booleanSettingHandler('mute_audio', value => muteAudio = value, () => muteAudioError = true);
@@ -190,35 +184,36 @@
     <Toggle checked={echoCancellation} onchange={handleEchoCancellation} label="Echo cancellation" bind:error={echoCancellationError} />
   </div>
 {/if}
+{#if !isLinux || isAndroid}
 <div class="setting-row" data-setting-target="audio-system-mute">
   <div><div class="label">{isMac ? 'Mute System Audio' : isAndroid ? 'Mute device audio' : 'Mute PC Audio'}</div><div class="desc">{isMac ? 'Mutes system volume while dictating to prevent audio interference' : isAndroid ? 'Mutes device audio while dictating to prevent audio interference' : isWindows ? 'Mutes Windows volume while dictating to prevent audio interference' : 'Mutes the default output while dictating to prevent audio interference'}</div></div>
   <Toggle checked={muteAudio} onchange={handleMuteAudio} label={isMac ? 'Mute system audio' : isAndroid ? 'Mute device audio' : 'Mute PC audio'} bind:error={muteAudioError} />
 </div>
+{/if}
 {#if isLinux && !isAndroid}
-  <div class="setting-row" data-setting-target="audio-volume-reduction">
-    <div><div class="label">Reduce speaker volume while dictating</div><div class="desc">Temporarily lower the default output, then restore its previous volume. Requires PipeWire's PulseAudio service and pactl. Mute takes priority; paused media stays paused.</div></div>
-    <Toggle checked={duckAudio} onchange={handleDuckAudio} label="Reduce speaker volume while dictating" bind:error={duckAudioError} />
-  </div>
-  {#if duckAudio}
+  <div data-setting-target="audio-system-mute">
     {#if duckSettingError}<div class="setting-row"><div class="desc" role="alert">Could not save the volume setting. Try changing it again.</div></div>{/if}
     <div class="setting-row sound-volume-row" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
-      <div class="sound-volume-header"><div><div class="label">Target volume</div><div class="desc">A percentage of your starting volume. 0% fades to silence; playback continues.</div></div><span class="sound-volume-value">{duckTarget}%</span></div>
+      <div class="sound-volume-header"><div><div class="label">Volume of audio while dictating</div><div class="desc">Percentage of your normal volume. 0% mutes immediately; 100% leaves it unchanged. Other levels fade down smoothly. Playback continues unless media pause is enabled. Partial reduction requires PipeWire's PulseAudio service and pactl.</div></div><span class="sound-volume-value">{duckTarget}%</span></div>
       <div class="sound-volume-slider-wrap">
-        <input type="range" class="sound-volume-slider" min="0" max="100" step="1" bind:value={duckTarget} onchange={() => saveDuckSetting('duck_target', duckTarget)} style="--pct: {duckTarget}%" aria-label="Target speaker volume" />
+        <input type="range" class="sound-volume-slider" min="0" max="100" step="1" bind:value={duckTarget} onchange={() => saveDuckSetting('duck_target', duckTarget)} style="--pct: {duckTarget}%" aria-label="Volume of audio while dictating" />
         <div class="sound-volume-ticks"><span>0%</span><span>50%</span><span>100%</span></div>
       </div>
     </div>
+    {#if duckTarget > 0 && duckTarget < 100}
+    <details class="volume-fades"><summary>Advanced volume fades</summary>
     <div class="setting-row sound-volume-row">
       <div class="sound-volume-header"><div><div class="label">Fade down duration</div><div class="desc">Time to reach the target when dictation starts.</div></div><span class="sound-volume-value">{duckFadeDown} ms</span></div>
       <div class="sound-volume-slider-wrap"><input type="range" class="sound-volume-slider" min="0" max="5000" step="50" bind:value={duckFadeDown} onchange={() => saveDuckSetting('duck_fade_down_ms', duckFadeDown)} style="--pct: {duckFadeDown / 50}%" aria-label="Fade down duration" /></div>
     </div>
-    <div class="setting-row"><div><div class="label">Smooth fade down</div><div class="desc">Ease the start and end of the fade; turn off for a linear curve.</div></div><Toggle checked={duckDownSmooth} onchange={(v) => setDuckCurve('down', v)} label="Smooth fade down" bind:error={duckDownCurveError} /></div>
     <div class="setting-row sound-volume-row">
       <div class="sound-volume-header"><div><div class="label">Fade up duration</div><div class="desc">Time to restore the volume when dictation ends.</div></div><span class="sound-volume-value">{duckFadeUp} ms</span></div>
       <div class="sound-volume-slider-wrap"><input type="range" class="sound-volume-slider" min="0" max="5000" step="50" bind:value={duckFadeUp} onchange={() => saveDuckSetting('duck_fade_up_ms', duckFadeUp)} style="--pct: {duckFadeUp / 50}%" aria-label="Fade up duration" /></div>
     </div>
-    <div class="setting-row"><div><div class="label">Smooth fade up</div><div class="desc">Ease the start and end of the fade; turn off for a linear curve.</div></div><Toggle checked={duckUpSmooth} onchange={(v) => setDuckCurve('up', v)} label="Smooth fade up" bind:error={duckUpCurveError} /></div>
-  {/if}
+    <div class="setting-row"><div><div class="label">Smooth fade up</div><div class="desc">Ease the start and end of the fade; turn off for a linear curve.</div></div><Toggle checked={duckUpSmooth} onchange={setDuckCurve} label="Smooth fade up" bind:error={duckUpCurveError} /></div>
+    </details>
+    {/if}
+  </div>
 {/if}
 {#if isMac}
   <div class="setting-row" data-setting-target="audio-exclusive">
@@ -228,7 +223,7 @@
 {/if}
 {#if isWindows || (isLinux && !isAndroid)}
   <div class="setting-row" data-setting-target="audio-pause-media">
-    <div><div class="label">Pause media while dictating</div><div class="desc">{isWindows ? 'Pauses active Windows media sessions and resumes them after transcription finishes. Works with apps that expose Windows media controls.' : 'Pauses playing music and videos and resumes them after transcription finishes. Works with apps and browsers that expose Linux media controls (MPRIS). Turn off Mute PC Audio if you only want to pause playback.'}</div></div>
+    <div><div class="label">Pause media while dictating</div><div class="desc">{isWindows ? 'Pauses active Windows media sessions and resumes them after transcription finishes. Works with apps that expose Windows media controls.' : 'Pauses playing music and videos and resumes them after transcription finishes. Works with apps and browsers that expose Linux media controls (MPRIS).'}</div></div>
     <Toggle checked={pauseMediaDuringDictation} onchange={handlePauseMedia} label="Pause media while dictating" bind:error={pauseMediaError} />
   </div>
 {/if}
@@ -279,6 +274,7 @@
 </div>
 
 <style>
+  .volume-fades summary { cursor: pointer; padding: 14px 0; }
 
   .gain-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
   .gain-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }

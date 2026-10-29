@@ -5,7 +5,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - New browser dictations include the detected website hostname in history when available, and history search matches websites. Earlier entries remain unchanged.
-- Added optional Linux PipeWire echo cancellation and speaker-volume reduction during dictation, with adjustable target and fade settings. The volume control requires PipeWire's PulseAudio service and `pactl`; echo cancellation uses the default microphone and PipeWire's echo-cancel module.
+- Added optional Linux PipeWire echo cancellation and a dictation audio volume control: 0% mutes, 100% leaves playback unchanged, and intermediate levels fade smoothly. Fade timing is available under advanced controls. Partial volume reduction requires PipeWire's PulseAudio service and `pactl`; echo cancellation uses the default microphone and PipeWire's echo-cancel module.
 - Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
 - Adjusted microphone gain automatically during detected speech to help keep the voice level consistent as its volume changes. The microphone gain setting sets the target level; the default is recommended for most microphones.
 - Verenu registers a small discovery guide for detected agent harnesses so an agent asked to manage Contexts or settings can find the packaged control skill. Saving the full control skill and enabling agent access remain separate user choices.
