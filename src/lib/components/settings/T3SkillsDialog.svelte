@@ -193,7 +193,7 @@
   .skill-row label:hover { background: var(--control-hover); }
   .skill-row code { color: var(--ink); font-family: var(--mono); font-size: 12px; min-width: 0; overflow-wrap: anywhere; transition: color var(--ui-duration-fast) var(--ui-ease-out), opacity var(--ui-duration-fast) var(--ui-ease-out); }
   .skill-row label.off code { color: var(--ink-mute); opacity: 0.7; text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--ink-mute) 50%, transparent); }
-  .skill-check { height: 1px; margin: 0; opacity: 0; position: absolute; width: 1px; }
+  .skill-check { cursor: pointer; height: 100%; inset: 0; margin: 0; opacity: 0; position: absolute; width: 100%; z-index: 1; }
   .box { align-items: center; background: var(--paper); border: 1px solid var(--line-strong); border-radius: 5px; color: var(--on-accent); display: inline-flex; flex: 0 0 auto; height: 18px; justify-content: center; transition: background-color var(--ui-duration-fast) var(--ui-ease-out), border-color var(--ui-duration-fast) var(--ui-ease-out), transform var(--ui-duration-fast) var(--ui-ease-out); width: 18px; }
   .box svg { height: 12px; stroke-dasharray: 22; stroke-dashoffset: 22; transition: stroke-dashoffset var(--ui-duration-base) var(--ui-ease-out); width: 12px; }
   .skill-check:checked + .box { background: var(--ink); border-color: var(--ink); color: var(--paper); }
@@ -207,7 +207,21 @@
     .box svg, .box, .skill-row label, .skill-row code { transition: none; }
   }
   @media (max-width: 560px) {
-    .skill-dialog { height: min(88vh, calc(100% - 24px)); }
+    .skill-dialog {
+      left: 0;
+      right: 0;
+      top: auto;
+      bottom: 0;
+      translate: 0 0;
+      width: 100%;
+      max-width: none;
+      height: min(88vh, calc(100% - 24px));
+      border-radius: var(--r-lg) var(--r-lg) 0 0;
+      border-left: 0;
+      border-right: 0;
+      border-bottom: 0;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
     .skill-dialog.empty-dialog { height: auto; }
   }
 </style>

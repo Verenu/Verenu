@@ -87,7 +87,7 @@
     {/if}
   {/snippet}
 
-  {#if connection && !replacing}
+  {#if connection}
     <div class="int-status int-enter">
       <span class="int-state">
         {#if updating}<span class="int-spinner" aria-hidden="true"></span>Updating…
@@ -99,14 +99,15 @@
       </button>
       <span class="int-meta">Pulled {timeAgo(connection.fetchedAt, now)}</span>
     </div>
-    {#if attention}<p class="int-note" role="status">{attention}</p>{/if}
-    <p class="int-fine">Only skill names reach your cleanup provider. Your pairing stays in your credential store.</p>
+    {#if attention && !replacing}<p class="int-note" role="status">{attention}</p>{/if}
+    {#if !replacing}<p class="int-fine">Only skill names reach your cleanup provider. Your pairing stays in your credential store.</p>{/if}
   {/if}
 
   {#if isAndroid}
     <p class="int-help">T3 skill pairing is available in Verenu on Windows, macOS, and Linux.</p>
   {:else if !connection || replacing}
     <form class="int-form int-enter" onsubmit={connect} aria-busy={t3State.connecting}>
+      {#if replacing}<p class="int-help first">Your current connection stays active until the new link connects.</p>{/if}
       <label for="t3-pairing-link">{replacing ? 'New pairing link' : 'T3 Code pairing link'}</label>
       <div class="int-row">
         <input id="t3-pairing-link" class="ui-input" type="password" bind:value={draft} autocomplete="off" spellcheck="false" placeholder="Paste a fresh pairing link" disabled={t3State.connecting} aria-describedby="t3-pairing-help" />
