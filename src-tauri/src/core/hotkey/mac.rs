@@ -59,6 +59,7 @@ pub fn clear_processing_generation(expected_generation: u64) {
 
 static MANAGER: OnceLock<GlobalHotKeyManager> = OnceLock::new();
 static CURRENT_HOTKEY: Mutex<Option<HotKey>> = Mutex::new(None);
+static MAIN_HOTKEY_LOCK: Mutex<()> = Mutex::new(());
 static MAIN_HOTKEY_ID: AtomicU32 = AtomicU32::new(0);
 static ESCAPE_HOTKEY: OnceLock<HotKey> = OnceLock::new();
 
@@ -81,12 +82,15 @@ pub fn is_win_key_down() -> bool {
 pub fn force_release_win_key() {}
 
 pub fn update_keys(ids: &[u32]) -> Result<(), String> {
+    super::with_capture_transition_lock(|| {
+    let _guard = MAIN_HOTKEY_LOCK.lock().map_err(|_| "Shortcut state unavailable")?;
     let hk = build_hotkey_from(ids)
         .ok_or("Use modifiers plus one regular key, or a single function key on macOS")?;
-    register_hotkey(hk)?;
+    if !super::capture_active() { register_hotkey(hk)?; }
     *KEYS.lock().map_err(|_| "Shortcut state unavailable")? = ids.to_vec();
     reset_chord_state();
     Ok(())
+    })
 }
 
 pub fn reset_chord_state() {
@@ -111,6 +115,15 @@ pub fn caps_lock_is_on() -> bool {
 }
 
 pub fn is_hotkey_available(keys: &[String]) -> Result<bool, String> {
+    super::with_capture_transition_lock(|| {
+        if super::capture_active() {
+            return Err("Finish recording the shortcut before checking availability.".into());
+        }
+        check_hotkey_availability(keys)
+    })
+}
+
+fn check_hotkey_availability(keys: &[String]) -> Result<bool, String> {
     let ids = super::mapped_codes(keys)?;
     let hk = build_hotkey_from(&ids)
         .ok_or("Use modifiers plus one regular key, or a single function key on macOS")?;
@@ -382,6 +395,7 @@ fn is_function_key(code: Code) -> bool {
 }
 
 fn register_main_hotkey() -> Result<(), String> {
+    let _guard = MAIN_HOTKEY_LOCK.lock().map_err(|_| "Shortcut state unavailable")?;
     let ids = KEYS.lock().map(|keys| {
         if keys.is_empty() {
             vec![ID_ALT, REGULAR_BASE + 49]
@@ -425,28 +439,32 @@ pub fn suspend_shortcuts(active: bool) -> Result<(), String> {
         return Ok(());
     };
     if active {
-        let mut current = CURRENT_HOTKEY
-            .lock()
-            .map_err(|_| "Shortcut state unavailable")?;
-        if let Some(hk) = *current {
-            manager.unregister(hk).map_err(|e| e.to_string())?;
-            *current = None;
-            MAIN_HOTKEY_ID.store(0, Ordering::SeqCst);
+        {
+            let _guard = MAIN_HOTKEY_LOCK.lock().map_err(|_| "Shortcut state unavailable")?;
+            let mut current = CURRENT_HOTKEY.lock().map_err(|_| "Shortcut state unavailable")?;
+            if let Some(hk) = *current {
+                manager.unregister(hk).map_err(|e| e.to_string())?;
+                *current = None;
+                MAIN_HOTKEY_ID.store(0, Ordering::SeqCst);
+            }
         }
         if let Some(hk) = COPY_LAST_HOTKEY.get() {
             let _ = manager.unregister(*hk);
         }
-        if let Some(hk) = SUB_APP_HOTKEY
-            .lock()
-            .map_err(|_| "Shortcut state unavailable")?
-            .take()
-        {
-            let _ = manager.unregister(hk);
-        }
+        super::with_sub_app_shortcut_lock(|| {
+            if let Some(hk) = SUB_APP_HOTKEY
+                .lock()
+                .map_err(|_| "Shortcut state unavailable")?
+                .take()
+            {
+                let _ = manager.unregister(hk);
+            }
+            Ok(())
+        })?;
     } else {
         register_main_hotkey()?;
         register_copy_last_hotkey();
-        register_sub_app_hotkey();
+        register_sub_app_hotkey()?;
     }
     Ok(())
 }
@@ -462,26 +480,31 @@ fn register_copy_last_hotkey() {
     }
 }
 
-pub fn set_sub_app_capture_chord(chord: super::chord::Chord) {
-    if let Ok(mut slot) = SUB_APP_CHORD.lock() {
-        *slot = Some(chord);
-    }
-    register_sub_app_hotkey();
+pub fn set_sub_app_capture_chord(chord: super::chord::Chord) -> Result<(), String> {
+    let mut slot = SUB_APP_CHORD.lock().map_err(|_| "Shortcut state unavailable")?;
+    try_register_sub_app_hotkey(chord)?;
+    *slot = Some(chord);
+    Ok(())
 }
 
-fn register_sub_app_hotkey() {
-    let Some(mgr) = MANAGER.get() else {
-        return;
-    };
-    let chord = SUB_APP_CHORD
-        .lock()
-        .ok()
-        .and_then(|slot| *slot)
-        .unwrap_or_else(super::chord::Chord::default_for_platform);
-    let Ok(code) = chord.web_code().parse::<Code>() else {
-        log::warn!("hotkey: unsupported sub-app capture key");
-        return;
-    };
+pub fn initialize_sub_app_capture_chord(chord: super::chord::Chord) -> Result<(), String> {
+    *SUB_APP_CHORD.lock().map_err(|_| "Shortcut state unavailable")? = Some(chord);
+    if super::capture_active() { Ok(()) } else { try_register_sub_app_hotkey(chord) }
+}
+
+fn register_sub_app_hotkey() -> Result<(), String> {
+    super::with_sub_app_shortcut_lock(|| {
+        let chord = SUB_APP_CHORD
+            .lock()
+            .map_err(|_| "Shortcut state unavailable")?
+            .unwrap_or_else(super::chord::Chord::default_for_platform);
+        try_register_sub_app_hotkey(chord)
+    })
+}
+
+fn try_register_sub_app_hotkey(chord: super::chord::Chord) -> Result<(), String> {
+    let mgr = MANAGER.get().ok_or("Shortcut manager unavailable")?;
+    let code = chord.web_code().parse::<Code>().map_err(|_| "Unsupported sub-app capture key")?;
     let mut mods = Modifiers::empty();
     if chord.ctrl {
         mods |= Modifiers::CONTROL;
@@ -496,16 +519,17 @@ fn register_sub_app_hotkey() {
         mods |= Modifiers::META;
     }
     let next = HotKey::new(Some(mods), code);
-    let Ok(mut slot) = SUB_APP_HOTKEY.lock() else {
-        return;
-    };
-    if let Some(previous) = slot.take() {
-        let _ = mgr.unregister(previous);
+    let mut slot = SUB_APP_HOTKEY.lock().map_err(|_| "Shortcut state unavailable")?;
+    if slot.as_ref().is_some_and(|previous| previous.id() == next.id()) { return Ok(()); }
+    mgr.register(next).map_err(|e| e.to_string())?;
+    if let Some(previous) = *slot {
+        if let Err(error) = mgr.unregister(previous) {
+            let _ = mgr.unregister(next);
+            return Err(error.to_string());
+        }
     }
-    match mgr.register(next) {
-        Ok(()) => *slot = Some(next),
-        Err(e) => log::warn!("hotkey: failed to register sub-app capture hotkey: {e}"),
-    }
+    *slot = Some(next);
+    Ok(())
 }
 
 fn set_escape_listening(on: bool) {
@@ -669,7 +693,9 @@ where
     }
     register_main_hotkey()?;
     register_copy_last_hotkey();
-    register_sub_app_hotkey();
+    if let Err(error) = register_sub_app_hotkey() {
+        log::warn!("hotkey: failed to register sub-app capture hotkey: {error}");
+    }
 
     let handle = std::thread::spawn(move || {
         let rx = GlobalHotKeyEvent::receiver();

@@ -1,5 +1,17 @@
 use super::*;
 
+#[test]
+fn autostart_is_device_local_and_not_restored_from_backups() {
+    assert!(!is_exportable_setting_key(store::AUTOSTART_ENABLED));
+    assert!(!exportable_setting_keys().any(|key| key == store::AUTOSTART_ENABLED));
+}
+
+#[test]
+fn hotkey_is_device_local_and_not_restored_from_backups() {
+    assert!(!is_exportable_setting_key(store::HOTKEY));
+    assert!(!exportable_setting_keys().any(|key| key == store::HOTKEY));
+}
+
 fn valid_backup(version: &str) -> serde_json::Value {
     serde_json::json!({
         "version": version, "app_version": "synthetic", "exported_at": "synthetic",

@@ -517,10 +517,11 @@
     const writeSnapshot = async () => {
       if (!modelBaseline || modelConflict) throw new Error('Reload model settings before saving.');
       const version = agentChangeVersion;
+      const cleanupVersion = ++appStore.cleanupChangeVersion;
       try {
         await invoke('save_model_settings_if_unchanged', { expected: modelBaseline, values: snapshot });
         modelBaseline = snapshot;
-        if (version === agentChangeVersion) appStore.cleanupEnabled = snapshot.cleanup_enabled;
+        if (version === agentChangeVersion && cleanupVersion === appStore.cleanupChangeVersion) appStore.cleanupEnabled = snapshot.cleanup_enabled;
         void refreshTranscriptionModel();
         window.dispatchEvent(new Event('verenu:setting-saved'));
       } catch (error) {
@@ -535,6 +536,7 @@
 
   async function migrateAndLoad(readOnly = false) {
     const version = agentChangeVersion;
+    const cleanupVersion = appStore.cleanupChangeVersion;
     void refreshAppleIntelligence();
     const [all, keyStatus] = await Promise.all([
       loadSettingsSnapshot(),
@@ -552,7 +554,7 @@
     hydrateCatalogCache(all.provider_model_cache);
     if (typeof cleanupRaw === 'boolean') {
       cleanupEnabled = cleanupRaw;
-      if (version === agentChangeVersion) appStore.cleanupEnabled = cleanupRaw;
+      if (version === agentChangeVersion && cleanupVersion === appStore.cleanupChangeVersion) appStore.cleanupEnabled = cleanupRaw;
     }
     transcriptionModelsByProvider = mergeProviderModelMap(all.transcription_models_by_provider);
     const rawCleanupModelsByProvider = mergeProviderModelMap(all.cleanup_models_by_provider);

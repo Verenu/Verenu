@@ -542,14 +542,8 @@ pub async fn check_hotkey(app: AppHandle, keys: Vec<String>) -> Result<bool, Str
                 .and_then(crate::core::hotkey::chord::Chord::parse)
         })
         .unwrap_or_else(crate::core::hotkey::chord::Chord::default_for_platform);
-    let copy = crate::core::hotkey::chord::Chord::parse(if cfg!(target_os = "macos") {
-        "Alt+Super+C"
-    } else {
-        "Ctrl+Alt+C"
-    })
-    .expect("copy shortcut");
-    if crate::core::hotkey::conflicts_with_chord(&keys, capture)
-        || crate::core::hotkey::conflicts_with_chord(&keys, copy)
+    if crate::core::hotkey::shortcut_conflicts(&keys, capture, cfg!(windows))
+        || crate::core::hotkey::copy_last_conflicts_with_keys(&keys)
     {
         return Ok(false);
     }
@@ -559,8 +553,47 @@ pub async fn check_hotkey(app: AppHandle, keys: Vec<String>) -> Result<bool, Str
     crate::core::hotkey::is_hotkey_available(&keys)
 }
 
+pub(super) static HOTKEY_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn finish_locked<T, F>(lock: &'static tokio::sync::Mutex<()>, work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let _guard = lock.lock().await;
+        work.await
+    }).await.map_err(|e| format!("Native settings transaction failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn save_hotkey(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
+    save_hotkey_transaction(app, keys, None, false).await
+}
+
+#[tauri::command]
+pub async fn save_hotkey_if_unchanged(app: AppHandle, keys: Vec<String>, expected: serde_json::Value) -> Result<(), String> {
+    save_hotkey_transaction(app, keys, Some(expected), false).await
+}
+
+pub(crate) async fn save_hotkey_for_agent(app: AppHandle, keys: Vec<String>, expected: serde_json::Value) -> Result<(), String> {
+    save_hotkey_transaction(app, keys, Some(expected), true).await
+}
+
+async fn save_hotkey_transaction(app: AppHandle, keys: Vec<String>, expected: Option<serde_json::Value>, notify_agent: bool) -> Result<(), String> {
+    finish_locked(&HOTKEY_SETTINGS_LOCK, async move {
+        if let Some(expected) = expected {
+            if store::settings_handle(&app)?.get(store::HOTKEY).unwrap_or(serde_json::Value::Null) != expected {
+                return Err("Settings changed while you were editing. Reload them before saving.".into());
+            }
+        }
+        save_hotkey_inner(app.clone(), keys).await?;
+        if notify_agent { let _ = app.emit("verenu:agent-settings-changed", vec![store::HOTKEY]); }
+        Ok(())
+    }).await
+}
+
+async fn save_hotkey_inner(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
     let keys = crate::core::hotkey::normalize_codes(&keys)?;
     let ids = crate::core::hotkey::mapped_codes(&keys)?;
     if !check_hotkey(app.clone(), keys.clone()).await? {
@@ -595,13 +628,263 @@ pub async fn save_hotkey(app: AppHandle, keys: Vec<String>) -> Result<(), String
     .await
 }
 
+static AUTOSTART_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tauri::command]
-pub async fn set_autostart(_app: AppHandle, enabled: bool) -> Result<(), String> {
+pub async fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    set_autostart_transaction(app, enabled, None, false).await
+}
+
+#[tauri::command]
+pub async fn set_autostart_if_unchanged(app: AppHandle, enabled: bool, expected: serde_json::Value) -> Result<(), String> {
+    set_autostart_transaction(app, enabled, Some(expected), false).await
+}
+
+pub(crate) async fn set_autostart_for_agent(app: AppHandle, enabled: bool, expected: serde_json::Value) -> Result<(), String> {
+    set_autostart_transaction(app, enabled, Some(expected), true).await
+}
+
+async fn set_autostart_transaction(app: AppHandle, enabled: bool, expected: Option<serde_json::Value>, notify_agent: bool) -> Result<(), String> {
+    finish_locked(&AUTOSTART_LOCK, async move {
+        set_autostart_inner(app.clone(), enabled, expected).await?;
+        if notify_agent { let _ = app.emit("verenu:agent-settings-changed", vec![store::AUTOSTART_ENABLED]); }
+        Ok(())
+    }).await
+}
+
+#[tauri::command]
+pub async fn initialize_autostart(app: AppHandle) -> Result<(), String> {
+    finish_locked(&AUTOSTART_LOCK, async move {
+        if store::settings_handle(&app)?.get(store::AUTOSTART_ENABLED).is_some() {
+            return Ok(());
+        }
+        set_autostart_inner(app, true, Some(serde_json::Value::Null)).await
+    }).await
+}
+
+pub(crate) async fn reconcile_autostart(app: AppHandle) -> Result<(), String> {
+    finish_locked(&AUTOSTART_LOCK, async move {
+    let enabled = store::settings_handle(&app)?.get(store::AUTOSTART_ENABLED)
+        .and_then(|value| value.as_bool());
+    if let Some(enabled) = enabled {
+        run_blocking("reconcile_autostart", move || {
+            #[cfg(target_os = "macos")]
+            {
+                let path = app.path().home_dir().map_err(|e| e.to_string())?
+                    .join("Library/LaunchAgents/com.verenu.app.plist");
+                let service = format!("gui/{}/com.verenu.app", unsafe { libc::getuid() });
+                let loaded = std::process::Command::new("launchctl")
+                    .args(["print", &service]).output()
+                    .map_err(|e| format!("Failed to inspect LaunchAgent: {e}"))?.status.success();
+                let plist_matches = std::fs::read(&path).ok()
+                    .is_some_and(|contents| launch_agent_plist().is_ok_and(|expected| contents == expected.as_bytes()));
+                if (enabled && loaded && plist_matches) || (!enabled && !loaded && !path.exists()) {
+                    return Ok(());
+                }
+            }
+            set_autostart_native(app, enabled)
+        }).await?;
+    }
+    Ok(())
+    }).await
+}
+
+async fn set_autostart_inner(app: AppHandle, enabled: bool, expected: Option<serde_json::Value>) -> Result<(), String> {
+    let settings = store::settings_handle(&app)?;
+    run_blocking("set_autostart", move || {
+        commit_autostart(&settings, enabled, expected, || set_autostart_native(app, enabled))
+    }).await
+}
+
+fn commit_autostart(
+    settings: &store::SettingsHandle,
+    enabled: bool,
+    expected: Option<serde_json::Value>,
+    apply_native: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    settings.save_values_with_commit(
+        [(store::AUTOSTART_ENABLED, serde_json::json!(enabled))],
+        |current| {
+            if let Some(expected) = expected {
+                if current.get_cloned(store::AUTOSTART_ENABLED).unwrap_or(serde_json::Value::Null) != expected {
+                    return Err("Settings changed while you were editing. Reload them before saving.".into());
+                }
+            }
+            Ok(())
+        },
+        apply_native,
+    ).map(|_| ())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn restore_after_native_failure(
+    result: Result<(), String>,
+    rollback_needed: bool,
+    rollback: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if !rollback_needed => Err(error),
+        Err(error) => match rollback() {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!("{error}; LaunchAgent rollback failed: {rollback}")),
+        },
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_plist() -> Result<String, String> {
+    let app_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable path: {e}"))?
+        .to_string_lossy().to_string();
+    let arguments = if let Some(index) = app_path.find(".app/Contents/MacOS/") {
+        let path = crate::api::cleanup::escape_transcript_xml(&app_path[..index + 4]);
+        format!("<string>open</string><string>-g</string><string>{path}</string>")
+    } else {
+        let path = crate::api::cleanup::escape_transcript_xml(&app_path);
+        format!("<string>{path}</string>")
+    };
+    Ok(format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n\
+           <key>Label</key><string>com.verenu.app</string>\n\
+           <key>ProgramArguments</key><array>{arguments}</array>\n\
+           <key>RunAtLoad</key><true/>\n\
+         </dict>\n\
+         </plist>\n"
+    ))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn write_launch_agent_atomically(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let parent = path.parent().ok_or("LaunchAgent path has no parent")?;
+    let temporary = parent.join(format!(".verenu-launchagent-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true)
+            .open(&temporary).map_err(|e| e.to_string())?;
+        file.write_all(contents).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        std::fs::rename(&temporary, path).map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(temporary); }
+    result
+}
+
+#[cfg(test)]
+mod autostart_commit_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelling_request_keeps_lock_until_native_transaction_finishes() {
+        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let first = tokio::spawn(finish_locked(&LOCK, async move {
+            let _ = started_tx.send(());
+            let _ = release_rx.await;
+            Ok(())
+        }));
+        started_rx.await.unwrap();
+        first.abort();
+        let (second_tx, mut second_rx) = tokio::sync::oneshot::channel();
+        let second = tokio::spawn(finish_locked(&LOCK, async move {
+            let _ = second_tx.send(());
+            Ok(())
+        }));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(30), &mut second_rx).await.is_err());
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), second_rx).await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn persistence_failure_does_not_change_native_autostart() {
+        let parent = std::env::temp_dir().join(format!("verenu-autostart-parent-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&parent, b"not a directory").unwrap();
+        let settings = store::SettingsHandle::empty_for_test(parent.join("settings.json"));
+        let mut applied = false;
+        assert!(commit_autostart(&settings, true, None, || { applied = true; Ok(()) }).is_err());
+        assert!(!applied);
+        assert_eq!(settings.get(store::AUTOSTART_ENABLED), None);
+        std::fs::remove_file(parent).unwrap();
+    }
+
+    #[test]
+    fn native_failure_restores_previous_saved_autostart() {
+        let path = std::env::temp_dir().join(format!("verenu-autostart-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings.save_value(store::AUTOSTART_ENABLED, serde_json::json!(false)).unwrap();
+        assert!(commit_autostart(&settings, true, None, || Err("native failure".into())).is_err());
+        assert_eq!(settings.get(store::AUTOSTART_ENABLED), Some(serde_json::json!(false)));
+        let disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk[store::AUTOSTART_ENABLED], false);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stale_autostart_write_does_not_touch_native_state() {
+        let path = std::env::temp_dir().join(format!("verenu-autostart-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings.save_value(store::AUTOSTART_ENABLED, serde_json::json!(false)).unwrap();
+        let mut applied = false;
+        assert!(commit_autostart(&settings, true, Some(serde_json::Value::Null), || { applied = true; Ok(()) }).is_err());
+        assert!(!applied);
+        assert_eq!(settings.get(store::AUTOSTART_ENABLED), Some(serde_json::json!(false)));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn partial_native_failure_restores_old_native_state_and_reports_rollback_failure() {
+        let native = std::cell::Cell::new(false);
+        let result = restore_after_native_failure(
+            { native.set(true); Err("bootstrap failed".into()) },
+            true,
+            || { native.set(false); Ok(()) },
+        );
+        assert_eq!(result.unwrap_err(), "bootstrap failed");
+        assert!(!native.get());
+        let error = restore_after_native_failure(Err("bootstrap failed".into()), true, || Err("restore failed".into())).unwrap_err();
+        assert!(error.contains("bootstrap failed") && error.contains("restore failed"));
+    }
+
+    #[test]
+    fn failure_before_native_changes_does_not_unload_a_working_service() {
+        let mut loaded = true;
+        let result = restore_after_native_failure(Err("plist write failed".into()), false, || {
+            loaded = false;
+            Err("rollback failed".into())
+        });
+        assert_eq!(result.unwrap_err(), "plist write failed");
+        assert!(loaded);
+    }
+
+    #[test]
+    fn launch_agent_replacement_preserves_existing_file_when_write_cannot_start() {
+        let dir = std::env::temp_dir().join(format!("verenu-agent-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("agent.plist");
+        std::fs::write(&path, b"original").unwrap();
+        let interrupted = dir.join(".verenu-launchagent-interrupted.tmp");
+        std::fs::write(&interrupted, b"partially written").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        write_launch_agent_atomically(&path, b"replacement").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        assert!(write_launch_agent_atomically(&dir.join("missing/agent.plist"), b"new").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+fn set_autostart_native(_app: AppHandle, enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
             use std::os::windows::ffi::OsStrExt;
             use windows::core::PCWSTR;
+            use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
             use windows::Win32::System::Registry::{
                 RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
                 HKEY_CURRENT_USER, KEY_WRITE, REG_SZ,
@@ -659,20 +942,15 @@ pub async fn set_autostart(_app: AppHandle, enabled: bool) -> Result<(), String>
 
                 let _ = RegCloseKey(hkey);
 
-                if result.is_err() {
+                if result.is_err() && (enabled || result != ERROR_FILE_NOT_FOUND) {
                     return Err("Failed to set registry value".to_string());
                 }
             }
-            Ok(())
-        })
-        .await
-        .map_err(|e| e.to_string())??;
     }
 
     #[cfg(target_os = "macos")]
     {
-        let app_handle = _app.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let app_handle = _app;
             let label = "com.verenu.app";
             let domain = format!("gui/{}", unsafe { libc::getuid() });
             let service_target = format!("{domain}/{label}");
@@ -682,66 +960,65 @@ pub async fn set_autostart(_app: AppHandle, enabled: bool) -> Result<(), String>
                 .map_err(|e| format!("Failed to get home directory: {e}"))?;
             let dir = home.join("Library/LaunchAgents");
             let plist_path = dir.join(format!("{label}.plist"));
-
-            if enabled {
-                let app_path = std::env::current_exe()
-                    .map_err(|e| format!("Failed to get executable path: {e}"))?
-                    .to_string_lossy()
-                    .to_string();
-                let mut use_open = false;
-                let mut target_path = app_path.clone();
-                if let Some(index) = app_path.find(".app/Contents/MacOS/") {
-                    target_path = app_path[..index + 4].to_string();
-                    use_open = true;
+            let previous_plist = match std::fs::read(&plist_path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(format!("Failed to read LaunchAgent: {error}")),
+            };
+            let was_loaded = std::process::Command::new("launchctl")
+                .args(["print", &service_target]).output()
+                .map_err(|e| format!("Failed to inspect LaunchAgent: {e}"))?.status.success();
+            if was_loaded && previous_plist.is_none() {
+                if enabled {
+                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                    return write_launch_agent_atomically(&plist_path, launch_agent_plist()?.as_bytes());
                 }
+                return Err("Cannot safely change a loaded LaunchAgent whose plist is missing".into());
+            }
 
-                let escaped_target_path = crate::api::cleanup::escape_transcript_xml(&target_path);
+            let plist_changed = std::cell::Cell::new(false);
+            let service_changed = std::cell::Cell::new(false);
+            let apply = || -> Result<(), String> { if enabled {
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                let plist = if use_open {
-                    format!(
-                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-                         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-                         <plist version=\"1.0\">\n\
-                         <dict>\n\
-                           <key>Label</key><string>{label}</string>\n\
-                           <key>ProgramArguments</key><array><string>open</string><string>-g</string><string>{escaped_target_path}</string></array>\n\
-                           <key>RunAtLoad</key><true/>\n\
-                         </dict>\n\
-                         </plist>\n"
-                    )
-                } else {
-                    format!(
-                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-                         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-                         <plist version=\"1.0\">\n\
-                         <dict>\n\
-                           <key>Label</key><string>{label}</string>\n\
-                           <key>ProgramArguments</key><array><string>{escaped_target_path}</string></array>\n\
-                           <key>RunAtLoad</key><true/>\n\
-                         </dict>\n\
-                         </plist>\n"
-                    )
-                };
-                std::fs::write(&plist_path, plist).map_err(|e| e.to_string())?;
-                let _ = launchctl_bootout(&service_target);
+                write_launch_agent_atomically(&plist_path, launch_agent_plist()?.as_bytes())?;
+                plist_changed.set(true);
+                if was_loaded {
+                    launchctl_bootout(&service_target)?;
+                    service_changed.set(true);
+                }
+                service_changed.set(true);
                 launchctl_bootstrap(&domain, &plist_path)?;
             } else {
-                let _ = launchctl_bootout(&service_target);
+                if was_loaded {
+                    launchctl_bootout(&service_target)?;
+                    service_changed.set(true);
+                }
                 if plist_path.exists() {
                     std::fs::remove_file(&plist_path).map_err(|e| e.to_string())?;
+                    plist_changed.set(true);
                 }
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+            } Ok(()) };
+            let result = apply();
+            restore_after_native_failure(result, plist_changed.get() || service_changed.get(), || -> Result<(), String> {
+                    if service_changed.get() && std::process::Command::new("launchctl").args(["print", &service_target])
+                        .output().map_err(|e| e.to_string())?.status.success() {
+                        launchctl_bootout(&service_target)?;
+                    }
+                    if plist_changed.get() { match previous_plist {
+                        Some(bytes) => write_launch_agent_atomically(&plist_path, &bytes)?,
+                        None => match std::fs::remove_file(&plist_path) {
+                            Ok(()) => (),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                            Err(e) => return Err(e.to_string()),
+                        },
+                    }}
+                    if service_changed.get() && was_loaded { launchctl_bootstrap(&domain, &plist_path)?; }
+                    Ok(())
+                })?;
     }
-
-    let settings = store::settings_handle(&_app)?;
-    run_blocking("set_autostart", move || {
-        settings.save_value(store::AUTOSTART_ENABLED, serde_json::json!(enabled))
-    })
-    .await
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = enabled;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
