@@ -36,6 +36,7 @@ const PAIRING_PROMPT_LIFETIME: Duration = Duration::from_secs(180);
 const MAX_BACKOFF: Duration = Duration::from_secs(600);
 const CHANGE_CHECK_INTERVAL: Duration = Duration::from_millis(750);
 const IDLE_SYNC_INTERVAL: Duration = Duration::from_secs(30);
+const DISCOVERY_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const PRIVATE_PORT_START: u16 = 49_152;
 const PRIVATE_PORT_COUNT: u32 = 16_384;
 const VIRTUAL_INTERFACE_MARKERS: &[&str] = &[
@@ -475,8 +476,6 @@ impl SyncManager {
             ChangeStamp::read(&conn)?
         };
         *self.inner.last_change.lock().expect("change stamp lock") = Some(initial_change);
-        self.start_discovery().await?;
-
         let monitor = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {
@@ -485,12 +484,33 @@ impl SyncManager {
             }
         });
 
+        if let Err(err) = self.start_discovery().await {
+            log::warn!("sync: discovery failed; saved connections remain available: {err:#}");
+            let discovery = self.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(DISCOVERY_RETRY_INTERVAL).await;
+                    if discovery.inner.mdns.lock().await.is_some() {
+                        break;
+                    }
+                    match discovery.start_discovery().await {
+                        Ok(()) => {
+                            discovery.inner.emit_devices_changed();
+                            break;
+                        }
+                        Err(err) => log::warn!("sync: discovery retry failed: {err:#}"),
+                    }
+                }
+            });
+        }
+
         let _ = self.inner.app.emit("verenu:sync-devices-changed", ());
         Ok(())
     }
 
     async fn start_discovery(&self) -> Result<()> {
-        if let Some(previous) = self.inner.mdns.lock().await.take() {
+        let mut mdns = self.inner.mdns.lock().await;
+        if let Some(previous) = mdns.take() {
             let _ = previous.shutdown();
         }
         let daemon =
@@ -551,28 +571,33 @@ impl SyncManager {
         lan_addresses.dedup();
         if lan_addresses.is_empty() {
             log::warn!(
-                "sync: no usable LAN address found; keeping discovery alive without advertising"
+                "sync: no usable LAN address found; waiting for an interface"
             );
         } else {
             log::info!("sync: advertising {host} on {lan_addresses:?}");
-            let service = ServiceInfo::new(
-                SERVICE_TYPE,
-                &instance,
-                &host,
-                lan_addresses.as_slice(),
-                port,
-                Some(props),
-            )
-            .map_err(|e| anyhow!("mDNS service info invalid: {e}"))?;
-            daemon
-                .register(service)
-                .map_err(|e| anyhow!("mDNS registration failed: {e}"))?;
         }
+        let mut service = ServiceInfo::new(
+            SERVICE_TYPE,
+            &instance,
+            &host,
+            lan_addresses.as_slice(),
+            port,
+            Some(props),
+        )
+        .map_err(|e| anyhow!("mDNS service info invalid: {e}"))?
+        .enable_addr_auto();
+        service.set_interfaces(vec![IfKind::Predicate(IfPredicate::new(|interface| {
+            is_discovery_interface_allowed(&interface.name, interface.ip(), interface.is_p2p())
+                && is_discovery_advertised_address_allowed(interface.ip())
+        }))]);
+        daemon
+            .register(service)
+            .map_err(|e| anyhow!("mDNS registration failed: {e}"))?;
 
         let receiver = daemon
             .browse(SERVICE_TYPE)
             .map_err(|e| anyhow!("mDNS browse failed: {e}"))?;
-        *self.inner.mdns.lock().await = Some(daemon);
+        *mdns = Some(daemon);
 
         let inner = self.inner.clone();
         tauri::async_runtime::spawn(async move {
@@ -2218,6 +2243,11 @@ impl SyncHost for ManagerHost {
 
     fn app_version(&self) -> String {
         env!("CARGO_PKG_VERSION").to_string()
+    }
+
+    fn history_retention_days(&self) -> Option<i64> {
+        let value = self.settings.get(store::HISTORY_RETENTION);
+        store::history_retention_days(value.as_ref().and_then(|v| v.as_str()).unwrap_or("30 days"))
     }
 
     fn settings_payload(&self) -> anyhow::Result<Vec<super::protocol::SettingRecord>> {

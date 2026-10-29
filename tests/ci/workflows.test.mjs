@@ -49,14 +49,16 @@ test('required CI aggregate cannot pass when a job fails, skips or is cancelled'
   const gate = jobs.required;
   assert.equal(gate.if, 'always()');
   for (const job of ['frontend', 'dependency-audits', 'rust', 'all-in-one-fast', 'owned-sessions', 'workflow-tests', 'android', 'native']) assert.ok(gate.needs.includes(job));
-  const step = gate.steps[0];
-  const source = step.run.match(/node -e '([\s\S]+)'/)?.[1];
-  assert.ok(source);
-  const evaluate = new Function('process', 'console', source);
-  for (const result of ['failure', 'skipped', 'cancelled']) {
-    let code;
-    evaluate({ env: { RESULTS: JSON.stringify({ test: { result } }) }, exit: value => { code = value; } }, { error() {} });
-    assert.equal(code, 1);
+  for (const aggregate of [gate, jobs['all-in-one-fast']]) {
+    assert.equal(aggregate.if, 'always()');
+    const source = aggregate.steps[0].run.match(/node -e '([\s\S]+)'/)?.[1];
+    assert.ok(source);
+    const evaluate = new Function('process', 'console', source);
+    for (const result of ['failure', 'skipped', 'cancelled']) {
+      let code;
+      evaluate({ env: { RESULTS: JSON.stringify({ test: { result } }) }, exit: value => { code = value; } }, { error() {} });
+      assert.equal(code, 1);
+    }
   }
 });
 
@@ -70,20 +72,73 @@ test('free GitHub runners execute every owned file once and both full browser pr
   const files = fs.readdirSync(path.join(root, 'tests/dev-session')).filter(file => file.endsWith('.test.mjs')).sort();
   const executed = matrix.filter(row => row.suite === 'node').flatMap(row => partitionFiles(files, sessionPartition(['--suite', row.suite, '--shard', row.shard, '--project', row.project])));
   assert.deepEqual(executed.sort(), files);
-  assert.deepEqual(matrix.filter(row => row.suite === 'browser').map(row => sessionPartition(['--suite', row.suite, '--shard', row.shard, '--project', row.project]).project).sort(), ['desktop', 'phone']);
+  for (const project of ['desktop', 'phone']) {
+    const rows = matrix.filter(row => row.suite === 'browser' && row.project === project);
+    assert.deepEqual(rows.map(row => row.shard).sort(), ['1/4', '2/4', '3/4', '4/4']);
+    const list = shard => {
+      const args = ['node_modules/@playwright/test/cli.js', 'test', '--config', 'tests/browser/playwright.config.mjs', '--list', `--project=${project}`, '--reporter=json'];
+      if (shard) args.push(`--shard=${shard}`);
+      const report = JSON.parse(execFileSync(process.execPath, args, { cwd: root, encoding: 'utf8', env: { ...process.env, VERENU_SESSION_ACCESS_FILE: path.join(os.tmpdir(), 'verenu-ci-list', 'access.json') } }));
+      const ids = [];
+      const visit = suite => {
+        for (const spec of suite.specs || []) for (const test of spec.tests || []) ids.push(`${spec.id}:${test.projectName}`);
+        for (const child of suite.suites || []) visit(child);
+      };
+      report.suites.forEach(visit);
+      return ids;
+    };
+    const all = list();
+    const shards = rows.flatMap(row => list(row.shard));
+    assert.ok(rows.every(row => list(row.shard).length > 0));
+    assert.deepEqual(shards.sort(), all.sort());
+    assert.equal(new Set(shards).size, shards.length);
+  }
   assert.equal(new Set(matrix.map(row => row.label)).size, matrix.length);
   const step = owned.steps.find(step => step.uses === './.github/actions/regression-checks');
   assert.equal(step.with.profile, 'owned');
   for (const key of ['suite', 'shard', 'project']) assert.equal(step.with[key], '${{ matrix.' + key + ' }}');
   assert.equal(step.with['report-prefix'], 'pr-${{ matrix.label }}');
-  assert.equal(jobs['all-in-one-fast'].steps.find(step => step.uses === './.github/actions/regression-checks').with.profile, 'fast');
+  assert.deepEqual(jobs['all-in-one-fast'].needs, ['fast-partitions', 'linux-regressions']);
   const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
   assert.equal(shared.inputs.profile.default, 'all');
   // Some Node transport files also launch Chromium internally.
-  assert.equal(shared.runs.steps.find(step => step.name === 'Install browser').if, undefined);
+  assert.equal(shared.runs.steps.find(step => step.name === 'Install browser').if, "inputs.profile != 'linux'");
   assert.deepEqual(workflow('pr-checks.yml').env, { CARGO_PROFILE_DEV_DEBUG: '0', CARGO_PROFILE_TEST_DEBUG: '0' });
-  assert.equal(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).if, "inputs.profile != 'fast'");
-  assert.equal(shared.runs.steps.find(step => step.name === 'Run deterministic contracts').if, "inputs.profile != 'owned'");
+  assert.equal(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).if, "inputs.profile == 'all' || inputs.profile == 'owned'");
+  assert.equal(shared.runs.steps.find(step => step.run?.includes('npm test -- --strict')).if, "inputs.profile == 'all' || inputs.profile == 'fast'");
+  const promptCompile = shared.runs.steps.find(step => step.run?.includes('prompt_regression_fixtures_hold --no-run'));
+  assert.match(promptCompile.if, /inputs\.fast-suites == ''/);
+  assert.match(promptCompile.if, /,contract,/);
+  assert.equal(shared.runs.steps.find(step => step.run?.includes('cargo build --manifest-path src-tauri/Cargo.toml --features dev-session')).if, "inputs.profile == 'all' || inputs.profile == 'owned'");
+});
+
+test('Rust partitions retain every platform check and required status fails closed', () => {
+  const jobs = workflow('pr-checks.yml').jobs;
+  assert.deepEqual(jobs['rust-partitions'].strategy.matrix.os, ['windows-latest', 'macos-latest']);
+  assert.deepEqual(jobs['rust-partitions'].strategy.matrix.check, ['clippy', 'test', 'dev-session']);
+  for (const check of ['clippy', 'test', 'dev-session']) assert.ok(jobs['rust-partitions'].steps.some(step => step.if === `matrix.check == '${check}'` && step.run?.includes('cargo ')));
+  assert.equal(jobs.rust.if, 'always()');
+  assert.equal(jobs.rust.needs, 'rust-partitions');
+  assert.match(jobs.rust.steps[0].run, /test "\$RESULT" = success/);
+  assert.deepEqual(workflow('release-quality.yml').jobs.rust.strategy.matrix.check, ['test', 'clippy']);
+});
+
+test('PR and release partitions cover the complete fast profile and owned sessions exactly once', () => {
+  const pr = workflow('pr-checks.yml').jobs;
+  const release = workflow('release-quality.yml').jobs;
+  const expected = JSON.parse(execFileSync('python3', ['-c', "import json, runpy; print(json.dumps(runpy.run_path('tests/OnePyFone.py')['PROFILE_SUITES']['fast']))"], { cwd: root, encoding: 'utf8' }));
+  for (const job of [pr['fast-partitions'], release.fast]) {
+    const suites = job.strategy.matrix.include.flatMap(row => row.suites.split(','));
+    assert.deepEqual(suites.sort(), expected.sort());
+    assert.equal(job.strategy['fail-fast'], false);
+    const step = job.steps.find(step => step.uses === './.github/actions/regression-checks');
+    assert.equal(step.with.profile, 'fast');
+    assert.equal(step.with['fast-suites'], '${{ matrix.suites }}');
+  }
+  assert.deepEqual(release.owned.strategy.matrix.include, pr['owned-sessions'].strategy.matrix.include);
+  for (const job of [pr['linux-regressions'], release.linux]) {
+    assert.equal(job.steps.find(step => step.uses === './.github/actions/regression-checks').with.profile, 'linux');
+  }
 });
 
 test('nightly publication requires exact-source regression verification', () => {
@@ -187,7 +242,7 @@ test('PR checks compile and run Android native regressions and native WebViews',
   assert.equal(jobs.android.steps.find(step => step.uses === 'android-actions/setup-android@v3').with.packages, 'platform-tools');
   assert.equal(jobs.android.steps.find(step => step.with?.name === 'android-unit-reports').with['if-no-files-found'], 'ignore');
   assert.deepEqual(jobs.native.strategy.matrix.os, ['windows-latest', 'macos-latest', 'ubuntu-latest']);
-  assert.match(jobs.native.steps.find(step => step.name === 'Run Linux native WebView').run, /XDG_RUNTIME_DIR/);
+  assert.match(jobs.native.steps.find(step => step.if === "runner.os == 'Linux'" && step.run?.includes('test:native:webview')).run, /XDG_RUNTIME_DIR/);
   const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
   assert.match(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).run, /XDG_RUNTIME_DIR/);
   assert.ok(shared.runs.steps.some(step => step.run?.includes('cargo clippy')));

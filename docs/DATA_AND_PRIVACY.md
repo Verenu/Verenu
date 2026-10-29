@@ -31,6 +31,7 @@ Stored locally in app storage and SQLite:
 - Custom provider definitions, including base URLs, task-specific model IDs, and non-secret request options. Definitions are included in settings backups; their API keys are not. Custom definitions are device-local and do not participate in LAN settings sync.
 - Context groups, their app/website targets, per-context tone/cleanup overrides, vocabulary, and snippets
 - Transcription history
+- When available, the hostname of the browser page active at the start of a dictation is stored with that history entry. Full URLs, paths and query strings are not stored as website metadata. Detection can be unavailable; older entries are not inferred. This hostname follows history retention, backup and device sync.
 - An optional metadata-only agent failure journal. It is off by default and
   stores daily UTC counts, fixed subsystem/category labels, and diagnostic
   fingerprints for up to 365 calendar days, including today. It has no history
@@ -75,13 +76,18 @@ Even with that hardening, log exports can still contain sensitive operational de
 
 ### Optional local agent control
 
-Desktop builds can expose the versioned agent API only when they are launched
-with an explicit 64-character hexadecimal bearer grant (generate it from 32
-random bytes) and a port. The listener binds to `127.0.0.1`; Verenu does not
-save the grant. A local process holding it can read app settings (including
+Desktop builds offer a local agent API on `127.0.0.1`. An agent must request
+access and the user must approve the matching code in Verenu. Approval grants
+access for one hour or until the app closes; Settings > Privacy can revoke it
+sooner. Verenu keeps approved grant hashes in memory, and the agent keeps its
+grant in a private session file. Scripted launches can instead provide an
+explicit bearer grant and port. A local process holding a grant can read app settings (including
 prompt and custom-provider configuration), Contexts, the current redacted
-diagnostics snapshot, and retained history, and can change allowlisted settings
-and Contexts. It does not read API keys from the native credential store.
+diagnostics snapshot, and retained history, and can change allowlisted settings,
+Contexts, vocabulary, snippets, sub-apps and sync configuration. It can replace
+or delete API keys in the native credential store but cannot read them back.
+The grant is not a boundary against a malicious process running as the same OS
+user, which may be able to inspect process environments or access app data.
 History text is returned only when the caller explicitly requests it. The API
 has no credential-read, arbitrary SQL,
 shell, audio-capture, or text-injection operation. Requests stay on the device;
@@ -98,14 +104,45 @@ Current backup export includes:
 - Settings
 - Context groups, app/website targets, context assignments, context-specific
   vocabulary and AutoLearn correction mappings, and snippets
-- Derived stats
+- Retained transcription history, including raw and cleaned text, timestamps,
+  Contexts, and provider usage records. The backup file is sensitive.
+- Lifetime, daily, Context, hourly and provider Insights, including summaries
+  retained after history is pruned. Import deduplicates retained records by UUID.
+  Historical summaries do not identify individual dictations; overlapping
+  summaries are reconciled conservatively and reported when uncertain, so some
+  totals can be incomplete. Imported history remains subject to retention.
+  Per-device counter IDs are included to reconcile totals with LAN sync without
+  counting the same device twice. Pairing credentials and certificates are not
+  transferred. If a source device has no counter identity, its aggregate totals
+  cannot safely be merged and the import report flags the limitation. Older
+  backup versions contain only an unidentifiable total; their settings and
+  library still import, but that total cannot safely be restored.
+
+After history retention removes transcript text, Verenu keeps a numeric
+receipt for each dictation and provider call. These receipts contain an event
+identifier, calendar bucket, Context, and usage measurements so that backups
+and LAN sync can recognize activity already counted on another device. They do
+not contain transcript text, prompts, audio, or application names. Older sync
+peers do not understand receipts. A fresh sync snapshot is requested when a
+peer upgrades, so it can receive activity it missed on the older version.
+History with ambiguous older statistics syncs separately, so its text remains
+available without counting its uncertain contribution twice. Incoming history
+outside the receiving device's retention period is kept as a text-free receipt.
 
 Short-lived AutoLearn candidate/pending evidence is intentionally local-only
 and is not exported or synchronized. Pending correction evidence expires after
 30 days. Persistent promoted mappings retain their originating Context during
 backup restore and LAN sync.
 
-Current backup export does not include full transcription history.
+Backups exclude API keys, device pairing credentials, local microphone
+and secondary shortcut selections, downloaded models, temporary caches, pending learning
+evidence, the device's opt-in diagnostic failure journal, and the in-progress
+audio spool. They also exclude sync cursors and logs, unresolved sync
+dependencies, cached provider pricing, and seeded-default bookkeeping. These
+are credentials, device-local diagnostics or sync state, replaceable cache
+entries, or transient data. App targets are matched to installed apps on the
+destination; weak, ambiguous, or conflicting matches are left out and
+reported.
 
 Import and restore paths validate supported setting values and reject oversized prompt overrides, snippet bodies, and unsupported context-target values instead of silently accepting junk. Legacy app-mapping exports remain supported for migration.
 

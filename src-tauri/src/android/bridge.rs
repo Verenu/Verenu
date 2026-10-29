@@ -444,7 +444,7 @@ fn sync_muting_enabled_value(settings: Option<&crate::data::store::SettingsSnaps
             .and_then(Value::as_bool)
             .unwrap_or(false)
     };
-    enabled(crate::data::store::SYNC_ENABLED) && enabled(crate::data::store::SYNC_MUTING_ENABLED)
+    enabled(crate::data::store::SYNC_MUTING_ENABLED)
 }
 
 fn analytics_settings_from_snapshot(
@@ -502,7 +502,6 @@ fn analytics_settings_from_snapshot(
         "history_retention": category_value(crate::data::store::HISTORY_RETENTION),
         "local_model_memory_policy": category_value(crate::data::store::LOCAL_MODEL_MEMORY_POLICY),
         "mic_mute_button_dictation": bool_value(crate::data::store::MIC_MUTE_BUTTON_DICTATION),
-        "sync_enabled": bool_value(crate::data::store::SYNC_ENABLED),
         "context_group_count": context_group_count,
         "feature_breadth": feature_breadth,
     })
@@ -1147,6 +1146,7 @@ mod tests {
     fn analytics_settings_are_allowlisted_and_normalized() {
         let settings = SettingsSnapshot::from_pairs([
             (crate::data::store::CLEANUP_ENABLED.to_string(), json!(true)),
+            (crate::data::store::SYNC_ENABLED.to_string(), json!(false)),
             (
                 crate::data::store::TRANSCRIPTION_PROVIDER.to_string(),
                 json!("custom-model"),
@@ -1172,6 +1172,7 @@ mod tests {
         assert_eq!(payload["cleanup_enabled"], true);
         assert_eq!(payload["transcription_provider"], "unknown");
         assert_eq!(payload["cleanup_intensity"], "medium");
+        assert!(payload.get("sync_enabled").is_none());
         let serialized = payload.to_string();
         assert!(!serialized.contains("fake transcript"));
         assert!(!serialized.contains("sk-test-api-key"));
@@ -1190,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn android_fast_mute_poll_requires_sync_and_device_local_opt_in() {
+    fn android_fast_mute_poll_requires_device_local_opt_in() {
         use crate::data::store;
         let settings = |sync, muting| {
             SettingsSnapshot::from_pairs([
@@ -1201,7 +1202,7 @@ mod tests {
 
         assert!(!sync_muting_enabled_value(None));
         assert!(!sync_muting_enabled_value(Some(&settings(true, false))));
-        assert!(!sync_muting_enabled_value(Some(&settings(false, true))));
+        assert!(sync_muting_enabled_value(Some(&settings(false, true))));
         assert!(sync_muting_enabled_value(Some(&settings(true, true))));
     }
 

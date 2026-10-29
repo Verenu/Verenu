@@ -4,12 +4,31 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Redesigned the Sync page. Paired and nearby devices share one Devices list with icon actions, the Tailscale setup is two steps, synchronous muting no longer has its own heading, and the pairing and remove dialogs use shorter text.
+- Insights now shows vocabulary replacements and snippet expansions for the selected date range and context. Detailed counts start with this update and are marked incomplete for older saved dictations.
+- Removed Basic from cleanup choices in Style, setup, and Contexts. Choose a cleanup level and model independently. Existing Basic settings continue to run locally until changed.
+- New browser dictations include the detected website hostname in history when available, and history search matches websites. Earlier entries remain unchanged.
+- Added optional Linux PipeWire echo cancellation and a dictation audio volume control: 0% mutes, 100% leaves playback unchanged, and intermediate levels fade smoothly. Fade timing is available under advanced controls. Partial volume reduction requires PipeWire's PulseAudio service and `pactl`; echo cancellation uses the default microphone and PipeWire's echo-cancel module.
+- Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
+- Adjusted microphone gain automatically during detected speech to help keep the voice level consistent as its volume changes. The microphone gain setting sets the target level; the default is recommended for most microphones.
+- Verenu registers a small discovery guide for detected agent harnesses so an agent asked to manage Contexts or settings can find the packaged control skill. Saving the full control skill and enabling agent access remain separate user choices.
+- On Linux and macOS, agents can request access in the running app. An approved grant can be shared by local agents until Verenu quits. The setup guide recommends Contexts from retained usage and existing assignments, with optional browser-history inspection only after explaining its privacy implications.
+- Smoothed the dictation pill's error animation. The native window now finishes growing before the error pill animates into the new space, so a message or card is never painted into a window that is still catching up (the flicker when the pill resized to fit an error, most visible on Linux/Hyprland). With reduced motion enabled, pill states now cross-fade without sliding, scaling, or width morphs.
+- Expanded privacy backups to include retained transcription history and Insights. Imports deduplicate retained records, preserve unrelated activity, report uncertain aggregate overlaps, and match app targets conservatively across devices. Backup files contain private transcription text; credentials and device-local state remain excluded.
+
 - Fixed the flicker when switching pages, Settings sections, Style tabs, and context groups. The leaving panel faded out too fast, so both panels were half-transparent at once and the background showed through (coverage dipped to 74%). It now stays opaque while the new panel rises (98% minimum). Scroll now resets without moving the page that is still on screen, and the transition no longer rewrites accessibility attributes on every frame.
 - Updated About, update checks and installer validation, package metadata, and documentation to use the `Verenu/Verenu` organization repository.
+- Sync now starts by default and is available in Settings without the experimental developer switch. Existing disabled flag values no longer prevent startup or synchronous muting.
+- If nearby discovery cannot start, sync continues using saved connections while Verenu retries discovery.
+- Nearby discovery now updates the advertised address when a device changes networks, so paired devices can reconnect without restarting Verenu.
 
+- Made dictation pill bars use a consistent pixel width and spacing at fractional display scales, including on Hyprland.
 - Reduced dependency info and repeated parser-warning noise, included subsystem names in session logs, and added a filtered current-process log query with retention and suppression counts for agent debugging.
 - Text inputs no longer show colored accent outlines, rings, or glows when focused; focused fields only get a subtle neutral border change.
 - Redesigned Settings > Developer around debugging. Overview now ranks findings with numbers (failing stages, a dominant pipeline stage, retries, cache misses, memory growth, idle CPU, heavy child processes, chatty or slow operations, log spam), shows where dictation time goes, and **Copy report** puts a compact plain-text report on the clipboard for pasting to an agent. Failures group by cause with per-failure copy and jumps to the trace and its logs. Pipeline shows stage timing (avg, p95, max) and an expandable waterfall per run. Logs add a Problems filter, repeat collapsing, and one-click copy. Runtime, Activity, and Storage merged into Resources, and Fault Injection moved into Developer Settings. The page no longer counts its own polling as app activity.
+- Added in-app approval for local agents, with matching codes, one-hour grants and a Privacy control to revoke access without restarting Verenu.
+- Expanded opt-in agent control to vocabulary, snippets, sub-apps, more validated settings, shortcuts, sync and credential management, while keeping credential reads and arbitrary database access unavailable.
+- Added an atomic agent Context settings patch that preserves omitted fields and supports explicit clearing, reducing accidental loss of Context instructions and formatting overrides.
 - Disabled Hyprland blur and shadows around the Linux dictation pill so transparent space stays clear on newer Omarchy desktops.
 - Added Linux support for Pause media while dictating in Settings > Audio. Verenu pauses playing MPRIS media players and resumes only those players after dictation, leaving already-paused, stopped, and closed players alone. Mute PC Audio remains a separate option.
 - Moved the GitHub chart explanation from the Insights info popover to About GitHub in Settings > Integrations.
@@ -34,7 +53,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Reworked the microphone gain advice in Settings > Audio. The "enable noise reduction" tip no longer appears when noise reduction is already on; at high gain it now points at the usual cause, a system input volume that is set too low. Each recording logs its input level and the share of samples clipped by the gain, with a warning when the gain is clipping the signal. Troubleshooting covers checking PipeWire and hardware capture levels.
 
-- Added Basic cleanup in Style and Contexts: on-device English filler, repetition, and conservative repair removal, with punctuation preserved and no cleanup model call. Existing Off and Light choices keep their behavior. Basic uses only the primary transcript and skips AI tone and custom instructions. Added separate, default-off English voice commands for punctuation, line breaks, mentions, and rollback within the current dictation. Both require selected English and cleanup other than Off; Auto and other languages skip the rules. Saved snippets, clipboard payloads, quoted text, and code are protected from deterministic edits.
+- Added default-off English voice commands for punctuation, line breaks, mentions, and rollback within the current dictation. They require selected English and cleanup other than Off; Auto and other languages skip the rules. Saved snippets, clipboard payloads, quoted text, and code are protected from deterministic edits.
 
 - Fixed nightly release preparation failing on CRLF version files. The release snapshot check accepts those line endings while continuing to reject trailing spaces.
 

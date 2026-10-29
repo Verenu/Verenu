@@ -60,7 +60,7 @@ test('production pipeline uses HTTP fallback and preserves speech when cleanup f
       cleanupFails = fails;
       const before = new Set((await invoke('get_recent')).map(row => row.id));
       const cursor = (await (await request('/events?after=0')).json()).cursor;
-      const response = await request(`/audio?context=${context.id}&process=synthetic-http`, { method: 'POST', body: audio });
+      const response = await request(`/audio?context=${context.id}&process=synthetic-http&domain=${encodeURIComponent('https://docs.example.test/private?q=secret')}`, { method: 'POST', body: audio });
       assert.equal(response.status, 200, 'Production pipeline must complete despite the primary provider outage');
       const result = await response.json();
       assert.equal(result.pipeline, 'production');
@@ -68,6 +68,9 @@ test('production pipeline uses HTTP fallback and preserves speech when cleanup f
       const rows = (await invoke('get_recent')).filter(row => !before.has(row.id));
       assert.equal(rows.length, 1, 'Every completed production run must create exactly one new history row');
       assert.equal(rows[0].clean_text, expected);
+      assert.equal(rows[0].website_domain, 'docs.example.test');
+      const matches = await invoke('get_recent', { search: 'docs.example.test' });
+      assert.ok(matches.some(row => row.id === rows[0].id));
       const events = (await (await request(`/events?after=${cursor}`)).json()).events;
       assert.ok(events.some(event => event.event === 'verenu:transcribed' && event.payload === expected));
     }
