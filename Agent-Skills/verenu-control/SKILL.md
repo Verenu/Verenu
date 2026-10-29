@@ -82,7 +82,7 @@ features, or recommendations for Context groups, also read
    corrections globally. With `contextId`, it removes that Context assignment
    and its corrections. `edit_dictionary_entry` replaces that Context's
    correction patterns and clears related learning evidence. Use
-   `rename_dictionary_entry_global` to deliberately rename a shared term in
+   `rename_dictionary_entry_global` with the original `expectedTerm` to deliberately rename a shared term in
    every Context while preserving corrections; it clears related learning
    evidence and requires destructive access. Snippet edits and deletes affect every Context using the
    snippet. Pass `expected` with the original `trigger`, `expansion`, and

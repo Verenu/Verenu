@@ -110,8 +110,9 @@ not these matches. Snippet expansion counts include attempts that may not finish
 `audit.page` lists recent agent write attempts, their operation, numeric target
 when available, and status. It stores no supplied text, values or tokens. It
 shows the last 30 days and removes older records on the next agent write.
-All callers using the shared session are identified
-as that session, not as separate agents. Audit writes and application changes
+Each approval has an opaque identifier shared by its audit entries; callers
+using the same grant are indistinguishable, as are environment-grant callers.
+Audit writes and application changes
 are separate transactions: a pending entry or interrupted operation has an
 uncertain outcome, and even a failed operation can require a state read before
 retrying.
@@ -168,7 +169,8 @@ mutation: cancellation does not guarantee a native operation was undone.
   assignment and corrections. `edit_dictionary_entry` replaces the selected
   Context's correction patterns and clears related auto-learn evidence; include
   all patterns that should remain. A scoped edit cannot rename a term assigned
-  to another Context. `rename_dictionary_entry_global` deliberately renames a
+  to another Context. `rename_dictionary_entry_global` requires `expectedTerm`
+  from the original entry and deliberately renames a
   shared term in every Context without replacing its corrections; it clears
   related learning evidence and requires destructive access. Editing or deleting a snippet affects every
   Context that uses it. For `edit_snippet`, pass `expected` with the original

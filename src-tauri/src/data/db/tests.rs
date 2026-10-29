@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn agent_audit_records_pending_and_completed_without_change_contents() {
     let db = open(":memory:").unwrap();
-    let id = begin_agent_change(&db, "edit_snippet", Some(17)).unwrap();
+    let id = begin_agent_change(&db, "edit_snippet", Some(17), "grant-one").unwrap();
     let pending = query_agent_changes(&db, 10).unwrap();
     assert_eq!(pending["entries"][0]["status"], "pending");
     assert_eq!(pending["atomic_with_change"], false);
@@ -11,6 +11,7 @@ fn agent_audit_records_pending_and_completed_without_change_contents() {
     let done = query_agent_changes(&db, 10).unwrap();
     assert_eq!(done["entries"][0]["status"], "succeeded");
     assert_eq!(done["entries"][0]["target_id"], 17);
+    assert_eq!(done["entries"][0]["actor_id"], "grant-one");
     assert!(done["entries"][0].get("value").is_none());
     assert!(query_agent_changes(&db, 0).is_err());
 }
@@ -45,7 +46,8 @@ fn failed_dictionary_edits_do_not_change_other_contexts_or_assign_orphans() {
     insert_dictionary_entry_returning(&db, "Shared", Some("wrongtwo"), Some(second.id)).unwrap();
     assert!(update_dictionary_entry_for_context(&db, first.id, shared.id, "Renamed", None).is_err());
     assert_eq!(query_dictionary(&db).unwrap().iter().find(|entry| entry.id == shared.id).unwrap().term, "Shared");
-    rename_dictionary_entry_global(&db, shared.id, "Renamed").unwrap();
+    assert!(rename_dictionary_entry_global(&db, shared.id, "Renamed", "Stale").is_err());
+    rename_dictionary_entry_global(&db, shared.id, "Renamed", "Shared").unwrap();
     for (context, correction) in [(first.id, "wrongone"), (second.id, "wrongtwo")] {
         let entries = query_effective_dictionary_for_context(&db, context).unwrap();
         let entry = entries.iter().find(|entry| entry.id == shared.id).unwrap();
@@ -78,13 +80,13 @@ fn global_rename_clears_old_learning_evidence_in_inheriting_contexts() {
             }
         }
     }
-    assert!(rename_dictionary_entry_global(&db, term.id, "Existing").is_err());
+    assert!(rename_dictionary_entry_global(&db, term.id, "Existing", "Original").is_err());
     {
         let conn = db.lock().unwrap();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM pending_corrections WHERE correct_word = 'Original'", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 2);
     }
-    rename_dictionary_entry_global(&db, term.id, "Renamed").unwrap();
+    rename_dictionary_entry_global(&db, term.id, "Renamed", "Original").unwrap();
     let conn = db.lock().unwrap();
     for table in ["pending_corrections", "auto_learn_candidates"] {
         let old: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE correct_word = 'Original'"), [], |r| r.get(0)).unwrap();
@@ -763,7 +765,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 37);
+    assert_eq!(version, 38);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
