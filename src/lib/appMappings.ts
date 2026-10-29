@@ -19,7 +19,6 @@ export const profileOptions = [
 
 export const cleanupIntensityOptions = [
   { id: 'none', label: 'Off' },
-  { id: 'rules', label: 'Basic' },
   { id: 'light', label: 'Light' },
   { id: 'medium', label: 'Medium' },
   { id: 'high', label: 'Strong' },
@@ -37,6 +36,7 @@ export function getProfileLabel(profile: string) {
 
 export function getCleanupIntensityLabel(intensity: string | undefined | null) {
   if (!intensity) return DEFAULT_CLEANUP_INTENSITY_LABEL;
+  if (intensity === 'rules') return 'Basic (previous setting)';
   return cleanupIntensityOptions.find((option) => option.id === intensity)?.label ?? titleize(intensity);
 }
 

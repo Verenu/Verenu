@@ -7,6 +7,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Redesigned the Sync page. Paired and nearby devices share one Devices list with icon actions, the Tailscale setup is two steps, synchronous muting no longer has its own heading, and the pairing and remove dialogs use shorter text.
 - Agents can manage vocabulary and snippets, preview and undo bulk deletions, and patch Context settings with a stale-read check. Agent access can be limited by capability, with a local change audit and local mechanical usage counts.
 - Insights now shows vocabulary replacements and snippet expansions for the selected date range and context. Detailed counts start with this update and are marked incomplete for older saved dictations.
+- Removed Basic from cleanup choices in Style, setup, and Contexts. Choose a cleanup level and model independently. Existing Basic settings continue to run locally until changed.
 - New browser dictations include the detected website hostname in history when available, and history search matches websites. Earlier entries remain unchanged.
 - Added optional Linux PipeWire echo cancellation and a dictation audio volume control: 0% mutes, 100% leaves playback unchanged, and intermediate levels fade smoothly. Fade timing is available under advanced controls. Partial volume reduction requires PipeWire's PulseAudio service and `pactl`; echo cancellation uses the default microphone and PipeWire's echo-cancel module.
 - Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
@@ -53,7 +54,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 - Reworked the microphone gain advice in Settings > Audio. The "enable noise reduction" tip no longer appears when noise reduction is already on; at high gain it now points at the usual cause, a system input volume that is set too low. Each recording logs its input level and the share of samples clipped by the gain, with a warning when the gain is clipping the signal. Troubleshooting covers checking PipeWire and hardware capture levels.
 
-- Added Basic cleanup in Style and Contexts: on-device English filler, repetition, and conservative repair removal, with punctuation preserved and no cleanup model call. Existing Off and Light choices keep their behavior. Basic uses only the primary transcript and skips AI tone and custom instructions. Added separate, default-off English voice commands for punctuation, line breaks, mentions, and rollback within the current dictation. Both require selected English and cleanup other than Off; Auto and other languages skip the rules. Saved snippets, clipboard payloads, quoted text, and code are protected from deterministic edits.
+- Added default-off English voice commands for punctuation, line breaks, mentions, and rollback within the current dictation. They require selected English and cleanup other than Off; Auto and other languages skip the rules. Saved snippets, clipboard payloads, quoted text, and code are protected from deterministic edits.
 
 - Fixed nightly release preparation failing on CRLF version files. The release snapshot check accepts those line endings while continuing to reject trailing spaces.
 
