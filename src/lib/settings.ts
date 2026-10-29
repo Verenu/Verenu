@@ -100,6 +100,13 @@ type SettingsValueMap = {
   cleanup_intensity: CleanupIntensity;
   app_mappings: AppMapping[];
   noise_reduction: boolean;
+  echo_cancellation: boolean;
+  duck_audio: boolean;
+  duck_target: number;
+  duck_fade_down_ms: number;
+  duck_fade_up_ms: number;
+  duck_fade_down_curve: 'linear' | 'smooth';
+  duck_fade_up_curve: 'linear' | 'smooth';
   mute_audio: boolean;
   mic_mute_button_dictation: boolean;
   exclusive_mic: boolean;
