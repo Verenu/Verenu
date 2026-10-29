@@ -34,6 +34,8 @@ pub struct Hello {
     pub app_version: String,
     #[serde(default)]
     pub activity_receipts: bool,
+    #[serde(default)]
+    pub cleanup_cache: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

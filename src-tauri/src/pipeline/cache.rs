@@ -35,7 +35,7 @@ pub(super) fn cleanup_cache_plan_for_context(
     snippet_instructions: &str,
     alternate_transcript: Option<&str>,
     dual_context_fingerprint: Option<String>,
-    context_id: Option<i64>,
+    context_identity: Option<&str>,
 ) -> CleanupCachePlan {
     let has_snippets = !snippet_instructions.is_empty();
     let cache_tokens = cache_tokens(expanded);
@@ -43,7 +43,7 @@ pub(super) fn cleanup_cache_plan_for_context(
         && (expanded.chars().count() <= 200 || has_snippets);
     let key = if allow_cache {
         format!(
-            "cleanup-v2:{}",
+            "cleanup-v3:{}",
             cache_digest(&serde_json::json!([
                 expanded,
                 profile,
@@ -51,7 +51,7 @@ pub(super) fn cleanup_cache_plan_for_context(
                 snippet_instructions,
                 alternate_transcript,
                 dual_context_fingerprint,
-                context_id
+                context_identity
             ]))
         )
     } else {
@@ -120,7 +120,7 @@ pub(super) fn cleanup_cache_hit_text(
     snippet_instructions: &str,
     expanded: &str,
     alternate: Option<&str>,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let entry = db::cleanup_cache_get_active(db_handle, cache_key)
         .ok()
         .flatten()?;
@@ -143,9 +143,9 @@ pub(super) fn cleanup_cache_hit_text(
         entry.hit_count
     );
     touch_cleanup_cache_hit(db_handle, cache_key, &entry);
-    Some(snippets::apply_cleanup_instruction_overrides(
-        &entry.clean_text,
-        snippet_instructions,
+    Some((
+        snippets::apply_cleanup_instruction_overrides(&entry.clean_text, snippet_instructions),
+        db::cleanup_cache_result_hash(&entry.clean_text),
     ))
 }
 use sha2::{Digest, Sha256};

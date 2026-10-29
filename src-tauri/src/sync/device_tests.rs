@@ -407,6 +407,7 @@ async fn two_devices_resume_an_interrupted_snapshot_without_duplicates() {
                         protocol: protocol::PROTOCOL_VERSION,
                         app_version: "test".into(),
                         activity_receipts: false,
+                        cleanup_cache: false,
                     }),
                 )
                 .await
@@ -638,4 +639,186 @@ async fn four_device_mesh_converges_after_concurrent_edits_offline_restart_and_s
         assert_eq!(store::effective_lifetime_totals(&device.db.lock().unwrap()).unwrap().0, 15);
         assert_eq!(store::max_log_seq(&device.db.lock().unwrap()).unwrap(), sequences[index], "repeat gossip must not amplify changes");
     }
+}
+
+#[tokio::test]
+async fn four_device_chain_relays_cleanup_cache_and_rejections() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    let d = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    pair(&c, &d, true).await.unwrap();
+
+    let left = format!("cleanup-v3:{}", "a".repeat(64));
+    let right = format!("cleanup-v3:{}", "b".repeat(64));
+    db::cleanup_cache_insert_new(&a.db, &left, "Synthetic result A", "2999-01-01 00:00:00", false).unwrap();
+    db::cleanup_cache_insert_new(&d.db, &right, "Synthetic result D", "2999-01-01 00:00:00", false).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    session(&c, &d).await.unwrap();
+    session(&c, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b, &c, &d] {
+        assert_eq!(db::cleanup_cache_get_active(&device.db, &left).unwrap().unwrap().clean_text, "Synthetic result A");
+        assert_eq!(db::cleanup_cache_get_active(&device.db, &right).unwrap().unwrap().clean_text, "Synthetic result D");
+    }
+
+    db::cleanup_cache_delete_by_key(&a.db, &left).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    session(&c, &d).await.unwrap();
+    session(&d, &c).await.unwrap();
+    session(&c, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b, &c, &d] {
+        assert!(db::cleanup_cache_get_active(&device.db, &left).unwrap().is_none());
+        assert!(db::cleanup_cache_get_active(&device.db, &right).unwrap().is_some());
+    }
+}
+
+#[tokio::test]
+async fn disabled_cache_does_not_store_or_relay_entries_and_recovers_on_enable() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    let existing = format!("cleanup-v3:{}", "e".repeat(64));
+    db::cleanup_cache_insert_new(&a.db, &existing, "Existing result", "2999-01-01 00:00:00", false).unwrap();
+    session(&a, &b).await.unwrap();
+    assert!(db::cleanup_cache_get_active(&b.db, &existing).unwrap().is_some());
+    db::cleanup_cache_set_enabled(&b.db, false).unwrap();
+    let key = format!("cleanup-v3:{}", "c".repeat(64));
+    db::cleanup_cache_insert_new(&a.db, &key, "Synthetic result", "2999-01-01 00:00:00", false).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    assert!(db::cleanup_cache_get_active(&b.db, &key).unwrap().is_none());
+    assert!(db::cleanup_cache_get_active(&c.db, &key).unwrap().is_none());
+    db::cleanup_cache_set_enabled(&b.db, true).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    assert!(db::cleanup_cache_get_active(&b.db, &existing).unwrap().is_some());
+    assert!(db::cleanup_cache_get_active(&c.db, &existing).unwrap().is_some());
+    assert_eq!(db::cleanup_cache_get_active(&c.db, &key).unwrap().unwrap().clean_text, "Synthetic result");
+}
+
+#[tokio::test]
+async fn cache_created_before_identity_is_in_first_snapshot() {
+    let a = Device::new();
+    let b = Device::new();
+    a.db.lock().unwrap().execute("DELETE FROM sync_identity", []).unwrap();
+    let key = format!("cleanup-v3:{}", "f".repeat(64));
+    db::cleanup_cache_insert_new(&a.db, &key, "Early result", "2999-01-01 00:00:00", false).unwrap();
+    store::ensure_self_identity(&a.db.lock().unwrap(), &a.host.uuid, "Fixture device").unwrap();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    assert_eq!(db::cleanup_cache_get_active(&b.db, &key).unwrap().unwrap().clean_text, "Early result");
+}
+
+#[tokio::test]
+async fn delayed_rejection_preserves_new_result_and_blocks_stale_copy() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    pair(&a, &c, true).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    let key = format!("cleanup-v3:{}", "a".repeat(64));
+    db::cleanup_cache_insert_new(&a.db, &key, "Old result", "2999-01-01 00:00:00", false).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &c).await.unwrap();
+    db::cleanup_cache_insert_new(&a.db, &key, "New result", "2999-01-01 00:00:00", false).unwrap();
+    db::cleanup_cache_reject(&a.db, &key, &db::cleanup_cache_result_hash("Old result")).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &c).await.unwrap();
+    session(&c, &b).await.unwrap();
+    for device in [&a, &b, &c] {
+        assert_eq!(db::cleanup_cache_get_active(&device.db, &key).unwrap().unwrap().clean_text, "New result");
+    }
+    db::cleanup_cache_insert_new(&c.db, &key, "Old result", "2999-01-01 00:00:00", false).unwrap();
+    assert_eq!(db::cleanup_cache_get_active(&c.db, &key).unwrap().unwrap().clean_text, "New result");
+}
+
+#[tokio::test]
+async fn expired_new_result_blocks_an_older_active_result() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    pair(&a, &c, true).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    let key = format!("cleanup-v3:{}", "b".repeat(64));
+    db::cleanup_cache_insert_new(&a.db, &key, "Old result", "2999-01-01 00:00:00", false).unwrap();
+    session(&a, &c).await.unwrap();
+    db::cleanup_cache_insert_new(&a.db, &key, "New result", "2999-01-01 00:00:00", false).unwrap();
+    a.db.lock().unwrap().execute("UPDATE cleanup_cache SET expires_at_epoch=0 WHERE key=?1", [&key]).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&c, &b).await.unwrap();
+    assert!(db::cleanup_cache_get_active(&b.db, &key).unwrap().is_none());
+    assert!(db::cleanup_cache_get_active(&c.db, &key).unwrap().is_none());
+    let watermark_count = |device: &Device| -> i64 {
+        device.db.lock().unwrap().query_row("SELECT COUNT(*) FROM sync_log WHERE table_name='cleanup_cache' AND row_uuid=?1", [&key], |r| r.get(0)).unwrap()
+    };
+    let before = (watermark_count(&b), watermark_count(&c));
+    for _ in 0..3 {
+        for device in [&b, &c] {
+            device.db.lock().unwrap().execute("UPDATE sync_peers SET recv_cursor=0, needs_snapshot=1", []).unwrap();
+        }
+        session(&c, &b).await.unwrap();
+    }
+    assert_eq!((watermark_count(&b), watermark_count(&c)), before);
+}
+
+#[tokio::test]
+async fn budget_eviction_preserves_newer_version_watermark() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    pair(&a, &c, true).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    let key = format!("cleanup-v3:{}", "9".repeat(64));
+    db::cleanup_cache_insert_new(&a.db, &key, "Old result", "2999-01-01 00:00:00", false).unwrap();
+    session(&a, &c).await.unwrap();
+    db::cleanup_cache_insert_new(&a.db, &key, "New result", "2999-01-01 00:00:00", false).unwrap();
+    b.db.lock().unwrap().execute_batch("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2000) INSERT INTO cleanup_cache(key, clean_text, created_at, last_hit_at, expires_at, created_at_epoch, last_hit_at_epoch, expires_at_epoch, is_snippet) SELECT 'local-'||x, 'Synthetic', datetime('now'), datetime('now'), datetime('now','+1 day'), strftime('%s','now'), strftime('%s','now'), strftime('%s','now','+1 day'), 1 FROM n").unwrap();
+    session(&a, &b).await.unwrap();
+    assert!(db::cleanup_cache_get_active(&b.db, &key).unwrap().is_none());
+    session(&c, &b).await.unwrap();
+    assert!(db::cleanup_cache_get_active(&b.db, &key).unwrap().is_none());
+    assert!(db::cleanup_cache_get_active(&c.db, &key).unwrap().is_none());
+}
+
+#[test]
+fn cache_pruning_compacts_superseded_operations_for_live_keys() {
+    let a = Device::new();
+    let key = format!("cleanup-v3:{}", "8".repeat(64));
+    for output in ["First", "Second", "Third"] {
+        db::cleanup_cache_insert_new(&a.db, &key, output, "2999-01-01 00:00:00", false).unwrap();
+    }
+    db::cleanup_cache_prune_expired(&a.db).unwrap();
+    let conn = a.db.lock().unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_log WHERE table_name='cleanup_cache' AND row_uuid=?1", [&key], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn stale_peer_does_not_restore_rejected_cache_entry() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    pair(&a, &c, true).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    let key = format!("cleanup-v3:{}", "d".repeat(64));
+    db::cleanup_cache_insert_new(&a.db, &key, "Synthetic result", "2999-01-01 00:00:00", false).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &c).await.unwrap();
+    db::cleanup_cache_delete_by_key(&a.db, &key).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&c, &b).await.unwrap();
+    assert!(db::cleanup_cache_get_active(&b.db, &key).unwrap().is_none());
+    assert!(db::cleanup_cache_get_active(&c.db, &key).unwrap().is_none());
 }

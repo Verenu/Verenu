@@ -50,6 +50,13 @@ Keys are versioned SHA-256 hashes of exact input and cleanup configuration;
 readable raw transcripts are not stored as keys. Hashes do not encrypt the
 cleaned text or make predictable inputs anonymous.
 
+Paired devices exchange cached cleaned text over authenticated, hop-by-hop TLS
+connections. Disabling caching clears this device's cache and stops it storing
+or forwarding cached results. It does not erase copies already sent to peers.
+Rejection records, including cache-key hashes, still travel through disabled
+devices to help remove rejected results elsewhere. The setting stays local to
+each device.
+
 Results expire after two days without reuse or seven days from creation,
 whichever comes first, including snippet results. The cache is limited to 2,000
 entries and 16 MiB of key/output text. The displayed size measures that text,
