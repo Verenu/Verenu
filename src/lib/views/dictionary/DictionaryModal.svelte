@@ -159,9 +159,6 @@
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveModal();
   }
 
-  $effect(() => {
-    if (termInput) setTimeout(() => termInput?.focus(), 50);
-  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />

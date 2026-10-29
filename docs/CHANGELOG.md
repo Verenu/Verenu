@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed the Dictionary editor moving focus back to the term field while entering a common mistranscription.
 - Redesigned the Providers page. One list shows only the providers you have added, with icons for transcription and cleanup instead of descriptions. The plus button opens a single flyout that adds built-in, preset, local, or custom providers, and adding a built-in or preset provider now needs only an API key. Added missing logos for more presets and fixed the flyout's close button overlapping the window controls.
 - Redesigned the Sync page. Paired and nearby devices share one Devices list with icon actions, the Tailscale setup is two steps, synchronous muting no longer has its own heading, and the pairing and remove dialogs use shorter text.
 - Insights now shows vocabulary replacements and snippet expansions for the selected date range and context. Detailed counts start with this update and are marked incomplete for older saved dictations.
@@ -11,6 +12,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Removed Basic from cleanup choices in Style, setup, and Contexts. Choose a cleanup level and model independently. Existing Basic settings continue to run locally until changed.
 - New browser dictations include the detected website hostname in history when available, and history search matches websites. Earlier entries remain unchanged.
 - Added optional Linux PipeWire echo cancellation and a dictation audio volume control: 0% mutes, 100% leaves playback unchanged, and intermediate levels fade smoothly. Fade timing is available under advanced controls. Partial volume reduction requires PipeWire's PulseAudio service and `pactl`; echo cancellation uses the default microphone and PipeWire's echo-cancel module.
+- Linux keeps the selected dictation shortcut when it conflicts with a desktop binding and reports the conflict instead of silently switching to another shortcut.
+- Linux ARM64 pull request checks build a Debian package and make it available as a CI artifact.
 - Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
 - Adjusted microphone gain automatically during detected speech to help keep the voice level consistent as its volume changes. The microphone gain setting sets the target level; the default is recommended for most microphones.
 - Verenu registers a small discovery guide for detected agent harnesses so an agent asked to manage Contexts or settings can find the packaged control skill. Saving the full control skill and enabling agent access remain separate user choices.

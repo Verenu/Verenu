@@ -4,7 +4,7 @@ _app_version="${VERENU_PKGVER:?Set VERENU_PKGVER to the release version}"
 pkgver="${_app_version//-/_}"
 pkgrel=1
 pkgdesc='Local-first dictation app for Omarchy and Arch Linux'
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url='https://github.com/Verenu/Verenu'
 license=('MIT')
 options=('!strip' '!debug')
@@ -22,14 +22,14 @@ optdepends=(
   'xdg-desktop-portal-hyprland: XDG portal backend for Omarchy and Hyprland'
   'polkit: administrator authorization for built-in package updates'
 )
-source=("Verenu_${_app_version}_x86_64.AppImage" 'LICENSE')
-noextract=("Verenu_${_app_version}_x86_64.AppImage")
+source=("Verenu_${_app_version}_${CARCH}.AppImage" 'LICENSE')
+noextract=("Verenu_${_app_version}_${CARCH}.AppImage")
 sha256sums=('SKIP' 'SKIP')
 
 prepare() {
-  chmod +x "$srcdir/Verenu_${_app_version}_x86_64.AppImage"
+  chmod +x "$srcdir/Verenu_${_app_version}_${CARCH}.AppImage"
   cd "$srcdir"
-  ./"Verenu_${_app_version}_x86_64.AppImage" --appimage-extract
+  ./"Verenu_${_app_version}_${CARCH}.AppImage" --appimage-extract
 }
 
 package() {
