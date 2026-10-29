@@ -1,14 +1,14 @@
 import { tick } from 'svelte';
-import { emit } from './tauri';
+import { emit, invoke } from './tauri';
 import { appStore } from './stores';
-import { saveSetting, type AppearanceMode } from './settings';
-import { ACCENT_CHANGE_EVENT, animateAccentChange, isAdaptiveDefaultAccent } from './accentTheme';
+import { type AppearanceMode } from './settings';
+import { ACCENT_CHANGE_EVENT, animateAccentChange, isAdaptiveDefaultAccent, normalizeAccentColor } from './accentTheme';
 import {
   CUSTOM_THEME_CHANGE_EVENT,
   defaultCustomTheme,
   themeColors,
+  normalizeCustomTheme,
   type CustomTheme,
-  type SavedTheme,
 } from './customTheme';
 
 const APPEARANCE_MODE_CHANGE_EVENT = 'verenu:appearance-mode-changed';
@@ -29,30 +29,6 @@ export function broadcastAppearance(mode: AppearanceMode, theme: CustomTheme | n
   });
 }
 
-export async function persistCustomTheme(next: CustomTheme | null, previous: CustomTheme | null = appStore.customTheme) {
-  const colors = next ? themeColors(next) : null;
-  appStore.customTheme = colors;
-  broadcastCustomTheme(colors);
-  try {
-    await saveSetting('custom_theme', colors);
-  } catch (err) {
-    appStore.customTheme = previous;
-    broadcastCustomTheme(previous);
-    console.error('save custom_theme failed:', err);
-    throw err;
-  }
-}
-
-export async function persistSavedThemes(next: SavedTheme[]) {
-  try {
-    await saveSetting('custom_themes', next);
-  } catch (err) {
-    console.error('save custom_themes failed:', err);
-    throw err;
-  }
-  appStore.savedThemes = next;
-}
-
 export async function setAppearanceMode(
   mode: AppearanceMode,
   from: { mode: AppearanceMode; customTheme: CustomTheme | null; accent: string | null } = {
@@ -61,40 +37,31 @@ export async function setAppearanceMode(
     accent: appStore.accentColor,
   },
 ) {
-  const previousAccent = from.accent;
-  const resetAccentToThemeDefault = isAdaptiveDefaultAccent(previousAccent);
-  let accentResetSaved = false;
-
+  const version = appStore.appearanceChangeVersion;
   try {
-    if (mode === 'custom' && !appStore.customTheme) {
-      await persistCustomTheme(defaultCustomTheme(document.documentElement.dataset.theme === 'dark'), null);
+    const expected = await readAppearanceSnapshot(from, version);
+    const accent = isAdaptiveDefaultAccent(from.accent) ? null : from.accent;
+    const theme = mode === 'custom' && !from.customTheme
+      ? defaultCustomTheme(document.documentElement.dataset.theme === 'dark') : from.customTheme;
+    await invoke('save_model_settings_if_unchanged', { expected, values: { ...expected, appearance_mode: mode, accent_color: accent, custom_theme: theme } });
+    if (version !== appStore.appearanceChangeVersion) {
+      window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
+      return;
     }
-    if (resetAccentToThemeDefault) {
-      await saveSetting('accent_color', null);
-      accentResetSaved = true;
-    }
-    await saveSetting('appearance_mode', mode);
-
     await animateAccentChange(async () => {
+      if (version !== appStore.appearanceChangeVersion) return;
       appStore.appearanceMode = mode;
-      if (resetAccentToThemeDefault) appStore.accentColor = null;
+      appStore.accentColor = accent;
+      appStore.customTheme = theme;
       await tick();
     });
-    if (resetAccentToThemeDefault) {
-      void emit(ACCENT_CHANGE_EVENT, null).catch((err) => {
-        console.warn('broadcast adaptive accent reset failed:', err);
-      });
+    if (version !== appStore.appearanceChangeVersion) {
+      window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
+      return;
     }
+    broadcastAppearance(mode, theme, accent);
   } catch (err) {
-    if (accentResetSaved) {
-      try {
-        await saveSetting('accent_color', previousAccent);
-      } catch (rollbackErr) {
-        console.error('restore accent_color after appearance save failed:', rollbackErr);
-      }
-    }
-    appStore.appearanceMode = from.mode;
-    appStore.accentColor = previousAccent;
+    window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
     console.error('save appearance_mode failed:', err);
     throw err;
   }
@@ -105,24 +72,30 @@ export async function persistAccentColor(
   previous: string | null = appStore.accentColor,
 ): Promise<boolean> {
   const next = isAdaptiveDefaultAccent(color) ? null : color;
-  await animateAccentChange(async () => {
-    appStore.accentColor = next;
-    await tick();
-  });
-  void emit(ACCENT_CHANGE_EVENT, next).catch((err) => {
-    console.warn('broadcast accent color failed:', err);
-  });
+  const version = appStore.appearanceChangeVersion;
+  const before = { ...snapshotAppearance(), accent: previous };
   try {
-    await saveSetting('accent_color', next);
-    return true;
-  } catch (err) {
+    const expected = await readAppearanceSnapshot(before, version);
+    await invoke('save_model_settings_if_unchanged', { expected, values: { ...expected, accent_color: next } });
+    if (version !== appStore.appearanceChangeVersion) {
+      window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
+      return true;
+    }
     await animateAccentChange(async () => {
-      appStore.accentColor = previous;
+      if (version !== appStore.appearanceChangeVersion) return;
+      appStore.accentColor = next;
       await tick();
     });
-    void emit(ACCENT_CHANGE_EVENT, previous).catch((emitErr) => {
-      console.warn('broadcast accent rollback failed:', emitErr);
+    if (version !== appStore.appearanceChangeVersion) {
+      window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
+      return true;
+    }
+    void emit(ACCENT_CHANGE_EVENT, next).catch((err) => {
+      console.warn('broadcast accent color failed:', err);
     });
+    return true;
+  } catch (err) {
+    window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
     console.error('save accent_color failed:', err);
     return false;
   }
@@ -144,57 +117,50 @@ export function snapshotAppearance(): AppearanceSnapshot {
   };
 }
 
+async function readAppearanceSnapshot(before: { mode: AppearanceMode; customTheme: CustomTheme | null; accent: string | null }, version: number) {
+  const [appearance_mode, accent_color, custom_theme, custom_themes] = await Promise.all([
+    invoke('get_setting', { key: 'appearance_mode' }),
+    invoke('get_setting', { key: 'accent_color' }),
+    invoke('get_setting', { key: 'custom_theme' }),
+    invoke('get_setting', { key: 'custom_themes' }),
+  ]);
+  if ((appearance_mode ?? 'system') !== before.mode
+    || normalizeAccentColor(accent_color) !== before.accent
+    || JSON.stringify(normalizeCustomTheme(custom_theme)) !== JSON.stringify(before.customTheme)
+    || version !== appStore.appearanceChangeVersion) throw new Error('Appearance changed while editing');
+  return { appearance_mode, accent_color, custom_theme, custom_themes };
+}
+
 export async function applyPalette(
   palette: CustomTheme,
   options: { accent?: string | null; themeId?: string | null; from?: AppearanceSnapshot } = {},
 ): Promise<boolean> {
   const before = options.from ?? snapshotAppearance();
-  let wroteTheme = false;
-  let wroteMode = false;
-  let wroteAccent = false;
+  const version = appStore.appearanceChangeVersion;
   try {
-    await persistCustomTheme(palette, before.customTheme);
-    wroteTheme = true;
-    if (before.mode !== 'custom') {
-      await setAppearanceMode('custom', before);
-      wroteMode = true;
-      wroteAccent = true;
+    const expected = await readAppearanceSnapshot(before, version);
+    const accent = 'accent' in options ? options.accent ?? null : (isAdaptiveDefaultAccent(before.accent) ? null : before.accent);
+    const values = { ...expected, appearance_mode: 'custom', custom_theme: themeColors(palette), accent_color: accent };
+    await invoke('save_model_settings_if_unchanged', { expected, values });
+    if (version !== appStore.appearanceChangeVersion) {
+      window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
+      return true;
     }
-    if ('accent' in options) {
-      wroteAccent = true;
-      if (!(await persistAccentColor(options.accent ?? null, before.accent))) throw new Error('accent save failed');
-    }
+    appStore.appearanceMode = 'custom';
+    appStore.customTheme = values.custom_theme;
+    appStore.accentColor = accent;
     appStore.activeThemeId = options.themeId ?? null;
+    broadcastAppearance('custom', values.custom_theme, accent);
     return true;
   } catch {
-    await restoreAppearance(before, { theme: wroteTheme, mode: wroteMode, accent: wroteAccent });
+    window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
     return false;
   }
 }
 
-async function restoreAppearance(
-  before: AppearanceSnapshot,
-  wrote: { theme: boolean; mode: boolean; accent: boolean },
-) {
-  const restore = async (key: 'custom_theme' | 'appearance_mode' | 'accent_color', value: unknown) => {
-    try {
-      await saveSetting(key, value as never);
-    } catch (err) {
-      console.error(`restore ${key} after appearance save failure failed:`, err);
-    }
-  };
-  if (wrote.mode) await restore('appearance_mode', before.mode);
-  if (wrote.accent) await restore('accent_color', before.accent);
-  if (wrote.theme) await restore('custom_theme', before.customTheme ? themeColors(before.customTheme) : null);
-  appStore.appearanceMode = before.mode;
-  appStore.customTheme = before.customTheme;
-  appStore.accentColor = before.accent;
-  appStore.activeThemeId = before.themeId;
-  broadcastAppearance(before.mode, before.customTheme, before.accent);
-}
-
 export async function withAppearanceLock<T>(task: () => Promise<T>): Promise<T | undefined> {
   if (appStore.appearanceSaving) return undefined;
+  appStore.appearanceChangeVersion++;
   appStore.appearanceSaving = true;
   try {
     return await task();

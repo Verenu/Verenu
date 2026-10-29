@@ -209,6 +209,7 @@ export async function editContextDictionaryEntry(
   contextId: number,
   term: string,
   mistake: string | null,
+  expected?: Pick<DictionaryEntry, 'term' | 'mistake'>,
 ): Promise<void> {
   const dictionaryId = dictionaryEntryId(entry);
   await invoke('edit_dictionary_entry', {
@@ -219,6 +220,7 @@ export async function editContextDictionaryEntry(
     correctionIds: dictionaryEntryCorrectionIds(entry),
     term,
     mistake,
+    expected,
   });
 }
 

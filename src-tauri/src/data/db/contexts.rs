@@ -419,6 +419,29 @@ pub fn update_context(db: &Db, context_id: i64, name: &str) -> Result<()> {
     require_row_changed(changed, "Context", context_id)
 }
 
+pub fn save_context_if_unchanged(db: &Db, original: Context, updated: Context) -> Result<Context> {
+    let name = normalize_context_name(&updated.name)?;
+    let instructions = normalize_custom_instructions(updated.custom_instructions.as_deref())?;
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let current = query_context_conn(&tx, original.id)?;
+    if original.id != updated.id || current.name != original.name || current.icon != original.icon
+        || current.tone != original.tone || current.cleanup_intensity != original.cleanup_intensity
+        || current.color != original.color || current.custom_instructions != original.custom_instructions
+        || current.contextual_formatting_override != original.contextual_formatting_override
+        || current.paste_in_chunks != original.paste_in_chunks
+        || current.t3_skill_mentions_disabled != original.t3_skill_mentions_disabled {
+        anyhow::bail!("This context changed while you were editing. Close and reopen it to see the latest changes.");
+    }
+    tx.execute(
+        "UPDATE contexts SET name = ?2, icon = ?3, tone = ?4, cleanup_intensity = ?5, color = ?6, custom_instructions = ?7, contextual_formatting_disabled = ?8, contextual_formatting_override = ?9, paste_in_chunks = ?10, t3_skill_mentions_disabled = ?11, updated_at = datetime('now') WHERE id = ?1",
+        params![original.id, name, normalize_optional_trimmed(updated.icon.as_deref()), normalize_optional_trimmed(updated.tone.as_deref()), normalize_optional_trimmed(updated.cleanup_intensity.as_deref()), normalize_optional_trimmed(updated.color.as_deref()), instructions, updated.contextual_formatting_override == Some(true), updated.contextual_formatting_override, updated.paste_in_chunks, updated.t3_skill_mentions_disabled],
+    )?;
+    let result = query_context_conn(&tx, original.id)?;
+    tx.commit()?;
+    Ok(result)
+}
+
 #[cfg(test)]
 pub fn update_context_settings(
     db: &Db,
@@ -472,6 +495,78 @@ pub fn update_context_settings_with_override_and_delivery(
     require_row_changed(changed, "Context", context_id)
 }
 
+// An omitted field is unchanged; an explicit null clears a nullable override.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContextSettingsPatch {
+    #[serde(default, deserialize_with = "present_nullable")]
+    pub icon: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present_nullable")]
+    pub tone: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present_nullable")]
+    pub cleanup_intensity: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present_nullable")]
+    pub custom_instructions: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present_nullable")]
+    pub contextual_formatting_override: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "present_value")]
+    pub paste_in_chunks: Option<bool>,
+}
+
+fn present_nullable<'de, D, T>(deserializer: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where D: serde::Deserializer<'de>, T: Deserialize<'de> {
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+fn present_value<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where D: serde::Deserializer<'de>, T: Deserialize<'de> {
+    T::deserialize(deserializer).map(Some)
+}
+
+#[cfg(test)]
+pub fn patch_context_settings(db: &Db, context_id: i64, patch: ContextSettingsPatch) -> Result<Context> {
+    patch_context_settings_inner(db, context_id, patch, None)
+}
+
+pub fn patch_context_settings_if_unchanged(db: &Db, context_id: i64, patch: ContextSettingsPatch, expected: Context) -> Result<Context> {
+    patch_context_settings_inner(db, context_id, patch, Some(expected))
+}
+
+fn patch_context_settings_inner(db: &Db, context_id: i64, patch: ContextSettingsPatch, expected: Option<Context>) -> Result<Context> {
+    if patch.icon.is_none() && patch.tone.is_none() && patch.cleanup_intensity.is_none()
+        && patch.custom_instructions.is_none() && patch.contextual_formatting_override.is_none()
+        && patch.paste_in_chunks.is_none() {
+        anyhow::bail!("Provide at least one Context setting to update");
+    }
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let current = query_context_conn(&tx, context_id)?;
+    if let Some(expected) = expected {
+        if expected.id != context_id
+            || (patch.icon.is_some() && current.icon != expected.icon)
+            || (patch.tone.is_some() && current.tone != expected.tone)
+            || (patch.cleanup_intensity.is_some() && current.cleanup_intensity != expected.cleanup_intensity)
+            || (patch.custom_instructions.is_some() && current.custom_instructions != expected.custom_instructions)
+            || (patch.contextual_formatting_override.is_some() && current.contextual_formatting_override != expected.contextual_formatting_override)
+            || (patch.paste_in_chunks.is_some() && current.paste_in_chunks != expected.paste_in_chunks) {
+            anyhow::bail!("This context changed while you were editing. Close and reopen it to see the latest changes.");
+        }
+    }
+    let icon = match patch.icon { Some(value) => normalize_optional_trimmed(value.as_deref()), None => current.icon };
+    let tone = match patch.tone { Some(value) => normalize_optional_trimmed(value.as_deref()), None => current.tone };
+    let intensity = match patch.cleanup_intensity { Some(value) => normalize_optional_trimmed(value.as_deref()), None => current.cleanup_intensity };
+    let instructions = match patch.custom_instructions { Some(value) => normalize_custom_instructions(value.as_deref())?, None => current.custom_instructions };
+    let formatting = patch.contextual_formatting_override.unwrap_or(current.contextual_formatting_override);
+    let paste = patch.paste_in_chunks.unwrap_or(current.paste_in_chunks);
+    tx.execute(
+        "UPDATE contexts SET icon = ?2, tone = ?3, cleanup_intensity = ?4, custom_instructions = ?5, contextual_formatting_disabled = ?6, paste_in_chunks = ?7, contextual_formatting_override = ?8, updated_at = datetime('now') WHERE id = ?1",
+        params![context_id, icon, tone, intensity, instructions, formatting == Some(true), paste, formatting],
+    )?;
+    let updated = query_context_conn(&tx, context_id)?;
+    tx.commit()?;
+    Ok(updated)
+}
+
 pub fn update_context_t3_skill_mentions(db: &Db, context_id: i64, enabled: bool) -> Result<()> {
     let conn = lock_conn(db)?;
     let changed = conn.execute(
@@ -507,6 +602,17 @@ pub fn set_context_pinned(db: &Db, context_id: i64, pinned: bool) -> Result<()> 
         params![context_id, pinned],
     )?;
     require_row_changed(changed, "Context", context_id)
+}
+
+pub fn set_context_pinned_if_unchanged(db: &Db, context_id: i64, pinned: bool, expected: Option<String>) -> Result<()> {
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if query_context_conn(&tx, context_id)?.pinned_at != expected {
+        anyhow::bail!("This context changed while you were editing. Close and reopen it to see the latest changes.");
+    }
+    tx.execute("UPDATE contexts SET pinned_at = CASE WHEN ?2 THEN datetime('now') ELSE NULL END WHERE id = ?1", params![context_id, pinned])?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn delete_context(db: &Db, context_id: i64) -> Result<()> {
@@ -1003,6 +1109,89 @@ pub fn set_snippet_context_assignment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_editor_rejects_stale_save_without_overwriting_agent_change() {
+        let db = open(":memory:").unwrap();
+        let original = insert_context_with_override_and_delivery(&db, "Original", None, None, None, None, None, false).unwrap();
+        let mut edited = original.clone();
+        edited.name = "User edit".into();
+        patch_context_settings(&db, original.id, serde_json::from_value(serde_json::json!({"tone": "formal"})).unwrap()).unwrap();
+        assert!(save_context_if_unchanged(&db, original.clone(), edited).unwrap_err().to_string().contains("changed while you were editing"));
+        let current = query_context(&db, original.id).unwrap();
+        assert_eq!(current.name, "Original");
+        assert_eq!(current.tone.as_deref(), Some("formal"));
+        let mut retry = current.clone();
+        retry.name = "User edit".into();
+        let saved = save_context_if_unchanged(&db, current, retry).unwrap();
+        assert_eq!(saved.name, "User edit");
+        assert_eq!(saved.tone.as_deref(), Some("formal"));
+    }
+
+    #[test]
+    fn agent_patch_rejects_stale_fields_but_preserves_unrelated_edits() {
+        let db = open(":memory:").unwrap();
+        let original = insert_context_with_override_and_delivery(&db, "Patch", None, None, None, Some("Original"), None, false).unwrap();
+        let change = serde_json::from_value(serde_json::json!({"customInstructions": "User edit"})).unwrap();
+        patch_context_settings(&db, original.id, change).unwrap();
+        let stale = serde_json::from_value(serde_json::json!({"customInstructions": "Agent edit", "tone": "formal"})).unwrap();
+        assert!(patch_context_settings_if_unchanged(&db, original.id, stale, original.clone()).is_err());
+        let unrelated = serde_json::from_value(serde_json::json!({"tone": "formal"})).unwrap();
+        let saved = patch_context_settings_if_unchanged(&db, original.id, unrelated, original).unwrap();
+        assert_eq!(saved.custom_instructions.as_deref(), Some("User edit"));
+        assert_eq!(saved.tone.as_deref(), Some("formal"));
+    }
+
+    #[test]
+    fn agent_patch_preserves_omitted_settings_and_clears_explicit_null() {
+        let db = open(":memory:").unwrap();
+        let context = insert_context_with_override_and_delivery(&db, "Agent patch", Some("AG"), Some("formal"), Some("light"), Some("Keep this"), Some(false), true).unwrap();
+        // Legacy/imported values must remain byte-for-byte intact when omitted.
+        lock_conn(&db).unwrap().execute("UPDATE contexts SET icon = ' AG ' WHERE id = ?1", params![context.id]).unwrap();
+        let patch = serde_json::from_value(serde_json::json!({"tone": "casual"})).unwrap();
+        let changed = patch_context_settings(&db, context.id, patch).unwrap();
+        assert_eq!(changed.tone.as_deref(), Some("casual"));
+        assert_eq!(changed.icon.as_deref(), Some(" AG "));
+        assert_eq!(changed.cleanup_intensity.as_deref(), Some("light"));
+        assert_eq!(changed.custom_instructions.as_deref(), Some("Keep this"));
+        assert_eq!(changed.contextual_formatting_override, Some(false));
+        assert!(changed.paste_in_chunks);
+        let patch = serde_json::from_value(serde_json::json!({"icon": null, "contextualFormattingOverride": null, "pasteInChunks": false})).unwrap();
+        let cleared = patch_context_settings(&db, context.id, patch).unwrap();
+        assert_eq!(cleared.icon, None);
+        assert_eq!(cleared.contextual_formatting_override, None);
+        assert!(!cleared.paste_in_chunks);
+        assert_eq!(cleared.custom_instructions.as_deref(), Some("Keep this"));
+        assert!(serde_json::from_value::<ContextSettingsPatch>(serde_json::json!({"pasteInChunks": null})).is_err());
+        assert!(serde_json::from_value::<ContextSettingsPatch>(serde_json::json!({"typo": true})).is_err());
+        assert!(patch_context_settings(&db, context.id, ContextSettingsPatch::default()).is_err());
+        assert!(patch_context_settings(&db, -1, serde_json::from_value(serde_json::json!({"tone": "casual"})).unwrap()).is_err());
+        let oversized = "x".repeat(CONTEXT_CUSTOM_INSTRUCTIONS_CHAR_LIMIT + 1);
+        let invalid = serde_json::from_value(serde_json::json!({"tone": "formal", "customInstructions": oversized})).unwrap();
+        assert!(patch_context_settings(&db, context.id, invalid).is_err());
+        assert_eq!(query_context(&db, context.id).unwrap().tone.as_deref(), Some("casual"));
+    }
+
+    #[test]
+    fn concurrent_agent_patches_preserve_both_changes() {
+        let db = open(":memory:").unwrap();
+        let context = insert_context_returning(&db, "Concurrent", None, None, None, None, false).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let threads: Vec<_> = [serde_json::json!({"tone":"formal"}), serde_json::json!({"icon":"AG"})]
+            .into_iter().map(|value| {
+                let db = db.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let patch = serde_json::from_value(value).unwrap();
+                    barrier.wait();
+                    patch_context_settings(&db, context.id, patch).unwrap();
+                })
+            }).collect();
+        for thread in threads { thread.join().unwrap(); }
+        let result = query_context(&db, context.id).unwrap();
+        assert_eq!(result.tone.as_deref(), Some("formal"));
+        assert_eq!(result.icon.as_deref(), Some("AG"));
+    }
 
     #[test]
     fn migration_assigns_existing_content_to_everywhere() {
@@ -2278,7 +2467,7 @@ mod tests {
             .any(|entry| entry.id == dictionary.id));
 
         let moved_snippet =
-            move_snippet_entry_to_context(&db, "sig", context.id).expect("move snippet");
+            move_snippet_entry_to_context(&db, "sig", context.id, None).expect("move snippet");
         assert_eq!(moved_snippet.id, snippet.id);
         assert_eq!(moved_snippet.expansion, "Best regards");
         assert!(query_snippets_for_context(&db, EVERYWHERE_CONTEXT_ID)
