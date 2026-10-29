@@ -721,6 +721,18 @@ pub async fn save_setting(
                     || Ok(()),
                 )
                 .map(|_| ())
+        } else if cfg!(target_os = "linux") && key_clone == store::DUCK_TARGET {
+            settings.save_values([
+                (key_clone, value),
+                (store::DUCK_AUDIO.to_string(), true.into()),
+                (store::MUTE_AUDIO.to_string(), false.into()),
+            ])
+        } else if cfg!(target_os = "linux") && key_clone == store::DUCK_AUDIO {
+            // Changing the combined volume control replaces any legacy local mute.
+            settings.save_values([
+                (key_clone, value),
+                (store::MUTE_AUDIO.to_string(), false.into()),
+            ])
         } else if key_clone == store::GITHUB_USERNAME {
             save_github_username(&settings, value)
         } else if key_clone == store::CONTEXTUAL_FORMATTING {

@@ -568,8 +568,6 @@ pub struct AudioConfig {
     #[cfg(target_os = "linux")]
     pub duck_fade_up_ms: u64,
     #[cfg(target_os = "linux")]
-    pub duck_fade_down_smooth: bool,
-    #[cfg(target_os = "linux")]
     pub duck_fade_up_smooth: bool,
     pub mic_gain: f32,
     pub mute_audio: bool,
@@ -592,8 +590,6 @@ impl Default for AudioConfig {
             duck_fade_down_ms: 250,
             #[cfg(target_os = "linux")]
             duck_fade_up_ms: 150,
-            #[cfg(target_os = "linux")]
-            duck_fade_down_smooth: true,
             #[cfg(target_os = "linux")]
             duck_fade_up_smooth: true,
             mic_gain: default_mic_gain(),
@@ -623,8 +619,6 @@ pub fn load_audio_config(store: &SettingsSnapshot) -> AudioConfig {
     let duck_fade_down_ms = store.get(DUCK_FADE_DOWN_MS).and_then(|v| v.as_u64()).unwrap_or(250).min(5000);
     #[cfg(target_os = "linux")]
     let duck_fade_up_ms = store.get(DUCK_FADE_UP_MS).and_then(|v| v.as_u64()).unwrap_or(150).min(5000);
-    #[cfg(target_os = "linux")]
-    let duck_fade_down_smooth = store.get(DUCK_FADE_DOWN_CURVE).and_then(|v| v.as_str()).unwrap_or("smooth") != "linear";
     #[cfg(target_os = "linux")]
     let duck_fade_up_smooth = store.get(DUCK_FADE_UP_CURVE).and_then(|v| v.as_str()).unwrap_or("smooth") != "linear";
     let mic_gain = store
@@ -669,8 +663,6 @@ pub fn load_audio_config(store: &SettingsSnapshot) -> AudioConfig {
         duck_fade_down_ms,
         #[cfg(target_os = "linux")]
         duck_fade_up_ms,
-        #[cfg(target_os = "linux")]
-        duck_fade_down_smooth,
         #[cfg(target_os = "linux")]
         duck_fade_up_smooth,
         mic_gain,

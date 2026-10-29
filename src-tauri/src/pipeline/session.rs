@@ -2,6 +2,27 @@ use super::*;
 use crate::core::context::ResolvedContextIdentity;
 use chrono::{SecondsFormat, Utc};
 
+#[cfg(target_os = "linux")]
+fn output_volume_policy(legacy_mute: bool, enabled: bool, target: u8) -> (bool, bool) {
+    let mute = legacy_mute || (enabled && target == 0);
+    let reduce = enabled && (1..100).contains(&target) && !mute;
+    (mute, reduce)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod output_volume_policy_tests {
+    use super::output_volume_policy;
+
+    #[test]
+    fn slider_and_legacy_mute_select_one_output_path() {
+        assert_eq!(output_volume_policy(false, false, 25), (false, false));
+        assert_eq!(output_volume_policy(false, true, 0), (true, false));
+        assert_eq!(output_volume_policy(false, true, 30), (false, true));
+        assert_eq!(output_volume_policy(false, true, 100), (false, false));
+        assert_eq!(output_volume_policy(true, true, 30), (true, false));
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct RecordingStartOptions {
     pub show_recording_pill: bool,
@@ -110,16 +131,23 @@ pub fn start_recording_session_ex_with_context(
     let use_default_input_device = device.is_none();
     let noise_reduction = audio_config.noise_reduction;
     let echo_cancellation = cfg!(target_os = "linux") && audio_config.echo_cancellation;
+    #[cfg(target_os = "linux")]
+    let (mute_audio, reduce_audio) = output_volume_policy(
+        audio_config.mute_audio,
+        audio_config.duck_audio,
+        audio_config.duck_target,
+    );
+    #[cfg(not(target_os = "linux"))]
     let mute_audio = audio_config.mute_audio;
     let exclusive_mic = audio_config.exclusive_mic;
     let pause_media = audio_config.pause_media_during_dictation;
     let mic_gain = audio_config.mic_gain;
     #[cfg(target_os = "linux")]
-    let duck_settings = audio_config.duck_audio.then_some(crate::system::output_duck::DuckSettings {
+    let duck_settings = reduce_audio.then_some(crate::system::output_duck::DuckSettings {
         target: audio_config.duck_target,
         down: std::time::Duration::from_millis(audio_config.duck_fade_down_ms),
         up: std::time::Duration::from_millis(audio_config.duck_fade_up_ms),
-        smooth_down: audio_config.duck_fade_down_smooth,
+        smooth_down: true,
         smooth_up: audio_config.duck_fade_up_smooth,
     });
     let exclusive_mic_session_id =
