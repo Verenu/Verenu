@@ -58,12 +58,12 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'general-caps-lock', section: 'general', label: 'Automatic caps lock detection', description: 'Output dictation in uppercase while Caps Lock is on', target: 'general-caps-lock', keywords: ['uppercase', 'capitalization'] },
   { id: 'general-legacy', section: 'general', label: 'Legacy pages', description: 'Restore App Mappings, Dictionary, and Snippets pages', target: 'general-legacy', keywords: ['dictionary', 'snippets', 'app mappings'] },
 
-  { id: 'keys-groq', section: 'keys', label: 'Groq API key', description: 'Save or remove the key used for Groq models', target: 'api-key-groq', keywords: ['whisper', 'qwen'] },
-  { id: 'keys-openai', section: 'keys', label: 'OpenAI API key', description: 'Save or remove the key used for OpenAI models', target: 'api-key-openai', keywords: ['gpt', 'whisper'] },
-  { id: 'keys-google', section: 'keys', label: 'Gemini API key', description: 'Save or remove the key used for Gemini models', target: 'api-key-google', keywords: ['google'] },
-  { id: 'keys-assemblyai', section: 'keys', label: 'AssemblyAI API key', description: 'Save or remove the key used for AssemblyAI models', target: 'api-key-assemblyai', keywords: ['universal'] },
-  { id: 'keys-openrouter', section: 'keys', label: 'OpenRouter API key', description: 'Save or remove the key used for OpenRouter models', target: 'api-key-openrouter', keywords: ['router', 'gateway'] },
-  { id: 'keys-xai', section: 'keys', label: 'xAI API key', description: 'Save or remove the key used for xAI Grok models', target: 'api-key-xai', keywords: ['grok'] },
+  { id: 'keys-groq', section: 'keys', label: 'Groq API key', description: 'Save or remove the key used for Groq models', target: 'api-key-groq', fallbackTarget: 'custom-providers', keywords: ['whisper', 'qwen'] },
+  { id: 'keys-openai', section: 'keys', label: 'OpenAI API key', description: 'Save or remove the key used for OpenAI models', target: 'api-key-openai', fallbackTarget: 'custom-providers', keywords: ['gpt', 'whisper'] },
+  { id: 'keys-google', section: 'keys', label: 'Gemini API key', description: 'Save or remove the key used for Gemini models', target: 'api-key-google', fallbackTarget: 'custom-providers', keywords: ['google'] },
+  { id: 'keys-assemblyai', section: 'keys', label: 'AssemblyAI API key', description: 'Save or remove the key used for AssemblyAI models', target: 'api-key-assemblyai', fallbackTarget: 'custom-providers', keywords: ['universal'] },
+  { id: 'keys-openrouter', section: 'keys', label: 'OpenRouter API key', description: 'Save or remove the key used for OpenRouter models', target: 'api-key-openrouter', fallbackTarget: 'custom-providers', keywords: ['router', 'gateway'] },
+  { id: 'keys-xai', section: 'keys', label: 'xAI API key', description: 'Save or remove the key used for xAI Grok models', target: 'api-key-xai', fallbackTarget: 'custom-providers', keywords: ['grok'] },
 
   { id: 'models-presets', section: 'models', label: 'Model presets', description: 'Apply a recommended model configuration', target: 'model-presets', keywords: ['recommended', 'balanced', 'local', 'cloud'] },
   { id: 'models-advanced', section: 'models', label: 'Advanced models', description: 'Choose specific models, fallbacks, prompts, and downloads', target: 'advanced-models', keywords: ['custom', 'fallback', 'download'] },
