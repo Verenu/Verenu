@@ -40,16 +40,24 @@ test('an older agent cleanup refresh cannot undo a user toggle', async ({ page, 
   const held = new Promise(resolve => { release = resolve; });
   let received;
   const read = new Promise(resolve => { received = resolve; });
+  let captured = false;
+  let fulfilled;
+  const completed = new Promise(resolve => { fulfilled = resolve; });
   try {
     await session.invoke('save_setting', { key: 'cleanup_enabled', value: true });
     await page.reload();
+    const pendingSettings = () => page.evaluate(async () => (await import('/src/lib/diagnostics.ts')).frontendIpcActivity.snapshot().find(metric => metric.command === 'get_setting')?.currently_running ?? 0);
+    await expect.poll(pendingSettings).toBe(0);
     await page.route('**/__verenu_dev/invoke', async route => {
       const request = route.request().postDataJSON();
-      if (request.command !== 'get_setting' || request.args?.key !== 'cleanup_enabled') return route.continue();
+      if (request.command !== 'get_setting' || request.args?.key !== 'cleanup_enabled' || captured) return route.continue();
+      captured = true;
       const response = await route.fetch();
+      expect(await response.json()).toBe(true);
       received();
       await held;
       await route.fulfill({ response });
+      fulfilled();
     });
     await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['cleanup_enabled']));
     await read;
@@ -59,9 +67,9 @@ test('an older agent cleanup refresh cannot undo a user toggle', async ({ page, 
     await toggle.click();
     await page.getByRole('button', { name: 'Turn off' }).click();
     await expect.poll(() => session.invoke('get_setting', { key: 'cleanup_enabled' })).toBe(false);
-    const completed = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_setting' && response.request().postDataJSON()?.args?.key === 'cleanup_enabled');
     release();
     await completed;
+    await expect.poll(pendingSettings).toBe(0);
     await expect(toggle).toHaveAttribute('aria-checked', 'false');
   } finally {
     release();
