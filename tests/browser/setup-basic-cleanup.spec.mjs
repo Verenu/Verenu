@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures.mjs';
+import { test, expect, keyProviders } from './fixtures.mjs';
 import path from 'node:path';
 
 async function captureSetupState(page, name) {
@@ -187,6 +187,7 @@ test('Setup applies the selected speaker audio behavior', async ({ page, session
   let capture;
   const requestCaptured = new Promise(resolve => { capture = resolve; });
   try {
+    await keyProviders(page, session, ['groq']);
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 9, provider: 'local' } });
     await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
@@ -399,6 +400,7 @@ for (const provider of ['groq', 'openrouter']) {
 test('finishing setup refreshes the shared transcription model', async ({ page, session }) => {
   const previous = await snapshotSetup(session);
   try {
+    await keyProviders(page, session, ['groq']);
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 9, provider: 'local' } });
     await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
@@ -430,6 +432,7 @@ test('finishing setup does not restore an older appearance after an agent change
   const held = new Promise(resolve => { release = resolve; });
   const pending = new Promise(resolve => { captured = resolve; });
   try {
+    await keyProviders(page, session, ['groq']);
     await session.invoke('save_setting', { key: 'appearance_mode', value: 'light' });
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 9, provider: 'local' } });

@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures.mjs';
+import { test, expect, keyProviders } from './fixtures.mjs';
 
 test('a delayed language choice preserves an agent change', async ({ page, session }) => {
   const previous = await session.invoke('get_setting', { key: 'transcription_language' });
@@ -110,13 +110,14 @@ test('a late model save response cannot restore state after an agent change', as
   let committed;
   const saved = new Promise(resolve => { committed = resolve; });
   try {
+    await keyProviders(page, session, ['groq']);
     await session.invoke('save_setting', { key: 'transcription_default_model', value: 'groq/whisper-large-v3-turbo' });
     await session.invoke('save_setting', { key: 'transcription_language', value: 'en' });
     await page.reload();
     await page.locator('[data-debug-id="nav.settings"]').click();
     await page.locator('[data-debug-id="settings.models"]').click();
     await page.route('**/__verenu_dev/invoke', async route => {
-      if (route.request().postDataJSON().command !== 'save_model_settings_if_unchanged') return route.continue();
+      if (route.request().postDataJSON().command !== 'save_model_settings_if_unchanged') return route.fallback();
       const response = await route.fetch();
       committed();
       await held;
@@ -148,6 +149,7 @@ test('a late model save response cannot restore state after an agent change', as
 test('external model-related changes block preset writes until reload', async ({ page, session }) => {
   const original = await session.invoke('get_setting', { key: 'cleanup_enabled' });
   try {
+    await keyProviders(page, session, ['groq']);
     await page.locator('[data-debug-id="nav.settings"]').click();
     await page.locator('[data-debug-id="settings.models"]').click();
     await expect(page.getByRole('region', { name: 'Cloud models' })).toBeVisible();
@@ -199,6 +201,7 @@ test('agent model change updates language choices on the General screen', async 
 test('model settings warn and reload after an external change', async ({ page, session }) => {
   const previous = await session.invoke('get_setting', { key: 'transcription_default_model' });
   try {
+  await keyProviders(page, session, ['groq']);
   await page.locator('[data-debug-id="nav.settings"]').click();
   await page.locator('[data-debug-id="settings.models"]').click();
   await expect(page.getByRole('region', { name: 'Cloud models' })).toBeVisible();

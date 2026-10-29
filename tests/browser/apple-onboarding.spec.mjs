@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures.mjs';
+import { test, expect, keyProviders } from './fixtures.mjs';
 import path from 'node:path';
 
 test('Finish rechecks native Apple availability before saving setup choices', async ({ page, session }) => {
@@ -78,6 +78,7 @@ test('onboarding uses native eligibility for the cleanup-only Apple option', asy
   const supported = ['available', 'intelligence-disabled', 'model-not-ready'].includes(availability.state);
   const modelsStep = await page.evaluate(() => /Mac/i.test(navigator.userAgent) ? 5 : 4);
   try {
+    await keyProviders(page, session, ['groq']);
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: modelsStep, provider: 'local' } });
     await page.reload();
@@ -102,6 +103,7 @@ test('presentation fixture can clear a chosen cleanup after availability checkin
   const saved = await session.invoke('get_all_settings');
   const modelsStep = await page.evaluate(() => /Mac/i.test(navigator.userAgent) ? 5 : 4);
   try {
+    await keyProviders(page, session, ['groq']);
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: modelsStep, provider: 'local' } });
     await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'medium' });
@@ -140,6 +142,7 @@ test('presentation fixture keeps Apple cleanup inactive when onboarding cleanup 
   const saved = await session.invoke('get_all_settings');
   const modelsStep = await page.evaluate(() => /Mac/i.test(navigator.userAgent) ? 5 : 4);
   try {
+    await keyProviders(page, session, ['groq']);
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: modelsStep, provider: 'local' } });
     await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'none' });
