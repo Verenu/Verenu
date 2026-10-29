@@ -27,6 +27,7 @@ let pendingStrongMutations = 0;
 let latestStrongMutation = 0;
 let latestPull = 0;
 let pendingExclusions = 0;
+let exclusionEpoch = 0;
 let exclusionQueue: Promise<void> = Promise.resolve();
 const STRONG_MUTATIONS = new Set(['connect_t3', 'select_t3_catalog', 'disconnect_t3']);
 
@@ -47,6 +48,7 @@ export async function updateT3(command = 'get_t3_skills', args?: Record<string, 
     latestPull = request;
   }
   const epoch = mutationEpoch;
+  const exclusionEpochAtStart = exclusionEpoch;
   const strongEpoch = strongMutationEpoch;
   const pullStartedDuringStrongMutation = pull && pendingStrongMutations > 0;
   const readDuringMutation = !mutation && pendingMutations > 0;
@@ -64,7 +66,7 @@ export async function updateT3(command = 'get_t3_skills', args?: Record<string, 
   try {
     const result = await invoke<T3Status>(command, args);
     if (canApply()) {
-      const pendingSelection = pendingExclusions > 0 ? t3State.status?.connection?.excludedSkills : undefined;
+      const pendingSelection = pendingExclusions > 0 || exclusionEpoch !== exclusionEpochAtStart ? t3State.status?.connection?.excludedSkills : undefined;
       t3State.status = result;
       if (pendingSelection && result.connection) result.connection.excludedSkills = pendingSelection;
       appliedSequence = Math.max(appliedSequence, request);
@@ -115,6 +117,7 @@ export function setSkillsExcluded(names: readonly string[], excluded: boolean): 
   const kept = (connection.excludedSkills ?? []).filter((name) => !touched.has(name.toLowerCase()));
   connection.excludedSkills = excluded ? [...kept, ...names] : kept;
   pendingExclusions++;
+  exclusionEpoch++;
   exclusionQueue = exclusionQueue.then(async () => {
     try {
       await invoke<T3Status>('set_t3_excluded_skills', { names: [...(t3State.status?.connection?.excludedSkills ?? [])] });
