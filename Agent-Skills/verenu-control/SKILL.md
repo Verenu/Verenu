@@ -21,8 +21,10 @@ features, or recommendations for Context groups, also read
    file contents. Existing `VERENU_AGENT_TOKEN` and `VERENU_AGENT_PORT` grants
    remain supported for scripted launches. The
    native app remains responsible for SQLite and native credential storage.
-   The grant enables private reads and writes: do not enable it without the
-   user's agreement. A missing grant does not require permanent skill installation.
+   The approval dialog selects permissions for this agent, including separate
+   transcript reads, writes, destructive changes, credentials and integrations.
+   Explain the permissions the task needs. Do not approve for the user. A missing
+   grant does not require permanent skill installation.
 2. Read `get_all_settings`, `get_contexts`, `get_context_targets` and
    `get_context_websites` before proposing changes. For Context cleanup, also
    inspect `get_sub_apps` and each relevant group's `get_context_dictionary`
@@ -33,6 +35,12 @@ features, or recommendations for Context groups, also read
    are preserved and explicit null clears a nullable override. For whole-record
    replacement use `save_context_if_unchanged` with the original and updated
    Context records. A conflict requires a fresh read.
+   For library cleanup, `library.usage` reports local mechanical substitutions
+   and snippet expansions since its coverage start; inspect its limitations.
+   Missing matches and zero correction counts do not prove an item is unused.
+   `audit.page` lists recent agent write attempts without storing their contents.
+   A pending audit record has an uncertain outcome; read current state before
+   retrying it.
    For a request to recommend, clean up, optimize, or add Contexts, collect
    evidence before recommending specific changes as well as before editing.
    Do not guess plausible categories while approval is pending or unavailable:
@@ -61,6 +69,36 @@ features, or recommendations for Context groups, also read
    assignment operation is unavailable, report the gap instead of editing SQL.
    Avoid speculative groups, target moves, and instruction changes. If history
    cannot establish a useful addition, explain that rather than inventing one.
+   For vocabulary cleanup, inspect the entries, their Context assignments and
+   retained history coverage. Correction counts measure corrections, not term
+   usage; zero does not mean unused, and absence from retained history does not
+   prove an entry is unnecessary. When needed to assess usage, inspect retained
+   history text privately via paginated `history.page` with `include_text:true`
+   when the grant permits it;
+   report coverage gaps without exposing dictated text. Remove entries only when
+   the user's request and evidence support doing so, and explain uncertain
+   candidates rather than guessing. Never use direct database writes as a fallback.
+   `remove_dictionary_entry` with no `contextId` deletes the term and all its
+   corrections globally. With `contextId`, it removes that Context assignment
+   and its corrections. `edit_dictionary_entry` replaces that Context's
+   correction patterns and clears related learning evidence. Use
+   `rename_dictionary_entry_global` to deliberately rename a shared term in
+   every Context while preserving corrections; it clears related learning
+   evidence and requires destructive access. Snippet edits and deletes affect every Context using the
+   snippet. Pass `expected` with the original `trigger`, `expansion`, and
+   `instructions` when editing a snippet to reject a concurrent change. Direct
+   edit and removal commands have no built-in undo; inspect assignments first.
+   For global bulk deletion, use `library.items` to find UUIDs, then
+   `library.preview_delete` with `items` containing `{kind, uuid}` objects
+   (`kind` is `dictionary` or `snippet`). Review the returned entries,
+   corrections, Context assignments and Everywhere inheritance effects.
+   `library.apply_delete` takes the same `items`, the returned `basis`, and a
+   new UUID `request_id`. It rejects a stale preview and retries with the same
+   request ID are idempotent. `library.undo_delete` takes that `request_id`.
+   Undo is available for 30 days, fails atomically on conflicts, and does not
+   recover purged learning evidence. The local recovery record contains the
+   deleted library content and is pruned on a later bulk change or app start.
+   A preview is evidence for review, not proof that an item is unused.
 3. For a troubleshooting or error-analysis request, run `history.report` and `diagnostics.top` with
    `{"start":"2026-01-01","end":"2026-04-01"}` for January through March
    (UTC calendar dates, exclusive end; state the assumed year).

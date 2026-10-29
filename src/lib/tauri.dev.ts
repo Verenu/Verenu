@@ -811,8 +811,25 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       const rows = readDevContexts();
       const index = rows.findIndex((row) => row.id === id);
       if (index === -1) throw new Error(`Context ${id} was not found`);
+      const expected = args?.expected as Record<string, unknown> | null | undefined;
+      const actual = rows[index] as unknown as Record<string, unknown>;
+      if (expected && Object.keys(expected).some((key) => expected[key] !== actual[key])) {
+        throw new Error('Context changed since it was read; fetch it again before retrying');
+      }
+      if (args?.name !== undefined) {
+        if (!expected) throw new Error('Updating the name requires an expected Context');
+        const name = assertDevText(args.name, 'Context name').trim();
+        if (rows.some((row) => row.id !== id && row.name.toLowerCase() === name.toLowerCase())) {
+          throw new Error('UNIQUE constraint failed: contexts.name');
+        }
+        rows[index] = { ...rows[index], name };
+      }
+      const editorPatch = args?.editorPatch as { color?: string | null; t3_skill_mentions_disabled?: boolean } | undefined;
+      if (editorPatch && !expected) throw new Error('Updating editor settings requires an expected Context');
       rows[index] = {
         ...rows[index],
+        ...(editorPatch && 'color' in editorPatch ? { color: editorPatch.color ?? null } : {}),
+        ...(editorPatch && 't3_skill_mentions_disabled' in editorPatch ? { t3_skill_mentions_disabled: editorPatch.t3_skill_mentions_disabled } : {}),
         icon: (args?.icon as string | null | undefined) ?? null,
         tone: (args?.tone as string | null | undefined) ?? null,
         cleanup_intensity: (args?.cleanupIntensity ?? args?.cleanup_intensity) as string | null | undefined ?? null,
