@@ -7,5 +7,7 @@ pub mod digital_silence;
 pub mod hardware_mute;
 pub mod mic_mute_trigger;
 pub mod mute_gate;
+#[cfg(target_os = "linux")]
+mod pipewire_echo;
 pub mod sound;
 pub mod vad;
