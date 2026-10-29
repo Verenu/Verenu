@@ -121,6 +121,23 @@ export function pageSwap(node: HTMLElement, params: MotionTransitionParams = {},
   };
 }
 
+/** Scale and fade a popover from its top-right corner, like it grows out of its trigger. */
+export function popoverPop(_node: Element, params: MotionTransitionParams & { origin?: string } = {}) {
+  const duration = motionMs(params.duration ?? MOTION_MS.fast);
+  const distance = params.distance ?? motionPx(MOTION_PX.nudge) * 0.6;
+  const scaleFrom = params.scaleFrom ?? 0.94;
+  const origin = params.origin ?? 'top right';
+  return {
+    duration,
+    easing: cubicOut,
+    css: (t: number) => {
+      const u = 1 - t;
+      const scale = scaleFrom + (1 - scaleFrom) * t;
+      return `opacity:${t}; transform-origin:${origin}; transform: translate3d(0, ${-u * distance}px, 0) scale(${scale});`;
+    },
+  };
+}
+
 export function listItemCollapse(node: HTMLElement, params: MotionTransitionParams = {}) {
   const duration = motionMs(params.duration ?? 200);
   const style = getComputedStyle(node);
