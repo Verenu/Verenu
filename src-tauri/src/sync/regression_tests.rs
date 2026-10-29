@@ -59,6 +59,7 @@ async fn session_rejects_a_different_peer_uuid() {
                     protocol: super::super::protocol::PROTOCOL_VERSION,
                     app_version: "test".into(),
                     activity_receipts: false,
+                    cleanup_cache: false,
                 }),
             )
             .await
@@ -90,6 +91,7 @@ async fn session_rejects_completion_before_final_batch() {
                     protocol: super::super::protocol::PROTOCOL_VERSION,
                     app_version: "test".into(),
                     activity_receipts: false,
+                    cleanup_cache: false,
                 }),
             )
             .await

@@ -1,6 +1,7 @@
 use anyhow::Result;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::*;
 
@@ -8,6 +9,41 @@ pub const CLEANUP_CACHE_MAX_ROWS: i64 = 2_000;
 pub const CLEANUP_CACHE_MAX_BYTES: i64 = 16 * 1024 * 1024;
 pub const CLEANUP_CACHE_IDLE_DAYS: i64 = 2;
 pub const CLEANUP_CACHE_MAX_AGE_DAYS: i64 = 7;
+
+pub(crate) fn shareable_cache_key(key: &str) -> bool {
+    key.strip_prefix("cleanup-v3:")
+        .is_some_and(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+}
+
+pub fn cleanup_cache_result_hash(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+pub(crate) fn cleanup_cache_rejection_id(key: &str, hash: &str) -> Option<String> {
+    if shareable_cache_key(key) && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        Some(format!("{key}:{hash}"))
+    } else {
+        None
+    }
+}
+
+pub(crate) fn cleanup_cache_enabled_conn(conn: &rusqlite::Connection) -> Result<bool> {
+    Ok(conn.query_row("SELECT enabled FROM cleanup_cache_gate WHERE id=1", [], |r| r.get(0))?)
+}
+
+pub fn cleanup_cache_set_enabled(db: &Db, enabled: bool) -> Result<()> {
+    let conn = lock_conn(db)?;
+    let tx = conn.unchecked_transaction()?;
+    let was_enabled = cleanup_cache_enabled_conn(&tx)?;
+    tx.execute("UPDATE cleanup_cache_gate SET enabled=?1 WHERE id=1", [enabled])?;
+    if !enabled {
+        tx.execute("DELETE FROM cleanup_cache", [])?;
+    } else if !was_enabled {
+        tx.execute("UPDATE sync_peers SET needs_snapshot=1, recv_cursor=0", [])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CleanupCacheEntry {
@@ -20,8 +56,19 @@ pub struct CleanupCacheEntry {
     pub is_snippet: bool,
 }
 
+pub fn cleanup_cache_context_identity(db: &Db, context_id: i64) -> Result<Option<String>> {
+    let conn = lock_conn(db)?;
+    conn.query_row(
+        "SELECT CASE WHEN is_everywhere = 1 THEN 'everywhere' ELSE uuid END FROM contexts WHERE id = ?1",
+        [context_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|identity| identity.flatten())
+    .map_err(Into::into)
+}
+
 pub fn cleanup_cache_get_active(db: &Db, key: &str) -> Result<Option<CleanupCacheEntry>> {
-    use rusqlite::OptionalExtension;
     let conn = lock_conn(db)?;
     conn.query_row(
         "SELECT key, clean_text, hit_count,
@@ -77,10 +124,15 @@ pub fn cleanup_cache_insert_if(
     enabled: impl FnOnce() -> bool,
 ) -> Result<()> {
     let conn = lock_conn(db)?;
-    if !enabled() {
+    if !enabled() || !cleanup_cache_enabled_conn(&conn)? {
         return Ok(());
     }
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    if let Some(id) = cleanup_cache_rejection_id(key, &cleanup_cache_result_hash(clean_text)) {
+        let rejected: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_log WHERE table_name='cleanup_cache_rejection' AND row_uuid=?1)", [id], |r| r.get(0))?;
+        if rejected { return Ok(()); }
+    }
+    tx.execute(
         "INSERT OR REPLACE INTO cleanup_cache
          (key, clean_text, hit_count, created_at, last_hit_at, expires_at,
           created_at_epoch, last_hit_at_epoch, expires_at_epoch, is_snippet)
@@ -91,7 +143,11 @@ pub fn cleanup_cache_insert_if(
                  ?4)",
         params![key, clean_text, expires_at, is_snippet as i64],
     )?;
-    cleanup_cache_enforce_budget_conn(&conn)?;
+    cleanup_cache_enforce_budget_conn(&tx)?;
+    if shareable_cache_key(key) && tx.query_row("SELECT EXISTS(SELECT 1 FROM cleanup_cache WHERE key=?1)", [key], |r| r.get::<_, bool>(0))? {
+        crate::sync::engine::append_self_log(&tx, "cleanup_cache", key, "upsert")?;
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -153,10 +209,14 @@ pub fn cleanup_cache_prune_expired(db: &Db) -> Result<usize> {
                 AND last_hit_at <= datetime('now', ?1))",
         params![format!("-{CLEANUP_CACHE_IDLE_DAYS} days")],
     )?;
+    conn.execute("DELETE FROM sync_log WHERE table_name='cleanup_cache' AND seq NOT IN (SELECT MAX(seq) FROM sync_log WHERE table_name='cleanup_cache' GROUP BY row_uuid)", [])?;
+    conn.execute("DELETE FROM sync_log WHERE table_name='cleanup_cache_rejection' AND seq NOT IN (SELECT MAX(seq) FROM sync_log WHERE table_name='cleanup_cache_rejection' GROUP BY row_uuid)", [])?;
+    conn.execute("DELETE FROM sync_log WHERE table_name='cleanup_cache' AND ts_ms < (CAST(strftime('%s','now','-8 days') AS INTEGER) * 1000) AND NOT EXISTS (SELECT 1 FROM cleanup_cache WHERE key=sync_log.row_uuid)", [])?;
+    conn.execute("DELETE FROM sync_log WHERE table_name='cleanup_cache_rejection' AND ts_ms < (CAST(strftime('%s','now','-8 days') AS INTEGER) * 1000)", [])?;
     Ok(changed_epoch + changed_fallback + cleanup_cache_enforce_budget_conn(&conn)?)
 }
 
-fn cleanup_cache_enforce_budget_conn(conn: &rusqlite::Connection) -> Result<usize> {
+pub(crate) fn cleanup_cache_enforce_budget_conn(conn: &rusqlite::Connection) -> Result<usize> {
     let (count, bytes): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(length(CAST(key AS BLOB)) +
                                   length(CAST(clean_text AS BLOB))), 0)
@@ -221,7 +281,25 @@ pub fn cleanup_cache_payload_bytes(db: &Db) -> Result<i64> {
 }
 
 pub fn cleanup_cache_delete_by_key(db: &Db, key: &str) -> Result<()> {
+    let entry = cleanup_cache_get_active(db, key)?;
+    if let Some(entry) = entry {
+        return cleanup_cache_reject(db, key, &cleanup_cache_result_hash(&entry.clean_text));
+    }
     let conn = lock_conn(db)?;
     conn.execute("DELETE FROM cleanup_cache WHERE key = ?1", params![key])?;
+    Ok(())
+}
+
+pub fn cleanup_cache_reject(db: &Db, key: &str, result_hash: &str) -> Result<()> {
+    let conn = lock_conn(db)?;
+    let tx = conn.unchecked_transaction()?;
+    if let Some(id) = cleanup_cache_rejection_id(key, result_hash) {
+        crate::sync::engine::append_self_log(&tx, "cleanup_cache_rejection", &id, "delete")?;
+    }
+    let current: Option<String> = tx.query_row("SELECT clean_text FROM cleanup_cache WHERE key=?1", [key], |r| r.get(0)).optional()?;
+    if current.as_deref().is_some_and(|text| cleanup_cache_result_hash(text) == result_hash) {
+        tx.execute("DELETE FROM cleanup_cache WHERE key=?1", [key])?;
+    }
+    tx.commit()?;
     Ok(())
 }
