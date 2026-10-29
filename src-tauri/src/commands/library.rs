@@ -210,10 +210,10 @@ pub async fn edit_dictionary_entry(
 }
 
 #[tauri::command]
-pub async fn rename_dictionary_entry_global(app: AppHandle, id: i64, term: String) -> Result<(), String> {
+pub async fn rename_dictionary_entry_global(app: AppHandle, id: i64, term: String, expected_term: String) -> Result<(), String> {
     let event_app = app.clone();
     run_db(&app, "rename_dictionary_entry_global", move |db| {
-        let result = db::rename_dictionary_entry_global(db, id, &term);
+        let result = db::rename_dictionary_entry_global(db, id, &term, &expected_term);
         if result.is_ok() { emit_dictionary_updated(&event_app, None, id); }
         result
     }).await

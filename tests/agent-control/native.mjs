@@ -1,6 +1,7 @@
 // Run only against a disposable native app: VERENU_AGENT_TEST_SYNTHETIC=1 node ...
 // The grant is inherited, never printed. No installed data or provider calls.
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { invoke } from '../../Agent-Skills/verenu-control/scripts/verenu-agent.mjs';
 
 assert.equal(process.env.VERENU_AGENT_TEST_SYNTHETIC, '1', 'Use a disposable synthetic native app, never installed user data');
@@ -105,23 +106,25 @@ try {
   await invoke('context.set_pinned', { contextId: created.id, pinned: true, expected: currentContext });
   await assert.rejects(invoke('context.set_pinned', { contextId: created.id, pinned: false, expected: currentContext }), /changed while you were editing/);
   const term = await invoke('create_dictionary_entry', { term: 'SyntheticVocabularyTerm', mistake: 'SyntheticMistake', contextId: created.id });
-  assert.ok((await invoke('get_dictionary')).some((entry) => entry.id === term.id));
-  await invoke('rename_dictionary_entry_global', { id: term.id, term: 'SyntheticRenamedTerm' });
+  const originalTerm = (await invoke('get_dictionary')).find((entry) => entry.id === term.id).term;
+  await assert.rejects(invoke('rename_dictionary_entry_global', { id: term.id, term: 'SyntheticRenamedTerm', expectedTerm: 'stale' }));
+  assert.equal((await invoke('get_dictionary')).find((entry) => entry.id === term.id).term, originalTerm);
+  await invoke('rename_dictionary_entry_global', { id: term.id, term: 'SyntheticRenamedTerm', expectedTerm: originalTerm });
   assert.ok((await invoke('get_dictionary')).some((entry) => entry.id === term.id && entry.term === 'SyntheticRenamedTerm'));
   await assert.rejects(invoke('remove_dictionary_entry', { id: term.id, correctionId: 1 }));
   assert.ok((await invoke('get_dictionary')).some((entry) => entry.id === term.id));
   await invoke('remove_dictionary_entry', { id: term.id });
   assert.ok(!(await invoke('get_dictionary')).some((entry) => entry.id === term.id));
-  const snippet = await invoke('create_snippet', { trigger: 'synthetic trigger', expansion: 'synthetic expansion', instructions: '', contextId: created.id });
-  await invoke('edit_snippet', { id: snippet.id, trigger: 'synthetic trigger', expansion: 'edited expansion', instructions: '', expected: { trigger: 'synthetic trigger', expansion: 'synthetic expansion', instructions: '' } });
-  await assert.rejects(invoke('edit_snippet', { id: snippet.id, trigger: 'synthetic trigger', expansion: 'stale edit', instructions: '', expected: { trigger: 'synthetic trigger', expansion: 'synthetic expansion', instructions: '' } }));
-  assert.ok((await invoke('get_snippets')).some((entry) => entry.id === snippet.id && entry.expansion === 'edited expansion'));
-  const item = (await invoke('library.items')).items.find((entry) => entry.kind === 'snippet' && entry.id === snippet.id);
+  const bulkSnippet = await invoke('create_snippet', { trigger: 'synthetic trigger', expansion: 'synthetic expansion', instructions: '', contextId: created.id });
+  await invoke('edit_snippet', { id: bulkSnippet.id, trigger: 'synthetic trigger', expansion: 'edited expansion', instructions: '', expected: { trigger: 'synthetic trigger', expansion: 'synthetic expansion', instructions: '' } });
+  await assert.rejects(invoke('edit_snippet', { id: bulkSnippet.id, trigger: 'synthetic trigger', expansion: 'stale edit', instructions: '', expected: { trigger: 'synthetic trigger', expansion: 'synthetic expansion', instructions: '' } }));
+  assert.ok((await invoke('get_snippets')).some((entry) => entry.id === bulkSnippet.id && entry.expansion === 'edited expansion'));
+  const item = (await invoke('library.items')).items.find((entry) => entry.kind === 'snippet' && entry.id === bulkSnippet.id);
   const items = [{ kind: item.kind, uuid: item.uuid }];
   const preview = await invoke('library.preview_delete', { items });
-  const request_id = '11111111-1111-4111-8111-111111111111';
+  const request_id = randomUUID();
   await invoke('library.apply_delete', { items, basis: preview.basis, request_id });
-  assert.ok(!(await invoke('get_snippets')).some((entry) => entry.id === snippet.id));
+  assert.ok(!(await invoke('get_snippets')).some((entry) => entry.id === bulkSnippet.id));
   assert.equal((await invoke('library.apply_delete', { items, basis: preview.basis, request_id })).replayed, true);
   await invoke('library.undo_delete', { request_id });
   const restored = (await invoke('get_snippets')).find((entry) => entry.trigger === 'synthetic trigger');
@@ -202,7 +205,8 @@ assert.ok(Number.isInteger(logs.evicted_since_reset));
 assert.ok(Number.isInteger(logs.file_records_dropped_this_process));
 await assert.rejects(invoke('diagnostics.logs', { limit: 0 }));
 const url = `http://127.0.0.1:${process.env.VERENU_AGENT_PORT}/v1/invoke`;
-for (const headers of [{}, { authorization: `Bearer ${'a'.repeat(64)}` }, { authorization: `Bearer ${process.env.VERENU_AGENT_TOKEN}`, origin: 'http://localhost' }, { authorization: `Bearer ${process.env.VERENU_AGENT_TOKEN}`, 'sec-fetch-site': 'same-origin' }]) {
+const invalidToken = process.env.VERENU_AGENT_TOKEN === 'a'.repeat(64) ? 'b'.repeat(64) : 'a'.repeat(64);
+for (const headers of [{}, { authorization: `Bearer ${invalidToken}` }, { authorization: `Bearer ${process.env.VERENU_AGENT_TOKEN}`, origin: 'http://localhost' }, { authorization: `Bearer ${process.env.VERENU_AGENT_TOKEN}`, 'sec-fetch-site': 'same-origin' }]) {
   const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ command: 'save_setting', args: { key: 'mute_audio', value: original } }) });
   assert.equal(response.status, 401);
   assert.equal(await invoke('get_setting', { key: 'mute_audio' }), !original);

@@ -364,7 +364,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // keys, so enable enforcement before schema work or application queries.
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    anyhow::ensure!(user_version <= 37, "This database was created by a newer version of Verenu");
+    anyhow::ensure!(user_version <= 38, "This database was created by a newer version of Verenu");
     if user_version < 2 && db_existed_before_open {
         let _ = std::fs::copy(db_path, db_path.with_extension("db.bak"));
     }
@@ -1072,7 +1072,14 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
-    if user_version <= 37 {
+    if user_version < 38 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "agent_change_audit", "actor_id", "ALTER TABLE agent_change_audit ADD COLUMN actor_id TEXT;")?;
+            conn.execute_batch("PRAGMA user_version = 38;")?;
+            Ok(())
+        })?;
+    }
+    if user_version <= 38 {
         conn.execute("DELETE FROM agent_library_changes WHERE created_at < datetime('now','-30 days')", [])?;
     }
     conn.execute("INSERT OR IGNORE INTO library_usage_coverage VALUES (1, datetime('now'))", [])?;
