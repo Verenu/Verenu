@@ -36,6 +36,21 @@ test('changing dictation volume replaces legacy mute and persists the new choice
 
     await invoke('save_setting', { key: 'duck_target', value: 100 });
     assert.equal((await invoke('get_all_settings')).duck_target, 100);
+
+    const expected = { duck_target: 100, duck_audio: true, mute_audio: false };
+    await invoke('save_setting_if_unchanged', { key: 'duck_target', value: 45, expected });
+    saved = await invoke('get_all_settings');
+    assert.equal(saved.duck_target, 45);
+    assert.equal(saved.duck_audio, true);
+    assert.equal(saved.mute_audio, false);
+    const stale = await fetch(`${base}/__verenu_dev/invoke`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${access.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'save_setting_if_unchanged', args: { key: 'duck_target', value: 20, expected } }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    assert.notEqual(stale.status, 200);
+    assert.equal((await invoke('get_all_settings')).duck_target, 45);
   } finally {
     await invoke('save_setting', { key: 'duck_target', value: original.duck_target ?? 25 });
     await invoke('save_setting', { key: 'duck_audio', value: original.duck_audio ?? false });

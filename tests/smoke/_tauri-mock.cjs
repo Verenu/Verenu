@@ -138,6 +138,45 @@ function tauriMock({ appVersion } = {}) {
     switch (cmd) {
       case 'get_setting':        return mem[args?.key] ?? null;
       case 'save_setting':       mem[args?.key] = args?.value; persistMem(); return null;
+      case 'save_setting_if_unchanged': {
+        const { key, value, expected } = args ?? {};
+        const affected = key === 'contextual_formatting_enabled'
+          ? ['contextual_formatting_enabled', 'contextual_caps_enabled', 'auto_spacing_enabled'] : [key];
+        if (!expected || Object.keys(expected).length !== affected.length || affected.some(name => !(name in expected))) {
+          throw new Error('Expected values must include every affected setting');
+        }
+        if (affected.some(name => JSON.stringify(mem[name] ?? null) !== JSON.stringify(expected[name]))) {
+          throw new Error('Settings changed while you were editing. Reload them before saving.');
+        }
+        for (const name of affected) mem[name] = value;
+        persistMem();
+        return null;
+      }
+      case 'save_hotkey_if_unchanged':
+      case 'set_autostart_if_unchanged': {
+        const key = cmd === 'save_hotkey_if_unchanged' ? 'hotkey' : 'autostart_enabled';
+        if (!args || !Object.prototype.hasOwnProperty.call(args, 'expected') ||
+            JSON.stringify(mem[key] ?? null) !== JSON.stringify(args.expected)) {
+          throw new Error('Settings changed while you were editing. Reload them before saving.');
+        }
+        mem[key] = cmd === 'save_hotkey_if_unchanged' ? args.keys : args.enabled;
+        persistMem();
+        return null;
+      }
+      case 'save_model_settings_if_unchanged': {
+        const { expected, values } = args ?? {};
+        if (!expected || !values || Object.keys(expected).length !== Object.keys(values).length ||
+            Object.keys(values).some(key => !(key in expected))) throw new Error('Invalid model settings snapshot');
+        const canonical = value => JSON.stringify(value, (key, item) =>
+          item && typeof item === 'object' && !Array.isArray(item)
+            ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+        if (Object.entries(expected).some(([key, value]) => canonical(mem[key] ?? null) !== canonical(value))) {
+          throw new Error('Model settings changed while you were editing. Reload them before saving.');
+        }
+        Object.assign(mem, values);
+        persistMem();
+        return null;
+      }
       case 'get_all_settings':   return {
         transcription_provider:        mem.transcription_provider ?? null,
         cleanup_provider:              mem.cleanup_provider ?? null,
@@ -149,6 +188,8 @@ function tauriMock({ appVersion } = {}) {
         cleanup_models_by_provider:    mem.cleanup_models_by_provider ?? null,
         transcription_fallback_models: mem.transcription_fallback_models ?? null,
         cleanup_fallback_models:       mem.cleanup_fallback_models ?? null,
+        dual_transcription_enabled:    mem.dual_transcription_enabled ?? null,
+        model_selection_mode:          mem.model_selection_mode ?? null,
         transcription_language:        mem.transcription_language ?? null,
         cleanup_enabled:               mem.cleanup_enabled ?? null,
         noise_reduction:               mem.noise_reduction ?? null,
@@ -158,6 +199,15 @@ function tauriMock({ appVersion } = {}) {
         auto_learn_enabled:            mem.auto_learn_enabled ?? null,
         contextual_caps_enabled:       mem.contextual_caps_enabled ?? null,
         auto_spacing_enabled:          mem.auto_spacing_enabled ?? null,
+        contextual_formatting_enabled: mem.contextual_formatting_enabled ?? null,
+        caps_lock_uppercase_enabled:   mem.caps_lock_uppercase_enabled ?? null,
+        voice_commands_enabled:        mem.voice_commands_enabled ?? null,
+        linux_cancel_key:              mem.linux_cancel_key ?? null,
+        linux_handsfree_key:           mem.linux_handsfree_key ?? null,
+        android_pill_position:         mem.android_pill_position ?? null,
+        android_pill_dock_position:    mem.android_pill_dock_position ?? null,
+        android_pill_hide_offline:     mem.android_pill_hide_offline ?? null,
+        android_pill_cover_keyboard_mic: mem.android_pill_cover_keyboard_mic ?? null,
         history_retention:             mem.history_retention ?? null,
         mic_gain:                      mem.mic_gain ?? null,
         microphone_device:             mem.microphone_device ?? null,
