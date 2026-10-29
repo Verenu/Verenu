@@ -916,7 +916,7 @@
 {/if}
 <h3 class="settings-subhead">Text processing</h3>
 <div class="setting-row" data-setting-target="general-cleanup">
-  <div><div class="label">Cleanup</div><div class="desc">Cleans up dictation after transcription. Basic works on-device with English rules; other levels use an AI model for tone and formatting. Choose the level in Style.</div></div>
+  <div><div class="label">Cleanup</div><div class="desc">Cleans up dictation after transcription. Choose the level in Style and a cleanup model in Models.</div></div>
   <Toggle checked={appStore.cleanupEnabled} onchange={handleCleanup} label="Cleanup" bind:error={cleanupError} />
 </div>
 <div class="setting-row" data-setting-target="general-spacing">
