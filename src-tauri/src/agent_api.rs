@@ -99,6 +99,7 @@ struct Approvals {
 struct Grant {
     expires: Instant,
     scopes: Vec<String>,
+    actor_id: String,
 }
 
 struct Pending {
@@ -160,7 +161,7 @@ pub fn agent_respond(app: AppHandle, id: String, approve: bool, scopes: Option<V
     if approve {
         approvals
             .grants
-            .insert(pending.digest, Grant { expires: Instant::now() + Duration::from_secs(3600), scopes });
+            .insert(pending.digest, Grant { expires: Instant::now() + Duration::from_secs(3600), scopes, actor_id: uuid::Uuid::new_v4().to_string() });
     }
     Ok(())
 }
@@ -219,7 +220,7 @@ fn required_scopes(request: &Request) -> Vec<&'static str> {
     if matches!(request.command.as_str(), "delete_context" | "remove_dictionary_entry" | "remove_snippet" | "edit_dictionary_entry" | "rename_dictionary_entry_global" | "edit_snippet" | "library.apply_delete" | "library.undo_delete" | "update_context_settings" | "save_context_if_unchanged" | "move_dictionary_entry_to_context" | "move_dictionary_entry_by_term_to_context" | "move_snippet_entry_to_context" | "credentials.save" | "assign_context_target" | "remove_context_target" | "assign_context_website" | "remove_context_website")
         || (request.command == "save_setting" && request.args.get("key").and_then(Value::as_str) == Some(store::HISTORY_RETENTION))
         || (request.command == "context.patch_settings" && request.args.get("settings").and_then(Value::as_object).is_some_and(|patch| patch.values().any(|value| value.is_null() || value.as_str().is_some_and(|s| s.trim().is_empty()))))
-        || matches!(request.command.as_str(), "credentials.delete" | "delete_custom_provider" | "delete_sub_app" | "sync_remove_device" | "disconnect_t3")
+        || matches!(request.command.as_str(), "credentials.delete" | "delete_custom_provider" | "assign_sub_app" | "delete_sub_app" | "sync_remove_device" | "disconnect_t3")
         || (request.command == "update_context_color" && request.args.get("color").is_none_or(|value| value.is_null() || value.as_str().is_some_and(|s| s.trim().is_empty())))
         || (matches!(request.command.as_str(), "set_dictionary_context_assignment" | "set_snippet_context_assignment")
             && request.args.get("assigned") == Some(&Value::Bool(false)))
@@ -453,22 +454,22 @@ async fn invoke(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<Value>) {
-    let scopes = (!is_browser(&headers)).then(|| agent.approvals.lock().ok()).flatten().and_then(|mut approvals| {
+    let grant = (!is_browser(&headers)).then(|| agent.approvals.lock().ok()).flatten().and_then(|mut approvals| {
             approvals
                 .grants
                 .retain(|_, grant| grant.expires > Instant::now());
             if approvals.legacy_token.as_ref().is_some_and(|token| authenticated(&headers, token)) {
-                Some(AGENT_SCOPES.iter().map(|scope| (*scope).to_string()).collect::<Vec<_>>())
+                Some((AGENT_SCOPES.iter().map(|scope| (*scope).to_string()).collect::<Vec<_>>(), "environment-grant".to_string()))
             } else {
                 headers
                     .get("authorization")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.strip_prefix("Bearer "))
                     .filter(|v| valid_token(v))
-                    .and_then(|token| approvals.grants.get(&digest(token)).map(|grant| grant.scopes.clone()))
+                    .and_then(|token| approvals.grants.get(&digest(token)).map(|grant| (grant.scopes.clone(), grant.actor_id.clone())))
             }
         });
-    let Some(scopes) = scopes else {
+    let Some((scopes, actor_id)) = grant else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Unauthorized"})),
@@ -507,7 +508,7 @@ async fn invoke(
         let db = app.state::<crate::DbHandle>().inner().clone();
         let db_for_start = db.clone();
         let command = request.command.clone();
-        let audit_id = tokio::task::spawn_blocking(move || db::begin_agent_change(&db_for_start, &command, target))
+        let audit_id = tokio::task::spawn_blocking(move || db::begin_agent_change(&db_for_start, &command, target, &actor_id))
             .await.map_err(|_| "Audit worker unavailable".to_string())?
             .map_err(|_| "Could not start the agent change audit".to_string())?;
         let result = dispatch(&app, request).await;
@@ -640,6 +641,10 @@ fn argument_schema(ty: &str) -> Value {
         let schema = json!({"type":"object", "properties": {"trigger":{"type":"string"}, "expansion":{"type":"string"}, "instructions":{"type":"string"}}, "required":["trigger","expansion","instructions"], "additionalProperties":false});
         return if optional { json!({"anyOf":[schema,{"type":"null"}]}) } else { schema };
     }
+    if inner == "db::ExpectedDictionaryEntry" {
+        let schema = json!({"type":"object", "properties":{"term":{"type":"string"},"mistake":{"type":["string","null"]}},"required":["term"],"additionalProperties":false});
+        return if optional { json!({"anyOf":[schema,{"type":"null"}]}) } else { schema };
+    }
     let kind = match inner {
         "String" => "string",
         "bool" => "boolean",
@@ -700,7 +705,7 @@ macro_rules! registry {
             remove_context_target { context_id: i64, executable: String },
             get_context_websites { context_id: Option<i64> },
             assign_context_website { context_id: i64, domain: String }, remove_context_website { context_id: i64, domain: String },
-            rename_dictionary_entry_global { id: i64, term: String },
+            rename_dictionary_entry_global { id: i64, term: String, expected_term: String },
             get_context_dictionary { context_id: i64 }, get_context_snippets { context_id: i64 },
             get_dictionary {},
             create_dictionary_entry { term: String, mistake: Option<String>, context_id: Option<i64> },
@@ -753,6 +758,10 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
         for entry in &mut native {
             if matches!(entry["command"].as_str(), Some("edit_dictionary_entry" | "edit_snippet")) {
                 entry["arguments"]["expected"] = json!("required original editable fields");
+                let schema = &mut entry["argument_schema"];
+                schema["required"].as_array_mut().unwrap().push(json!("expected"));
+                let expected = &mut schema["properties"]["expected"];
+                *expected = expected["anyOf"][0].clone();
             }
         }
         return Ok(
@@ -1084,6 +1093,10 @@ mod tests {
         assert_eq!(required_scopes(&request), vec!["metadata", "history_text"]);
         let request = Request { command: "remove_dictionary_entry".into(), args: json!({"id": 1}) };
         assert_eq!(required_scopes(&request), vec!["library_write", "destructive"]);
+        for context_id in [json!(null), json!(42)] {
+            let request = Request { command: "assign_sub_app".into(), args: json!({"id": 1, "contextId": context_id}) };
+            assert_eq!(required_scopes(&request), vec!["context_write", "destructive"]);
+        }
         for value in [json!(null), json!(""), json!("  ")] {
             let request = Request { command: "context.patch_settings".into(), args: json!({"settings": {"customInstructions": value}}) };
             assert_eq!(required_scopes(&request), vec!["context_write", "destructive"]);

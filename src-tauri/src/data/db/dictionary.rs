@@ -1756,12 +1756,13 @@ pub(crate) fn update_dictionary_entry_for_context_conn(
 }
 
 /// Rename the canonical term in every Context without changing its corrections.
-pub fn rename_dictionary_entry_global(db: &Db, id: i64, term: &str) -> Result<()> {
+pub fn rename_dictionary_entry_global(db: &Db, id: i64, term: &str, expected_term: &str) -> Result<()> {
     let term = require_nonempty_trimmed("Term", term)?;
     validate_char_limit("Term", &term, DICTIONARY_ENTRY_CHAR_LIMIT)?;
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
     let old_term: String = tx.query_row("SELECT term FROM dictionary WHERE id = ?1", [id], |row| row.get(0))?;
+    anyhow::ensure!(old_term == expected_term, "This vocabulary entry changed while you were editing. Read it again before renaming.");
     let context_ids: Vec<i64> = tx.prepare("SELECT context_id FROM dictionary_contexts WHERE dictionary_id = ?1")?
         .query_map([id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
     for context_id in context_ids {
