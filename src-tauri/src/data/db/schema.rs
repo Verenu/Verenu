@@ -364,7 +364,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // keys, so enable enforcement before schema work or application queries.
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    anyhow::ensure!(user_version <= 35, "This database was created by a newer version of Verenu");
+    anyhow::ensure!(user_version <= 36, "This database was created by a newer version of Verenu");
     if user_version < 2 && db_existed_before_open {
         let _ = std::fs::copy(db_path, db_path.with_extension("db.bak"));
     }
@@ -1036,6 +1036,14 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
+    if user_version < 36 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "transcriptions", "vocabulary_replacements", "ALTER TABLE transcriptions ADD COLUMN vocabulary_replacements INTEGER;")?;
+            ensure_table_column(conn, "transcriptions", "snippet_expansions", "ALTER TABLE transcriptions ADD COLUMN snippet_expansions INTEGER;")?;
+            conn.execute_batch("PRAGMA user_version = 36;")?;
+            Ok(())
+        })?;
+    }
     conn.execute_batch(
         "CREATE VIEW IF NOT EXISTS combined_device_counters AS
            SELECT device_id, MAX(total_words) AS total_words, MAX(dictionary_fixes) AS dictionary_fixes
@@ -1044,6 +1052,8 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             GROUP BY device_id;
          CREATE INDEX IF NOT EXISTS idx_transcriptions_context_created_at
            ON transcriptions(context_id, created_at);
+         CREATE INDEX IF NOT EXISTS idx_transcriptions_activity_day
+           ON transcriptions(activity_day);
          CREATE INDEX IF NOT EXISTS idx_transcription_context_daily_stats_context_day
            ON transcription_context_daily_stats(context_uuid, day);
          CREATE INDEX IF NOT EXISTS idx_transcription_receipts_day_hour
