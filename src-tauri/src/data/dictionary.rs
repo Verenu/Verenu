@@ -322,7 +322,13 @@ fn format_dictionary_entry(
     )
 }
 
+#[cfg(test)]
 pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> (String, Vec<i64>) {
+    let (text, ids, _) = apply_substitutions_counted(text, entries);
+    (text, ids)
+}
+
+pub fn apply_substitutions_counted(text: &str, entries: &[db::DictionaryEntry]) -> (String, Vec<i64>, i64) {
     let mut replaceable: Vec<(i64, &str, &str)> = entries
         .iter()
         .flat_map(|entry| {
@@ -339,7 +345,7 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
     replaceable.sort_by_key(|(_, mistake, _)| std::cmp::Reverse(mistake.len()));
 
     if replaceable.is_empty() {
-        return (text.to_string(), Vec::new());
+        return (text.to_string(), Vec::new(), 0);
     }
 
     fn is_word_char(ch: char) -> bool {
@@ -360,6 +366,7 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
 
     let mut result = text.to_string();
     let mut applied_ids: Vec<i64> = Vec::new();
+    let mut replacements = 0;
     for (id, mistake, term) in &replaceable {
         if mistake.is_empty() {
             continue;
@@ -399,11 +406,12 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
         if !applied_ids.contains(id) {
             applied_ids.push(*id);
         }
+        replacements += positions.len() as i64;
         for pos in positions.into_iter().rev() {
             result.replace_range(pos..pos + mistake.len(), term);
         }
     }
-    (result, applied_ids)
+    (result, applied_ids, replacements)
 }
 
 fn joined_spelling(value: &str) -> String {
@@ -417,7 +425,7 @@ fn joined_spelling(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_substitutions_from, build_dictionary_prompt_limited,
+        apply_substitutions_counted, apply_substitutions_from, build_dictionary_prompt_limited,
         build_relevant_dictionary_prompt_from, build_relevant_dictionary_prompt_from_sources,
     };
     use crate::data::db::{DictionaryCorrection, DictionaryEntry};
@@ -529,6 +537,15 @@ mod tests {
         let (out, applied) = apply_substitutions_from("kubernetez Kubernetes", &entries);
         assert_eq!(out, "Kubernetes Kubernetes");
         assert_eq!(applied, vec![1]);
+    }
+
+    #[test]
+    fn counted_substitutions_include_repeated_matches() {
+        let entries = vec![entry(1, "Kubernetes", Some("kubernetez"))];
+        let (out, ids, count) = apply_substitutions_counted("kubernetez and kubernetez", &entries);
+        assert_eq!(out, "Kubernetes and Kubernetes");
+        assert_eq!(ids, vec![1]);
+        assert_eq!(count, 2);
     }
 
     #[test]

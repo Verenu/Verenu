@@ -24,6 +24,10 @@ pub(super) struct Transcription {
     app_name: Option<String>,
     #[serde(default)]
     website_domain: Option<String>,
+    #[serde(default)]
+    vocabulary_replacements: Option<i64>,
+    #[serde(default)]
+    snippet_expansions: Option<i64>,
     pub(super) context_uuid: Option<String>,
     pub(super) created_at: String,
     #[serde(default)]
@@ -63,7 +67,7 @@ pub(super) struct HistoryImportStats {
 }
 
 pub(super) fn export_history_conn(conn: &Connection) -> Result<BackupHistory> {
-    let mut stmt = conn.prepare("SELECT t.uuid, t.raw_text, t.clean_text, t.words, t.spoken_words, t.duration_ms, t.api_used, t.app_name, COALESCE(c.uuid, p.context_uuid), t.created_at, t.activity_day, t.activity_hour, EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = t.uuid) OR EXISTS(SELECT 1 FROM backup_preupgrade_history p WHERE p.uuid = t.uuid), EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid=t.uuid), t.website_domain FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid=t.uuid ORDER BY t.id")?;
+    let mut stmt = conn.prepare("SELECT t.uuid, t.raw_text, t.clean_text, t.words, t.spoken_words, t.duration_ms, t.api_used, t.app_name, COALESCE(c.uuid, p.context_uuid), t.created_at, t.activity_day, t.activity_hour, EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = t.uuid) OR EXISTS(SELECT 1 FROM backup_preupgrade_history p WHERE p.uuid = t.uuid), EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid=t.uuid), t.website_domain, t.vocabulary_replacements, t.snippet_expansions FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid=t.uuid ORDER BY t.id")?;
     let transcriptions = stmt
         .query_map([], |r| {
             Ok(Transcription {
@@ -82,6 +86,8 @@ pub(super) fn export_history_conn(conn: &Connection) -> Result<BackupHistory> {
                 held: r.get(12)?,
                 hourly_held: r.get(13)?,
                 website_domain: r.get(14)?,
+                vocabulary_replacements: r.get(15)?,
+                snippet_expansions: r.get(16)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -177,6 +183,8 @@ pub(super) fn import_history_with_retention(
                 && row.words >= 0
                 && row.duration_ms >= 0
                 && row.spoken_words.is_none_or(|v| v >= 0)
+                && row.vocabulary_replacements.is_none_or(|v| v >= 0)
+                && row.snippet_expansions.is_none_or(|v| v >= 0)
                 && row.activity_day.as_ref().is_none_or(|day| chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok())
                 && row.activity_hour.is_none_or(|hour| (0..24).contains(&hour)),
             "Invalid transcription in backup"
@@ -239,10 +247,12 @@ pub(super) fn import_history_with_retention(
         let existing: Option<bool> = conn.query_row("SELECT raw_text = ?2 AND clean_text = ?3 AND words = ?4 AND spoken_words IS ?5 AND duration_ms = ?6 AND api_used = ?7 AND app_name IS ?8 AND context_id IS ?9 AND created_at = ?10 AND (?11 IS NULL OR activity_day = ?11) AND (?12 IS NULL OR activity_hour = ?12) FROM transcriptions WHERE uuid = ?1", params![row.uuid, row.raw_text, row.clean_text, row.words, row.spoken_words, row.duration_ms, row.api_used, row.app_name, context, row.created_at, row.activity_day, row.activity_hour], |r| r.get(0)).optional()?;
         if let Some(matches) = existing {
             let pending_matches: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pending_transcription_contexts WHERE transcription_uuid=?1 AND context_uuid IS ?2)", params![row.uuid,row.context_uuid], |r| r.get(0))?;
-            if !matches || (row.context_uuid.is_some() && context.is_none() && !pending_matches) {
+            let metrics_match: bool = conn.query_row("SELECT (vocabulary_replacements IS NULL OR ?2 IS NULL OR vocabulary_replacements = ?2) AND (snippet_expansions IS NULL OR ?3 IS NULL OR snippet_expansions = ?3) FROM transcriptions WHERE uuid = ?1", params![row.uuid, row.vocabulary_replacements, row.snippet_expansions], |r| r.get(0))?;
+            if !matches || !metrics_match || (row.context_uuid.is_some() && context.is_none() && !pending_matches) {
                 stats.conflicts += 1;
                 conflicts.insert(row.uuid.as_str());
             } else {
+                conn.execute("UPDATE transcriptions SET vocabulary_replacements = COALESCE(vocabulary_replacements, ?2), snippet_expansions = COALESCE(snippet_expansions, ?3) WHERE uuid = ?1", params![row.uuid, row.vocabulary_replacements, row.snippet_expansions])?;
                 stats.existing += 1;
                 record_mapped_event(conn, &row.uuid, row.context_uuid.as_deref(), local_uuid.as_deref())?;
                 conn.execute(
@@ -283,7 +293,7 @@ pub(super) fn import_history_with_retention(
             conn.execute("INSERT OR IGNORE INTO backup_held_history(uuid) VALUES (?1)", [&row.uuid])?;
             stats.conflicts += usize::from(pruned_overlap);
         }
-        conn.execute("INSERT INTO transcriptions (uuid, raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, created_at, activity_day, activity_hour, website_domain) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)", params![row.uuid, row.raw_text, row.clean_text, row.words, row.spoken_words, row.duration_ms, row.api_used, row.app_name, context, row.created_at, row.activity_day, row.activity_hour, row.website_domain.as_deref().and_then(crate::core::browser_probe::extract_domain)])?;
+        conn.execute("INSERT INTO transcriptions (uuid, raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, created_at, activity_day, activity_hour, website_domain, vocabulary_replacements, snippet_expansions) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)", params![row.uuid, row.raw_text, row.clean_text, row.words, row.spoken_words, row.duration_ms, row.api_used, row.app_name, context, row.created_at, row.activity_day, row.activity_hour, row.website_domain.as_deref().and_then(crate::core::browser_probe::extract_domain), row.vocabulary_replacements, row.snippet_expansions])?;
         record_mapped_event(conn, &row.uuid, row.context_uuid.as_deref(), local_uuid.as_deref())?;
         if context.is_none() && row.context_uuid.is_some() {
             conn.execute("INSERT OR IGNORE INTO pending_transcription_contexts VALUES (?1,?2)", params![row.uuid,row.context_uuid])?;
@@ -328,6 +338,19 @@ pub(super) fn import_history_with_retention(
 mod tests {
     use super::*;
     use crate::data::db;
+
+    #[test]
+    fn cleanup_activity_survives_history_backup_and_reimport() {
+        let source = db::open(":memory:").unwrap();
+        db::insert_transcription_with_metrics(&source, "synthetic", "synthetic", 0, 1000, "test", None, None, None, Some((3, 2))).unwrap();
+        let history = export_history_conn(&source.lock().unwrap()).unwrap();
+        let dest = db::open(":memory:").unwrap();
+        let conn = dest.lock().unwrap();
+        assert_eq!(import_history(&conn, &history, &[]).unwrap().inserted, 1);
+        assert_eq!(import_history(&conn, &history, &[]).unwrap().existing, 1);
+        let counts: (i64, i64) = conn.query_row("SELECT vocabulary_replacements, snippet_expansions FROM transcriptions", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(counts, (3, 2));
+    }
 
     #[test]
     fn retained_parent_rejects_orphan_call_context_conflict() {
