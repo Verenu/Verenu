@@ -58,6 +58,11 @@ pub async fn update_context(app: AppHandle, context_id: i64, name: String) -> Re
 }
 
 #[tauri::command]
+pub async fn save_context_if_unchanged(app: AppHandle, original: db::Context, updated: db::Context) -> Result<db::Context, String> {
+    run_db(&app, "save_context_if_unchanged", move |db| db::save_context_if_unchanged(db, original, updated)).await
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_context_settings(
     app: AppHandle,
@@ -265,8 +270,9 @@ pub async fn move_snippet_entry_to_context(
     app: AppHandle,
     trigger: String,
     context_id: i64,
+    edit: Option<db::SnippetMoveEdit>,
 ) -> Result<db::Snippet, String> {
-    run_db(&app, "move_snippet_entry_to_context", move |db| db::move_snippet_entry_to_context(db, &trigger, context_id))
+    run_db(&app, "move_snippet_entry_to_context", move |db| db::move_snippet_entry_to_context(db, &trigger, context_id, edit.as_ref()))
         .await
 }
 

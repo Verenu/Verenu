@@ -9,9 +9,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -20,85 +22,150 @@ use tauri::{AppHandle, Emitter, Manager};
 #[derive(Clone)]
 pub(crate) struct Agent {
     app: AppHandle,
-    pairing: Arc<Mutex<Pairing>>,
+    instance: String,
+    approvals: Arc<Mutex<Approvals>>,
     gate: Arc<tokio::sync::Semaphore>,
 }
 
-struct Pairing {
-    token: Option<String>,
-    pending: Option<(String, Instant)>,
-    port: u16,
-    path: Option<std::path::PathBuf>,
-    instance: String,
+fn publish_discovery(port: u16, instance: &str) -> anyhow::Result<()> {
+    let path = crate::app_data_dir().join("agent-session.json");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let directory = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Missing agent directory"))?;
+        let metadata = std::fs::symlink_metadata(directory)?;
+        anyhow::ensure!(
+            metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o022 == 0,
+            "Agent profile directory is not private to this user"
+        );
+        let resolved = std::fs::canonicalize(directory)?;
+        for ancestor in directory.ancestors().chain(resolved.ancestors()) {
+            let entry = std::fs::symlink_metadata(ancestor)?;
+            let uid = entry.uid();
+            anyhow::ensure!(
+                (uid == 0 || uid == unsafe { libc::geteuid() })
+                    && (!entry.is_dir()
+                        || entry.mode() & 0o022 == 0
+                        || (uid == 0 && entry.mode() & 0o1000 != 0)),
+                "Agent profile has an untrusted ancestor"
+            );
+        }
+        anyhow::ensure!(
+            !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()),
+            "Agent descriptor cannot be a symbolic link"
+        );
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        let result = (|| -> anyhow::Result<()> {
+            file.write_all(&serde_json::to_vec(
+                &json!({"version": 1, "port": port, "instance": instance}),
+            )?)?;
+            file.sync_all()?;
+            std::fs::rename(&temp, &path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(temp);
+        }
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(
+            path,
+            serde_json::to_vec(&json!({"version": 1, "port": port, "instance": instance}))?,
+        )?;
+        Ok(())
+    }
 }
 
-impl Pairing {
-    fn publish(&self, status: &str) -> anyhow::Result<()> {
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-            let directory = path
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("Missing agent directory"))?;
-            let metadata = std::fs::symlink_metadata(directory)?;
-            // A writable profile directory would let another user replace the
-            // descriptor even though the descriptor itself is private.
-            if !metadata.is_dir()
-                || metadata.file_type().is_symlink()
-                || metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.mode() & 0o022 != 0
-            {
-                anyhow::bail!("Agent profile directory is not private to this user");
-            }
-            // Also reject a profile under an ancestor another user can replace.
-            // Check both the visible and resolved paths, since either can
-            // contain a symlink. A root-owned sticky directory such as /tmp is
-            // safe to traverse when our next directory is owned by this user.
-            let resolved = std::fs::canonicalize(directory)?;
-            for ancestor in directory.ancestors().chain(resolved.ancestors()) {
-                let entry = std::fs::symlink_metadata(ancestor)?;
-                let uid = entry.uid();
-                if uid != 0 && uid != unsafe { libc::geteuid() } {
-                    anyhow::bail!("Agent profile has an untrusted ancestor");
-                }
-                if entry.is_dir()
-                    && entry.mode() & 0o022 != 0
-                    && !(uid == 0 && entry.mode() & 0o1000 != 0)
-                {
-                    anyhow::bail!("Agent profile has a writable ancestor");
-                }
-            }
-            if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-                anyhow::bail!("Agent descriptor cannot be a symbolic link");
-            }
-            let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temp)?;
-            let payload = json!({"version": 1, "port": self.port, "status": status, "token": self.token, "instance": self.instance});
-            let result = (|| -> anyhow::Result<()> {
-                file.write_all(&serde_json::to_vec(&payload)?)?;
-                file.sync_all()?;
-                std::fs::rename(&temp, path)?;
-                Ok(())
-            })();
-            if result.is_err() {
-                let _ = std::fs::remove_file(temp);
-            }
-            result
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (status, path, self.port);
-            anyhow::bail!("Secure shared agent grants are unavailable on this platform")
-        }
+#[derive(Default)]
+struct Approvals {
+    pending: Option<Pending>,
+    grants: HashMap<[u8; 32], Instant>,
+    legacy_token: Option<String>,
+}
+
+struct Pending {
+    digest: [u8; 32],
+    code: String,
+    expires: Instant,
+}
+
+#[derive(Serialize)]
+pub struct ApprovalRequest {
+    code: String,
+    id: String,
+}
+
+fn request_id(hash: &[u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn digest(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+fn valid_token(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+#[tauri::command]
+pub fn agent_pending_request(app: AppHandle) -> Option<ApprovalRequest> {
+    let state = app.try_state::<Arc<Mutex<Approvals>>>()?;
+    let mut approvals = state.lock().ok()?;
+    if approvals
+        .pending
+        .as_ref()
+        .is_some_and(|p| p.expires <= Instant::now())
+    {
+        approvals.pending = None;
     }
+    approvals.pending.as_ref().map(|p| ApprovalRequest {
+        code: p.code.clone(),
+        id: request_id(&p.digest),
+    })
+}
+
+#[tauri::command]
+pub fn agent_respond(app: AppHandle, id: String, approve: bool) -> Result<(), String> {
+    let state = app
+        .try_state::<Arc<Mutex<Approvals>>>()
+        .ok_or("Agent access unavailable")?;
+    let mut approvals = state.lock().map_err(|_| "Agent access unavailable")?;
+    let pending = approvals.pending.as_ref().ok_or("Request expired")?;
+    if pending.expires <= Instant::now() || request_id(&pending.digest) != id {
+        return Err("Request expired or changed".into());
+    }
+    let pending = approvals.pending.take().ok_or("Request expired")?;
+    if approve {
+        approvals
+            .grants
+            .insert(pending.digest, Instant::now() + Duration::from_secs(3600));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn agent_revoke_all(app: AppHandle) -> Result<(), String> {
+    let state = app
+        .try_state::<Arc<Mutex<Approvals>>>()
+        .ok_or("Agent access unavailable")?;
+    let mut approvals = state.lock().map_err(|_| "Agent access unavailable")?;
+    approvals.pending = None;
+    approvals.grants.clear();
+    approvals.legacy_token = None;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -114,47 +181,33 @@ fn empty_args() -> Value {
 
 pub fn start(app: AppHandle) -> anyhow::Result<()> {
     let token = std::env::var("VERENU_AGENT_TOKEN").ok();
-    if let Some(token) = &token {
+    let port: u16 = if let Some(ref token) = token {
         anyhow::ensure!(
-            token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()),
+            valid_token(token),
             "VERENU_AGENT_TOKEN must be 32 random bytes encoded as 64 hex characters"
         );
-    }
-    #[cfg(not(unix))]
-    if token.is_none() {
-        return Ok(());
-    }
-    let port: u16 = if token.is_some() {
-        std::env::var("VERENU_AGENT_PORT")?.parse()?
+        let port = std::env::var("VERENU_AGENT_PORT")?.parse()?;
+        anyhow::ensure!(port > 0, "VERENU_AGENT_PORT must be 1..65535");
+        port
     } else {
         0
     };
-    anyhow::ensure!(
-        token.is_none() || port > 0,
-        "VERENU_AGENT_PORT must be 1..65535"
-    );
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))?;
     listener.set_nonblocking(true)?;
-    let port = listener.local_addr()?.port();
-    let path = if token.is_none() {
-        Some(crate::app_data_dir().join("agent-session.json"))
-    } else {
-        None
-    };
-    let pairing = Pairing {
-        token,
-        pending: None,
-        port,
-        path,
-        instance: uuid::Uuid::new_v4().to_string(),
-    };
-    pairing.publish("idle")?;
+    let actual_port = listener.local_addr()?.port();
+    let instance = uuid::Uuid::new_v4().to_string();
+    publish_discovery(actual_port, &instance)?;
+    let approvals = Arc::new(Mutex::new(Approvals {
+        legacy_token: token,
+        ..Approvals::default()
+    }));
+    app.manage(approvals.clone());
     let state = Agent {
-        app: app.clone(),
-        pairing: Arc::new(Mutex::new(pairing)),
+        app,
+        instance,
+        approvals,
         gate: Arc::new(tokio::sync::Semaphore::new(1)),
     };
-    app.manage(state.clone());
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::from_std(listener) {
             Ok(l) => l,
@@ -162,8 +215,10 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
         };
         let routes = Router::new()
             .route("/v1/invoke", post(invoke))
-            .route("/v1/pair", post(pair))
             .route("/v1/status", get(status))
+            .route("/v1/authorize", post(authorize))
+            .route("/v1/authorization-status", post(authorization_status))
+            .route("/v1/revoke", post(revoke))
             .layer(DefaultBodyLimit::max(64 * 1024))
             .with_state(state);
         if axum::serve(listener, routes).await.is_err() {
@@ -174,147 +229,139 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
 }
 
 async fn status(State(agent): State<Agent>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
-    if headers.contains_key("origin") || headers.contains_key("sec-fetch-site") {
+    if is_browser(&headers) {
         return (StatusCode::FORBIDDEN, Json(json!({"error":"Forbidden"})));
     }
-    match agent.pairing.lock() {
-        Ok(state) if state.path.is_some() => (
-            StatusCode::OK,
-            Json(json!({"version":1,"instance":state.instance})),
-        ),
-        _ => (StatusCode::NOT_FOUND, Json(json!({"error":"Unavailable"}))),
-    }
+    (StatusCode::OK, Json(json!({"version":1, "instance":agent.instance})))
 }
 
-pub(crate) fn clear_session(app: &AppHandle) {
-    let Some(agent) = app.try_state::<Agent>() else {
-        return;
-    };
-    let Ok(state) = agent.pairing.lock() else {
-        return;
-    };
-    let Some(path) = &state.path else {
-        return;
-    };
-    // A newer process may have replaced this file; never remove its grant.
-    let ours = std::fs::read(path)
-        .ok()
-        .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
-        .and_then(|data| {
-            data.get("instance")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some_and(|instance| instance == state.instance);
-    if ours {
-        let _ = std::fs::remove_file(path);
-    }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Authorization {
+    token: String,
 }
 
-async fn pair(State(agent): State<Agent>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
-    if headers.contains_key("origin") || headers.contains_key("sec-fetch-site") {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"Forbidden"})));
+fn is_browser(headers: &HeaderMap) -> bool {
+    headers.contains_key("origin") || headers.contains_key("sec-fetch-site")
+}
+
+async fn authorize(
+    State(agent): State<Agent>,
+    headers: HeaderMap,
+    Json(request): Json<Authorization>,
+) -> (StatusCode, Json<Value>) {
+    if is_browser(&headers) || !valid_token(&request.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"Unauthorized"})),
+        );
     }
-    let id = {
-        let Ok(mut state) = agent.pairing.lock() else {
+    let hash = digest(&request.token);
+    let code = hash[..6]
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<String>();
+    {
+        let Ok(mut approvals) = agent.approvals.lock() else {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error":"Unavailable"})),
             );
         };
-        if state.path.is_none() {
+        approvals
+            .grants
+            .retain(|_, expiry| *expiry > Instant::now());
+        if approvals.grants.len() >= 128 {
             return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error":"Pairing unavailable"})),
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({"error":"Too many active agents"})),
             );
         }
-        if state.token.is_some() {
-            return (StatusCode::OK, Json(json!({"status":"approved"})));
-        }
-        if let Some((_, started)) = &state.pending {
-            if started.elapsed() < Duration::from_secs(120) {
-                return (StatusCode::ACCEPTED, Json(json!({"status":"pending"})));
-            }
-        }
-        let id = uuid::Uuid::new_v4().to_string();
-        state.pending = Some((id.clone(), Instant::now()));
-        if state.publish("pending").is_err() {
-            state.pending = None;
+        if approvals
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.expires > Instant::now())
+        {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error":"Unable to create request"})),
+                StatusCode::CONFLICT,
+                Json(json!({"error":"Another approval is pending"})),
             );
         }
-        id
-    };
-    crate::show_main_window(&agent.app);
-    let _ = agent.app.emit_to("main", "verenu:agent-pair-request", &id);
-    let timeout_agent = agent.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(120)).await;
-        let expired = if let Ok(mut state) = timeout_agent.pairing.lock() {
-            if state.pending.as_ref().is_some_and(|(pending, started)| {
-                pending == &id && started.elapsed() >= Duration::from_secs(120)
-            }) {
-                state.pending = None;
-                let _ = state.publish("denied");
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        if expired {
-            let _ = timeout_agent
-                .app
-                .emit_to("main", "verenu:agent-pair-cleared", &id);
-        }
-    });
-    (StatusCode::ACCEPTED, Json(json!({"status":"pending"})))
+        approvals.pending = Some(Pending {
+            digest: hash,
+            code: code.clone(),
+            expires: Instant::now() + Duration::from_secs(120),
+        });
+    }
+    crate::app_setup::show_main_window(&agent.app);
+    (
+        StatusCode::OK,
+        Json(json!({"code":code, "expires_in_seconds":120})),
+    )
 }
 
-#[tauri::command]
-pub(crate) fn agent_pair_pending(state: tauri::State<'_, Agent>) -> Option<String> {
-    let state = state.pairing.lock().ok()?;
-    state
+async fn authorization_status(
+    State(agent): State<Agent>,
+    headers: HeaderMap,
+    Json(request): Json<Authorization>,
+) -> (StatusCode, Json<Value>) {
+    if is_browser(&headers) || !valid_token(&request.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"Unauthorized"})),
+        );
+    }
+    let hash = digest(&request.token);
+    let Ok(mut approvals) = agent.approvals.lock() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"Unavailable"})),
+        );
+    };
+    approvals
+        .grants
+        .retain(|_, expiry| *expiry > Instant::now());
+    let status = if approvals.grants.contains_key(&hash) {
+        "approved"
+    } else if approvals
         .pending
         .as_ref()
-        .filter(|(_, started)| started.elapsed() < Duration::from_secs(120))
-        .map(|(id, _)| id.clone())
+        .is_some_and(|p| p.digest == hash && p.expires > Instant::now())
+    {
+        "pending"
+    } else {
+        "denied_or_expired"
+    };
+    (StatusCode::OK, Json(json!({"status":status})))
 }
 
-#[tauri::command]
-pub(crate) fn agent_pair_respond(
-    app: AppHandle,
-    state: tauri::State<'_, Agent>,
-    request_id: String,
-    approved: bool,
-) -> Result<(), String> {
-    use rand::RngCore;
-    let mut state = state.pairing.lock().map_err(|_| "Pairing unavailable")?;
-    let valid = state.pending.as_ref().is_some_and(|(id, started)| {
-        id == &request_id && started.elapsed() < Duration::from_secs(120)
-    });
-    if !valid {
-        return Err("This access request has expired. Ask the agent to try again.".into());
+async fn revoke(
+    State(agent): State<Agent>,
+    headers: HeaderMap,
+    Json(request): Json<Authorization>,
+) -> (StatusCode, Json<Value>) {
+    if is_browser(&headers) || !valid_token(&request.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"Unauthorized"})),
+        );
     }
-    if approved {
-        let mut bytes = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
-        state.token = Some(bytes.iter().map(|b| format!("{b:02x}")).collect());
+    if let Ok(mut approvals) = agent.approvals.lock() {
+        let hash = digest(&request.token);
+        approvals.grants.remove(&hash);
+        if approvals
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.digest == hash)
+        {
+            approvals.pending = None;
+        }
     }
-    if let Err(error) = state.publish(if approved { "approved" } else { "denied" }) {
-        state.token = None;
-        return Err(format!("Could not save agent access: {error}"));
-    }
-    state.pending = None;
-    let _ = app.emit_to("main", "verenu:agent-pair-cleared", &request_id);
-    Ok(())
+    (StatusCode::OK, Json(json!({"revoked":true})))
 }
 
 fn authenticated(headers: &HeaderMap, token: &str) -> bool {
-    if headers.contains_key("origin") || headers.contains_key("sec-fetch-site") {
+    if is_browser(headers) {
         return false;
     }
     let Some(value) = headers
@@ -338,18 +385,23 @@ async fn invoke(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<Value>) {
-    let authorized = agent
-        .pairing
-        .lock()
-        .ok()
-        .and_then(|state| {
-            state
-                .token
+    let allowed = !is_browser(&headers)
+        && agent.approvals.lock().ok().is_some_and(|mut approvals| {
+            approvals
+                .grants
+                .retain(|_, expiry| *expiry > Instant::now());
+            approvals
+                .legacy_token
                 .as_ref()
-                .map(|token| authenticated(&headers, token))
-        })
-        .unwrap_or(false);
-    if !authorized {
+                .is_some_and(|token| authenticated(&headers, token))
+                || headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("Bearer "))
+                    .filter(|v| valid_token(v))
+                    .is_some_and(|token| approvals.grants.contains_key(&digest(token)))
+        });
+    if !allowed {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Unauthorized"})),
@@ -412,6 +464,45 @@ const WRITABLE_SETTINGS: &[&str] = &[
     store::CLEANUP_MODEL,
     store::CLEANUP_PROMPT_OVERRIDE,
     store::HISTORY_RETENTION,
+    store::VOICE_COMMANDS_ENABLED,
+    store::CUSTOM_PROVIDERS,
+    store::MODEL_SELECTION_MODE,
+    store::TRANSCRIPTION_MODELS_BY_PROVIDER,
+    store::CLEANUP_MODELS_BY_PROVIDER,
+    store::TRANSCRIPTION_DEFAULT_MODEL,
+    store::CLEANUP_DEFAULT_MODEL,
+    store::TRANSCRIPTION_FALLBACK_MODELS,
+    store::CLEANUP_FALLBACK_MODELS,
+    store::DUAL_TRANSCRIPTION_ENABLED,
+    store::CLEANUP_CACHE_ENABLED,
+    store::SUB_APP_CAPTURE_HOTKEY,
+    store::LINUX_CANCEL_KEY,
+    store::LINUX_HANDSFREE_KEY,
+    store::DEFAULT_TONE,
+    store::CLEANUP_INTENSITY,
+    store::MIC_MUTE_BUTTON_DICTATION,
+    store::EXCLUSIVE_MIC,
+    store::AUTO_LEARN_EVENT_MODE,
+    store::APPEARANCE_MODE,
+    store::ACCENT_COLOR,
+    store::CUSTOM_THEME,
+    store::CUSTOM_THEMES,
+    store::ANDROID_PILL_POSITION,
+    store::ANDROID_PILL_DOCK_POSITION,
+    store::ANDROID_PILL_COVER_KEYBOARD_MIC,
+    store::ANDROID_PILL_HIDE_OFFLINE,
+    store::ADVANCED_MODEL_UI,
+    store::STYLE_PROMPT_INSTRUCTIONS,
+    store::BETA_UPDATES_ENABLED,
+    store::ANALYTICS_ENABLED,
+    store::VERENU_SERVICE_CHECKS_ENABLED,
+    store::GITHUB_USERNAME,
+    store::LOCAL_MODEL_MEMORY_POLICY,
+    store::CLIPBOARD_PHRASE_ENABLED,
+    store::CLIPBOARD_PHRASE,
+    store::LEGACY_FEATURES_ENABLED,
+    store::SYNC_ENABLED,
+    store::SYNC_MUTING_ENABLED,
 ];
 
 // One registry generates argument discovery and dispatch. Calling the existing
@@ -421,7 +512,7 @@ macro_rules! native_commands {
         native_commands!(@$mode, $app, $request, $( $name { $( $field : $ty ),* } ),*)
     };
     (@describe, $app:ident, $request:ident, $( $name:ident { $( $field:ident : $ty:ty ),* } ),*) => {
-        json!([$( {"command": stringify!($name), "arguments": { $( camel_case(stringify!($field)): stringify!($ty) ),* } } ),*])
+        vec![$( json!({"command": stringify!($name), "arguments": { $( camel_case(stringify!($field)): stringify!($ty) ),* } }) ),*]
     };
     (@dispatch, $app:ident, $request:ident, $( $name:ident { $( $field:ident : $ty:ty ),* } ),*) => {
         match $request.command.as_str() {
@@ -458,21 +549,41 @@ macro_rules! registry {
             test_cleanup_prompt { provider: String, model: String, template: String, intensity: Option<String>, tone: Option<String> },
             get_contexts {},
             create_context { name: String, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: Option<bool>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool> },
-            duplicate_context { context_id: i64 }, update_context { context_id: i64, name: String },
-            update_context_settings { context_id: i64, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: Option<bool>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool> },
-            update_context_color { context_id: i64, color: Option<String> },
-            set_context_pinned { context_id: i64, pinned: bool }, delete_context { context_id: i64 },
+            duplicate_context { context_id: i64 },
+            save_context_if_unchanged { original: db::Context, updated: db::Context },
+            delete_context { context_id: i64 },
             get_context_stats { context_id: i64 }, get_context_targets { context_id: Option<i64> },
             assign_context_target { context_id: i64, executable: String, app_name: Option<String>, developer: Option<String> },
             remove_context_target { context_id: i64, executable: String },
             get_context_websites { context_id: Option<i64> },
             assign_context_website { context_id: i64, domain: String }, remove_context_website { context_id: i64, domain: String },
-            get_dictionary {}, get_snippets {},
             get_context_dictionary { context_id: i64 }, get_context_snippets { context_id: i64 },
-            get_dictionary_entry_contexts { term: String }, get_snippet_entry_contexts { trigger: String },
+            get_dictionary {},
+            create_dictionary_entry { term: String, mistake: Option<String>, context_id: Option<i64> },
+            edit_dictionary_entry { id: i64, term: String, mistake: Option<String>, dictionary_id: Option<i64>, context_id: Option<i64>, correction_id: Option<i64>, correction_ids: Option<Vec<i64>>, expected: Option<db::ExpectedDictionaryEntry> },
+            remove_dictionary_entry { id: i64, dictionary_id: Option<i64>, context_id: Option<i64>, correction_id: Option<i64>, correction_ids: Option<Vec<i64>> },
+            move_dictionary_entry_to_context { dictionary_id: i64, source_context_id: i64, target_context_id: i64, correction_id: Option<i64>, correction_ids: Option<Vec<i64>> },
+            get_dictionary_entry_contexts { term: String },
+            move_dictionary_entry_by_term_to_context { term: String, context_id: i64 },
             set_dictionary_context_assignment { context_id: i64, dictionary_id: i64, assigned: bool },
+            get_snippets {},
+            create_snippet { trigger: String, expansion: String, instructions: String, context_id: Option<i64> },
+            edit_snippet { id: i64, trigger: String, expansion: String, instructions: String, expected: Option<db::ExpectedSnippet> },
+            remove_snippet { id: i64 },
+            get_snippet_entry_contexts { trigger: String },
+            move_snippet_entry_to_context { trigger: String, context_id: i64, edit: Option<db::SnippetMoveEdit> },
             set_snippet_context_assignment { context_id: i64, snippet_id: i64, assigned: bool },
-            get_sub_apps {}
+            get_sub_apps {},
+            create_sub_app { executable: String, app_name: Option<String>, label: String, icon: Option<String>, title_pattern: String, match_mode: String },
+            assign_sub_app { id: i64, context_id: Option<i64> }, delete_sub_app { id: i64 },
+            get_api_key_status {}, delete_custom_provider { provider: String },
+            sync_get_status {}, sync_set_device_name { name: String },
+            sync_set_peer_address { device_uuid: String, address: String },
+            sync_pair_connection { details: String }, sync_start_pairing { device_uuid: String },
+            sync_respond_to_pairing { code: String, approve: bool }, sync_cancel_pairing {},
+            sync_remove_device { device_uuid: String }, sync_now { device_uuid: Option<String> },
+            get_t3_skills {}, pull_t3_skills { force: Option<bool> },
+            select_t3_catalog { catalog_id: String }, disconnect_t3 {}
         )
     };
 }
@@ -481,13 +592,36 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
     if !request.args.is_object() {
         return Err("args must be an object".into());
     }
+    if matches!(
+        request.command.as_str(),
+        "describe" | "get_microphones" | "diagnostics.snapshot"
+    ) && request
+        .args
+        .as_object()
+        .is_some_and(|args| !args.is_empty())
+    {
+        return Err("This command does not accept arguments".into());
+    }
     if request.command == "describe" {
+        let mut native = registry!(describe, app, request);
+        native.push(json!({"command": "save_hotkey", "arguments": {"keys": "Vec<String>", "expected": "raw hotkey value from get_setting"}}));
+        native.push(json!({"command": "set_autostart", "arguments": {"enabled": "bool", "expected": "raw autostart_enabled value from get_setting"}}));
+        for entry in &mut native {
+            if matches!(entry["command"].as_str(), Some("edit_dictionary_entry" | "edit_snippet")) {
+                entry["arguments"]["expected"] = json!("required original editable fields");
+            }
+        }
         return Ok(
-            json!({"version": 1, "native_commands": registry!(describe, app, request),
-            "argument_naming": "Native command fields use camelCase; optional fields may be omitted. update_context_settings replaces all fields; read then modify.",
+            json!({"version": 1, "native_commands": native,
+            "argument_naming": "Native command fields use camelCase; optional fields may be omitted. edit_dictionary_entry and edit_snippet require expected snapshots. Use context.patch_settings for partial edits or save_context_if_unchanged for replacements.",
             "writable_settings": WRITABLE_SETTINGS,
             "additional_commands": {
-                "save_setting": {"key": "writable setting", "value": "native validated JSON"},
+                "save_setting": {"key": "writable setting", "value": "native validated JSON", "expected": "object mapping affected keys to values read with get_setting; contextual_formatting_enabled also requires contextual_caps_enabled and auto_spacing_enabled; on Linux duck_target requires duck_audio and mute_audio, and duck_audio requires mute_audio"},
+                "credentials.save": {"provider": "string", "key": "secret; supply through private stdin"},
+                "credentials.delete": {"provider": "string"},
+                "t3.connect": {"pairingLink": "private pairing link; supply through stdin"},
+                "context.patch_settings": {"contextId": "integer", "expected": "original Context returned by get_contexts", "settings": "object: icon, tone, cleanupIntensity, customInstructions, contextualFormattingOverride, pasteInChunks; omitted fields are preserved, null clears nullable fields"},
+                "context.set_pinned": {"contextId": "integer", "pinned": "boolean", "expected": "original Context returned by get_contexts"},
                 "get_microphones": {}, "diagnostics.snapshot": {},
                 "diagnostics.logs": {"since_ms": "optional inclusive UTC milliseconds", "until_ms": "optional exclusive UTC milliseconds", "subsystem": "optional substring", "level": "optional exact level: error, warn, info, debug, trace", "limit": "1..1000 (default 200); newest matches"},
                 "prompts.lint": {"template": "string", "intensity": "optional string", "tone": "optional string"},
@@ -497,22 +631,120 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
                 "diagnostics.top": {"start": "date", "end": "date"},
                 "diagnostics.retention": {"days": "optional 0..365; 0 disables and clears"}
             },
-            "security": "Token grants settings/context writes and explicit history text access. Loopback only; no credential, SQL, shell, audio capture, or injection operations."}),
+            "security": "Token grants broad settings and data writes, credential replacement/deletion, sync control and explicit history text access. Loopback only; no credential reads, SQL, shell, audio capture, or injection operations."}),
         );
     }
     match request.command.as_str() {
+        "save_hotkey" | "set_autostart" => {
+            if !request.args.as_object().is_some_and(|args| args.contains_key("expected")) {
+                return Err("Expected current setting is required; read it before editing".into());
+            }
+            if request.command == "save_hotkey" {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args { keys: Vec<String>, expected: Value }
+                let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+                commands::save_hotkey_for_agent(app.clone(), args.keys, args.expected).await?;
+            } else {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args { enabled: bool, expected: Value }
+                let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+                commands::set_autostart_for_agent(app.clone(), args.enabled, args.expected).await?;
+            }
+            Ok(Value::Null)
+        }
+        "t3.connect" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                pairing_link: String,
+            }
+            let args: Args = serde_json::from_value(request.args)
+                .map_err(|_| "Expected pairingLink string".to_string())?;
+            let result = commands::connect_t3(app.clone(), args.pairing_link)
+                .await
+                .map_err(|_| "Could not connect T3".to_string())?;
+            serde_json::to_value(result).map_err(|_| "Could not encode T3 status".to_string())
+        }
+        "credentials.save" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {
+                provider: String,
+                key: String,
+            }
+            let args: Args = serde_json::from_value(request.args)
+                .map_err(|_| "Expected provider and key strings".to_string())?;
+            commands::save_api_key(app.clone(), args.provider, args.key)
+                .await
+                .map_err(|_| "Could not save credential".to_string())?;
+            let _ = app.emit("verenu:agent-settings-changed", ());
+            Ok(Value::Null)
+        }
+        "credentials.delete" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {
+                provider: String,
+            }
+            let args: Args = serde_json::from_value(request.args)
+                .map_err(|_| "Expected provider string".to_string())?;
+            commands::delete_api_key(app.clone(), args.provider)
+                .await
+                .map_err(|_| "Could not delete credential".to_string())?;
+            let _ = app.emit("verenu:agent-settings-changed", ());
+            Ok(Value::Null)
+        }
+        "context.set_pinned" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args { context_id: i64, pinned: bool, expected: db::Context }
+            let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            if args.expected.id != args.context_id { return Err("Expected Context does not match contextId".to_string()); }
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            tokio::task::spawn_blocking(move || db::set_context_pinned_if_unchanged(&db, args.context_id, args.pinned, args.expected.pinned_at))
+                .await.map_err(|_| "Context worker unavailable".to_string())?.map_err(|e| e.to_string())?;
+            let _ = app.emit("verenu:agent-contexts-changed", ());
+            Ok(Value::Null)
+        }
+        "context.patch_settings" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                context_id: i64,
+                settings: db::ContextSettingsPatch,
+                expected: db::Context,
+            }
+            let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            let context = tokio::task::spawn_blocking(move || {
+                db::patch_context_settings_if_unchanged(&db, args.context_id, args.settings, args.expected)
+            })
+            .await
+            .map_err(|_| "Context worker unavailable".to_string())?
+            .map_err(|e| e.to_string())?;
+            let _ = app.emit("verenu:agent-contexts-changed", ());
+            serde_json::to_value(context).map_err(|e| e.to_string())
+        }
         "save_setting" => {
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
             struct Args {
                 key: String,
                 value: Value,
+                expected: serde_json::Map<String, Value>,
             }
             let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
             if !WRITABLE_SETTINGS.contains(&args.key.as_str()) {
                 return Err("Setting is not agent-writable; use describe".into());
             }
-            commands::save_setting(app.clone(), args.key, args.value).await?;
+            if args.key == store::SUB_APP_CAPTURE_HOTKEY {
+                commands::save_sub_app_shortcut_for_agent(app.clone(), args.value, args.expected).await?;
+            } else {
+                commands::save_setting_if_unchanged(app.clone(), args.key.clone(), args.value, args.expected).await?;
+                let _ = app.emit("verenu:agent-settings-changed", vec![args.key]);
+            }
             Ok(Value::Null)
         }
         "get_microphones" => {
@@ -580,53 +812,41 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             .map_err(|_| "History worker unavailable".to_string())?
             .map_err(|e| e.to_string())
         }
-        _ => registry!(dispatch, app, request),
+        _ => {
+            if matches!(request.command.as_str(), "edit_dictionary_entry" | "edit_snippet")
+                && request.args.get("expected").is_none_or(Value::is_null) {
+                return Err("Expected original entry is required; read the entry before editing".into());
+            }
+            let refresh_settings = matches!(request.command.as_str(),
+                "delete_custom_provider" | "save_hotkey" | "set_autostart");
+            let refresh_contexts = matches!(request.command.as_str(),
+                "create_context" | "duplicate_context" | "update_context" | "save_context_if_unchanged"
+                | "update_context_color" | "set_context_t3_skill_mentions" | "set_context_pinned" | "delete_context"
+                | "assign_context_target" | "remove_context_target" | "assign_context_website" | "remove_context_website"
+                | "create_dictionary_entry" | "edit_dictionary_entry" | "remove_dictionary_entry" | "move_dictionary_entry_to_context"
+                | "move_dictionary_entry_by_term_to_context" | "set_dictionary_context_assignment"
+                | "create_snippet" | "edit_snippet" | "remove_snippet" | "move_snippet_entry_to_context" | "set_snippet_context_assignment"
+                | "create_sub_app" | "assign_sub_app" | "delete_sub_app");
+            let result = registry!(dispatch, app, request);
+            if refresh_contexts && result.is_ok() {
+                let _ = app.emit("verenu:agent-contexts-changed", ());
+            }
+            if refresh_settings && result.is_ok() {
+                let _ = app.emit("verenu:agent-settings-changed", ());
+            }
+            result
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
-    #[test]
-    fn session_descriptor_is_private_and_contains_no_token_before_approval() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("verenu-agent-pair-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&dir).unwrap();
-        let path = dir.join("agent-session.json");
-        let mut state = Pairing {
-            token: None,
-            pending: None,
-            port: 14201,
-            path: Some(path.clone()),
-            instance: "synthetic".into(),
-        };
-        state.publish("idle").unwrap();
-        let descriptor: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(descriptor["status"], "idle");
-        assert!(descriptor["token"].is_null());
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        state.token = Some("a".repeat(64));
-        state.publish("approved").unwrap();
-        let descriptor: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(descriptor["status"], "approved");
-        assert_eq!(descriptor["token"], "a".repeat(64));
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
     #[test]
     fn agent_context_commands_advertise_nullable_formatting_overrides() {
         let described = registry!(describe, app, request);
-        for command in ["create_context", "update_context_settings"] {
+        for command in ["create_context"] {
             let entry = described
-                .as_array()
-                .unwrap()
                 .iter()
                 .find(|entry| entry["command"] == command)
                 .unwrap();
@@ -660,7 +880,7 @@ mod tests {
     #[test]
     fn agent_context_library_operations_are_discoverable() {
         let described = registry!(describe, unused_app, unused_request);
-        let commands = described.as_array().unwrap();
+        let commands = &described;
         for command in [
             "get_dictionary",
             "get_snippets",

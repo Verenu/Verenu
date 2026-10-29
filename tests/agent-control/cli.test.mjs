@@ -1,79 +1,77 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, writeFile, rename, rm, symlink, chmod, mkdir, copyFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, symlink, chmod, mkdir, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { connect, invoke } from '../../Agent-Skills/verenu-control/scripts/verenu-agent.mjs';
 
-const token = 'a'.repeat(64);
 const instance = '80e46383-dfaf-4be9-8761-0b60477c9300';
 
-async function fixture(t, onPair) {
+async function fixture(t, { restartDuringAuthorization = false } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'verenu-agent-cli-'));
   const sessionFile = path.join(directory, 'agent-session.json');
-  let port;
-  async function publish(status, grant, instanceId = instance) {
-    const next = path.join(directory, 'next.json');
-    await writeFile(next, JSON.stringify({ version: 1, port, instance: instanceId, status, ...(grant ? { token: grant } : {}) }), { mode: 0o600 });
-    await rename(next, sessionFile);
-  }
+  let currentInstance = instance;
+  let token;
+  let approved = false;
   const server = createServer(async (req, res) => {
-    if (req.url === '/v1/status') {
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ version: 1, instance }));
-    } else if (req.url === '/v1/pair') {
-      await onPair(publish);
-      res.writeHead(202).end();
-    } else if (req.url === '/v1/invoke' && req.headers.authorization === `Bearer ${token}`) {
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ version: 1, result: { ok: true } }));
-    } else res.writeHead(401, { 'content-type': 'application/json' }).end('{}');
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/v1/status') return res.end(JSON.stringify({ version: 1, instance: currentInstance }));
+    if (req.url === '/v1/authorize') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      token = JSON.parse(body).token;
+      if (restartDuringAuthorization) currentInstance = '90e46383-dfaf-4be9-8761-0b60477c9300';
+      return res.end(JSON.stringify({ code: '123456', expires_in_seconds: 120 }));
+    }
+    if (req.url === '/v1/invoke' && approved && req.headers.authorization === `Bearer ${token}`) return res.end(JSON.stringify({ version: 1, result: { ok: true } }));
+    res.writeHead(401).end(JSON.stringify({ error: 'Unauthorized' }));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  port = server.address().port;
-  await publish('idle');
+  await writeFile(sessionFile, JSON.stringify({ version: 1, port: server.address().port, instance }), { mode: 0o600 });
   t.after(async () => { await new Promise((resolve) => server.close(resolve)); await rm(directory, { recursive: true, force: true }); });
-  return { env: { VERENU_APP_DATA_DIR_OVERRIDE: directory }, publish, sessionFile, directory };
+  return { directory, sessionFile, env: { VERENU_APP_DATA_DIR_OVERRIDE: directory, VERENU_AGENT_GRANT_FILE: path.join(directory, 'grant.json') }, approve: () => { approved = true; }, restart: () => { currentInstance = '90e46383-dfaf-4be9-8761-0b60477c9300'; } };
 }
 
-test('connect waits for approval and later commands reuse the approved grant', { skip: process.platform === 'win32' }, async (t) => {
-  const f = await fixture(t, async (publish) => { await publish('pending'); setTimeout(() => void publish('approved', token), 15); });
-  await assert.rejects(invoke('describe', {}, f.env), /not approved/);
-  await connect(f.env, { timeoutMs: 500, pollMs: 5 });
+test('approval is required and the agent retains its own grant', async (t) => {
+  const f = await fixture(t);
+  assert.equal((await connect(f.env)).code, '123456');
+  await assert.rejects(invoke('describe', {}, f.env), /Unauthorized/);
+  f.approve();
   assert.deepEqual(await invoke('describe', {}, f.env), { ok: true });
-  await connect(f.env, { timeoutMs: 500, pollMs: 5 });
 });
 
-test('declined approval never grants access', { skip: process.platform === 'win32' }, async (t) => {
-  const f = await fixture(t, async (publish) => { await publish('denied'); });
-  await assert.rejects(connect(f.env, { timeoutMs: 500, pollMs: 5 }), /declined/);
-  await assert.rejects(invoke('describe', {}, f.env), /not approved/);
+test('cleans up the grant if Verenu restarts during authorization', async (t) => {
+  const f = await fixture(t, { restartDuringAuthorization: true });
+  await assert.rejects(connect(f.env), /restarted/);
+  await assert.rejects(invoke('describe', {}, f.env), /ENOENT/);
 });
 
-test('does not accept a restarted instance using the same port', { skip: process.platform === 'win32' }, async (t) => {
-  const f = await fixture(t, async (publish) => { await publish('approved', token, '90e46383-dfaf-4be9-8761-0b60477c9300'); });
-  await assert.rejects(connect(f.env, { timeoutMs: 500, pollMs: 5 }), /restarted during approval/);
+test('rejects a restarted instance on the same port', async (t) => {
+  const f = await fixture(t);
+  await connect(f.env);
+  f.approve();
+  f.restart();
+  await assert.rejects(invoke('describe', {}, f.env), /restarted/);
 });
 
-test('rejects non-private or linked session files on Unix', { skip: process.platform === 'win32' }, async (t) => {
-  const f = await fixture(t, async () => {});
+test('rejects non-private and linked discovery files on Unix', { skip: process.platform === 'win32' }, async (t) => {
+  const f = await fixture(t);
   await chmod(f.sessionFile, 0o644);
-  await assert.rejects(invoke('describe', {}, f.env), /not private/);
+  await assert.rejects(connect(f.env), /not private/);
   await rm(f.sessionFile);
   await symlink(path.join(f.directory, 'other'), f.sessionFile);
-  await assert.rejects(invoke('describe', {}, f.env));
+  await assert.rejects(connect(f.env));
 });
 
-test('does not silently fall back from a partial explicit grant', { skip: process.platform === 'win32' }, async (t) => {
-  const f = await fixture(t, async () => {});
-  await f.publish('approved', token);
-  await assert.rejects(invoke('describe', {}, { ...f.env, VERENU_AGENT_TOKEN: token }), /Invalid explicit agent grant/);
+test('does not fall back from a partial explicit grant', async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(invoke('describe', {}, { ...f.env, VERENU_AGENT_TOKEN: 'a'.repeat(64) }), /Set VERENU_AGENT_TOKEN/);
 });
 
-test('finds the normal live profile when XDG points elsewhere and rejects ambiguity', { skip: process.platform !== 'linux' }, async (t) => {
-  const standard = await fixture(t, async () => {});
-  const other = await fixture(t, async () => {});
-  await standard.publish('approved', token);
-  await other.publish('approved', token);
+test('finds the normal profile and rejects multiple live profiles', { skip: process.platform !== 'linux' }, async (t) => {
+  const standard = await fixture(t);
+  const other = await fixture(t);
   const home = await mkdtemp(path.join(tmpdir(), 'verenu-agent-home-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const defaultDir = path.join(home, '.config', 'Verenu');
@@ -82,8 +80,9 @@ test('finds the normal live profile when XDG points elsewhere and rejects ambigu
   await mkdir(defaultDir, { recursive: true });
   await mkdir(xdgDir, { recursive: true });
   await copyFile(standard.sessionFile, path.join(defaultDir, 'agent-session.json'));
-  const env = { HOME: home, XDG_CONFIG_HOME: xdg };
-  assert.deepEqual(await invoke('describe', {}, env), { ok: true });
+  const env = { HOME: home, XDG_CONFIG_HOME: xdg, VERENU_AGENT_GRANT_FILE: path.join(home, 'grant.json') };
+  await connect(env);
+  await rm(env.VERENU_AGENT_GRANT_FILE);
   await copyFile(other.sessionFile, path.join(xdgDir, 'agent-session.json'));
-  await assert.rejects(invoke('describe', {}, env), /More than one Verenu profile/);
+  await assert.rejects(connect(env), /More than one Verenu profile/);
 });

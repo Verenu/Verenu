@@ -370,13 +370,14 @@ static SUB_APP_KEY_DOWN: AtomicBool = AtomicBool::new(false);
 static SUB_APP_VK: AtomicU32 = AtomicU32::new(0x53);
 static SUB_APP_MODS: AtomicU32 = AtomicU32::new(1 | 2 | 4);
 
-pub fn set_sub_app_capture_chord(chord: super::chord::Chord) {
+pub fn set_sub_app_capture_chord(chord: super::chord::Chord) -> Result<(), String> {
     let mods = u32::from(chord.ctrl)
         | (u32::from(chord.alt) << 1)
         | (u32::from(chord.shift) << 2)
         | (u32::from(chord.super_key) << 3);
     SUB_APP_MODS.store(mods, Ordering::SeqCst);
     SUB_APP_VK.store(chord.windows_vk(), Ordering::SeqCst);
+    Ok(())
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

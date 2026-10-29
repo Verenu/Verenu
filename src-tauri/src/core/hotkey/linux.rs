@@ -475,6 +475,42 @@ pub fn suspend_shortcuts(active: bool) -> Result<(), String> {
     eval_hyprland(&suspend_shortcuts_snippet(active))
 }
 
+fn install_with_capture_suspended(work: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    super::with_capture_transition_lock(|| {
+        maintain_capture_suspension(super::capture_active(), work, || suspend_shortcuts(true))
+    })
+}
+
+fn maintain_capture_suspension(
+    active: bool,
+    work: impl FnOnce() -> Result<(), String>,
+    suspend: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let result = work();
+    if active { suspend()?; }
+    result
+}
+
+#[cfg(test)]
+mod capture_binding_tests {
+    use super::*;
+    #[test]
+    fn reconnect_reapplies_capture_suspension_even_if_install_fails() {
+        let calls = std::cell::Cell::new(0);
+        let result = maintain_capture_suspension(true, || Err("install failed".into()), || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 1);
+        maintain_capture_suspension(false, || Ok(()), || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        }).unwrap();
+        assert_eq!(calls.get(), 1);
+    }
+}
+
 fn suspend_shortcuts_snippet(active: bool) -> String {
     let enabled = if active { "false" } else { "true" };
     format!(
@@ -533,14 +569,56 @@ pub fn set_chord_cancel_callback(callback: impl Fn() + Send + Sync + 'static) {
 }
 static SUB_APP_CHORD: Mutex<Option<super::chord::Chord>> = Mutex::new(None);
 
-pub fn set_sub_app_capture_chord(chord: super::chord::Chord) {
-    if let Ok(mut slot) = SUB_APP_CHORD.lock() {
-        *slot = Some(chord);
-    }
-    install_sub_app_capture_binding();
+pub fn initialize_sub_app_capture_chord(chord: super::chord::Chord) -> Result<(), String> {
+    initialize_sub_app_chord(&SUB_APP_CHORD, chord, || install_sub_app_capture_binding(false))
 }
 
-fn install_sub_app_capture_binding() {
+fn initialize_sub_app_chord(
+    slot: &Mutex<Option<super::chord::Chord>>,
+    chord: super::chord::Chord,
+    install: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    *slot.lock().map_err(|_| "Shortcut state unavailable")? = Some(chord);
+    install()
+}
+
+#[cfg(test)]
+mod sub_app_startup_tests {
+    use super::*;
+
+    #[test]
+    fn occupied_saved_shortcut_keeps_requested_chord_while_using_fallback() {
+        let requested = super::super::chord::Chord::parse("Ctrl+Alt+F6").unwrap();
+        let slot = Mutex::new(None);
+        let occupied = vec![conflicts::Binding { modmask: 12, key: "F6".into(), ..Default::default() }];
+        initialize_sub_app_chord(&slot, requested, || {
+            let saved = slot.lock().unwrap().unwrap().to_string();
+            assert_eq!(saved, requested.to_string());
+            assert_eq!(conflicts::choose(&occupied, &saved, &["Ctrl+Alt+Shift+F7"], false).as_deref(), Some("Ctrl+Alt+Shift+F7"));
+            Ok(())
+        }).unwrap();
+        assert_eq!(slot.lock().unwrap().unwrap().to_string(), requested.to_string());
+    }
+}
+
+pub fn set_sub_app_capture_chord(chord: super::chord::Chord) -> Result<(), String> {
+    let previous = {
+        let mut slot = SUB_APP_CHORD.lock().map_err(|_| "Shortcut state unavailable")?;
+        let previous = *slot;
+        *slot = Some(chord);
+        previous
+    };
+    if let Err(error) = install_sub_app_capture_binding(true) {
+        *SUB_APP_CHORD.lock().map_err(|_| "Shortcut state unavailable")? = previous;
+        if let Err(rollback) = install_sub_app_capture_binding(false) {
+            return Err(format!("{error}; shortcut rollback failed: {rollback}"));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn install_sub_app_capture_binding(require_exact: bool) -> Result<(), String> {
     let chord = SUB_APP_CHORD
         .lock()
         .ok()
@@ -556,15 +634,17 @@ fn install_sub_app_capture_binding() {
         )
     });
     let Some(active) = active else {
+        if require_exact { return Err("Sub-app shortcut is unavailable".into()); }
         let _ = shortcuts::remove_block(
             "-- >>> Verenu sub-app capture (do not edit) <<<",
             "-- <<< End Verenu sub-app capture >>>",
         );
         conflicts::status("capture", requested, None, vec![]);
-        return;
+        return Ok(());
     };
+    if require_exact && active != requested { return Err("Sub-app shortcut is already assigned".into()); }
     let Some(chord) = super::chord::Chord::parse(&active) else {
-        return;
+        return Err("Invalid sub-app shortcut".into());
     };
     match std::env::current_exe() {
         Ok(exe) => {
@@ -579,9 +659,9 @@ fn install_sub_app_capture_binding() {
                 publish_shortcut_failure(
                     "capture",
                     &requested,
-                    portal::Failure::new("Installing sub-app shortcut", error),
+                    portal::Failure::new("Installing sub-app shortcut", error.clone()),
                 );
-                return;
+                return Err(error);
             }
             conflicts::status("capture", requested, Some(active), vec![]);
             ESCAPE_ARMED.store(false, Ordering::SeqCst);
@@ -589,12 +669,12 @@ fn install_sub_app_capture_binding() {
             register_temporary_controls();
             refresh_escape_listening();
         }
-        Err(error) => publish_shortcut_failure(
-            "capture",
-            &requested,
-            portal::Failure::new("Preparing sub-app shortcut", error.to_string()),
-        ),
+        Err(error) => {
+            publish_shortcut_failure("capture", &requested, portal::Failure::new("Preparing sub-app shortcut", error.to_string()));
+            return Err(error.to_string());
+        }
     }
+    Ok(())
 }
 
 pub fn notify_capture_sub_app() {
@@ -1003,13 +1083,13 @@ async fn run_portal_session(
             return true;
         }
     };
-    if let Err(error) = crate::core::hyprland::ensure_global_shortcut_binding(
+    if let Err(error) = install_with_capture_suspended(|| crate::core::hyprland::ensure_global_shortcut_binding(
         bindings,
         &dictate_id,
         &release_command,
         &handsfree_command,
         &release_keycodes_for(&configured_keys(&EFFECTIVE_KEYS)),
-    ) {
+    )) {
         registration_failure(portal::Failure::new("Installing desktop bindings", error));
         return true;
     }
@@ -1029,7 +1109,9 @@ async fn run_portal_session(
         Some(shortcut_display(&keys)),
         keys.iter().map(|id| shortcut_code(*id)).collect(),
     );
-    install_sub_app_capture_binding();
+    if let Err(error) = install_with_capture_suspended(|| super::with_sub_app_shortcut_lock(|| install_sub_app_capture_binding(false))) {
+        log::warn!("Could not install sub-app shortcut: {error}");
+    }
     match discover_portal_id(&before, PORTAL_CANCEL_DESCRIPTION) {
         Some(id) => {
             if let Ok(mut slot) = CANCEL_PORTAL_ID.lock() {

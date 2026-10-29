@@ -139,9 +139,10 @@ pub async fn edit_snippet(
     trigger: String,
     expansion: String,
     instructions: String,
+    expected: Option<db::ExpectedSnippet>,
 ) -> Result<(), String> {
     run_db(&app, "edit_snippet", move |db| {
-        db::update_snippet(db, id, &trigger, &expansion, &instructions)
+        db::update_snippet_if_unchanged(db, id, &trigger, &expansion, &instructions, expected.as_ref())
     })
     .await
 }
@@ -190,11 +191,14 @@ pub async fn edit_dictionary_entry(
     context_id: Option<i64>,
     correction_id: Option<i64>,
     correction_ids: Option<Vec<i64>>,
+    expected: Option<db::ExpectedDictionaryEntry>,
 ) -> Result<(), String> {
     let event_app = app.clone();
     run_db(&app, "edit_dictionary_entry", move |db| {
         let _ = (dictionary_id, correction_id, correction_ids);
-        let result = match context_id {
+        let result = if let Some(expected) = expected.as_ref() {
+            db::update_dictionary_entry_if_unchanged(db, context_id, id, &term, mistake.as_deref(), expected)
+        } else { match context_id {
             Some(context_id) => db::update_dictionary_entry_for_context(
                 db,
                 context_id,
@@ -203,7 +207,7 @@ pub async fn edit_dictionary_entry(
                 mistake.as_deref(),
             ),
             None => db::update_dictionary_entry(db, id, &term, mistake.as_deref()),
-        };
+        }};
         if result.is_ok() {
             emit_dictionary_updated(&event_app, context_id, id);
         }
