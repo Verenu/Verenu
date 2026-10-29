@@ -139,8 +139,9 @@ pub(super) async fn finalize_pipeline_completion(
     let duration_for_insert = ctx.duration_ms as i64;
     let dictionary_fixes_applied = applied_dict_ids.len() as i64;
     let context_for_insert = Some(ctx.context.id);
+    let website_for_insert = ctx.context.website_domain.clone();
     let entry = match tokio::task::spawn_blocking(move || -> anyhow::Result<db::RecentEntry> {
-        let entry = db::insert_transcription_returning(
+        let entry = db::insert_transcription_with_website(
             &db_for_insert,
             &raw_for_insert,
             &clean_for_insert,
@@ -149,6 +150,7 @@ pub(super) async fn finalize_pipeline_completion(
             &api_used_for_insert,
             app_name_for_insert.as_deref(),
             context_for_insert,
+            website_for_insert.as_deref(),
         )?;
         if dictionary_fixes_applied > 0 {
             if let Err(e) =

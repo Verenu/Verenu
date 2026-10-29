@@ -820,6 +820,7 @@ mod tests {
             let mut st = lock_state(&state).expect("state lock");
             st.recording_context = Some(ResolvedContextIdentity {
                 t3_skills: None,
+                website_domain: None,
                 id: 42,
                 label: "Old context".into(),
             });
@@ -877,6 +878,7 @@ mod tests {
         let state = fresh_state();
         let context = ResolvedContextIdentity {
             t3_skills: None,
+            website_domain: None,
             id: 7,
             label: "Development".into(),
         };
@@ -946,6 +948,7 @@ mod tests {
                 process_name: String::new(),
                 context: ResolvedContextIdentity {
                     t3_skills: None,
+                    website_domain: None,
                     id: 1,
                     label: "Everywhere".into(),
                 },
@@ -1119,6 +1122,7 @@ mod tests {
         let state = fresh_state();
         let context = ResolvedContextIdentity {
             t3_skills: None,
+            website_domain: None,
             id: 8,
             label: "Development".into(),
         };
@@ -1153,6 +1157,7 @@ mod tests {
         let state = fresh_state();
         let context = ResolvedContextIdentity {
             t3_skills: None,
+            website_domain: None,
             id: 9,
             label: "Writing".into(),
         };
