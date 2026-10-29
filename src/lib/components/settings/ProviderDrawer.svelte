@@ -257,7 +257,6 @@
       </span>
       <input type="password" bind:value={key} autocomplete="off" placeholder={keyStatus[editing.id] ? 'Saved. Enter a new key to replace it' : preset?.key_hint ?? 'Enter your API key'} disabled={busy} />
     </label>
-    {@render clearKey()}
   {/if}
 {/snippet}
 
@@ -430,6 +429,7 @@
                 {@render advanced()}
               </details>
             {/if}
+            {@render clearKey()}
             <div class="actions sticky">
               {#if error}<p class="provider-error" role="alert" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>{error}</p>{/if}
               <button class="btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : savedOriginal ? 'Save provider' : 'Add provider'}</button>
