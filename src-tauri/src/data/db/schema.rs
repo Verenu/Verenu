@@ -364,7 +364,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // keys, so enable enforcement before schema work or application queries.
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    anyhow::ensure!(user_version <= 38, "This database was created by a newer version of Verenu");
+    anyhow::ensure!(user_version <= 39, "This database was created by a newer version of Verenu");
     if user_version < 2 && db_existed_before_open {
         let _ = std::fs::copy(db_path, db_path.with_extension("db.bak"));
     }
@@ -1036,8 +1036,10 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
-    if user_version < 36 {
+    if user_version < 39 {
         run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "transcriptions", "vocabulary_replacements", "ALTER TABLE transcriptions ADD COLUMN vocabulary_replacements INTEGER;")?;
+            ensure_table_column(conn, "transcriptions", "snippet_expansions", "ALTER TABLE transcriptions ADD COLUMN snippet_expansions INTEGER;")?;
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS library_usage_coverage (id INTEGER PRIMARY KEY CHECK(id = 1), started_at TEXT NOT NULL);
                  INSERT OR IGNORE INTO library_usage_coverage VALUES (1, datetime('now'));
@@ -1057,29 +1059,19 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
                    started_at TEXT NOT NULL DEFAULT (datetime('now')),
                    finished_at TEXT
                  );
-                 PRAGMA user_version = 36;",
+                 ",
             )?;
-            Ok(())
-        })?;
-    }
-    if user_version < 37 {
-        run_migration(&mut conn, |conn| {
             conn.execute_batch("CREATE TABLE IF NOT EXISTS agent_library_changes (
               request_id TEXT PRIMARY KEY, basis TEXT NOT NULL, snapshot TEXT NOT NULL, log_seq INTEGER NOT NULL,
               undone INTEGER NOT NULL DEFAULT 0 CHECK(undone IN (0, 1)),
               created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            ); PRAGMA user_version = 37;")?;
-            Ok(())
-        })?;
-    }
-    if user_version < 38 {
-        run_migration(&mut conn, |conn| {
+            );")?;
             ensure_table_column(conn, "agent_change_audit", "actor_id", "ALTER TABLE agent_change_audit ADD COLUMN actor_id TEXT;")?;
-            conn.execute_batch("PRAGMA user_version = 38;")?;
+            conn.execute_batch("PRAGMA user_version = 39;")?;
             Ok(())
         })?;
     }
-    if user_version <= 38 {
+    if user_version <= 39 {
         conn.execute("DELETE FROM agent_library_changes WHERE created_at < datetime('now','-30 days')", [])?;
     }
     conn.execute("INSERT OR IGNORE INTO library_usage_coverage VALUES (1, datetime('now'))", [])?;
@@ -1091,6 +1083,8 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             GROUP BY device_id;
          CREATE INDEX IF NOT EXISTS idx_transcriptions_context_created_at
            ON transcriptions(context_id, created_at);
+         CREATE INDEX IF NOT EXISTS idx_transcriptions_activity_day
+           ON transcriptions(activity_day);
          CREATE INDEX IF NOT EXISTS idx_transcription_context_daily_stats_context_day
            ON transcription_context_daily_stats(context_uuid, day);
          CREATE INDEX IF NOT EXISTS idx_transcription_receipts_day_hour
