@@ -105,6 +105,28 @@ test('refreshing Context items preserves an open vocabulary editor', async ({ pa
   }
 });
 
+test('editing inherited vocabulary preserves the Everywhere correction', async ({ page, session }) => {
+  const context = await session.invoke('create_context', { name: `Inherited edit ${Date.now()}` });
+  const word = await session.invoke('create_dictionary_entry', { term: 'InheritedSynthetic', mistake: 'global spelling', contextId: 1 });
+  try {
+    await session.invoke('set_dictionary_context_assignment', { contextId: context.id, dictionaryId: word.id, assigned: true });
+    await page.reload();
+    await page.locator(`[data-debug-id="context.${context.id}"]`).click();
+    await page.locator('.item-row').filter({ hasText: 'InheritedSynthetic' }).click();
+    await page.getByRole('menuitem', { name: 'Edit', exact: true }).click();
+    await expect(page.locator('#dict-mistake')).toHaveValue('');
+    await page.locator('#dict-mistake').fill('local spelling');
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    const entry = (await session.invoke('get_context_dictionary', { contextId: context.id })).find(item => item.id === word.id);
+    expect(entry.context_corrections.map(item => item.mistake)).toContain('local spelling');
+    expect((await session.invoke('get_context_dictionary', { contextId: 1 })).find(item => item.id === word.id).mistake).toBe('global spelling');
+  } finally {
+    await session.invoke('remove_dictionary_entry', { id: word.id });
+    await session.invoke('delete_context', { contextId: context.id });
+  }
+});
+
 test('refreshing Context items preserves an open snippet editor', async ({ page, session }) => {
   const context = await session.invoke('create_context', { name: `Snippet refresh ${Date.now()}` });
   const snippet = await session.invoke('create_snippet', { trigger: 'synthetic snippet', expansion: 'old expansion', instructions: '', contextId: context.id });
@@ -124,6 +146,58 @@ test('refreshing Context items preserves an open snippet editor', async ({ page,
     const entries = await session.invoke('get_context_snippets', { contextId: context.id });
     expect(entries.filter(entry => entry.id === snippet.id)).toHaveLength(1);
     expect(entries.find(entry => entry.id === snippet.id).expansion).toBe('new expansion');
+  } finally {
+    await session.invoke('remove_snippet', { id: snippet.id });
+    await session.invoke('delete_context', { contextId: context.id });
+  }
+});
+
+test('open vocabulary and snippet drafts cannot overwrite concurrent edits', async ({ page, session }) => {
+  const context = await session.invoke('create_context', { name: `Concurrent items ${Date.now()}` });
+  const word = await session.invoke('create_dictionary_entry', { term: 'SyntheticTerm', mistake: 'old spelling', contextId: context.id });
+  const snippet = await session.invoke('create_snippet', { trigger: 'synthetic snippet', expansion: 'old expansion', instructions: '', contextId: context.id });
+  try {
+    await page.reload();
+    await page.locator(`[data-debug-id="context.${context.id}"]`).click();
+    await page.locator('.item-row').filter({ hasText: 'SyntheticTerm' }).click();
+    await page.getByRole('menuitem', { name: 'Edit', exact: true }).click();
+    await page.locator('#dict-term').fill('User rename');
+    await session.invoke('edit_dictionary_entry', { id: word.id, term: 'SyntheticTerm', mistake: 'agent spelling', contextId: context.id });
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(page.getByText(/changed while you were editing/)).toBeVisible();
+    expect((await session.invoke('get_context_dictionary', { contextId: context.id })).find(item => item.id === word.id).mistake).toBe('agent spelling');
+    await page.keyboard.press('Escape');
+    await page.getByRole('tab', { name: /Snippets/ }).click();
+    await page.locator('.item-row').filter({ hasText: 'synthetic snippet' }).click();
+    await page.getByRole('menuitem', { name: 'Edit', exact: true }).click();
+    await page.locator('#expansion-input').fill('user expansion');
+    await session.invoke('edit_snippet', { id: snippet.id, trigger: 'synthetic snippet', expansion: 'agent expansion', instructions: '' });
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(page.getByText(/changed while you were editing/)).toBeVisible();
+    expect((await session.invoke('get_context_snippets', { contextId: context.id })).find(item => item.id === snippet.id).expansion).toBe('agent expansion');
+  } finally {
+    await session.invoke('remove_dictionary_entry', { id: word.id });
+    await session.invoke('remove_snippet', { id: snippet.id });
+    await session.invoke('delete_context', { contextId: context.id });
+  }
+});
+
+test('moving a conflicting snippet rejects changes made after the conflict appeared', async ({ page, session }) => {
+  const context = await session.invoke('create_context', { name: `Move conflict ${Date.now()}` });
+  const snippet = await session.invoke('create_snippet', { trigger: 'synthetic move', expansion: 'original', instructions: '', contextId: 1 });
+  try {
+    await page.reload();
+    await page.locator(`[data-debug-id="context.${context.id}"]`).click();
+    await page.getByRole('tab', { name: /Snippets/ }).click();
+    await page.getByRole('button', { name: 'Add snippet' }).click();
+    await page.locator('#trigger-input').fill('synthetic move');
+    await page.locator('#expansion-input').fill('user draft');
+    await page.getByRole('button', { name: 'Add snippet', exact: true }).last().click();
+    await expect(page.getByRole('button', { name: 'Move it here' })).toBeVisible();
+    await session.invoke('edit_snippet', { id: snippet.id, trigger: 'synthetic move', expansion: 'agent edit', instructions: '' });
+    await page.getByRole('button', { name: /Move.*here/i }).click();
+    await expect(page.getByText(/changed while you were editing/)).toBeVisible();
+    expect((await session.invoke('get_snippets')).find(item => item.id === snippet.id).expansion).toBe('agent edit');
   } finally {
     await session.invoke('remove_snippet', { id: snippet.id });
     await session.invoke('delete_context', { contextId: context.id });

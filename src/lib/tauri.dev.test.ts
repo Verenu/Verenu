@@ -23,12 +23,26 @@ it('persists an inherited word customization locally and preserves its global sp
   browserStorage();
   const created = await devInvoke<{ id: number }>('create_dictionary_entry', { term: 'GlobalWord', mistake: 'global-word', contextId: 1 });
   await expect(devInvoke('edit_dictionary_entry', { id: created.id, term: 'Renamed', contextId: 2 })).rejects.toThrow('Rename inherited terms in Everywhere');
-  await devInvoke('edit_dictionary_entry', { id: created.id, term: 'GlobalWord', mistake: 'local-word', contextId: 2 });
+  await devInvoke('edit_dictionary_entry', { id: created.id, term: 'GlobalWord', mistake: 'local-word', contextId: 2, expected: { term: 'GlobalWord', mistake: null } });
+  await expect(devInvoke('edit_dictionary_entry', { id: created.id, term: 'GlobalWord', mistake: 'stale', contextId: 2, expected: { term: 'GlobalWord', mistake: null } })).rejects.toThrow('changed while you were editing');
   expect(await devInvoke('get_context_dictionary', { contextId: 2 })).toMatchObject([{
     term: 'GlobalWord', assigned_to_context: true, inherited_from_everywhere: true,
     context_corrections: [{ mistake: 'local-word', context_id: 2 }],
   }]);
   expect(await devInvoke('get_context_dictionary', { contextId: 1 })).toMatchObject([{ term: 'GlobalWord', mistake: 'global-word' }]);
+});
+
+it('rejects stale vocabulary and snippet edits without losing newer changes', async () => {
+  browserStorage();
+  const word = await devInvoke<{ id: number }>('create_dictionary_entry', { term: 'Word', mistake: 'old', contextId: 2 });
+  await devInvoke('edit_dictionary_entry', { id: word.id, term: 'Word', mistake: 'new', contextId: 2 });
+  await expect(devInvoke('edit_dictionary_entry', { id: word.id, term: 'Renamed', mistake: 'old', contextId: 2, expected: { term: 'Word', mistake: 'old' } })).rejects.toThrow('changed while you were editing');
+  expect(await devInvoke('get_context_dictionary', { contextId: 2 })).toMatchObject([{ term: 'Word', mistake: 'new' }]);
+
+  const snippet = await devInvoke<{ id: number }>('create_snippet', { trigger: 'sig', expansion: 'old', instructions: '' });
+  await devInvoke('edit_snippet', { id: snippet.id, trigger: 'sig', expansion: 'new', instructions: '' });
+  await expect(devInvoke('edit_snippet', { id: snippet.id, trigger: 'signature', expansion: 'old', instructions: '', expected: { trigger: 'sig', expansion: 'old', instructions: '' } })).rejects.toThrow('changed while you were editing');
+  expect(await devInvoke('get_snippets')).toMatchObject([{ trigger: 'sig', expansion: 'new' }]);
 });
 
 it('preserves Android pill defaults in individual and full browser settings reads', async () => {

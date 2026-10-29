@@ -470,11 +470,9 @@ macro_rules! registry {
             test_cleanup_prompt { provider: String, model: String, template: String, intensity: Option<String>, tone: Option<String> },
             get_contexts {},
             create_context { name: String, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: Option<bool>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool> },
-            duplicate_context { context_id: i64 }, update_context { context_id: i64, name: String },
-            update_context_settings { context_id: i64, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: Option<bool>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool> },
-            update_context_color { context_id: i64, color: Option<String> },
-            set_context_t3_skill_mentions { context_id: i64, enabled: bool },
-            set_context_pinned { context_id: i64, pinned: bool }, delete_context { context_id: i64 },
+            duplicate_context { context_id: i64 },
+            save_context_if_unchanged { original: db::Context, updated: db::Context },
+            delete_context { context_id: i64 },
             get_context_stats { context_id: i64 }, get_context_targets { context_id: Option<i64> },
             assign_context_target { context_id: i64, executable: String, app_name: Option<String>, developer: Option<String> },
             remove_context_target { context_id: i64, executable: String },
@@ -483,7 +481,7 @@ macro_rules! registry {
             get_context_dictionary { context_id: i64 }, get_context_snippets { context_id: i64 },
             get_dictionary {},
             create_dictionary_entry { term: String, mistake: Option<String>, context_id: Option<i64> },
-            edit_dictionary_entry { id: i64, term: String, mistake: Option<String>, dictionary_id: Option<i64>, context_id: Option<i64>, correction_id: Option<i64>, correction_ids: Option<Vec<i64>> },
+            edit_dictionary_entry { id: i64, term: String, mistake: Option<String>, dictionary_id: Option<i64>, context_id: Option<i64>, correction_id: Option<i64>, correction_ids: Option<Vec<i64>>, expected: Option<db::ExpectedDictionaryEntry> },
             remove_dictionary_entry { id: i64, dictionary_id: Option<i64>, context_id: Option<i64>, correction_id: Option<i64>, correction_ids: Option<Vec<i64>> },
             move_dictionary_entry_to_context { dictionary_id: i64, source_context_id: i64, target_context_id: i64, correction_id: Option<i64>, correction_ids: Option<Vec<i64>> },
             get_dictionary_entry_contexts { term: String },
@@ -491,15 +489,14 @@ macro_rules! registry {
             set_dictionary_context_assignment { context_id: i64, dictionary_id: i64, assigned: bool },
             get_snippets {},
             create_snippet { trigger: String, expansion: String, instructions: String, context_id: Option<i64> },
-            edit_snippet { id: i64, trigger: String, expansion: String, instructions: String },
+            edit_snippet { id: i64, trigger: String, expansion: String, instructions: String, expected: Option<db::ExpectedSnippet> },
             remove_snippet { id: i64 },
             get_snippet_entry_contexts { trigger: String },
-            move_snippet_entry_to_context { trigger: String, context_id: i64 },
+            move_snippet_entry_to_context { trigger: String, context_id: i64, edit: Option<db::SnippetMoveEdit> },
             set_snippet_context_assignment { context_id: i64, snippet_id: i64, assigned: bool },
             get_sub_apps {},
             create_sub_app { executable: String, app_name: Option<String>, label: String, icon: Option<String>, title_pattern: String, match_mode: String },
             assign_sub_app { id: i64, context_id: Option<i64> }, delete_sub_app { id: i64 },
-            save_hotkey { keys: Vec<String> }, set_autostart { enabled: bool },
             get_api_key_status {}, delete_custom_provider { provider: String },
             sync_get_status {}, sync_set_device_name { name: String },
             sync_set_peer_address { device_uuid: String, address: String },
@@ -527,16 +524,25 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
         return Err("This command does not accept arguments".into());
     }
     if request.command == "describe" {
+        let mut native = registry!(describe, app, request);
+        native.push(json!({"command": "save_hotkey", "arguments": {"keys": "Vec<String>", "expected": "raw hotkey value from get_setting"}}));
+        native.push(json!({"command": "set_autostart", "arguments": {"enabled": "bool", "expected": "raw autostart_enabled value from get_setting"}}));
+        for entry in &mut native {
+            if matches!(entry["command"].as_str(), Some("edit_dictionary_entry" | "edit_snippet")) {
+                entry["arguments"]["expected"] = json!("required original editable fields");
+            }
+        }
         return Ok(
-            json!({"version": 1, "native_commands": registry!(describe, app, request),
-            "argument_naming": "Native command fields use camelCase; optional fields may be omitted. update_context_settings replaces all fields; read then modify.",
+            json!({"version": 1, "native_commands": native,
+            "argument_naming": "Native command fields use camelCase; optional fields may be omitted. edit_dictionary_entry and edit_snippet require expected snapshots. Use context.patch_settings for partial edits or save_context_if_unchanged for replacements.",
             "writable_settings": WRITABLE_SETTINGS,
             "additional_commands": {
-                "save_setting": {"key": "writable setting", "value": "native validated JSON"},
+                "save_setting": {"key": "writable setting", "value": "native validated JSON", "expected": "object mapping affected keys to values read with get_setting; contextual_formatting_enabled also requires contextual_caps_enabled and auto_spacing_enabled"},
                 "credentials.save": {"provider": "string", "key": "secret; supply through private stdin"},
                 "credentials.delete": {"provider": "string"},
                 "t3.connect": {"pairingLink": "private pairing link; supply through stdin"},
-                "context.patch_settings": {"contextId": "integer", "settings": "object: icon, tone, cleanupIntensity, customInstructions, contextualFormattingOverride, pasteInChunks; omitted fields are preserved, null clears nullable fields"},
+                "context.patch_settings": {"contextId": "integer", "expected": "original Context returned by get_contexts", "settings": "object: icon, tone, cleanupIntensity, customInstructions, contextualFormattingOverride, pasteInChunks; omitted fields are preserved, null clears nullable fields"},
+                "context.set_pinned": {"contextId": "integer", "pinned": "boolean", "expected": "original Context returned by get_contexts"},
                 "get_microphones": {}, "diagnostics.snapshot": {},
                 "diagnostics.logs": {"since_ms": "optional inclusive UTC milliseconds", "until_ms": "optional exclusive UTC milliseconds", "subsystem": "optional substring", "level": "optional exact level: error, warn, info, debug, trace", "limit": "1..1000 (default 200); newest matches"},
                 "prompts.lint": {"template": "string", "intensity": "optional string", "tone": "optional string"},
@@ -550,6 +556,25 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
         );
     }
     match request.command.as_str() {
+        "save_hotkey" | "set_autostart" => {
+            if !request.args.as_object().is_some_and(|args| args.contains_key("expected")) {
+                return Err("Expected current setting is required; read it before editing".into());
+            }
+            if request.command == "save_hotkey" {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args { keys: Vec<String>, expected: Value }
+                let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+                commands::save_hotkey_for_agent(app.clone(), args.keys, args.expected).await?;
+            } else {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args { enabled: bool, expected: Value }
+                let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+                commands::set_autostart_for_agent(app.clone(), args.enabled, args.expected).await?;
+            }
+            Ok(Value::Null)
+        }
         "t3.connect" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -592,17 +617,30 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             let _ = app.emit("verenu:agent-settings-changed", ());
             Ok(Value::Null)
         }
+        "context.set_pinned" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args { context_id: i64, pinned: bool, expected: db::Context }
+            let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            if args.expected.id != args.context_id { return Err("Expected Context does not match contextId".to_string()); }
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            tokio::task::spawn_blocking(move || db::set_context_pinned_if_unchanged(&db, args.context_id, args.pinned, args.expected.pinned_at))
+                .await.map_err(|_| "Context worker unavailable".to_string())?.map_err(|e| e.to_string())?;
+            let _ = app.emit("verenu:agent-contexts-changed", ());
+            Ok(Value::Null)
+        }
         "context.patch_settings" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct Args {
                 context_id: i64,
                 settings: db::ContextSettingsPatch,
+                expected: db::Context,
             }
             let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
             let db = app.state::<crate::DbHandle>().inner().clone();
             let context = tokio::task::spawn_blocking(move || {
-                db::patch_context_settings(&db, args.context_id, args.settings)
+                db::patch_context_settings_if_unchanged(&db, args.context_id, args.settings, args.expected)
             })
             .await
             .map_err(|_| "Context worker unavailable".to_string())?
@@ -616,25 +654,18 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             struct Args {
                 key: String,
                 value: Value,
+                expected: serde_json::Map<String, Value>,
             }
             let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
             if !WRITABLE_SETTINGS.contains(&args.key.as_str()) {
                 return Err("Setting is not agent-writable; use describe".into());
             }
-            if args.key == store::CUSTOM_PROVIDERS {
-                let settings = store::settings_snapshot(app)?;
-                let before =
-                    crate::api::custom::parse_stored(settings.get(store::CUSTOM_PROVIDERS));
-                let after = crate::api::custom::normalize_list(&args.value)?;
-                if before
-                    .iter()
-                    .any(|old| !after.iter().any(|new| new.id == old.id))
-                {
-                    return Err("Remove providers with delete_custom_provider so model selections are repaired".into());
-                }
+            if args.key == store::SUB_APP_CAPTURE_HOTKEY {
+                commands::save_sub_app_shortcut_for_agent(app.clone(), args.value, args.expected).await?;
+            } else {
+                commands::save_setting_if_unchanged(app.clone(), args.key.clone(), args.value, args.expected).await?;
+                let _ = app.emit("verenu:agent-settings-changed", vec![args.key]);
             }
-            commands::save_setting(app.clone(), args.key.clone(), args.value).await?;
-            let _ = app.emit("verenu:agent-settings-changed", vec![args.key]);
             Ok(Value::Null)
         }
         "get_microphones" => {
@@ -703,9 +734,14 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             .map_err(|e| e.to_string())
         }
         _ => {
-            let refresh_settings = request.command == "delete_custom_provider";
+            if matches!(request.command.as_str(), "edit_dictionary_entry" | "edit_snippet")
+                && request.args.get("expected").is_none_or(Value::is_null) {
+                return Err("Expected original entry is required; read the entry before editing".into());
+            }
+            let refresh_settings = matches!(request.command.as_str(),
+                "delete_custom_provider" | "save_hotkey" | "set_autostart");
             let refresh_contexts = matches!(request.command.as_str(),
-                "create_context" | "duplicate_context" | "update_context" | "update_context_settings"
+                "create_context" | "duplicate_context" | "update_context" | "save_context_if_unchanged"
                 | "update_context_color" | "set_context_t3_skill_mentions" | "set_context_pinned" | "delete_context"
                 | "assign_context_target" | "remove_context_target" | "assign_context_website" | "remove_context_website"
                 | "create_dictionary_entry" | "edit_dictionary_entry" | "remove_dictionary_entry" | "move_dictionary_entry_to_context"
@@ -730,7 +766,7 @@ mod tests {
     #[test]
     fn agent_context_commands_advertise_nullable_formatting_overrides() {
         let described = registry!(describe, app, request);
-        for command in ["create_context", "update_context_settings"] {
+        for command in ["create_context"] {
             let entry = described
                 .iter()
                 .find(|entry| entry["command"] == command)

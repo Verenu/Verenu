@@ -38,7 +38,6 @@
   const cleanupOff = $derived(cleanupName === 'Off');
   const isLocal = $derived(providerName === 'On this device' || providerName === 'Local');
 
-  const smartProcessing = 'Noise reduction, spacing, capitalization, and correction learning are on.';
 
   let checkAnimating = $state(false);
   onMount(() => {
@@ -137,7 +136,7 @@
     </div>
   </div>
 
-  <p class="done-footer">{smartProcessing} Change any of it in <strong>Settings</strong> or <strong>Style</strong>.</p>
+  <p class="done-footer">Adjust noise reduction, spacing, capitalization, and correction learning in <strong>Settings</strong> or <strong>Style</strong>.</p>
 </div>
 
 <style>

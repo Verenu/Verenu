@@ -28,8 +28,11 @@ features, or recommendations for Context groups, also read
    inspect `get_sub_apps` and each relevant group's `get_context_dictionary`
    and `get_context_snippets`. Native arguments use
    camelCase: e.g. `{"contextId": 4}`. `describe` lists available fields and
-   writable settings. Omitted optional fields in `update_context_settings`
-   become null, so preserve existing fields when editing one property.
+   writable settings. Use `context.patch_settings` for partial Context edits with
+   `expected` set to the original Context from `get_contexts`; omitted fields
+   are preserved and explicit null clears a nullable override. For whole-record
+   replacement use `save_context_if_unchanged` with the original and updated
+   Context records. A conflict requires a fresh read.
    For a request to recommend, clean up, optimize, or add Contexts, collect
    evidence before recommending specific changes as well as before editing.
    Do not guess plausible categories while approval is pending or unavailable:
@@ -89,8 +92,15 @@ features, or recommendations for Context groups, also read
    `docs/TROUBLESHOOTING.md#session-logs-for-agents`; the opt-in daily journal
    contains counts and fingerprints, not historical log messages.
 6. For authorized edits, use `save_setting`, Context CRUD, target commands,
-   dictionary and snippet CRUD/assignments, and sub-app commands. Use the native
-   `save_hotkey` and `set_autostart` commands for shortcut and startup changes;
+   dictionary and snippet CRUD/assignments, and sub-app commands.
+   `save_setting` requires an `expected` object mapping each affected key to
+   its raw `get_setting` value; for `contextual_formatting_enabled` include
+   `contextual_caps_enabled` and `auto_spacing_enabled` too. Dictionary and
+   snippet edits require the original editable fields in `expected`. If a
+   conflict occurs, reread and reconcile rather than blindly retrying. Use the native
+   `save_hotkey` and `set_autostart` commands for shortcut and startup changes,
+   passing the raw `hotkey` or `autostart_enabled` value from `get_setting` as
+   `expected` (including `null` if unset); stale values reject the change.
    never write live SQLite or settings.json. Read back changed values, reload
    the relevant app view, and check persistence after a normal restart when
    practical. Target reassignment moves the existing target. Preserve Everywhere
