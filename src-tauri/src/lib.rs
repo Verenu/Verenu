@@ -814,6 +814,7 @@ pub fn run() {
              commands::get_context_snippets,
              commands::set_dictionary_context_assignment,
              commands::set_snippet_context_assignment,
+             commands::move_snippet_context_assignment,
             commands::get_snippets,
             commands::create_snippet,
             commands::edit_snippet,
