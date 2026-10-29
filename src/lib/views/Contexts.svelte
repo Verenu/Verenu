@@ -4,7 +4,7 @@
   import ColorSwatches from '../components/ColorSwatches.svelte';
   import { portal } from '../portal';
   import { encodeContextIcon, parseContextIcon, iconText, iconKindFor } from '../contextIcon';
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { fly, slide } from 'svelte/transition';
   import { crossfade } from 'svelte/transition';
   import { flip } from 'svelte/animate';
@@ -195,6 +195,7 @@
   let contextErrorMessage = $state('');
   let loading = $state(true);
   let loadToken = 0;
+  let loadedContextId: number | null = null;
 
   let recentlyAddedChips = $state<Set<string>>(new Set());
   function markRecentlyAdded(key: string) {
@@ -329,15 +330,21 @@
     try {
       const stats = await invoke<ContextStats>('get_context_stats', { contextId });
       if (token !== loadToken) return;
+      if (JSON.stringify(contextStats) !== JSON.stringify(stats ?? null)) closeRowMenu();
       contextStats = stats ?? null;
     } catch {
-      if (token === loadToken) contextStats = null;
+      if (token === loadToken) {
+        if (contextStats !== null) closeRowMenu();
+        contextStats = null;
+      }
     }
   }
 
   async function loadContextItems(contextId: number) {
     const token = ++loadToken;
+    rowMenuDeleteArmed = false;
     loading = true;
+    if (contextErrorMessage) closeRowMenu();
     contextErrorMessage = '';
     try {
       const [nextDictionary, nextSnippets] = await Promise.all([
@@ -345,12 +352,22 @@
         invoke<Snippet[]>('get_context_snippets', { contextId }),
       ]);
       if (token !== loadToken) return;
+      const previousRows = openRowMenu
+        ? JSON.stringify(openRowMenu.kind === 'dictionary' ? filteredDictionary : filteredSnippets)
+        : null;
       dictionary = normalizeContextDictionary(nextDictionary, contextId);
       snippets = nextSnippets ?? [];
       void loadContextStats(contextId);
-      closeRowMenu();
+      if (openRowMenu && (openRowMenu.kind === 'dictionary'
+        ? !filteredDictionary.some((entry) => entry.id === openRowMenu?.id)
+          || previousRows !== JSON.stringify(filteredDictionary)
+        : !filteredSnippets.some((snippet) => snippet.id === openRowMenu?.id && !snippet.inherited_from_everywhere)
+          || previousRows !== JSON.stringify(filteredSnippets))) {
+        closeRowMenu();
+      }
     } catch (error) {
       if (token !== loadToken) return;
+      closeRowMenu();
       contextErrorMessage = classifyIpcError(error).message;
     } finally {
       if (token === loadToken) loading = false;
@@ -381,7 +398,10 @@
     let mounted = true;
     const stops: Array<() => void> = [];
     const registrations = [
-      listen('verenu:context-updated', () => { void loadSharedContexts(true); }),
+      listen('verenu:context-updated', () => {
+        closeRowMenu();
+        void loadSharedContexts(true).finally(closeRowMenu);
+      }),
       listen('verenu:snippets-updated', () => { void loadContextItems(selectedContextId); }),
       listen<DictionaryUpdatedPayload>('verenu:dictionary-updated', (event) => {
         const contextId = selectedContextId;
@@ -413,11 +433,12 @@
 
   $effect(() => {
     const contextId = selectedContextId;
-    if (contexts.length > 0) {
+    if (contexts.length > 0 && contextId !== loadedContextId) {
+      loadedContextId = contextId;
       dictionary = [];
       snippets = [];
       closeRowMenu();
-      void loadContextItems(contextId);
+      void untrack(() => loadContextItems(contextId));
     }
   });
 
@@ -501,6 +522,15 @@
     rowMenuDeleteArmed = false;
     rowMenuShowMove = false;
   }
+
+  let rowMenuLayoutKey = '';
+  $effect(() => {
+    const next = JSON.stringify([contextErrorMessage, tab, search]);
+    if (next !== rowMenuLayoutKey) {
+      rowMenuLayoutKey = next;
+      untrack(closeRowMenu);
+    }
+  });
 
   function isInheritedDictionaryEntry(id: number): boolean {
     const entry = dictionary.find((candidate) => dictionaryEntryId(candidate) === id);
@@ -623,6 +653,7 @@
   }
 
   async function confirmDeleteRow(kind: 'dictionary' | 'snippet', id: number) {
+    if (loading) return;
     if (!rowMenuDeleteArmed) {
       rowMenuDeleteArmed = true;
       return;
@@ -1444,6 +1475,7 @@
         class:is-armed={rowMenuDeleteArmed}
         type="button"
         role="menuitem"
+        disabled={loading}
         onclick={() => openRowMenu && void confirmDeleteRow(openRowMenu.kind, openRowMenu.id)}
       >
         {rowMenuDeleteArmed ? 'Confirm delete' : openRowMenu.kind === 'dictionary' && dictionary.find((entry) => dictionaryEntryId(entry) === openRowMenu!.id)?.inherited_from_everywhere ? 'Clear local override' : 'Delete'}
