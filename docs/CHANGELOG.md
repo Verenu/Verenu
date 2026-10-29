@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Redesigned the Sync page. Paired and nearby devices share one Devices list with icon actions, the Tailscale setup is two steps, synchronous muting no longer has its own heading, and the pairing and remove dialogs use shorter text.
 - New browser dictations include the detected website hostname in history when available, and history search matches websites. Earlier entries remain unchanged.
 
 - Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
