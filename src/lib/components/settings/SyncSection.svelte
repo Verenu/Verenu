@@ -476,221 +476,183 @@
   {/if}
 </div>
 
-<h3 class="settings-subhead">Muting</h3>
-<div class="setting-row" data-setting-target="sync-muting">
-  <div>
-    <div class="label">Synchronous muting</div>
-    <div class="desc">
-      When a paired device records, mute this device. When you record, mute paired devices with this on. Works over LAN or saved Tailscale connections. Your own dictation mute setting stays separate.
-    </div>
-    {#if syncMuting.loadFailed}
-      <div class="field-error sync-muting-error" role="alert">
-        <span>Could not load this setting.</span>
-        <button type="button" class="btn-ghost btn-compact" onclick={() => syncMuting.load()}>Retry</button>
-      </div>
-    {:else if syncMuting.saveFailed}
-      <div class="field-error" role="alert">Could not save this setting. Try again.</div>
-    {/if}
-  </div>
-  <Toggle
-    checked={syncMuting.enabled}
-    onchange={(value) => syncMuting.setEnabled(value)}
-    disabled={syncMuting.disabled}
-    label="Synchronous muting"
-    bind:error={syncMuting.flashError}
-  />
-</div>
-
-<h3 class="settings-subhead" data-setting-target="sync-paired">Paired devices</h3>
-{#if peers.length === 0}
-  <div class="empty-note" in:fade={{ duration: durFast() }}>
-    <div class="discover-title">Nothing paired yet</div>
-    <div class="discover-hint">Pick a nearby device below, or connect through Tailscale. Paired devices stay connected until either side removes them.</div>
-  </div>
-{:else}
-  <div class="device-list">
-    {#each peers as device (device.uuid)}
-      <div
-        class="device"
-        class:is-error={device.state === 'error'}
-        class:is-open={editingConnection?.uuid === device.uuid}
-        animate:flip={{ duration: durBase() }}
-        in:fly={{ y: motionPx(MOTION_PX.nudge), duration: durBase(), easing: cubicOut }}
-        out:listItemCollapse
-      >
-        <div class="device-row">
-          <div class="tile tile-dim" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              {@html icons.devices}
-            </svg>
+<h3 class="settings-subhead" data-setting-target="sync-paired">Devices</h3>
+<div class="device-list" data-setting-target="sync-nearby">
+  {#each peers as device (device.uuid)}
+    <div
+      class="device"
+      class:is-error={device.state === 'error'}
+      class:is-open={editingConnection?.uuid === device.uuid}
+      animate:flip={{ duration: durBase() }}
+      in:fly={{ y: motionPx(MOTION_PX.nudge), duration: durBase(), easing: cubicOut }}
+      out:listItemCollapse
+    >
+      <div class="device-row">
+        <div class="tile tile-dim" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            {@html icons.devices}
+          </svg>
+        </div>
+        <div class="device-main">
+          <div class="device-top">
+            <span class="device-name">{device.name}</span>
+            {#key device.state}
+              <span class="pill {device.state}" in:fade={{ duration: durFast() }}>
+                <span class="pill-dot" aria-hidden="true"></span>{stateLabel(device.state)}
+              </span>
+            {/key}
           </div>
-          <div class="device-main">
-            <div class="device-top">
-              <span class="device-name">{device.name}</span>
-              {#key device.state}
-                <span class="pill {device.state}" in:fade={{ duration: durFast() }}>
-                  <span class="pill-dot" aria-hidden="true"></span>{stateLabel(device.state)}
-                </span>
-              {/key}
-            </div>
-            <div class="desc device-meta">
-              Last synced {relativeTime(device.last_sync_at, now)}
-              {#if routeLabel(device)}
-                <span class="id-sep" aria-hidden="true">·</span>{routeLabel(device)}
-              {/if}
-            </div>
-            {#if device.error && device.state === 'error'}
-              <div class="desc device-error" transition:slide={{ duration: durBase(), easing: cubicOut }}>
-                {formatIpcError(device.error, 'Sync did not finish')}
-              </div>
+          <div class="desc device-meta">
+            {relativeTime(device.last_sync_at, now)}
+            {#if routeLabel(device)}
+              <span class="id-sep" aria-hidden="true">·</span>{routeLabel(device)}
             {/if}
           </div>
-          <div class="device-actions">
-            <button
-              class="btn-ghost btn-compact sync-btn"
-              onclick={() => void syncNow(device)}
-              disabled={syncingUuid !== '' || device.state === 'syncing'}
-            >
-              <svg
-                class="sync-glyph"
-                class:spin={syncingUuid === device.uuid || device.state === 'syncing'}
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                {@html icons.refresh}
-              </svg>
-              {syncingUuid === device.uuid || device.state === 'syncing' ? 'Syncing…' : 'Sync now'}
-            </button>
-            <button
-              class="btn-ghost btn-compact"
-              data-connection-button={device.uuid}
-              aria-expanded={editingConnection?.uuid === device.uuid}
-              aria-controls="sync-route-{device.uuid}"
-              onclick={() => openEditor(device)}
-            >Connection</button>
-            <button
-              class="btn-ghost btn-compact danger-ghost"
-              onclick={() => askRemove(device)}
-              disabled={removingUuid !== ''}
-            >
-              Remove
-            </button>
-          </div>
-        </div>
-
-        {#if editingConnection?.uuid === device.uuid}
-          <div id="sync-route-{device.uuid}" class="drawer" transition:slide={{ duration: durBase(), easing: cubicOut }}>
-            <form
-              class="connection-editor"
-              onsubmit={(event) => { event.preventDefault(); void saveConnection(); }}
-            >
-              <label for="sync-peer-address">How to reach {device.name}</label>
-              <div class="field">
-                <input
-                  id="sync-peer-address"
-                  class="ui-input field-input"
-                  bind:value={peerAddress}
-                  placeholder="Paste connection details or 100.x.x.x:port"
-                  spellcheck="false"
-                  autocomplete="off"
-                  disabled={routeBusy}
-                  use:focusOnMount
-                />
-                <div class="field-actions">
-                  <button class="btn-primary btn-compact" type="submit" disabled={routeBusy}>{routeBusy ? 'Saving…' : 'Save'}</button>
-                  <button class="btn-ghost btn-compact" type="button" onclick={closeEditor} disabled={routeBusy}>Cancel</button>
-                </div>
-              </div>
-              <div class="desc">On {device.name}, open Sync and copy its connection details. Leave this empty to use nearby discovery only.</div>
-              {#if routeError}
-                <div class="field-error" role="alert" transition:slide={{ duration: durFast(), easing: cubicOut }}>{routeError}</div>
-              {/if}
-            </form>
-          </div>
-        {/if}
-
-        {#if freshPeers[device.uuid] && device.connection_address && ownDetails && editingConnection?.uuid !== device.uuid}
-          <div class="drawer" transition:slide={{ duration: durBase(), easing: cubicOut }}>
-            <div class="nudge">
-              <div class="nudge-text">
-                <div class="nudge-title">One more step so {device.name} can reach you</div>
-                <div class="desc">On {device.name}, open Sync, press Connection on {nameSaved || 'this device'}, and paste this device's details.</div>
-              </div>
-              <div class="nudge-actions">
-                <button class="btn-ghost btn-compact copy-action" class:copied={copiedKey === 'nudge'} onclick={() => void copyDetails('nudge')}>
-                  {@render copyGlyph(copiedKey === 'nudge')}
-                  {copiedKey === 'nudge' ? 'Copied' : 'Copy details'}
-                </button>
-                <button class="btn-ghost btn-compact" onclick={() => dismissNudge(device.uuid)}>Done</button>
-              </div>
+          {#if device.error && device.state === 'error'}
+            <div class="desc device-error" transition:slide={{ duration: durBase(), easing: cubicOut }}>
+              {formatIpcError(device.error, 'Sync did not finish')}
             </div>
-          </div>
-        {/if}
-      </div>
-    {/each}
-  </div>
-{/if}
-
-<h3 class="settings-subhead" data-setting-target="sync-nearby">Nearby devices</h3>
-{#if !syncStore.loaded}
-  <div class="discover-card" role="status" in:fade={{ duration: durFast() }}>
-    <span class="search-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-    Searching your network for other devices…
-  </div>
-{:else if unpairedNearby.length === 0}
-  <div class="discover-card discover-empty" in:fade={{ duration: durBase() }}>
-    <span class="radar" aria-hidden="true">
-      <i></i><i></i>
-      <svg class="discover-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-        {@html icons.devices}
-      </svg>
-    </span>
-    <div class="discover-title">No devices found yet</div>
-    <div class="discover-hint">
-      Open Verenu on your other device and join the same Wi-Fi or wired network. It shows up here on
-      its own. On different networks, use Tailscale below.
-    </div>
-  </div>
-{:else}
-  <div class="device-list">
-    {#each unpairedNearby as device (device.uuid)}
-      <div
-        class="device"
-        animate:flip={{ duration: durBase() }}
-        in:fly={{ y: motionPx(MOTION_PX.nudge), duration: durBase(), easing: cubicOut }}
-        out:listItemCollapse
-      >
-        <div class="device-row">
-          <div class="tile tile-dim" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              {@html icons.devices}
+          {/if}
+        </div>
+        <div class="device-actions">
+          <button
+            class="btn-ghost btn-compact icon-btn"
+            title="Sync now"
+            aria-label="Sync {device.name} now"
+            onclick={() => void syncNow(device)}
+            disabled={syncingUuid !== '' || device.state === 'syncing'}
+          >
+            <svg
+              class="sync-glyph"
+              class:spin={syncingUuid === device.uuid || device.state === 'syncing'}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              {@html icons.refresh}
             </svg>
-          </div>
-          <div class="device-main">
-            <div class="device-top">
-              <span class="device-name">{device.name}</span>
-            </div>
-            <div class="desc">Ready to pair. You'll confirm with a short code.</div>
-          </div>
-          <div class="device-actions">
-            <button
-              class="btn-primary btn-compact"
-              onclick={() => void startPairing(device)}
-              disabled={pairingUuid !== '' || !!outgoing}
-            >
-              {pairingUuid === device.uuid ? 'Starting…' : 'Pair'}
-            </button>
-          </div>
+          </button>
+          <button
+            class="btn-ghost btn-compact icon-btn"
+            title="Connection"
+            aria-label="Connection to {device.name}"
+            data-connection-button={device.uuid}
+            aria-expanded={editingConnection?.uuid === device.uuid}
+            aria-controls="sync-route-{device.uuid}"
+            onclick={() => openEditor(device)}
+          >
+            <svg class="sync-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+            </svg>
+          </button>
+          <button
+            class="btn-ghost btn-compact icon-btn danger-ghost"
+            title="Remove"
+            aria-label="Remove {device.name}"
+            onclick={() => askRemove(device)}
+            disabled={removingUuid !== ''}
+          >
+            <svg class="sync-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              {@html icons.close}
+            </svg>
+          </button>
         </div>
       </div>
-    {/each}
-  </div>
-{/if}
+
+      {#if editingConnection?.uuid === device.uuid}
+        <div id="sync-route-{device.uuid}" class="drawer" transition:slide={{ duration: durBase(), easing: cubicOut }}>
+          <form
+            class="connection-editor"
+            onsubmit={(event) => { event.preventDefault(); void saveConnection(); }}
+          >
+            <label for="sync-peer-address">Tailscale address of {device.name}</label>
+            <div class="field">
+              <input
+                id="sync-peer-address"
+                class="ui-input field-input"
+                bind:value={peerAddress}
+                placeholder="Connection details or 100.x.x.x:port"
+                spellcheck="false"
+                autocomplete="off"
+                disabled={routeBusy}
+                use:focusOnMount
+              />
+              <div class="field-actions">
+                <button class="btn-primary btn-compact" type="submit" disabled={routeBusy}>{routeBusy ? 'Saving…' : 'Save'}</button>
+                <button class="btn-ghost btn-compact" type="button" onclick={closeEditor} disabled={routeBusy}>Cancel</button>
+              </div>
+            </div>
+            {#if routeError}
+              <div class="field-error" role="alert" transition:slide={{ duration: durFast(), easing: cubicOut }}>{routeError}</div>
+            {/if}
+          </form>
+        </div>
+      {/if}
+
+      {#if freshPeers[device.uuid] && device.connection_address && ownDetails && editingConnection?.uuid !== device.uuid}
+        <div class="drawer" transition:slide={{ duration: durBase(), easing: cubicOut }}>
+          <div class="nudge">
+            <div class="nudge-text">
+              <div class="nudge-title">{device.name} can't reach you yet</div>
+              <div class="desc">Paste these details into Connection for {nameSaved || 'this device'} on {device.name}.</div>
+            </div>
+            <div class="nudge-actions">
+              <button class="btn-ghost btn-compact copy-action" class:copied={copiedKey === 'nudge'} onclick={() => void copyDetails('nudge')}>
+                {@render copyGlyph(copiedKey === 'nudge')}
+                {copiedKey === 'nudge' ? 'Copied' : 'Copy details'}
+              </button>
+              <button class="btn-ghost btn-compact" onclick={() => dismissNudge(device.uuid)}>Done</button>
+            </div>
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/each}
+
+  {#each unpairedNearby as device (device.uuid)}
+    <div
+      class="device"
+      animate:flip={{ duration: durBase() }}
+      in:fly={{ y: motionPx(MOTION_PX.nudge), duration: durBase(), easing: cubicOut }}
+      out:listItemCollapse
+    >
+      <div class="device-row">
+        <div class="tile tile-dim" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            {@html icons.devices}
+          </svg>
+        </div>
+        <div class="device-main">
+          <div class="device-top">
+            <span class="device-name">{device.name}</span>
+          </div>
+          <div class="desc">Nearby</div>
+        </div>
+        <div class="device-actions">
+          <button
+            class="btn-primary btn-compact"
+            onclick={() => void startPairing(device)}
+            disabled={pairingUuid !== '' || !!outgoing}
+          >
+            {pairingUuid === device.uuid ? 'Starting…' : 'Pair'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/each}
+
+  {#if peers.length === 0 && unpairedNearby.length === 0}
+    <div class="discover-card" role="status" in:fade={{ duration: durFast() }}>
+      <span class="search-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      Looking for devices on your network
+    </div>
+  {/if}
+</div>
 
 <section class="setup" class:is-open={setupOpen} data-setting-target="sync-tailscale">
   <button
@@ -707,14 +669,13 @@
     </span>
     <span class="setup-text">
       <span class="setup-title">Connect through Tailscale</span>
-      <span class="setup-sub">For devices on different networks.</span>
+      <span class="setup-sub">Both devices need Tailscale</span>
     </span>
     {@render chevron()}
   </button>
 
   {#if setupOpen}
     <div id="sync-setup-panel" class="drawer" transition:slide={{ duration: motionMs(MOTION_MS.panel), easing: cubicOut }}>
-      <p class="setup-intro">Both devices need Tailscale on the same tailnet, with Verenu open.</p>
       <ol class="steps">
         <li class="step" class:done={detailsCopied}>
           <span class="marker" aria-hidden="true">
@@ -723,7 +684,6 @@
           </span>
           <div class="step-body">
             <div class="step-title">Copy this device's details</div>
-            <div class="desc">Do the same on the other device.</div>
             {#if detectedIp && !editAddress}
               <div class="field">
                 <div class="addr" aria-label="This device's Tailscale address">
@@ -743,7 +703,7 @@
                 </div>
               </div>
             {:else}
-              <label class="field-label" for="sync-own-ip">This device's Tailscale IPv4 address</label>
+              <label class="field-label" for="sync-own-ip">Tailscale IPv4 address</label>
               <div class="field">
                 <input
                   id="sync-own-ip"
@@ -769,7 +729,7 @@
                 </div>
               </div>
               {#if !detectedIp}
-                <div class="desc" transition:slide={{ duration: durFast(), easing: cubicOut }}>Verenu could not detect the address. Copy it from the Tailscale app.</div>
+                <div class="desc" transition:slide={{ duration: durFast(), easing: cubicOut }}>Not detected. Copy it from Tailscale.</div>
               {/if}
             {/if}
             {#if manualCopy && ownDetails}
@@ -794,7 +754,7 @@
                 onkeydown={(e) => {
                   if (e.key === 'Enter' && connectionDetails.trim() && !connectionBusy && !outgoing && listenerActive) void pairConnection();
                 }}
-                placeholder="Paste from the other device"
+                placeholder="verenu-sync://…"
                 spellcheck="false"
                 autocomplete="off"
                 disabled={connectionBusy}
@@ -812,17 +772,6 @@
             {/if}
           </div>
         </li>
-
-        <li class="step" class:done={!!outgoing}>
-          <span class="marker" aria-hidden="true">
-            <span class="num">3</span>
-            <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">{@html icons.check}</svg>
-          </span>
-          <div class="step-body">
-            <div class="step-title">Enter the code on the other device</div>
-            <div class="desc">A short code appears here. Type it there to finish pairing.</div>
-          </div>
-        </li>
       </ol>
 
       <button
@@ -831,19 +780,40 @@
         aria-controls="sync-tips"
         onclick={() => (tipsOpen = !tipsOpen)}
       >
-        Tips and troubleshooting
+        Troubleshooting
         {@render chevron()}
       </button>
       {#if tipsOpen}
         <ul id="sync-tips" class="tips" transition:slide={{ duration: durBase(), easing: cubicOut }}>
-          <li>With three or more devices, pair each new one with a device you already have. Changes relay between them.</li>
-          <li>Keep Verenu and Tailscale running. Android can pause Verenu in the background, so keep it open while syncing.</li>
-          <li>If it fails to connect, allow TCP port {ownPort ?? 'shown above'} through your firewall and Tailscale access rules.</li>
+          <li>Keep Verenu open on both devices. Android may pause it in the background.</li>
+          <li>Allow TCP port {ownPort ?? 'shown above'} through your firewall and Tailscale access rules.</li>
         </ul>
       {/if}
     </div>
   {/if}
 </section>
+
+<div class="setting-row sync-muting" data-setting-target="sync-muting">
+  <div>
+    <div class="label">Synchronous muting</div>
+    <div class="desc">Mute paired devices while you dictate, and this one while they do.</div>
+    {#if syncMuting.loadFailed}
+      <div class="field-error sync-muting-error" role="alert">
+        <span>Could not load this setting.</span>
+        <button type="button" class="btn-ghost btn-compact" onclick={() => syncMuting.load()}>Retry</button>
+      </div>
+    {:else if syncMuting.saveFailed}
+      <div class="field-error" role="alert">Could not save this setting. Try again.</div>
+    {/if}
+  </div>
+  <Toggle
+    checked={syncMuting.enabled}
+    onchange={(value) => syncMuting.setEnabled(value)}
+    disabled={syncMuting.disabled}
+    label="Synchronous muting"
+    bind:error={syncMuting.flashError}
+  />
+</div>
 
 {#if outgoing}
   <div class="dialog-layer" use:portal>
@@ -871,7 +841,7 @@
       </div>
       <div>
         <div class="pair-title">Pair with {outgoing.peer_name}</div>
-        <div class="pair-sub">Type this code on {outgoing.peer_name} to confirm.</div>
+        <div class="pair-sub">Enter this code on {outgoing.peer_name}.</div>
       </div>
     </div>
 
@@ -901,13 +871,13 @@
       <div class="pair-wait" role="status" in:fade={{ duration: durFast() }}>
         {#if pairPhase === 2}
           <span class="search-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-          Checking the code…
+          Checking…
         {:else if pairPhase === 0}
           <span class="search-dots" aria-hidden="true"><i></i><i></i><i></i></span>
           Contacting {outgoing.peer_name}…
         {:else}
           <span class="search-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-          Waiting for {outgoing.peer_name}. The code expires in a few minutes.
+          Waiting for {outgoing.peer_name}…
         {/if}
       </div>
     {/key}
@@ -940,10 +910,7 @@
     out:modalCard={{ duration: motionMs(MOTION_MS.fast) }}
   >
     <div class="pair-title">Remove {confirmRemove.name}?</div>
-    <div class="pair-sub">
-      It will immediately lose access to sync with this device. To sync again you'd have to pair
-      both devices again.
-    </div>
+    <div class="pair-sub">It stops syncing with this device. Pair again to reconnect.</div>
     <div class="pair-actions">
       <button
         bind:this={cancelRemoveButton}
@@ -957,7 +924,7 @@
         onclick={() => void removeDevice()}
         disabled={removingUuid !== ''}
       >
-        {removingUuid ? 'Removing…' : 'Remove device'}
+        {removingUuid ? 'Removing…' : 'Remove'}
       </button>
     </div>
   </div>
@@ -965,21 +932,10 @@
 {/if}
 
 <div class="panel-note sync-note" in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
-  <svg
-    class="note-icon"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
+  <svg class="note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
     {@html icons.lock}
   </svg>
-  Sync runs between paired devices over your local network or a saved Tailscale connection,
-  encrypted end to end. Provider and model choices, themes, API keys,
-  microphone settings, and hotkeys stay on each device.
+  End-to-end encrypted. Keys, hotkeys, and audio settings stay on each device.
 </div>
 
 <style>
@@ -1157,6 +1113,9 @@
   .device-list {
     margin-top: 8px;
   }
+  .sync-muting {
+    margin-top: 32px;
+  }
   .device {
     container-type: inline-size;
     margin-top: 10px;
@@ -1213,16 +1172,17 @@
   }
   .device-actions {
     display: flex;
-    gap: 8px;
+    gap: 6px;
+  }
+  .icon-btn {
+    width: 30px;
+    padding: 0;
+    display: inline-grid;
+    place-items: center;
   }
   .danger-ghost:hover {
     color: var(--danger);
     border-color: var(--danger);
-  }
-  .sync-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
   }
   .sync-glyph {
     width: 13px;
@@ -1235,31 +1195,6 @@
   @keyframes sync-spin {
     to {
       transform: rotate(360deg);
-    }
-  }
-
-  @container (max-width: 540px) {
-    .device-row {
-      grid-template-columns: auto minmax(0, 1fr);
-    }
-    .device-actions {
-      grid-column: 1 / -1;
-      display: grid;
-      grid-auto-flow: column;
-      grid-auto-columns: minmax(0, 1fr);
-    }
-    .device-actions :global(button) {
-      justify-content: center;
-    }
-  }
-  @container (max-width: 400px) {
-    .device-actions {
-      grid-auto-flow: row;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .device-actions .sync-btn,
-    .device-actions > :global(:only-child) {
-      grid-column: 1 / -1;
     }
   }
 
@@ -1452,60 +1387,6 @@
     color: var(--ink-mute);
     font-size: 12.5px;
   }
-  .discover-empty {
-    flex-direction: column;
-    text-align: center;
-    gap: 6px;
-    padding: 26px 24px;
-    border-style: dashed;
-    border-color: var(--line-strong);
-  }
-  .radar {
-    position: relative;
-    display: grid;
-    place-items: center;
-    width: 44px;
-    height: 44px;
-    margin-bottom: 2px;
-  }
-  .radar i {
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    border: 1px solid var(--ink-faint);
-    opacity: 0;
-    animation: radar-ping 2.8s var(--ui-ease-out) infinite;
-  }
-  .radar i:nth-child(2) {
-    animation-delay: 1.4s;
-  }
-  @keyframes radar-ping {
-    0% {
-      transform: scale(0.5);
-      opacity: 0.55;
-    }
-    100% {
-      transform: scale(1.15);
-      opacity: 0;
-    }
-  }
-  .discover-icon {
-    position: relative;
-    width: 22px;
-    height: 22px;
-    color: var(--ink-faint);
-  }
-  .discover-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--ink-soft);
-  }
-  .discover-hint {
-    max-width: 400px;
-    line-height: 1.5;
-    font-size: 12px;
-    color: var(--ink-mute);
-  }
   .search-dots {
     display: inline-flex;
     gap: 3px;
@@ -1535,15 +1416,6 @@
     }
   }
 
-  .empty-note {
-    display: grid;
-    gap: 3px;
-    padding: 2px 0 4px;
-  }
-  .empty-note .discover-hint {
-    max-width: 56ch;
-    text-align: left;
-  }
 
   .setup {
     margin-top: 14px;
@@ -1598,13 +1470,6 @@
   }
   [aria-expanded='true'] > .chev {
     transform: rotate(180deg);
-  }
-  .setup-intro {
-    margin: 0;
-    padding: 12px 14px 4px;
-    font-size: 12.5px;
-    line-height: 1.45;
-    color: var(--ink-mute);
   }
   .steps {
     list-style: none;
@@ -1847,11 +1712,11 @@
     gap: 8px;
   }
 
-  .sync-note {
+  .sync-note.panel-note {
     display: flex;
     gap: 8px;
     align-items: flex-start;
-    margin-top: 20px;
+    margin-top: 28px;
   }
   .note-icon {
     width: 14px;
@@ -1869,9 +1734,5 @@
     .digit.placeholder {
       animation: none;
     }
-    .radar i {
-      animation: none;
-      opacity: 0;
     }
-  }
 </style>

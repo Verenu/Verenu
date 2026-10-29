@@ -4,6 +4,8 @@ pub mod diagnostics;
 pub mod diagnostic_journal;
 pub mod icons;
 pub mod logger;
+#[cfg(target_os = "linux")]
+pub(crate) mod output_duck;
 #[cfg(target_os = "macos")]
 pub mod mac_app;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

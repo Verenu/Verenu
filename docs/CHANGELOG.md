@@ -4,8 +4,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Redesigned the Sync page. Paired and nearby devices share one Devices list with icon actions, the Tailscale setup is two steps, synchronous muting no longer has its own heading, and the pairing and remove dialogs use shorter text.
 - New browser dictations include the detected website hostname in history when available, and history search matches websites. Earlier entries remain unchanged.
-
+- Added optional Linux PipeWire echo cancellation and a dictation audio volume control: 0% mutes, 100% leaves playback unchanged, and intermediate levels fade smoothly. Fade timing is available under advanced controls. Partial volume reduction requires PipeWire's PulseAudio service and `pactl`; echo cancellation uses the default microphone and PipeWire's echo-cancel module.
 - Linux keeps the selected dictation shortcut when it conflicts with a desktop binding and reports the conflict instead of silently switching to another shortcut.
 - Linux ARM64 pull request checks build a Debian package and make it available as a CI artifact.
 - Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
