@@ -25,17 +25,22 @@ only when it matches the code from the agent you intended to connect. Local
 processes running as the same OS user may be able to inspect private files or
 modify Verenu's data directly; this is not a sandbox against such processes.
 
-## Scripted launch
+## Scripted use
 
 Open Verenu normally, then request access from the bundled CLI:
 
 ```bash
+session_dir="$(mktemp -d)"
+export VERENU_AGENT_GRANT_FILE="$session_dir/grant.json"
 node Agent-Skills/verenu-control/scripts/verenu-agent.mjs connect
+# Compare the returned code with Verenu and approve it before continuing.
 node Agent-Skills/verenu-control/scripts/verenu-agent.mjs describe
 ```
 
-Use the executable inside the app bundle on macOS. PowerShell examples are in
-the CLI's `--help`. The CLI or agent must inherit the same variables as the app;
+The agent performs this setup; the user does not need to launch a terminal. Use
+the executable inside the app bundle on macOS. For an explicit environment grant,
+PowerShell examples are in the CLI's `--help`. The CLI or agent must inherit the
+same variables as the app when using that explicit grant;
 exporting them in a different terminal does not give an existing agent session
 access. Keep the variables in the invoking shell; do not print the
 token, put it in a command argument, or commit it. It grants broad settings and
