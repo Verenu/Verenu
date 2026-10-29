@@ -1,6 +1,6 @@
 import { CATALOG, providerDisplayLabel, taskLabel } from './components/settings/models';
 import type { SettingsSectionId } from './settingsSections';
-import { isAndroid } from './platform';
+import { isAndroid, isLinux } from './platform';
 
 export type SettingsSearchEntry = {
   id: string;
@@ -82,7 +82,7 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'privacy-import', section: 'privacy', label: 'Import backup', description: 'Restore Verenu data from a backup', target: 'privacy-import', keywords: ['backup', 'restore', 'data'] },
 
   { id: 'audio-gain', section: 'advanced', label: 'Microphone gain', description: 'Set the target level for automatic speech gain', target: 'audio-gain', keywords: ['mic', 'volume', 'input', 'clipping', 'quiet'] },
-  { id: 'audio-system-mute', section: 'advanced', label: 'Mute system audio', description: 'Mute computer audio while dictating', target: 'audio-system-mute', keywords: ['windows', 'macos', 'sound'] },
+  { id: 'audio-system-mute', section: 'advanced', label: isLinux && !isAndroid ? 'Volume of audio while dictating' : 'Mute system audio', description: 'Adjust computer audio while dictating', target: 'audio-system-mute', keywords: ['windows', 'macos', 'linux', 'sound', 'mute', 'speaker'] },
   { id: 'audio-exclusive', section: 'advanced', label: 'Exclusive microphone access', description: 'Reserve the microphone for Verenu while dictating', target: 'audio-exclusive', keywords: ['mic', 'input', 'other apps'] },
   { id: 'audio-pause-media', section: 'advanced', label: 'Pause media while dictating', description: 'Pause and resume active media around dictation', target: 'audio-pause-media', keywords: ['music', 'video', 'windows', 'linux', 'mpris', 'playback'] },
   { id: 'sub-apps-shortcut', section: 'subapps', label: 'Sub-app capture shortcut', description: 'Change the shortcut that saves the focused window as a sub-app', target: 'sub-apps-shortcut', keywords: ['sub-app', 'subapp', 'capture', 'shortcut', 'hotkey', 'window', 'discord', 'slack'] },
