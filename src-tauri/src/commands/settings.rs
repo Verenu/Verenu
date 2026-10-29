@@ -39,6 +39,13 @@ fn github_identity_changed(current: Option<&str>, next: &str) -> bool {
     current.is_none_or(|current| !current.eq_ignore_ascii_case(next))
 }
 
+fn check_expected_settings(current: &store::SettingsSnapshot, expected: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    if expected.iter().any(|(key, value)| current.get(key).unwrap_or(&serde_json::Value::Null) != value) {
+        return Err("Settings changed while you were editing. Reload them before saving.".into());
+    }
+    Ok(())
+}
+
 fn save_github_username(
     settings: &store::SettingsHandle,
     value: serde_json::Value,
@@ -127,7 +134,7 @@ setting_specs! {
     CLEANUP_FALLBACK_MODELS: StringArray = true,
     CLEANUP_ENABLED: Bool = true,
     CLEANUP_CACHE_ENABLED: Bool = true,
-    HOTKEY: Hotkey = true,
+    HOTKEY: Hotkey = false,
     SUB_APP_CAPTURE_HOTKEY: SubAppChord = false,
     LINUX_CANCEL_KEY: ControlKey = false,
     LINUX_HANDSFREE_KEY: ControlKey = false,
@@ -172,7 +179,7 @@ setting_specs! {
     HISTORY_RETENTION: HistoryRetention = true,
     GITHUB_USERNAME: GithubUsername = false,
     LOCAL_MODEL_MEMORY_POLICY: LocalModelMemoryPolicy = true,
-    AUTOSTART_ENABLED: Bool = true,
+    AUTOSTART_ENABLED: Bool = false,
     CAPS_LOCK_UPPERCASE: Bool = true,
     CLIPBOARD_PHRASE_ENABLED: Bool = true,
     CLIPBOARD_PHRASE: ClipboardPhrase = true,
@@ -655,18 +662,37 @@ const MODEL_KEYS: &[&str] = &[
         store::CLEANUP_ENABLED,
 ];
 
+const SETUP_KEYS: &[&str] = &[
+    store::CLEANUP_INTENSITY, store::DEFAULT_TONE, store::CLEANUP_ENABLED,
+    store::TRANSCRIPTION_PROVIDER, store::TRANSCRIPTION_MODEL, store::TRANSCRIPTION_DEFAULT_MODEL,
+    store::TRANSCRIPTION_MODELS_BY_PROVIDER, store::TRANSCRIPTION_FALLBACK_MODELS,
+    store::DUAL_TRANSCRIPTION_ENABLED, store::TRANSCRIPTION_LANGUAGE, store::CLEANUP_PROVIDER,
+    store::CLEANUP_MODEL, store::CLEANUP_DEFAULT_MODEL, store::CLEANUP_MODELS_BY_PROVIDER,
+    store::CLEANUP_FALLBACK_MODELS, store::APPEARANCE_MODE, store::MUTE_AUDIO,
+    store::PAUSE_MEDIA_DURING_DICTATION, store::NOISE_REDUCTION, store::CONTEXTUAL_FORMATTING,
+    store::CONTEXTUAL_CAPS, store::AUTO_SPACING, store::CAPS_LOCK_UPPERCASE, store::AUTO_LEARN_ENABLED,
+];
+
+const APPEARANCE_KEYS: &[&str] = &[
+    store::APPEARANCE_MODE, store::ACCENT_COLOR, store::CUSTOM_THEME, store::CUSTOM_THEMES,
+];
+
 fn commit_model_settings(
     settings: &store::SettingsHandle,
     expected: serde_json::Map<String, serde_json::Value>,
     values: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    if values.len() != MODEL_KEYS.len() || expected.len() != MODEL_KEYS.len()
-        || MODEL_KEYS.iter().any(|key| !values.contains_key(*key) || !expected.contains_key(*key))
+    let valid_keys = [MODEL_KEYS, SETUP_KEYS, APPEARANCE_KEYS].iter().any(|keys|
+        values.len() == keys.len() && expected.len() == keys.len()
+            && keys.iter().all(|key| values.contains_key(*key) && expected.contains_key(*key)));
+    if !valid_keys
     {
         return Err("Invalid model settings snapshot".into());
     }
     for (key, value) in &values {
-        validate_setting(key, value)?;
+        if expected.get(key) != Some(value) {
+            validate_setting(key, value)?;
+        }
     }
     if store::storage_full_simulation_enabled() {
         return Err(format!("{}: simulated settings write failure", store::STORAGE_FULL_ERROR));
@@ -675,7 +701,7 @@ fn commit_model_settings(
             if expected.iter().any(|(key, value)| {
                 current.get(key).unwrap_or(&serde_json::Value::Null) != value
             }) {
-                return Err("Model settings changed while you were editing. Reload them before saving.".into());
+                return Err("Settings changed while you were editing. Reload them before saving.".into());
             }
             Ok(())
     }, || Ok(())).map(|_| ())
@@ -685,6 +711,34 @@ fn commit_model_settings(
 mod model_settings_conflict_tests {
     use super::*;
     use serde_json::{json, Map, Value};
+
+    #[test]
+    fn appearance_batch_rejects_stale_library_without_partial_writes() {
+        let path = std::env::temp_dir().join(format!("verenu-appearance-conflict-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        let expected: Map<String, Value> = APPEARANCE_KEYS.iter().map(|key| ((*key).into(), Value::Null)).collect();
+        settings.save_values_with_commit([(store::CUSTOM_THEMES, json!([]))], |_| Ok(()), || Ok(())).unwrap();
+        let mut values = expected.clone();
+        values.insert(store::APPEARANCE_MODE.into(), json!("dark"));
+        assert!(commit_model_settings(&settings, expected, values).is_err());
+        assert_eq!(settings.get(store::APPEARANCE_MODE).unwrap_or(Value::Null), Value::Null);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn stale_agent_setting_snapshot_rejects_the_entire_coupled_write() {
+        let path = std::env::temp_dir().join(format!("verenu-agent-setting-conflict-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        let keys = [store::CONTEXTUAL_FORMATTING, store::CONTEXTUAL_CAPS, store::AUTO_SPACING];
+        let expected: Map<String, Value> = keys.iter().map(|key| ((*key).into(), Value::Null)).collect();
+        settings.save_value(store::AUTO_SPACING, json!(false)).unwrap();
+        let values = keys.iter().map(|key| ((*key).to_string(), json!(true)));
+        assert!(settings.save_values_with_commit(values, |current| check_expected_settings(current, &expected), || Ok(())).is_err());
+        assert_eq!(settings.get(store::CONTEXTUAL_FORMATTING), None);
+        assert_eq!(settings.get(store::CONTEXTUAL_CAPS), None);
+        assert_eq!(settings.get(store::AUTO_SPACING), Some(json!(false)));
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn stale_model_snapshot_cannot_overwrite_a_concurrent_change() {
@@ -714,6 +768,38 @@ mod model_settings_conflict_tests {
         assert_eq!(settings.get(store::CLEANUP_DEFAULT_MODEL), Some(json!("groq/model")));
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn stale_setup_snapshot_preserves_concurrent_changes_and_never_partially_saves() {
+        let path = std::env::temp_dir().join(format!("verenu-setup-conflict-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        let expected: Map<String, Value> = SETUP_KEYS.iter().map(|key| ((*key).into(), Value::Null)).collect();
+        let values = json!({
+            "cleanup_intensity": "rules", "default_tone": "casual", "cleanup_enabled": true,
+            "transcription_provider": "groq", "transcription_model": "groq/whisper",
+            "transcription_default_model": "groq/whisper", "transcription_models_by_provider": {},
+            "transcription_fallback_models": [], "dual_transcription_enabled": false,
+            "transcription_language": "en", "cleanup_provider": "groq", "cleanup_model": "groq/model",
+            "cleanup_default_model": "groq/model", "cleanup_models_by_provider": {},
+            "cleanup_fallback_models": [], "appearance_mode": "dark", "mute_audio": false,
+            "pause_media_during_dictation": false, "noise_reduction": true,
+            "contextual_formatting_enabled": true, "contextual_caps_enabled": true,
+            "auto_spacing_enabled": true, "caps_lock_uppercase_enabled": true, "auto_learn_enabled": true
+        }).as_object().unwrap().clone();
+        settings.save_value(store::CLEANUP_ENABLED, json!(false)).unwrap();
+        settings.save_value(store::TRANSCRIPTION_DEFAULT_MODEL, json!("openai/new-model")).unwrap();
+        assert!(commit_model_settings(&settings, expected.clone(), values.clone()).is_err());
+        assert_eq!(settings.get(store::CLEANUP_ENABLED), Some(json!(false)));
+        assert_eq!(settings.get(store::TRANSCRIPTION_DEFAULT_MODEL), Some(json!("openai/new-model")));
+        assert_eq!(settings.get(store::DEFAULT_TONE), None);
+        let mut current = expected;
+        current.insert(store::CLEANUP_ENABLED.into(), json!(false));
+        current.insert(store::TRANSCRIPTION_DEFAULT_MODEL.into(), json!("openai/new-model"));
+        commit_model_settings(&settings, current, values).unwrap();
+        assert_eq!(settings.get(store::CLEANUP_INTENSITY), Some(json!("rules")));
+        assert_eq!(settings.get(store::CONTEXTUAL_CAPS), Some(json!(true)));
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[tauri::command]
@@ -724,6 +810,9 @@ pub async fn save_model_settings_if_unchanged(
 ) -> Result<(), String> {
     let settings = store::settings_handle(&app)?;
     let keys: Vec<String> = values.keys().cloned().collect();
+    let refresh_icons = keys.iter().any(|key| crate::app_tray::setting_updates_runtime_icons(key));
+    #[cfg(target_os = "windows")]
+    let refresh_titlebar = keys.iter().any(|key| key == store::APPEARANCE_MODE || key == store::CUSTOM_THEME);
     run_blocking("save_model_settings_if_unchanged", move || {
         commit_model_settings(&settings, expected, values)
     }).await?;
@@ -741,6 +830,9 @@ pub async fn save_model_settings_if_unchanged(
     }).await;
     if let Err(err) = stamped { log::warn!("sync: failed to stamp model settings: {err}"); }
     if let Some(manager) = app.try_state::<crate::sync::SyncManager>() { manager.mark_dirty(); }
+    if refresh_icons { crate::apply_runtime_icons(&app, None); }
+    #[cfg(target_os = "windows")]
+    if refresh_titlebar { crate::system::windows_titlebar::refresh_for_app(&app); }
     Ok(())
 }
 
@@ -748,9 +840,186 @@ pub async fn save_model_settings_if_unchanged(
 pub async fn save_setting(
     app: AppHandle,
     key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    if key == store::SUB_APP_CAPTURE_HOTKEY {
+        return save_sub_app_shortcut(app, value, None, false).await;
+    }
+    save_setting_inner(app, key, value, None).await
+}
+
+#[tauri::command]
+pub async fn save_setting_if_unchanged(
+    app: AppHandle,
+    key: String,
+    value: serde_json::Value,
+    expected: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if key == store::SUB_APP_CAPTURE_HOTKEY {
+        return save_sub_app_shortcut(app, value, Some(expected), false).await;
+    }
+    save_setting_inner(app, key, value, Some(expected)).await
+}
+
+pub(crate) async fn save_sub_app_shortcut_for_agent(app: AppHandle, value: serde_json::Value, expected: serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    save_sub_app_shortcut(app, value, Some(expected), true).await
+}
+
+async fn save_sub_app_shortcut(
+    app: AppHandle,
+    value: serde_json::Value,
+    expected: Option<serde_json::Map<String, serde_json::Value>>,
+    notify_agent: bool,
+) -> Result<(), String> {
+    tokio::spawn(async move {
+        let _guard = super::system::HOTKEY_SETTINGS_LOCK.lock().await;
+        validate_setting(store::SUB_APP_CAPTURE_HOTKEY, &value)?;
+        if let Some(ref expected) = expected {
+            if expected.len() != 1 || !expected.contains_key(store::SUB_APP_CAPTURE_HOTKEY) {
+                return Err("Expected values must include every affected setting; use describe".into());
+            }
+        }
+        let chord = value.as_str().and_then(crate::core::hotkey::chord::Chord::parse)
+            .ok_or("Invalid sub-app shortcut")?;
+        let settings = store::settings_handle(&app)?;
+        run_blocking("save_sub_app_shortcut", move || {
+            crate::core::hotkey::with_capture_transition_lock(|| {
+                if crate::core::hotkey::capture_active() {
+                    return Err("Finish recording the shortcut before changing the sub-app shortcut".into());
+                }
+                crate::core::hotkey::with_sub_app_shortcut_lock(|| commit_sub_app_shortcut(&settings, value, expected,
+                || if crate::is_dev_session() { Ok(()) } else { crate::core::hotkey::set_sub_app_capture_chord(chord) },
+            ))
+            })
+        }).await?;
+        if notify_agent { let _ = app.emit("verenu:agent-settings-changed", vec![store::SUB_APP_CAPTURE_HOTKEY]); }
+        Ok(())
+    }).await.map_err(|e| format!("Sub-app shortcut transaction failed: {e}"))?
+}
+
+fn commit_sub_app_shortcut(
+    settings: &store::SettingsHandle,
+    value: serde_json::Value,
+    expected: Option<serde_json::Map<String, serde_json::Value>>,
+    apply: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let chord = value.as_str().and_then(crate::core::hotkey::chord::Chord::parse)
+        .ok_or("Invalid sub-app shortcut")?;
+    if crate::core::hotkey::copy_last_conflicts(chord, cfg!(windows), cfg!(target_os = "macos")) {
+        return Err("That shortcut is already assigned to copy last dictation. Choose another combination.".into());
+    }
+    settings.save_values_with_commit(
+        [(store::SUB_APP_CAPTURE_HOTKEY, value)],
+        |current| {
+            let hotkey = current.get_cloned(store::HOTKEY)
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+                .unwrap_or_else(|| if cfg!(target_os = "macos") {
+                    vec!["AltLeft".into(), "Space".into()]
+                } else {
+                    vec!["ControlLeft".into(), "MetaLeft".into()]
+                });
+            if crate::core::hotkey::shortcut_conflicts(&hotkey, chord, cfg!(windows)) {
+                return Err("That shortcut is already assigned to dictation. Choose another combination.".into());
+            }
+            if let Some(expected) = expected {
+                if current.get_cloned(store::SUB_APP_CAPTURE_HOTKEY).unwrap_or(serde_json::Value::Null)
+                    != expected[store::SUB_APP_CAPTURE_HOTKEY] {
+                    return Err("Settings changed while you were editing. Reload them before saving.".into());
+                }
+            }
+            Ok(())
+        },
+        apply,
+    ).map(|_| ())
+}
+
+#[cfg(test)]
+mod sub_app_shortcut_transaction_tests {
+    use super::*;
+    use serde_json::{json, Map, Value};
+
+    #[test]
+    fn stale_write_and_native_failure_preserve_saved_shortcut() {
+        let path = std::env::temp_dir().join(format!("verenu-shortcut-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings.save_value(store::SUB_APP_CAPTURE_HOTKEY, json!("Ctrl+Alt+A")).unwrap();
+        let expected: Map<String, Value> = [(store::SUB_APP_CAPTURE_HOTKEY.into(), json!("Ctrl+Alt+A"))].into_iter().collect();
+        settings.save_value(store::SUB_APP_CAPTURE_HOTKEY, json!("Ctrl+Alt+B")).unwrap();
+        let called = std::cell::Cell::new(false);
+        assert!(commit_sub_app_shortcut(&settings, json!("Ctrl+Alt+D"), Some(expected), || {
+            called.set(true);
+            Ok(())
+        }).is_err());
+        assert!(!called.get());
+        let current: Map<String, Value> = [(store::SUB_APP_CAPTURE_HOTKEY.into(), json!("Ctrl+Alt+B"))].into_iter().collect();
+        assert!(commit_sub_app_shortcut(&settings, json!("Ctrl+Alt+D"), Some(current), || Err("registration failed".into())).is_err());
+        assert_eq!(settings.get(store::SUB_APP_CAPTURE_HOTKEY), Some(json!("Ctrl+Alt+B")));
+        let persisted: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted[store::SUB_APP_CAPTURE_HOTKEY], json!("Ctrl+Alt+B"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_sub_app_shortcut_matching_dictation_before_native_change() {
+        let path = std::env::temp_dir().join(format!("verenu-shortcut-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings.save_value(store::HOTKEY, json!(["ControlLeft", "AltRight", "KeyA"])).unwrap();
+        let called = std::cell::Cell::new(false);
+        assert!(commit_sub_app_shortcut(&settings, json!("Ctrl+Alt+A"), None, || {
+            called.set(true);
+            Ok(())
+        }).is_err());
+        assert!(!called.get());
+        assert_eq!(settings.get(store::SUB_APP_CAPTURE_HOTKEY), None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_copy_last_shortcut_before_native_change() {
+        let path = std::env::temp_dir().join(format!("verenu-shortcut-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        let chord = if cfg!(target_os = "macos") { "Alt+Super+C" } else { "Ctrl+Alt+C" };
+        let called = std::cell::Cell::new(false);
+        assert!(commit_sub_app_shortcut(&settings, json!(chord), None, || {
+            called.set(true);
+            Ok(())
+        }).is_err());
+        assert!(!called.get());
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+async fn save_setting_inner(
+    app: AppHandle,
+    key: String,
     mut value: serde_json::Value,
+    expected: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Result<(), String> {
     validate_setting(&key, &value)?;
+    if key == store::HOTKEY {
+        let keys: Vec<String> = serde_json::from_value(value).map_err(|_| "Invalid hotkey value")?;
+        return match expected {
+            Some(expected) => {
+                if expected.len() != 1 || !expected.contains_key(&key) {
+                    return Err("Expected values must include every affected setting; use describe".into());
+                }
+                super::save_hotkey_if_unchanged(app, keys, expected[&key].clone()).await
+            }
+            None => super::save_hotkey(app, keys).await,
+        };
+    }
+    if key == store::AUTOSTART_ENABLED {
+        let enabled = value.as_bool().ok_or("Invalid autostart value")?;
+        return match expected {
+            Some(expected) => {
+                if expected.len() != 1 || !expected.contains_key(&key) {
+                    return Err("Expected values must include every affected setting; use describe".into());
+                }
+                super::set_autostart_if_unchanged(app, enabled, expected[&key].clone()).await
+            }
+            None => super::set_autostart(app, enabled).await,
+        };
+    }
     let disable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == false;
     if key == store::CUSTOM_PROVIDERS {
         let providers = crate::api::custom::normalize_list(&value)?;
@@ -782,7 +1051,35 @@ pub async fn save_setting(
                 store::STORAGE_FULL_ERROR
             ));
         }
-        if key_clone == store::CUSTOM_PROVIDERS {
+        if let Some(expected) = expected {
+            let affected = if key_clone == store::CONTEXTUAL_FORMATTING {
+                vec![store::CONTEXTUAL_FORMATTING, store::CONTEXTUAL_CAPS, store::AUTO_SPACING]
+            } else { vec![key_clone.as_str()] };
+            if expected.len() != affected.len() || affected.iter().any(|key| !expected.contains_key(*key)) {
+                return Err("Expected values must include every affected setting; use describe".into());
+            }
+            let providers = if key_clone == store::CUSTOM_PROVIDERS {
+                Some(crate::api::custom::normalize_list(&value)?)
+            } else { None };
+            let github_changed = key_clone == store::GITHUB_USERNAME && github_identity_changed(
+                expected.get(&key_clone).and_then(|v| v.as_str()), value.as_str().unwrap_or_default());
+            let mut values: Vec<(String, serde_json::Value)> = affected.iter()
+                .map(|key| ((*key).to_string(), value.clone())).collect();
+            if github_changed { values.push((store::GITHUB_COMMIT_CACHE.into(), serde_json::Value::Null)); }
+            settings.save_values_with_commit(values, |current| {
+                check_expected_settings(current, &expected)?;
+                if let Some(providers) = &providers {
+                    let before = crate::api::custom::parse_stored(current.get(store::CUSTOM_PROVIDERS));
+                    if before.iter().any(|old| !providers.iter().any(|new| new.id == old.id)) {
+                        return Err("Remove providers with delete_custom_provider so model selections are repaired".into());
+                    }
+                    clear_changed_custom_provider_keys(&credential_app, current, providers)?;
+                }
+                if github_changed { crate::commands::github::invalidate_github_refresh_owner(); }
+                Ok(())
+            }, || Ok(())).map(|_| ())?;
+            Ok(())
+        } else if key_clone == store::CUSTOM_PROVIDERS {
             let providers = crate::api::custom::normalize_list(&value)?;
             settings
                 .save_values_with_commit(
@@ -853,9 +1150,6 @@ pub async fn save_setting(
         crate::media::sound::set_volume(volume);
     }
 
-    if key == store::SUB_APP_CAPTURE_HOTKEY {
-        apply_sub_app_capture_hotkey(&app);
-    }
     #[cfg(target_os = "linux")]
     if key == store::LINUX_CANCEL_KEY || key == store::LINUX_HANDSFREE_KEY {
         apply_linux_control_keys(&app)?;
@@ -896,6 +1190,8 @@ pub async fn get_setting(app: AppHandle, key: String) -> Result<Option<serde_jso
 
 #[derive(serde::Serialize)]
 pub struct AllSettings {
+    pub default_tone: Option<String>,
+    pub cleanup_intensity: Option<String>,
     pub clipboard_phrase: Option<String>,
     pub clipboard_phrase_enabled: Option<bool>,
     pub legacy_features_enabled: Option<bool>,
@@ -986,6 +1282,8 @@ macro_rules! snapshot_value {
 }
 
 all_settings! {
+    default_tone = str_val(store::DEFAULT_TONE),
+    cleanup_intensity = str_val(store::CLEANUP_INTENSITY),
     clipboard_phrase = str_val(store::CLIPBOARD_PHRASE),
     clipboard_phrase_enabled = bool_val(store::CLIPBOARD_PHRASE_ENABLED),
     legacy_features_enabled = bool_val(store::LEGACY_FEATURES_ENABLED),
@@ -1338,14 +1636,23 @@ pub fn apply_linux_control_keys(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn apply_sub_app_capture_hotkey(app: &AppHandle) {
-    let chord = store::settings_handle(app)
-        .ok()
-        .and_then(|settings| settings.get(store::SUB_APP_CAPTURE_HOTKEY))
-        .and_then(|value| {
-            value
-                .as_str()
-                .and_then(crate::core::hotkey::chord::Chord::parse)
-        })
-        .unwrap_or_else(crate::core::hotkey::chord::Chord::default_for_platform);
-    crate::core::hotkey::set_sub_app_capture_chord(chord);
+    let result = crate::core::hotkey::with_capture_transition_lock(|| crate::core::hotkey::with_sub_app_shortcut_lock(|| {
+        let chord = store::settings_handle(app)
+            .ok()
+            .and_then(|settings| settings.get(store::SUB_APP_CAPTURE_HOTKEY))
+            .and_then(|value| value.as_str().and_then(crate::core::hotkey::chord::Chord::parse))
+            .unwrap_or_else(crate::core::hotkey::chord::Chord::default_for_platform);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let result = crate::core::hotkey::initialize_sub_app_capture_chord(chord);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let result = crate::core::hotkey::set_sub_app_capture_chord(chord);
+        #[cfg(target_os = "linux")]
+        if crate::core::hotkey::capture_active() {
+            crate::core::hotkey::suspend_shortcuts(true)?;
+        }
+        result
+    }));
+    if let Err(error) = result {
+        log::warn!("Could not apply sub-app shortcut: {error}");
+    }
 }

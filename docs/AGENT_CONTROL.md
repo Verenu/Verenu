@@ -95,7 +95,8 @@ inclusive start and exclusive end.
 
 ```bash
 npm run agent -- get_contexts
-npm run agent -- save_setting '{"key":"mute_audio","value":true}'
+npm run agent -- get_setting '{"key":"mute_audio"}'
+npm run agent -- save_setting '{"key":"mute_audio","value":true,"expected":{"mute_audio":false}}'
 npm run agent -- history.report '{"start":"2026-01-01","end":"2026-04-01"}'
 npm run agent -- diagnostics.top '{"start":"2026-01-01","end":"2026-04-01"}'
 ```
@@ -108,9 +109,16 @@ active request and 60 seconds. After a timeout, read state before retrying a
 mutation: cancellation does not guarantee a native operation was undone.
 
 - Read settings and microphones; write the discovered allowlist of validated
-  user settings. Use `save_hotkey` and `set_autostart` for their native effects.
+  user settings. Use `save_hotkey` and `set_autostart` for their native effects;
+  pass the raw `hotkey` or `autostart_enabled` value read with `get_setting` as
+  `expected` (including `null` if unset). Stale values reject the change.
+  `save_setting` requires the current raw values in `expected`; when changing
+  `contextual_formatting_enabled`, include `contextual_caps_enabled` and
+  `auto_spacing_enabled`. A stale value rejects the complete write.
 - Create, edit, delete and assign dictionary entries and snippets; create,
   assign and delete sub-apps. Inspect `describe` for the complete command list.
+  Entry edits require the original editable fields in `expected`; reread and
+  reconcile after a conflict.
 - `credentials.save` and `credentials.delete` manage saved provider keys through
   the native credential store; `get_api_key_status` reports presence, never key
   values. Pass secrets with `--stdin`, not command arguments, and do not log them.
@@ -120,14 +128,14 @@ mutation: cancellation does not guarantee a native operation was undone.
   Use `delete_custom_provider` for removal so selected models are repaired.
 - Create, duplicate, rename, pin, color, edit or delete Context groups; inspect
   stats, dictionary and snippets; assign/remove apps and website targets.
-  Reassignment moves a target. Use `context.patch_settings` for a partial edit,
-  for example `{"contextId":4,"settings":{"tone":"professional"}}`.
-  Omitted fields remain unchanged; null clears a nullable setting. The older
-  `update_context_settings` replaces its settings. Use
-  `set_context_t3_skill_mentions` to enable or disable T3 skill mentions for a
-  Context. Everywhere semantics
+  Reassignment moves a target. Use `context.patch_settings` for a partial edit
+  with `expected` set to the original Context from `get_contexts`.
+  Omitted fields remain unchanged; null clears a nullable setting. For a whole
+  Context replacement, use `save_context_if_unchanged` with its original and
+  updated records, including changes to T3 skill mentions. Pin or unpin with
+  `context.set_pinned`, passing the original Context as `expected`. Everywhere semantics
   remain owned by the existing native handlers. `create_context` and
-  `update_context_settings` accept the optional `pasteInChunks` preference.
+  `context.patch_settings` accept the optional `pasteInChunks` preference.
 - Read `diagnostics.snapshot`, lint current prompt templates using `prompts.lint`,
   or explicitly invoke `test_cleanup_prompt` with the existing saved provider
   credentials. That last command makes a live provider request and may cost
@@ -135,8 +143,7 @@ mutation: cancellation does not guarantee a native operation was undone.
 - Read `history.report`, metadata-only `history.usage`, bounded `history.page`, and `diagnostics.top`; configure
   journal retention using `diagnostics.retention`.
 
-Read back mutations. Open/reload the relevant UI view to observe external edits;
-already-mounted UI state is not automatically refreshed by this interface.
+Read back mutations and reconcile any reported conflicts before retrying.
 
 ## Historical coverage and privacy
 

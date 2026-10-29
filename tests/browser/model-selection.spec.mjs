@@ -1,5 +1,107 @@
 import { test, expect } from './fixtures.mjs';
 
+test('a delayed language choice preserves an agent change', async ({ page, session }) => {
+  const previous = await session.invoke('get_setting', { key: 'transcription_language' });
+  let release;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const pending = new Promise(resolve => { captured = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'transcription_language', value: 'en' });
+    await page.reload();
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (request.command !== 'save_setting_if_unchanged' || request.args?.key !== 'transcription_language') return route.continue();
+      captured();
+      await held;
+      await route.continue();
+    });
+    await page.getByRole('button', { name: 'Spoken language' }).click();
+    await page.getByRole('button', { name: 'French fr' }).click();
+    await pending;
+    await session.invoke('save_setting', { key: 'transcription_language', value: 'de' });
+    await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['transcription_language']));
+    const response = page.waitForResponse(result => result.url().includes('/__verenu_dev/invoke') && result.request().postDataJSON()?.command === 'save_setting_if_unchanged' && result.request().postDataJSON()?.args?.key === 'transcription_language');
+    release();
+    await response;
+    await expect.poll(() => session.invoke('get_setting', { key: 'transcription_language' })).toBe('de');
+    await expect(page.getByText('Settings changed outside this screen.', { exact: false })).toBeVisible();
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'transcription_language', value: previous ?? 'en' });
+  }
+});
+
+test('an older agent cleanup refresh cannot undo a user toggle', async ({ page, session }) => {
+  const previous = await session.invoke('get_setting', { key: 'cleanup_enabled' });
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let received;
+  const read = new Promise(resolve => { received = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'cleanup_enabled', value: true });
+    await page.reload();
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (request.command !== 'get_setting' || request.args?.key !== 'cleanup_enabled') return route.continue();
+      const response = await route.fetch();
+      received();
+      await held;
+      await route.fulfill({ response });
+    });
+    await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['cleanup_enabled']));
+    await read;
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    const toggle = page.locator('[data-setting-target="general-cleanup"] [role="switch"]');
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await toggle.click();
+    await page.getByRole('button', { name: 'Turn off' }).click();
+    await expect.poll(() => session.invoke('get_setting', { key: 'cleanup_enabled' })).toBe(false);
+    const completed = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_setting' && response.request().postDataJSON()?.args?.key === 'cleanup_enabled');
+    release();
+    await completed;
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'cleanup_enabled', value: previous ?? true });
+  }
+});
+
+test('a late General settings load cannot restore old cleanup state', async ({ page, session }) => {
+  const previous = await session.invoke('get_setting', { key: 'cleanup_enabled' });
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let received;
+  const snapshotRead = new Promise(resolve => { received = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'cleanup_enabled', value: true });
+    await page.reload();
+    await page.route('**/__verenu_dev/invoke', async route => {
+      if (route.request().postDataJSON().command !== 'get_all_settings') return route.continue();
+      const response = await route.fetch();
+      received();
+      await held;
+      await route.fulfill({ response });
+    });
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await snapshotRead;
+    await session.invoke('save_setting', { key: 'cleanup_enabled', value: false });
+    const refreshed = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_setting' && response.request().postDataJSON()?.args?.key === 'cleanup_enabled');
+    await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['cleanup_enabled']));
+    await refreshed;
+    release();
+    await expect(page.locator('[data-setting-target="general-cleanup"] [role="switch"]')).toHaveAttribute('aria-checked', 'false');
+    expect(await session.invoke('get_setting', { key: 'cleanup_enabled' })).toBe(false);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'cleanup_enabled', value: previous ?? true });
+  }
+});
+
 test('a late model save response cannot restore state after an agent change', async ({ page, session }) => {
   const before = await session.invoke('get_all_settings');
   const keys = ['transcription_default_model', 'cleanup_default_model', 'transcription_fallback_models', 'cleanup_fallback_models', 'dual_transcription_enabled', 'cleanup_enabled', 'transcription_provider', 'cleanup_provider', 'transcription_model', 'cleanup_model', 'transcription_models_by_provider', 'cleanup_models_by_provider', 'model_selection_mode', 'transcription_language'];

@@ -523,7 +523,16 @@ where D: serde::Deserializer<'de>, T: Deserialize<'de> {
     T::deserialize(deserializer).map(Some)
 }
 
+#[cfg(test)]
 pub fn patch_context_settings(db: &Db, context_id: i64, patch: ContextSettingsPatch) -> Result<Context> {
+    patch_context_settings_inner(db, context_id, patch, None)
+}
+
+pub fn patch_context_settings_if_unchanged(db: &Db, context_id: i64, patch: ContextSettingsPatch, expected: Context) -> Result<Context> {
+    patch_context_settings_inner(db, context_id, patch, Some(expected))
+}
+
+fn patch_context_settings_inner(db: &Db, context_id: i64, patch: ContextSettingsPatch, expected: Option<Context>) -> Result<Context> {
     if patch.icon.is_none() && patch.tone.is_none() && patch.cleanup_intensity.is_none()
         && patch.custom_instructions.is_none() && patch.contextual_formatting_override.is_none()
         && patch.paste_in_chunks.is_none() {
@@ -532,6 +541,17 @@ pub fn patch_context_settings(db: &Db, context_id: i64, patch: ContextSettingsPa
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current = query_context_conn(&tx, context_id)?;
+    if let Some(expected) = expected {
+        if expected.id != context_id
+            || (patch.icon.is_some() && current.icon != expected.icon)
+            || (patch.tone.is_some() && current.tone != expected.tone)
+            || (patch.cleanup_intensity.is_some() && current.cleanup_intensity != expected.cleanup_intensity)
+            || (patch.custom_instructions.is_some() && current.custom_instructions != expected.custom_instructions)
+            || (patch.contextual_formatting_override.is_some() && current.contextual_formatting_override != expected.contextual_formatting_override)
+            || (patch.paste_in_chunks.is_some() && current.paste_in_chunks != expected.paste_in_chunks) {
+            anyhow::bail!("This context changed while you were editing. Close and reopen it to see the latest changes.");
+        }
+    }
     let icon = match patch.icon { Some(value) => normalize_optional_trimmed(value.as_deref()), None => current.icon };
     let tone = match patch.tone { Some(value) => normalize_optional_trimmed(value.as_deref()), None => current.tone };
     let intensity = match patch.cleanup_intensity { Some(value) => normalize_optional_trimmed(value.as_deref()), None => current.cleanup_intensity };
@@ -582,6 +602,17 @@ pub fn set_context_pinned(db: &Db, context_id: i64, pinned: bool) -> Result<()> 
         params![context_id, pinned],
     )?;
     require_row_changed(changed, "Context", context_id)
+}
+
+pub fn set_context_pinned_if_unchanged(db: &Db, context_id: i64, pinned: bool, expected: Option<String>) -> Result<()> {
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if query_context_conn(&tx, context_id)?.pinned_at != expected {
+        anyhow::bail!("This context changed while you were editing. Close and reopen it to see the latest changes.");
+    }
+    tx.execute("UPDATE contexts SET pinned_at = CASE WHEN ?2 THEN datetime('now') ELSE NULL END WHERE id = ?1", params![context_id, pinned])?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn delete_context(db: &Db, context_id: i64) -> Result<()> {
@@ -1094,6 +1125,20 @@ mod tests {
         retry.name = "User edit".into();
         let saved = save_context_if_unchanged(&db, current, retry).unwrap();
         assert_eq!(saved.name, "User edit");
+        assert_eq!(saved.tone.as_deref(), Some("formal"));
+    }
+
+    #[test]
+    fn agent_patch_rejects_stale_fields_but_preserves_unrelated_edits() {
+        let db = open(":memory:").unwrap();
+        let original = insert_context_with_override_and_delivery(&db, "Patch", None, None, None, Some("Original"), None, false).unwrap();
+        let change = serde_json::from_value(serde_json::json!({"customInstructions": "User edit"})).unwrap();
+        patch_context_settings(&db, original.id, change).unwrap();
+        let stale = serde_json::from_value(serde_json::json!({"customInstructions": "Agent edit", "tone": "formal"})).unwrap();
+        assert!(patch_context_settings_if_unchanged(&db, original.id, stale, original.clone()).is_err());
+        let unrelated = serde_json::from_value(serde_json::json!({"tone": "formal"})).unwrap();
+        let saved = patch_context_settings_if_unchanged(&db, original.id, unrelated, original).unwrap();
+        assert_eq!(saved.custom_instructions.as_deref(), Some("User edit"));
         assert_eq!(saved.tone.as_deref(), Some("formal"));
     }
 
@@ -2422,7 +2467,7 @@ mod tests {
             .any(|entry| entry.id == dictionary.id));
 
         let moved_snippet =
-            move_snippet_entry_to_context(&db, "sig", context.id).expect("move snippet");
+            move_snippet_entry_to_context(&db, "sig", context.id, None).expect("move snippet");
         assert_eq!(moved_snippet.id, snippet.id);
         assert_eq!(moved_snippet.expansion, "Best regards");
         assert!(query_snippets_for_context(&db, EVERYWHERE_CONTEXT_ID)

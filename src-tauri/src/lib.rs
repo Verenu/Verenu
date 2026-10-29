@@ -434,6 +434,16 @@ pub fn run() {
             }
 
             #[cfg(desktop)]
+            if !crate::is_dev_session() {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = commands::reconcile_autostart(app_handle).await {
+                        log::warn!("Failed to reconcile autostart at startup: {error}");
+                    }
+                });
+            }
+
+            #[cfg(desktop)]
             if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
                 analytics.install_panic_hook();
                 let context_group_count = app
@@ -660,6 +670,7 @@ pub fn run() {
             system::windows_titlebar::set_native_titlebar_theme,
             system::omarchy_theme::get_omarchy_theme,
             commands::save_hotkey,
+            commands::save_hotkey_if_unchanged,
             core::hotkey::shortcut_status::get_shortcut_status,
             commands::check_hotkey,
             commands::set_hotkey_capture,
@@ -676,6 +687,7 @@ pub fn run() {
             commands::check_keychain_access,
             commands::save_setting,
             commands::save_model_settings_if_unchanged,
+            commands::save_setting_if_unchanged,
             commands::analytics_setup_event,
             commands::analytics_frontend_exception,
             commands::get_setting,
@@ -701,6 +713,8 @@ pub fn run() {
             commands::cancel_local_llm_runtime_download,
             commands::delete_local_llm_runtime,
             commands::set_autostart,
+            commands::set_autostart_if_unchanged,
+            commands::initialize_autostart,
             commands::get_macos_permission_snapshot,
             commands::request_accessibility_permission,
             commands::open_accessibility_settings,

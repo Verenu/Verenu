@@ -38,6 +38,7 @@
     basicCleanup = false,
     onOpenApiKeys,
     onChooseCloudProvider,
+    onSelect,
   }: {
     provider: ProviderId;
     apiKeyStatus: Record<ProviderId, boolean>;
@@ -47,6 +48,7 @@
     basicCleanup?: boolean;
     onOpenApiKeys: () => void;
     onChooseCloudProvider: (localSupport: 'unsupported' | 'unknown') => void;
+    onSelect?: () => void;
   } = $props();
 
   let hardware = $state<Hardware>({ totalRamMb: 16384, freeRamMb: 12288, gpus: [], unknown: true });
@@ -125,6 +127,7 @@
 
   function choose(next: Preset) {
     if (!next.target) return;
+    onSelect?.();
     userPicked = true;
     preset = next;
     for (const model of missingLocalModels(next.target, installedLocal, appleActive)) {
@@ -225,7 +228,7 @@
                 {appleRefreshing ? 'Checking…' : 'Check again'}
               </button>
             {/if}
-            <button class="btn-ghost btn-compact" type="button" onclick={() => { appleCleanup = false; }}>Turn off selected cleanup</button>
+            <button class="btn-ghost btn-compact" type="button" onclick={() => { appleCleanup = false; onSelect?.(); }}>Turn off selected cleanup</button>
           </div>
         </div>
       </div>
@@ -258,7 +261,7 @@
           checked={appleCleanup}
           disabled={!appleOffer.selectable && !appleCleanup}
           label="Clean up with Apple Intelligence"
-          onchange={(value) => { appleCleanup = value; }}
+          onchange={(value) => { appleCleanup = value; onSelect?.(); }}
         />
       </div>
     {/if}

@@ -35,7 +35,8 @@ async function main() {
   const mute = muteForRoute({ output: output.name, activePort: output.port }, policy);
   if (mute === null) { console.log(JSON.stringify({ applied: false, reason: 'No matching route; mute_audio unchanged' })); return; }
   if (process.argv.includes('--apply')) {
-    await invoke('save_setting', { key: 'mute_audio', value: mute });
+    const previous = await invoke('get_setting', { key: 'mute_audio' });
+    await invoke('save_setting', { key: 'mute_audio', value: mute, expected: { mute_audio: previous } });
     if (await invoke('get_setting', { key: 'mute_audio' }) !== mute) throw new Error('mute_audio readback mismatch');
   }
   console.log(JSON.stringify({ mute_audio: mute, applied: process.argv.includes('--apply') }));
