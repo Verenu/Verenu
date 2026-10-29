@@ -1,5 +1,13 @@
-import { test, expect, keyProviders } from './fixtures.mjs';
+import { test, expect } from './fixtures.mjs';
 import path from 'node:path';
+
+async function openResumedSetup(page, session) {
+  const progressLoaded = page.waitForResponse(response => response.url().endsWith('/__verenu_dev/invoke')
+    && response.request().postDataJSON()?.command === 'get_setting'
+    && response.request().postDataJSON()?.args?.key === 'setup_progress');
+  await page.goto(session.access.localAccessUrl);
+  await progressLoaded;
+}
 
 test('Finish rechecks native Apple availability before saving setup choices', async ({ page, session }) => {
   const saved = await session.invoke('get_all_settings');
@@ -16,10 +24,13 @@ test('Finish rechecks native Apple availability before saving setup choices', as
       if (route.request().postDataJSON()?.command !== 'get_api_key_status') return route.continue();
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(missingKeys) });
     });
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'transcription_provider', value: 'groq' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: 'groq/whisper-large-v3-turbo' });
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 3, provider: 'groq' } });
     await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'medium' });
-    await page.reload();
+    await openResumedSetup(page, session);
     await page.getByRole('button', { name: "I'll add it later", exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Speed or accuracy?' })).toBeVisible();
     await page.evaluate(async () => {
@@ -55,9 +66,11 @@ test('Finish rechecks native Apple availability before saving setup choices', as
     expect(refreshCalls).toBe(1);
     expect(await page.evaluate(async () => (await import('/src/lib/appleIntelligence.svelte.ts')).appleIntelligence.status)).toEqual(fresh);
     expect(await session.invoke('get_setting', { key: 'setup_complete' })).toBe(false);
-    for (const key of ['cleanup_default_model', 'cleanup_provider', 'transcription_default_model', 'transcription_provider']) {
+    for (const key of ['cleanup_default_model', 'cleanup_provider']) {
       expect(await session.invoke('get_setting', { key })).toEqual(saved[key]);
     }
+    expect(await session.invoke('get_setting', { key: 'transcription_default_model' })).toBe('groq/whisper-large-v3-turbo');
+    expect(await session.invoke('get_setting', { key: 'transcription_provider' })).toBe('groq');
     await page.screenshot({ path: path.join(directory, `apple-finish-after-${test.info().project.name}.png`) });
     await page.getByRole('button', { name: 'Review models', exact: true }).click();
     const selected = page.getByRole('switch', { name: 'Clean up with Apple Intelligence', exact: true });
@@ -66,6 +79,9 @@ test('Finish rechecks native Apple availability before saving setup choices', as
     await expect(selected).toHaveAttribute('aria-checked', 'false');
   } finally {
     releaseRefresh();
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'transcription_provider', value: saved.transcription_provider ?? 'groq' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: saved.transcription_default_model ?? null });
     for (const key of ['cleanup_intensity', 'setup_complete', 'setup_progress']) {
       await session.invoke('save_setting', { key, value: saved[key] ?? (key === 'setup_complete' ? true : key === 'cleanup_intensity' ? 'medium' : null) });
     }
@@ -78,10 +94,12 @@ test('onboarding uses native eligibility for the cleanup-only Apple option', asy
   const supported = ['available', 'intelligence-disabled', 'model-not-ready'].includes(availability.state);
   const modelsStep = await page.evaluate(() => /Mac/i.test(navigator.userAgent) ? 5 : 4);
   try {
-    await keyProviders(page, session, ['groq']);
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: 'local/whisper-small' });
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: modelsStep, provider: 'local' } });
-    await page.reload();
+    await openResumedSetup(page, session);
     await expect(page.getByRole('heading', { name: 'Speed or accuracy?' })).toBeVisible();
     const choice = page.getByRole('switch', { name: 'Clean up with Apple Intelligence', exact: true });
     if (supported) {
@@ -91,9 +109,12 @@ test('onboarding uses native eligibility for the cleanup-only Apple option', asy
       await expect(choice).toHaveCount(0);
       await expect(page.getByText('Clean up with Apple Intelligence', { exact: true })).toHaveCount(0);
     }
-    expect(await session.invoke('get_setting', { key: 'transcription_default_model' })).toEqual(saved.transcription_default_model);
+    expect(await session.invoke('get_setting', { key: 'transcription_default_model' })).toBe('local/whisper-small');
     expect(await session.invoke('get_setting', { key: 'cleanup_default_model' })).toEqual(saved.cleanup_default_model);
   } finally {
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'transcription_provider', value: saved.transcription_provider ?? 'groq' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: saved.transcription_default_model ?? null });
     await session.invoke('save_setting', { key: 'setup_complete', value: saved.setup_complete ?? true });
     await session.invoke('save_setting', { key: 'setup_progress', value: saved.setup_progress ?? null });
   }
@@ -103,11 +124,13 @@ test('presentation fixture can clear a chosen cleanup after availability checkin
   const saved = await session.invoke('get_all_settings');
   const modelsStep = await page.evaluate(() => /Mac/i.test(navigator.userAgent) ? 5 : 4);
   try {
-    await keyProviders(page, session, ['groq']);
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: 'local/whisper-small' });
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: modelsStep, provider: 'local' } });
     await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'medium' });
-    await page.reload();
+    await openResumedSetup(page, session);
     await expect(page.getByRole('heading', { name: 'Speed or accuracy?' })).toBeVisible();
     const downloads = page.getByRole('button', { name: /^Download / });
     const originalDownloads = await downloads.allTextContents();
@@ -130,8 +153,11 @@ test('presentation fixture can clear a chosen cleanup after availability checkin
     await expect(recovery).toHaveCount(0);
     expect(await downloads.allTextContents()).toEqual(originalDownloads);
     expect(await session.invoke('get_setting', { key: 'cleanup_default_model' })).toEqual(saved.cleanup_default_model);
-    expect(await session.invoke('get_setting', { key: 'transcription_default_model' })).toEqual(saved.transcription_default_model);
+    expect(await session.invoke('get_setting', { key: 'transcription_default_model' })).toBe('local/whisper-small');
   } finally {
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'transcription_provider', value: saved.transcription_provider ?? 'groq' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: saved.transcription_default_model ?? null });
     await session.invoke('save_setting', { key: 'cleanup_intensity', value: saved.cleanup_intensity ?? 'medium' });
     await session.invoke('save_setting', { key: 'setup_complete', value: saved.setup_complete ?? true });
     await session.invoke('save_setting', { key: 'setup_progress', value: saved.setup_progress ?? null });
@@ -142,11 +168,13 @@ test('presentation fixture keeps Apple cleanup inactive when onboarding cleanup 
   const saved = await session.invoke('get_all_settings');
   const modelsStep = await page.evaluate(() => /Mac/i.test(navigator.userAgent) ? 5 : 4);
   try {
-    await keyProviders(page, session, ['groq']);
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: 'local/whisper-small' });
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: modelsStep, provider: 'local' } });
     await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'none' });
-    await page.reload();
+    await openResumedSetup(page, session);
     await expect(page.getByRole('heading', { name: 'Speed or accuracy?' })).toBeVisible();
     const downloads = page.getByRole('button', { name: /^Download / });
     const originalDownloads = await downloads.allTextContents();
@@ -168,8 +196,11 @@ test('presentation fixture keeps Apple cleanup inactive when onboarding cleanup 
     await expect(choice).toHaveAttribute('aria-checked', 'true');
     await expect(page.getByText('Selected, but not ready.', { exact: false })).toHaveCount(0);
     expect(await session.invoke('get_setting', { key: 'cleanup_default_model' })).toEqual(saved.cleanup_default_model);
-    expect(await session.invoke('get_setting', { key: 'transcription_default_model' })).toEqual(saved.transcription_default_model);
+    expect(await session.invoke('get_setting', { key: 'transcription_default_model' })).toBe('local/whisper-small');
   } finally {
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'transcription_provider', value: saved.transcription_provider ?? 'groq' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: saved.transcription_default_model ?? null });
     await session.invoke('save_setting', { key: 'cleanup_intensity', value: saved.cleanup_intensity ?? 'medium' });
     await session.invoke('save_setting', { key: 'setup_complete', value: true });
     await session.invoke('save_setting', { key: 'setup_progress', value: saved.setup_progress ?? null });

@@ -1,4 +1,28 @@
-import { test, expect, keyProviders } from './fixtures.mjs';
+import { test, expect } from './fixtures.mjs';
+
+const syntheticProvider = {
+  id: 'custom:12345678-1234-1234-1234-123456789012', name: 'Synthetic provider',
+  protocol: 'openai', base_url: 'http://127.0.0.1:1/v1', requires_key: false,
+  supports_transcription: true, supports_cleanup: true, auth_header: null,
+  extra_headers: {}, body_overrides: null,
+  transcription_models: ['synthetic-primary', 'synthetic-secondary'], cleanup_models: ['synthetic-cleanup'],
+};
+
+const modelSettingDefaults = {
+  transcription_default_model: null, cleanup_default_model: null,
+  transcription_model: null, cleanup_model: null,
+  transcription_provider: 'groq', cleanup_provider: 'groq',
+  transcription_models_by_provider: {}, cleanup_models_by_provider: {},
+  transcription_fallback_models: [], cleanup_fallback_models: [],
+  dual_transcription_enabled: false, cleanup_enabled: true,
+  model_selection_mode: 'manual', transcription_language: 'en',
+};
+
+async function restoreModelSettings(session, before, keys) {
+  for (const key of keys) {
+    await session.invoke('save_setting', { key, value: before[key] ?? modelSettingDefaults[key] });
+  }
+}
 
 test('a delayed language choice preserves an agent change', async ({ page, session }) => {
   const previous = await session.invoke('get_setting', { key: 'transcription_language' });
@@ -118,7 +142,7 @@ test('a late model save response cannot restore state after an agent change', as
   let committed;
   const saved = new Promise(resolve => { committed = resolve; });
   try {
-    await keyProviders(page, session, ['groq']);
+    await session.invoke('save_setting', { key: 'custom_providers', value: [syntheticProvider] });
     await session.invoke('save_setting', { key: 'transcription_default_model', value: 'groq/whisper-large-v3-turbo' });
     await session.invoke('save_setting', { key: 'transcription_language', value: 'en' });
     await page.reload();
@@ -148,16 +172,17 @@ test('a late model save response cannot restore state after an agent change', as
   } finally {
     release();
     await page.unrouteAll({ behavior: 'wait' });
-    for (const key of keys) {
-      if (before[key] !== undefined && before[key] !== null) await session.invoke('save_setting', { key, value: before[key] });
-    }
+    await session.invoke('save_setting', { key: 'custom_providers', value: before.custom_providers ?? [] });
+    await restoreModelSettings(session, before, keys);
   }
 });
 
 test('external model-related changes block preset writes until reload', async ({ page, session }) => {
   const original = await session.invoke('get_setting', { key: 'cleanup_enabled' });
+  const providers = await session.invoke('get_setting', { key: 'custom_providers' });
   try {
-    await keyProviders(page, session, ['groq']);
+    await session.invoke('save_setting', { key: 'custom_providers', value: [syntheticProvider] });
+    await page.reload();
     await page.locator('[data-debug-id="nav.settings"]').click();
     await page.locator('[data-debug-id="settings.models"]').click();
     await expect(page.getByRole('region', { name: 'Cloud models' })).toBeVisible();
@@ -176,6 +201,7 @@ test('external model-related changes block preset writes until reload', async ({
       await expect(page.getByRole('alert')).toHaveCount(0);
     }
   } finally {
+    await session.invoke('save_setting', { key: 'custom_providers', value: providers ?? [] });
     await session.invoke('save_setting', { key: 'cleanup_enabled', value: original ?? true });
   }
 });
@@ -200,16 +226,18 @@ test('agent model change updates language choices on the General screen', async 
     await page.getByRole('button', { name: 'Spoken language' }).click();
     await expect(page.getByRole('button', { name: 'French fr' })).toBeVisible();
   } finally {
-    await session.invoke('save_setting', { key: 'transcription_default_model', value: previous.transcription_default_model ?? 'groq/whisper-large-v3-turbo' });
-    await session.invoke('save_setting', { key: 'transcription_model', value: previous.transcription_model ?? 'groq/whisper-large-v3-turbo' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: previous.transcription_default_model ?? null });
+    await session.invoke('save_setting', { key: 'transcription_model', value: previous.transcription_model ?? null });
     await session.invoke('save_setting', { key: 'transcription_language', value: previous.transcription_language ?? 'en' });
   }
 });
 
 test('model settings warn and reload after an external change', async ({ page, session }) => {
   const previous = await session.invoke('get_setting', { key: 'transcription_default_model' });
+  const providers = await session.invoke('get_setting', { key: 'custom_providers' });
   try {
-  await keyProviders(page, session, ['groq']);
+  await session.invoke('save_setting', { key: 'custom_providers', value: [syntheticProvider] });
+  await page.reload();
   await page.locator('[data-debug-id="nav.settings"]').click();
   await page.locator('[data-debug-id="settings.models"]').click();
   await expect(page.getByRole('region', { name: 'Cloud models' })).toBeVisible();
@@ -220,7 +248,8 @@ test('model settings warn and reload after an external change', async ({ page, s
   await expect(page.getByRole('alert')).toHaveCount(0);
   expect(await session.invoke('get_setting', { key: 'transcription_default_model' })).toBe('groq/agent-model');
   } finally {
-    if (previous !== null) await session.invoke('save_setting', { key: 'transcription_default_model', value: previous });
+    await session.invoke('save_setting', { key: 'custom_providers', value: providers ?? [] });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: previous });
   }
 });
 
@@ -244,13 +273,7 @@ test('other settings remain protected until the user reloads after an external c
 });
 
 test('cloud priorities explain their models and retain dual comparison across reload', async ({ page, session }) => {
-  const provider = {
-    id: 'custom:12345678-1234-1234-1234-123456789012', name: 'Synthetic provider',
-    protocol: 'openai', base_url: 'http://127.0.0.1:1/v1', requires_key: false,
-    supports_transcription: true, supports_cleanup: true, auth_header: null,
-    extra_headers: {}, body_overrides: null,
-    transcription_models: ['synthetic-primary', 'synthetic-secondary'], cleanup_models: ['synthetic-cleanup'],
-  };
+  const provider = syntheticProvider;
   const before = await session.invoke('get_all_settings');
   const mode = await session.invoke('get_setting', { key: 'model_selection_mode' });
   const keys = ['transcription_default_model', 'cleanup_default_model', 'transcription_fallback_models', 'cleanup_fallback_models', 'dual_transcription_enabled', 'cleanup_enabled', 'transcription_provider', 'cleanup_provider', 'transcription_model', 'cleanup_model', 'transcription_models_by_provider', 'cleanup_models_by_provider'];
@@ -282,9 +305,7 @@ test('cloud priorities explain their models and retain dual comparison across re
     await expect(page.getByRole('button', { name: 'Prepare offline fallback' }).first()).toBeVisible();
   } finally {
     await session.invoke('save_setting', { key: 'custom_providers', value: before.custom_providers ?? [] });
-    for (const key of keys) {
-      if (before[key] !== undefined && before[key] !== null) await session.invoke('save_setting', { key, value: before[key] });
-    }
+    await restoreModelSettings(session, before, keys);
     await session.invoke('save_setting', { key: 'model_selection_mode', value: mode ?? 'manual' });
   }
 });
