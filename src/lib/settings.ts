@@ -75,7 +75,7 @@ export interface AppMapping {
   cleanup_intensity?: CleanupIntensity;
 }
 
-type SettingsValueMap = {
+export type SettingsValueMap = {
   autostart_enabled: boolean;
   hotkey: string[];
   custom_providers: import('./customProviders.svelte').CustomProvider[];
@@ -100,6 +100,13 @@ type SettingsValueMap = {
   cleanup_intensity: CleanupIntensity;
   app_mappings: AppMapping[];
   noise_reduction: boolean;
+  echo_cancellation: boolean;
+  duck_audio: boolean;
+  duck_target: number;
+  duck_fade_down_ms: number;
+  duck_fade_up_ms: number;
+  duck_fade_down_curve: 'linear' | 'smooth';
+  duck_fade_up_curve: 'linear' | 'smooth';
   mute_audio: boolean;
   mic_mute_button_dictation: boolean;
   exclusive_mic: boolean;
@@ -149,10 +156,10 @@ type SettingsValueMap = {
 };
 
 type SettingKey = keyof SettingsValueMap;
-type WritableSettingKey = Exclude<SettingKey, 'sync_peer_addresses'>;
+export type WritableSettingKey = Exclude<SettingKey, 'sync_peer_addresses'>;
 
 export type SettingsSnapshot = {
-  [K in Exclude<SettingKey, 'default_tone' | 'cleanup_intensity' | 'app_mappings' | 'setup_complete'>]?: SettingsValueMap[K] | null;
+  [K in Exclude<SettingKey, 'app_mappings' | 'setup_complete'>]?: SettingsValueMap[K] | null;
 };
 
 export function loadSettingsSnapshot(): Promise<SettingsSnapshot> {
@@ -189,7 +196,15 @@ const readinessSettingKeys = new Set<WritableSettingKey>([
 ]);
 
 export function saveSetting<K extends WritableSettingKey>(key: K, value: SettingsValueMap[K]) {
-  return invoke('save_setting', { key, value }).then((result) => {
+  return finishSettingSave(key, invoke('save_setting', { key, value }));
+}
+
+export function saveSettingIfUnchanged<K extends WritableSettingKey>(key: K, value: SettingsValueMap[K], expected: Record<string, unknown>) {
+  return finishSettingSave(key, invoke('save_setting_if_unchanged', { key, value, expected }));
+}
+
+function finishSettingSave(key: WritableSettingKey, request: Promise<unknown>) {
+  return request.then((result) => {
     if (typeof window !== 'undefined' && readinessSettingKeys.has(key)) {
       window.dispatchEvent(new CustomEvent('verenu:setting-saved', { detail: { key } }));
     }

@@ -137,9 +137,16 @@ pub fn query_effective_dictionary_for_context(
     context_id: i64,
 ) -> Result<Vec<DictionaryEntry>> {
     let conn = lock_conn(db)?;
-    let context = query_context_conn(&conn, context_id)?;
-    let everywhere_id = ensure_everywhere_context_conn(&conn)?;
-    let mut local = query_dictionary_conn(&conn, Some(context_id))?;
+    query_effective_dictionary_for_context_conn(&conn, context_id)
+}
+
+fn query_effective_dictionary_for_context_conn(
+    conn: &rusqlite::Connection,
+    context_id: i64,
+) -> Result<Vec<DictionaryEntry>> {
+    let context = query_context_conn(conn, context_id)?;
+    let everywhere_id = ensure_everywhere_context_conn(conn)?;
+    let mut local = query_dictionary_conn(conn, Some(context_id))?;
     for entry in &mut local {
         entry.assigned_to_context = true;
     }
@@ -156,7 +163,7 @@ pub fn query_effective_dictionary_for_context(
         .flat_map(|entry| &entry.corrections)
         .map(|correction| correction.mistake.to_lowercase())
         .collect::<HashSet<_>>();
-    let global = query_dictionary_conn(&conn, Some(everywhere_id))?;
+    let global = query_dictionary_conn(conn, Some(everywhere_id))?;
     let mut indices = local
         .iter()
         .enumerate()
@@ -1586,6 +1593,60 @@ pub fn update_dictionary_entry_for_context(
         &normalized_term,
         normalized_mistake.as_deref(),
     )?;
+    tx.commit()?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct ExpectedDictionaryEntry {
+    pub term: String,
+    pub mistake: Option<String>,
+}
+
+pub fn update_dictionary_entry_if_unchanged(
+    db: &Db, context_id: Option<i64>, id: i64, term: &str, mistake: Option<&str>,
+    expected: &ExpectedDictionaryEntry,
+) -> Result<()> {
+    let normalized_term = require_nonempty_trimmed("Term", term)?;
+    let normalized_mistake = normalize_optional_trimmed(mistake);
+    validate_char_limit("Term", &normalized_term, DICTIONARY_ENTRY_CHAR_LIMIT)?;
+    if let Some(mistake) = normalized_mistake.as_deref() {
+        validate_char_limit("Often mistranscribed as", mistake, DICTIONARY_ENTRY_CHAR_LIMIT)?;
+    }
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let current = match context_id {
+        Some(context_id) => query_effective_dictionary_for_context_conn(&tx, context_id)?,
+        None => query_dictionary_conn(&tx, None)?,
+    }.into_iter().find(|entry| entry.id == id);
+    if !current.is_some_and(|entry| {
+        let mistake = if entry.inherited_from_everywhere && context_id.is_some() {
+            let local = entry.context_corrections.iter().map(|item| item.mistake.as_str()).collect::<Vec<_>>().join(", ");
+            if local.is_empty() { None } else { Some(local) }
+        } else {
+            entry.mistake
+        };
+        entry.term == expected.term && mistake == expected.mistake
+    }) {
+        anyhow::bail!("This vocabulary entry changed while you were editing. Close and reopen it before saving.");
+    }
+    let target = match context_id {
+        Some(context_id) => context_id,
+        None => {
+            let ids: Vec<i64> = tx.prepare("SELECT context_id FROM dictionary_contexts WHERE dictionary_id = ?1 ORDER BY context_id")?
+                .query_map(params![id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+            match ids.as_slice() {
+                [] => {
+                    let everywhere = ensure_everywhere_context_conn(&tx)?;
+                    tx.execute("INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id) VALUES (?1, ?2)", params![everywhere, id])?;
+                    everywhere
+                }
+                [only] => *only,
+                _ => anyhow::bail!("Dictionary entry {id} is shared by multiple contexts; edit it from the active Context"),
+            }
+        }
+    };
+    update_dictionary_entry_for_context_conn(&tx, target, id, &normalized_term, normalized_mistake.as_deref())?;
     tx.commit()?;
     Ok(())
 }

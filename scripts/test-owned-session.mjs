@@ -55,13 +55,13 @@ try {
     report.checks.push(...nodes.checks);
   }
   if (partition.suite !== 'node') {
-    console.log(`Owned browser: starting ${partition.project}`);
+    console.log(`Owned browser: starting ${partition.project} ${partition.index}/${partition.count}`);
     const browserStarted = performance.now();
     session = await startOwnedSession({ id, fixtures, directory, synthetic: true });
     report.timing.browserStartupMs = Math.round(performance.now() - browserStarted);
     const env = { ...process.env, VERENU_SESSION_ACCESS_FILE: session.accessFile, VERENU_DEV_REQUIRE_LIVE: args.includes('--live') ? '1' : '0' };
     const browserEnv = args.includes('--update-snapshots') ? { ...env, VERENU_SNAPSHOT_SOURCE_FINGERPRINT: identity.fingerprint } : env;
-    const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs', ...(partition.project === 'all' ? [] : [`--project=${partition.project}`]), ...(args.includes('--update-snapshots') ? ['--update-snapshots=all'] : [])], { directory, name: 'playwright', env: browserEnv });
+    const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs', ...(partition.project === 'all' ? [] : [`--project=${partition.project}`]), ...(partition.count === 1 ? [] : [`--shard=${partition.index}/${partition.count}`]), ...(args.includes('--update-snapshots') ? ['--update-snapshots=all'] : [])], { directory, name: 'playwright', env: browserEnv });
     report.timing.playwrightMs = playwright.durationMs;
     report.artifacts.push(artifact(playwright.log));
     const browserReport = await readPlaywrightReport(path.join(session.directory, 'playwright.json'));
@@ -90,7 +90,6 @@ try {
         ? `Real-session Playwright flows failed in ${failedTests.length} case(s).`
         : browserSummary.reason || 'Real-session Playwright flows failed.'), { verificationStatus: browserSummary.status });
     }
-    report.checks.push({ name: `Real UI settings save/reload and invalid Context recovery (${partition.project})`, status: 'passed' });
     const restartStarted = performance.now();
     const context = await invokeSession(session, 'create_context', { name: 'Synthetic restart', contextualFormattingOverride: null });
     const initialLegacy = (await invokeSession(session, 'get_all_settings')).legacy_features_enabled === true;

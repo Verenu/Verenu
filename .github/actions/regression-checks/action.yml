@@ -5,17 +5,20 @@ inputs:
     description: Report and artifact name prefix
     required: true
   profile:
-    description: all (local/release parity), fast, or owned
+    description: all, fast, linux, or owned
     default: all
   suite:
     description: all, node, or browser owned tests
     default: all
   shard:
-    description: Node shard index/count
+    description: Node or browser shard index/count
     default: 1/1
   project:
     description: all, desktop, or phone browser project
     default: all
+  fast-suites:
+    description: Comma-separated OnePyFone suites; empty runs the full fast profile
+    default: ''
 runs:
   using: composite
   steps:
@@ -24,7 +27,7 @@ runs:
       env:
         PROFILE: ${{ inputs.profile }}
       run: |
-        case "$PROFILE" in all|fast|owned) ;; *) exit 1 ;; esac
+        case "$PROFILE" in all|fast|linux|owned) ;; *) exit 1 ;; esac
     - uses: actions/setup-node@v6
       with:
         node-version: 24
@@ -49,32 +52,44 @@ runs:
       shell: bash
       run: npm ci
     - name: Install browser
+      if: inputs.profile != 'linux'
       shell: bash
       run: npx playwright install --with-deps chromium
-    - name: Run deterministic contracts
-      if: inputs.profile != 'owned'
+    - name: Compile Rust prompt contract tests
+      if: (inputs.profile == 'all' || inputs.profile == 'fast') && (inputs.fast-suites == '' || contains(format(',{0},', inputs.fast-suites), ',contract,'))
+      shell: bash
+      run: cargo test --manifest-path src-tauri/Cargo.toml prompt_regression_fixtures_hold --no-run
+    - name: Compile Rust session backend
+      if: inputs.profile == 'all' || inputs.profile == 'owned'
+      shell: bash
+      run: cargo build --manifest-path src-tauri/Cargo.toml --features dev-session
+    - name: Run selected deterministic regression suites
+      if: inputs.profile == 'all' || inputs.profile == 'fast'
       shell: bash
       env:
         REPORT_PREFIX: ${{ inputs.report-prefix }}
+        FAST_SUITES: ${{ inputs.fast-suites }}
       run: |
         mkdir -p tests/reports
-        npm test -- --strict --json-report "tests/reports/$REPORT_PREFIX-fast.json" --junit-report "tests/reports/$REPORT_PREFIX-fast.xml"
+        args=()
+        if [ -n "$FAST_SUITES" ]; then args+=(--suite "$FAST_SUITES"); fi
+        npm test -- --strict "${args[@]}" --json-report "tests/reports/$REPORT_PREFIX-fast.json" --junit-report "tests/reports/$REPORT_PREFIX-fast.xml"
     - name: Lint Linux Rust including dev-session code
-      if: inputs.profile != 'owned'
+      if: inputs.profile == 'all' || inputs.profile == 'linux'
       shell: bash
       run: cargo clippy --manifest-path src-tauri/Cargo.toml --features dev-session -- -D warnings
     - name: Verify generated compositor gestures
-      if: inputs.profile != 'owned'
+      if: inputs.profile == 'all' || inputs.profile == 'linux'
       shell: bash
       run: |
         cargo test --manifest-path src-tauri/Cargo.toml core::hyprland::tests --lib -- --include-ignored
         cargo test --manifest-path src-tauri/Cargo.toml core::hotkey::linux --lib
     - name: Stress native runtime handle ownership
-      if: inputs.profile != 'owned'
+      if: inputs.profile == 'all' || inputs.profile == 'linux'
       shell: bash
       run: dbus-run-session -- xvfb-run -a cargo run --manifest-path src-tauri/Cargo.toml --example runtime-handle-stress
-    - name: Run every owned-session and browser regression
-      if: inputs.profile != 'fast'
+    - name: Run selected isolated session tests
+      if: inputs.profile == 'all' || inputs.profile == 'owned'
       shell: bash
       env:
         REPORT_PREFIX: ${{ inputs.report-prefix }}
@@ -106,7 +121,7 @@ runs:
             npm run test:session:owned -- --suite "$SESSION_SUITE" --shard "$SESSION_SHARD" --project "$SESSION_PROJECT" --report "tests/reports/$REPORT_PREFIX-session.json"
           '
     - name: Upload safe regression reports
-      if: always()
+      if: always() && inputs.profile != 'linux'
       uses: actions/upload-artifact@v4
       with:
         name: ${{ inputs.report-prefix }}-reports

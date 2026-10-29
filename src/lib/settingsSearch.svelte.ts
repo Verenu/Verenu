@@ -1,6 +1,6 @@
 import { CATALOG, providerDisplayLabel, taskLabel } from './components/settings/models';
 import type { SettingsSectionId } from './settingsSections';
-import { isAndroid } from './platform';
+import { isAndroid, isLinux } from './platform';
 
 export type SettingsSearchEntry = {
   id: string;
@@ -52,7 +52,7 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'general-appearance', section: 'general', label: 'Appearance', description: 'Choose the light, dark, or system look, or pick, create, and edit a theme', target: 'general-appearance', keywords: ['theme', 'light mode', 'dark mode', 'system', 'omarchy', 'custom colors', 'hex', 'background color', 'palette', 'create theme', 'theme gallery', 'theme editor', 'saved themes'] },
   { id: 'general-accent', section: 'general', label: 'Accent color', description: 'Change the color used for actions, highlights, and focus rings', target: 'general-accent', keywords: ['colour', 'orange', 'brand', 'palette', 'theme', 'custom color', 'hex'] },
   { id: 'general-startup', section: 'general', label: 'Start on boot', description: 'Launch Verenu when the computer starts', target: 'general-startup', keywords: ['autostart', 'startup', 'launch'] },
-  { id: 'general-cleanup', section: 'general', label: 'Cleanup', description: 'Clean up transcripts with Basic rules or an AI pass after transcription', target: 'general-cleanup', keywords: ['formatting', 'rewrite', 'llm', 'ai', 'basic', 'rules'] },
+  { id: 'general-cleanup', section: 'general', label: 'Cleanup', description: 'Clean up transcripts after transcription', target: 'general-cleanup', keywords: ['formatting', 'rewrite', 'llm', 'ai'] },
   { id: 'general-voice-commands', section: 'general', label: 'Voice commands', description: 'Say spoken punctuation, line breaks, and scratch that while dictating', target: 'general-voice-commands', keywords: ['voice commands', 'spoken punctuation', 'punctuation', 'new line', 'line break', 'new paragraph', 'scratch that', 'delete that', 'commands'] },
   { id: 'general-spacing', section: 'general', label: 'Smart spacing and capitalization', description: 'Adjust inserted text using the cursor context', target: 'general-spacing', keywords: ['caps', 'capitalization', 'punctuation'] },
   { id: 'general-caps-lock', section: 'general', label: 'Automatic caps lock detection', description: 'Output dictation in uppercase while Caps Lock is on', target: 'general-caps-lock', keywords: ['uppercase', 'capitalization'] },
@@ -81,8 +81,8 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'privacy-export', section: 'privacy', label: 'Export backup', description: 'Save a backup of Verenu data', target: 'privacy-export', keywords: ['backup', 'download', 'data'] },
   { id: 'privacy-import', section: 'privacy', label: 'Import backup', description: 'Restore Verenu data from a backup', target: 'privacy-import', keywords: ['backup', 'restore', 'data'] },
 
-  { id: 'audio-gain', section: 'advanced', label: 'Microphone gain', description: 'Digital boost on top of your system input volume', target: 'audio-gain', keywords: ['mic', 'volume', 'input', 'clipping', 'quiet'] },
-  { id: 'audio-system-mute', section: 'advanced', label: 'Mute system audio', description: 'Mute computer audio while dictating', target: 'audio-system-mute', keywords: ['windows', 'macos', 'sound'] },
+  { id: 'audio-gain', section: 'advanced', label: 'Microphone gain', description: 'Set the target level for automatic speech gain', target: 'audio-gain', keywords: ['mic', 'volume', 'input', 'clipping', 'quiet'] },
+  { id: 'audio-system-mute', section: 'advanced', label: isLinux && !isAndroid ? 'Volume of audio while dictating' : 'Mute system audio', description: 'Adjust computer audio while dictating', target: 'audio-system-mute', keywords: ['windows', 'macos', 'linux', 'sound', 'mute', 'speaker'] },
   { id: 'audio-exclusive', section: 'advanced', label: 'Exclusive microphone access', description: 'Reserve the microphone for Verenu while dictating', target: 'audio-exclusive', keywords: ['mic', 'input', 'other apps'] },
   { id: 'audio-pause-media', section: 'advanced', label: 'Pause media while dictating', description: 'Pause and resume active media around dictation', target: 'audio-pause-media', keywords: ['music', 'video', 'windows', 'linux', 'mpris', 'playback'] },
   { id: 'sub-apps-shortcut', section: 'subapps', label: 'Sub-app capture shortcut', description: 'Change the shortcut that saves the focused window as a sub-app', target: 'sub-apps-shortcut', keywords: ['sub-app', 'subapp', 'capture', 'shortcut', 'hotkey', 'window', 'discord', 'slack'] },
@@ -106,7 +106,7 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'permissions-macos', section: 'permissions', label: 'macOS permissions', description: 'Manage microphone, accessibility, and Keychain access', target: 'permissions', keywords: ['microphone', 'accessibility', 'keychain'] },
   { id: 'apps-mappings', section: 'apps', label: 'App mappings', description: 'Configure per-app cleanup and tone overrides', target: 'apps-mappings', keywords: ['applications', 'tone', 'legacy'] },
 
-  { id: 'developer-sync', section: 'developer', label: 'LAN device sync', description: 'Enable experimental device-to-device sync', target: 'developer-sync', keywords: ['network', 'pairing'] },
+  { id: 'sync-devices', section: 'sync', label: 'LAN device sync', description: 'Pair nearby devices and configure device sync', target: 'sync-paired', keywords: ['network', 'pairing'] },
   { id: 'developer-setup', section: 'developer', label: 'Force setup on launch', description: 'Show onboarding every time Verenu starts', target: 'developer-setup', keywords: ['onboarding', 'startup'] },
   { id: 'developer-ruin-accessibility', section: 'developer', label: 'Ruin accessibility', description: 'Dump diagnostics into the accessibility tree for agent SnapShots', target: 'developer-ruin-accessibility', keywords: ['a11y', 'snapshot', 'debug', 'agent', 't3'] },
   { id: 'developer-logs', section: 'developer', label: 'Real-time logs', description: 'View the current diagnostic log stream', target: 'developer-logs', keywords: ['debug', 'logging'] },

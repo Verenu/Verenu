@@ -163,6 +163,13 @@ const defaultSettings: Record<string, unknown> = {
   cleanup_intensity: 'medium',
   app_mappings: [],
   noise_reduction: true,
+  echo_cancellation: false,
+  duck_audio: false,
+  duck_target: 25,
+  duck_fade_down_ms: 250,
+  duck_fade_up_ms: 150,
+  duck_fade_down_curve: 'smooth',
+  duck_fade_up_curve: 'smooth',
   mute_audio: false,
   pause_media_during_dictation: false,
   play_start_stop_sounds: true,
@@ -672,11 +679,44 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return undefined as T;
     case 'get_setting':
       return getDevSetting(String(args?.key ?? '')) as T;
+    case 'get_effective_transcription_model': {
+      const current = getDevSetting('transcription_default_model');
+      const legacy = getDevSetting('transcription_model');
+      const model = [current, legacy].find(value => typeof value === 'string' && value.includes('/'));
+      return (model ?? 'groq/whisper-large-v3-turbo') as T;
+    }
     case 'get_storage_full_simulation':
       return devStorageFullSimulation as T;
     case 'set_storage_full_simulation':
       devStorageFullSimulation = Boolean(args?.enabled);
       return undefined as T;
+    case 'save_model_settings_if_unchanged': {
+      if (devStorageFullSimulation) throw new Error('STORAGE_FULL: simulated settings write failure');
+      const expected = args?.expected as Record<string, unknown>;
+      const values = args?.values as Record<string, unknown>;
+      if (!expected || !values) throw new Error('Invalid model settings snapshot');
+      const setup = Object.prototype.hasOwnProperty.call(expected, 'appearance_mode');
+      const saved = readDevSettings();
+      if (Object.entries(expected).some(([key, value]) =>
+        JSON.stringify(setup ? (saved[key] ?? null) : getDevSetting(key)) !== JSON.stringify(value))) {
+        throw new Error('Model settings changed while you were editing. Reload them before saving.');
+      }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(DEV_STORAGE_KEY, JSON.stringify({ ...readDevSettings(), ...values }));
+      }
+      return undefined as T;
+    }
+    case 'save_setting_if_unchanged': {
+      const key = String(args?.key ?? '');
+      const expected = args?.expected as Record<string, unknown>;
+      if (!expected || !Object.prototype.hasOwnProperty.call(expected, key)) throw new Error('Missing expected setting');
+      if (Object.entries(expected).some(([name, value]) => JSON.stringify(getDevSetting(name) ?? null) !== JSON.stringify(value))) {
+        throw new Error('Settings changed while you were editing. Reload them before saving.');
+      }
+      if (devStorageFullSimulation) throw new Error('STORAGE_FULL: simulated settings write failure');
+      for (const name of Object.keys(expected)) writeDevSetting(name, args?.value);
+      return undefined as T;
+    }
     case 'save_setting':
       if (typeof args?.key !== 'string' || args.key.length === 0) {
         return undefined as T;
@@ -689,8 +729,22 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         emitDevTauriEvent('verenu:ruin-accessibility-changed', Boolean(args.value));
       }
       return undefined as T;
-    case 'get_all_settings':
-      return { ...defaultSettings, ...readDevSettings() } as T;
+    case 'get_all_settings': {
+      const saved = readDevSettings();
+      const snapshot = { ...defaultSettings, ...saved };
+      if (saved.setup_complete === false) {
+        for (const key of [
+          'cleanup_intensity', 'default_tone', 'cleanup_enabled', 'transcription_provider',
+          'transcription_model', 'transcription_default_model', 'transcription_models_by_provider',
+          'transcription_fallback_models', 'dual_transcription_enabled', 'transcription_language',
+          'cleanup_provider', 'cleanup_model', 'cleanup_default_model', 'cleanup_models_by_provider',
+          'cleanup_fallback_models', 'appearance_mode', 'mute_audio', 'pause_media_during_dictation',
+          'noise_reduction', 'contextual_formatting_enabled', 'contextual_caps_enabled',
+          'auto_spacing_enabled', 'caps_lock_uppercase_enabled', 'auto_learn_enabled',
+        ]) snapshot[key] = saved[key] ?? null;
+      }
+      return snapshot as T;
+    }
     case 'get_app_mappings':
       return getDevSetting('app_mappings') as T;
     case 'get_t3_skills':
@@ -967,6 +1021,38 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     }
     case 'get_snippets':
       return readDevList<DevSnippet>(DEV_SNIPPETS_KEY) as T;
+    case 'move_snippet_entry_to_context': {
+      const trigger = assertDevText(args?.trigger, 'Trigger').trim();
+      const contextId = Number(args?.contextId ?? args?.context_id);
+      if (contextId === DEV_EVERYWHERE_CONTEXT_ID || !readDevContexts().some(context => context.id === contextId)) {
+        throw new Error('Invalid move destination');
+      }
+      const rows = readDevList<DevSnippet>(DEV_SNIPPETS_KEY);
+      const index = rows.findIndex(row => row.trigger === trigger);
+      if (index < 0) throw new Error(`"${trigger}" was not found`);
+      const existing = rows[index];
+      const assignments = readDevContextAssignments();
+      const source = (assignments.snippets[String(DEV_EVERYWHERE_CONTEXT_ID)] ??= rows.map(row => row.id));
+      if (!source.includes(existing.id)) throw new Error(`"${trigger}" is not assigned to Everywhere`);
+      const edit = args?.edit;
+      if (edit && typeof edit === 'object' && 'expected' in edit && 'id' in edit && 'expansion' in edit && 'instructions' in edit) {
+        const expected = edit.expected;
+        if (!expected || typeof expected !== 'object' || !('trigger' in expected) || !('expansion' in expected) || !('instructions' in expected) ||
+            edit.id !== existing.id || existing.trigger !== expected.trigger || existing.expansion !== expected.expansion || existing.instructions !== expected.instructions) {
+          throw new Error('This snippet changed while you were editing. Close and reopen it before saving.');
+        }
+        const expansion = assertDevText(edit.expansion, 'Expansion');
+        const instructions = assertDevText(edit.instructions, 'Cleanup instructions');
+        if (!expansion.trim()) throw new Error('Expansion cannot be empty');
+        rows[index] = { ...existing, expansion, instructions };
+      }
+      source.splice(source.indexOf(existing.id), 1);
+      const target = (assignments.snippets[String(contextId)] ??= []);
+      if (!target.includes(existing.id)) target.push(existing.id);
+      writeDevList(DEV_SNIPPETS_KEY, rows);
+      writeDevContextAssignments(assignments);
+      return rows[index] as T;
+    }
     case 'get_dictionary':
       return readDevList<DevDictionaryEntry>(DEV_DICTIONARY_KEY) as T;
     case 'get_recent':
@@ -1489,8 +1575,17 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     case 'save_hotkey':
       writeDevSetting('hotkey', args?.keys);
       return undefined as T;
+    case 'save_hotkey_if_unchanged':
+      if (JSON.stringify(getDevSetting('hotkey') ?? null) !== JSON.stringify(args?.expected)) throw new Error('Settings changed while you were editing. Reload them before saving.');
+      writeDevSetting('hotkey', args?.keys);
+      return undefined as T;
+    case 'set_autostart_if_unchanged':
+      if (JSON.stringify(getDevSetting('autostart_enabled') ?? null) !== JSON.stringify(args?.expected)) throw new Error('Settings changed while you were editing. Reload them before saving.');
+      writeDevSetting('autostart_enabled', args?.enabled);
+      return undefined as T;
     case 'set_hotkey_capture':
     case 'set_autostart':
+    case 'initialize_autostart':
     case 'open_accessibility_settings':
     case 'open_microphone_settings':
     case 'open_notifications_settings':
@@ -1576,6 +1671,11 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       }
       const index = rows.findIndex((row) => row.id === id);
       if (index === -1) throw new Error(`Snippet ${id} was not found`);
+      const expected = args?.expected;
+      if (expected && typeof expected === 'object' && 'trigger' in expected && 'expansion' in expected && 'instructions' in expected &&
+          (rows[index].trigger !== expected.trigger || rows[index].expansion !== expected.expansion || rows[index].instructions !== expected.instructions)) {
+        throw new Error('This snippet changed while you were editing. Close and reopen it before saving.');
+      }
       rows[index] = { ...rows[index], trigger, expansion, instructions };
       writeDevList(DEV_SNIPPETS_KEY, rows);
       return undefined as T;
@@ -1664,6 +1764,15 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       }
       const index = rows.findIndex((row) => row.id === id);
       if (index === -1) throw new Error(`Dictionary entry ${id} was not found`);
+      const expected = args?.expected;
+      const current = contextId === null ? rows[index] : devEffectiveContextDictionaryRows(contextId).find(row => row.id === id);
+      const currentMistake = current?.inherited_from_everywhere && contextId !== DEV_EVERYWHERE_CONTEXT_ID
+        ? current.context_corrections?.map(item => item.mistake).join(', ') || null
+        : current?.mistake;
+      if (expected && typeof expected === 'object' && 'term' in expected && 'mistake' in expected &&
+          (!current || current.term !== expected.term || currentMistake !== expected.mistake)) {
+        throw new Error('This vocabulary entry changed while you were editing. Close and reopen it before saving.');
+      }
       if (contextId !== null) {
         const assignments = readDevContextAssignments();
         ensureDevEverywhereDictionaryAssignment(assignments, rows);

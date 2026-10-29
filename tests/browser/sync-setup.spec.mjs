@@ -19,7 +19,6 @@ async function openSync(page, status = snapshot()) {
   await page.evaluate(async (next) => {
     const { appStore } = await import('/src/lib/stores.ts');
     const { syncStore } = await import('/src/lib/syncStore.svelte.ts');
-    appStore.syncEnabled = true;
     appStore.settingsSection = 'sync';
     syncStore.status = next;
     syncStore.loaded = true;
@@ -50,7 +49,7 @@ test('Tailscale setup is a stepwise disclosure that copies, validates, and fits'
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   const panel = page.locator('#sync-setup-panel');
-  await expect(panel.locator('ol.steps > li')).toHaveCount(3);
+  await expect(panel.locator('ol.steps > li')).toHaveCount(2);
   await expect(panel.getByText(/verenu-sync:\/\//)).toHaveCount(0);
   await expect(panel.getByText('100.101.102.103')).toBeVisible();
 
@@ -64,9 +63,9 @@ test('Tailscale setup is a stepwise disclosure that copies, validates, and fits'
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('verenu-sync://synthetic-this@100.101.102.103:48211');
   await expect(panel.getByRole('button', { name: 'Copy details' })).toBeVisible({ timeout: 4000 });
 
-  await panel.getByRole('button', { name: /Tips and troubleshooting/ }).click();
-  await expect(panel.getByText(/three or more devices/)).toBeVisible();
-  await expect(panel.getByText(/Android can pause Verenu/)).toBeVisible();
+  await panel.getByRole('button', { name: /Troubleshooting/ }).click();
+  await expect(panel.getByText(/Keep Verenu open on both devices/)).toBeVisible();
+  await expect(panel.getByText(/Allow TCP port 48211/)).toBeVisible();
   const fit = await fitsWidth(page.locator('[data-setting-target="sync-tailscale"]'));
   expect(fit, 'Setup fits its container').toEqual({ scrolls: false, overflowing: [] });
 
@@ -80,8 +79,8 @@ test('Setup asks for the address when none is detected', async ({ page }) => {
   const panel = page.locator('#sync-setup-panel');
   const copy = panel.getByRole('button', { name: 'Copy details' });
   await expect(copy).toBeDisabled();
-  await expect(panel.getByText(/could not detect the address/)).toBeVisible();
-  await panel.getByLabel("This device's Tailscale IPv4 address").fill('100.90.80.70');
+  await expect(panel.getByText(/Not detected/)).toBeVisible();
+  await panel.getByLabel('Tailscale IPv4 address').fill('100.90.80.70');
   await expect(copy).toBeEnabled();
 });
 
@@ -92,7 +91,7 @@ test('Connection editor opens inside its device, closes with Escape, and returns
   await expect(button).toHaveAttribute('aria-expanded', 'false');
   await button.click();
   await expect(button).toHaveAttribute('aria-expanded', 'true');
-  const input = device.getByLabel('How to reach Pixel Fold');
+  const input = device.getByLabel('Tailscale address of Pixel Fold');
   await expect(input).toBeFocused();
   await expect(input).toHaveValue('100.64.0.7:48211');
   expect(await fitsWidth(device)).toEqual({ scrolls: false, overflowing: [] });
@@ -110,7 +109,7 @@ test('Device rows, long names, errors and status fit at this width', async ({ pa
   }
   await expect(page.getByText('Up to date')).toBeVisible();
   await expect(page.getByText('Sync failed')).toBeVisible();
-  await expect(page.getByText(/Last synced 3 min ago/)).toBeVisible();
+  await expect(page.getByText(/3 min ago/)).toBeVisible();
 });
 
 test('Pairing dialog walks through connecting, code, and verifying', async ({ page }) => {
@@ -134,21 +133,21 @@ test('Pairing dialog walks through connecting, code, and verifying', async ({ pa
   });
   expect(placement).toEqual({ inside: true, leftEdgeVisible: true, rightEdgeVisible: true });
   await setStatus(page, pairing('verifying', '123456'));
-  await expect(dialog.getByText('Checking the code…')).toBeVisible();
+  await expect(dialog.getByText('Checking…')).toBeVisible();
   await expect(dialog.locator('.phase-seg.on')).toHaveCount(3);
   await setStatus(page, snapshot());
   await expect(dialog).toHaveCount(0);
 });
 
 test('A newly paired device announces itself and offers the return route', async ({ page }) => {
-  await openSync(page, snapshot({ peers: [] }));
-  await expect(page.getByText('Nothing paired yet')).toBeVisible();
+  await openSync(page, snapshot({ peers: [], discovered: [] }));
+  await expect(page.getByText('Looking for devices on your network')).toBeVisible();
   await setStatus(page, snapshot({ peers: [{ uuid: 'synthetic-new', name: 'Pixel Fold', added_at: ago(0), last_sync_at: null, state: 'connecting', error: null, online: false, connection_address: '100.64.0.7:48211' }] }));
   await expect(page.getByRole('status').filter({ hasText: 'Paired with Pixel Fold.' })).toBeVisible();
   const device = page.locator('.device', { hasText: 'Pixel Fold' });
-  await expect(device.getByText(/One more step so Pixel Fold can reach you/)).toBeVisible();
+  await expect(device.getByText(/Pixel Fold can't reach you yet/)).toBeVisible();
   await device.getByRole('button', { name: 'Done' }).click();
-  await expect(device.getByText(/One more step/)).toHaveCount(0);
+  await expect(device.getByText(/can't reach you yet/)).toHaveCount(0);
 });
 
 test('Reduced motion stops looping indicators and keeps status readable', async ({ page }) => {

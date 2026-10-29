@@ -249,6 +249,7 @@ mod tests {
             correction_ids: vec![701, 702],
             context: ResolvedContextIdentity {
                 t3_skills: None,
+                website_domain: None,
                 id: 11,
                 label: "Development".to_string(),
             },
@@ -274,6 +275,7 @@ mod tests {
                 correction_ids: vec![701],
                 context: ResolvedContextIdentity {
                     t3_skills: None,
+                    website_domain: None,
                     id: context_id,
                     label: "context".to_string(),
                 },
