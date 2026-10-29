@@ -6,7 +6,7 @@ export type T3Skill = { name: string; displayName?: string; description?: string
 export type T3Catalog = { id: string; label: string; providerInstanceId: string; workspaceId: string; revision: string; skills: T3Skill[] };
 export type T3Connection = {
   id: string; label: string; version: string; expiresAt: number; fetchedAt: number;
-  selectedCatalog: string | null; catalogs: T3Catalog[]; error: string | null;
+  selectedCatalog: string | null; catalogs: T3Catalog[]; error: string | null; excludedSkills?: string[];
 };
 export type T3Status = { minimumVersion: string; connection: T3Connection | null; skills: T3Skill[] };
 export const t3State = $state({
@@ -100,4 +100,24 @@ export async function connectT3(pairingLink: string): Promise<boolean> {
 
 export function startT3Refresh(): () => void {
   return startPolling(() => updateT3('pull_t3_skills', { force: false }, { background: true }), 60_000, { hiddenIntervalMs: 15 * 60_000 }).stop;
+}
+
+let exclusionQueue: Promise<void> = Promise.resolve();
+
+/** Include or exclude skill names from what is sent to the cleanup model. Applies instantly, then saves in order. */
+export function setSkillsExcluded(names: readonly string[], excluded: boolean): Promise<void> {
+  const connection = t3State.status?.connection;
+  if (!connection) return Promise.resolve();
+  const touched = new Set(names.map((name) => name.toLowerCase()));
+  const kept = (connection.excludedSkills ?? []).filter((name) => !touched.has(name.toLowerCase()));
+  connection.excludedSkills = excluded ? [...kept, ...names] : kept;
+  exclusionQueue = exclusionQueue.then(async () => {
+    try {
+      await invoke<T3Status>('set_t3_excluded_skills', { names: [...(t3State.status?.connection?.excludedSkills ?? [])] });
+    } catch (error) {
+      t3State.error = formatIpcError(error, 'Could not save the skill selection.');
+      await updateT3('get_t3_skills', undefined, { background: true });
+    }
+  });
+  return exclusionQueue;
 }
