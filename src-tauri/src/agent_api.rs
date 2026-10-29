@@ -206,7 +206,7 @@ fn required_scopes(request: &Request) -> Vec<&'static str> {
         | "assign_context_website" | "remove_context_website" => scopes.push("context_write"),
         "create_dictionary_entry" | "edit_dictionary_entry" | "rename_dictionary_entry_global" | "remove_dictionary_entry"
         | "create_snippet" | "edit_snippet" | "remove_snippet"
-        | "set_dictionary_context_assignment" | "set_snippet_context_assignment" | "move_dictionary_entry_to_context" | "move_dictionary_entry_by_term_to_context" | "move_snippet_entry_to_context" | "library.apply_delete" | "library.undo_delete" => scopes.push("library_write"),
+        | "set_dictionary_context_assignment" | "set_snippet_context_assignment" | "move_dictionary_entry_to_context" | "move_dictionary_entry_by_term_to_context" | "move_snippet_entry_to_context" | "move_snippet_context_assignment" | "library.apply_delete" | "library.undo_delete" => scopes.push("library_write"),
         "diagnostics.snapshot" | "diagnostics.logs" | "diagnostics.top" | "diagnostics.retention" => scopes.push("diagnostics"),
         "test_cleanup_prompt" => scopes.push("provider_calls"),
         "describe" => {},
@@ -217,7 +217,7 @@ fn required_scopes(request: &Request) -> Vec<&'static str> {
         | "history.page" | "history.report" | "history.usage" | "get_api_key_status" | "sync_get_status" | "get_t3_skills" | "library.usage" | "library.items" | "library.preview_delete" | "audit.page" => scopes.push("metadata"),
         _ => scopes.push("unsupported"),
     }
-    if matches!(request.command.as_str(), "delete_context" | "remove_dictionary_entry" | "remove_snippet" | "edit_dictionary_entry" | "rename_dictionary_entry_global" | "edit_snippet" | "library.apply_delete" | "library.undo_delete" | "update_context_settings" | "save_context_if_unchanged" | "move_dictionary_entry_to_context" | "move_dictionary_entry_by_term_to_context" | "move_snippet_entry_to_context" | "credentials.save" | "assign_context_target" | "remove_context_target" | "assign_context_website" | "remove_context_website")
+    if matches!(request.command.as_str(), "delete_context" | "remove_dictionary_entry" | "remove_snippet" | "edit_dictionary_entry" | "rename_dictionary_entry_global" | "edit_snippet" | "library.apply_delete" | "library.undo_delete" | "update_context_settings" | "save_context_if_unchanged" | "move_dictionary_entry_to_context" | "move_dictionary_entry_by_term_to_context" | "move_snippet_entry_to_context" | "move_snippet_context_assignment" | "credentials.save" | "assign_context_target" | "remove_context_target" | "assign_context_website" | "remove_context_website")
         || (request.command == "save_setting" && request.args.get("key").and_then(Value::as_str) == Some(store::HISTORY_RETENTION))
         || (request.command == "context.patch_settings" && request.args.get("settings").and_then(Value::as_object).is_some_and(|patch| patch.values().any(|value| value.is_null() || value.as_str().is_some_and(|s| s.trim().is_empty()))))
         || matches!(request.command.as_str(), "credentials.delete" | "delete_custom_provider" | "assign_sub_app" | "delete_sub_app" | "sync_remove_device" | "disconnect_t3")
@@ -722,6 +722,7 @@ macro_rules! registry {
             get_snippet_entry_contexts { trigger: String },
             move_snippet_entry_to_context { trigger: String, context_id: i64, edit: Option<db::SnippetMoveEdit> },
             set_snippet_context_assignment { context_id: i64, snippet_id: i64, assigned: bool },
+            move_snippet_context_assignment { source_id: i64, target_id: i64, snippet_id: i64 },
             get_sub_apps {},
             create_sub_app { executable: String, app_name: Option<String>, label: String, icon: Option<String>, title_pattern: String, match_mode: String },
             assign_sub_app { id: i64, context_id: Option<i64> }, delete_sub_app { id: i64 },
@@ -1049,7 +1050,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
                 | "assign_context_target" | "remove_context_target" | "assign_context_website" | "remove_context_website"
                 | "create_dictionary_entry" | "edit_dictionary_entry" | "remove_dictionary_entry" | "move_dictionary_entry_to_context"
                 | "move_dictionary_entry_by_term_to_context" | "set_dictionary_context_assignment"
-                | "create_snippet" | "edit_snippet" | "remove_snippet" | "move_snippet_entry_to_context" | "set_snippet_context_assignment"
+                | "create_snippet" | "edit_snippet" | "remove_snippet" | "move_snippet_entry_to_context" | "set_snippet_context_assignment" | "move_snippet_context_assignment"
                 | "create_sub_app" | "assign_sub_app" | "delete_sub_app");
             let result = registry!(dispatch, app, request);
             if refresh_contexts && result.is_ok() {
@@ -1092,6 +1093,8 @@ mod tests {
         let request = Request { command: "history.page".into(), args: json!({"include_text": true}) };
         assert_eq!(required_scopes(&request), vec!["metadata", "history_text"]);
         let request = Request { command: "remove_dictionary_entry".into(), args: json!({"id": 1}) };
+        assert_eq!(required_scopes(&request), vec!["library_write", "destructive"]);
+        let request = Request { command: "move_snippet_context_assignment".into(), args: json!({}) };
         assert_eq!(required_scopes(&request), vec!["library_write", "destructive"]);
         for context_id in [json!(null), json!(42)] {
             let request = Request { command: "assign_sub_app".into(), args: json!({"id": 1, "contextId": context_id}) };

@@ -562,8 +562,7 @@
         if (!entry) throw new Error('The dictionary entry is no longer in this context.');
         await moveContextDictionaryEntry(entry, selectedContextId, targetContextId);
       } else {
-        await invoke('set_snippet_context_assignment', { contextId: targetContextId, snippetId: id, assigned: true });
-        await invoke('set_snippet_context_assignment', { contextId: selectedContextId, snippetId: id, assigned: false });
+        await invoke('move_snippet_context_assignment', { sourceId: selectedContextId, targetId: targetContextId, snippetId: id });
       }
       await loadContextItems(selectedContextId);
     } catch (error) {
