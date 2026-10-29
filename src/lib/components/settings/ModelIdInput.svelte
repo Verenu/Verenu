@@ -66,7 +66,6 @@
     <input {id} bind:this={input} bind:value={draft} {onkeydown} {onpaste} onblur={commit} {disabled} autocomplete="off" spellcheck="false" autocapitalize="off"
       placeholder={values.length ? 'Add another' : placeholder} />
   </div>
-  <small>Type an ID and press Enter. Add as many as you like.</small>
   {#if open.length}
     <span class="suggest">
       <span class="suggest-label">Suggested</span>
@@ -90,7 +89,6 @@
   .tag-x:hover:not(:disabled) { background: var(--control-active); color: var(--ink); }
   .tag-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   input { flex: 1 1 110px; min-width: 90px; width: auto; padding: 3px 2px; border: 0; background: transparent; color: var(--ink); font-family: var(--mono); font-size: 12px; outline: none; }
-  small { font-size: 11px; line-height: 1.5; color: var(--ink-mute); }
   .suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .suggest-label { font-size: 11px; color: var(--ink-mute); }
   .chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 9px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--ink-soft); font-family: var(--mono); font-size: 11px; cursor: pointer; overflow-wrap: anywhere; text-align: left; transition: background 120ms ease, color 120ms ease; }

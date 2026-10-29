@@ -8,7 +8,9 @@
     intensity = $bindable(),
     tone = $bindable(),
     onIntensitySelect,
-  }: { intensity: CleanupIntensity; tone: ToneId; onIntensitySelect?: () => void } = $props();
+    cleanupModelMissing,
+    onReviewModels,
+  }: { intensity: CleanupIntensity; tone: ToneId; onIntensitySelect?: () => void; cleanupModelMissing: boolean; onReviewModels: () => void } = $props();
 
   const cleanupOff = $derived(intensity === 'none');
   const toneInactive = $derived(cleanupOff || intensity === 'rules');
@@ -18,11 +20,14 @@
 <div class="step writing-style-step">
   <div class="style-group">
     <p class="group-label">Cleanup intensity</p>
+    {#if intensity === 'rules'}<p class="group-note">Your previous Basic setting is still active. Choose a level to replace it; Basic cannot be selected again.</p>{/if}
+    {#if cleanupModelMissing && intensity !== 'none' && intensity !== 'rules'}
+      <p class="group-note" role="status">Cleanup is off with your transcription-only model choice. <button type="button" class="cleanup-model-link" onclick={onReviewModels}>Choose a preset with a cleanup model</button> to use this level.</p>
+    {/if}
     <div class="style-grid cleanup-grid">
-      {#each cleanupCards as c, i}
+      {#each cleanupCards as c}
         <button
           class="pick-card style-card"
-          class:wide={i >= 3}
           class:selected={intensity === c.id}
           aria-pressed={intensity === c.id}
           onclick={() => { intensity = c.id; onIntensitySelect?.(); }}
@@ -92,6 +97,7 @@
   .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 
   .group-note { font-size: 11px; color: var(--ink-faint); font-style: italic; }
+  .cleanup-model-link { color: var(--ink-strong); text-decoration: underline; cursor: pointer; }
 
   .style-grid {
     display: grid;
@@ -102,8 +108,7 @@
   .style-grid > :global(*) { grid-column: span 3; }
   .tone-grid > :global(*) { grid-column: span 4; }
 
-  .cleanup-grid > :global(*) { grid-column: span 4; }
-  .cleanup-grid > .wide { grid-column: span 6; }
+  .cleanup-grid > :global(*) { grid-column: span 6; }
 
   .style-card { min-height: 72px; justify-content: flex-start; }
 
