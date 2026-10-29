@@ -401,7 +401,7 @@ pub(super) async fn run_cleanup_and_snippets(
     protected_instruction: Option<&str>,
     gen: u64,
     telemetry: &PipelineTelemetry,
-) -> Option<(String, Vec<db::DictionaryEntry>, String, String)> {
+) -> Option<(String, Vec<db::DictionaryEntry>, String, String, i64)> {
     let db_handle = app.state::<DbHandle>();
     match run_cleanup_and_snippets_for_db(
         db_handle.inner(),
@@ -448,9 +448,10 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
     app: Option<&AppHandle>,
     gen: u64,
     telemetry: Option<&PipelineTelemetry>,
-) -> anyhow::Result<(String, Vec<db::DictionaryEntry>, String, String)> {
+) -> anyhow::Result<(String, Vec<db::DictionaryEntry>, String, String, i64)> {
     let mut db_snippets =
         db::query_effective_snippets_for_context(db_handle, context_id).unwrap_or_default();
+    let initial_snippet_uses: i64 = db_snippets.iter().map(|snippet| snippet.use_count).sum();
     let dict_entries =
         db::query_effective_dictionary_for_context(db_handle, context_id).unwrap_or_default();
     log::debug!(
@@ -502,8 +503,11 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             snippets::expand_snippets_from(raw, &mut db_snippets, db_handle)
         }
     });
+    let snippet_expansions = if pure_expansion.is_some() { 1 } else {
+        db_snippets.iter().map(|snippet| snippet.use_count).sum::<i64>() - initial_snippet_uses
+    };
     if cfg.cleanup_intensity == "rules" || (commands_active && expanded.trim().is_empty()) {
-        return Ok((expanded, dict_entries, String::new(), String::new()));
+        return Ok((expanded, dict_entries, String::new(), String::new(), snippet_expansions));
     }
     log::debug!(
         "pipeline: snippets expanded pure_fast_path={} expanded_chars={}",
@@ -638,7 +642,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 alternate.map(|candidate| candidate.text.as_str()),
             ) {
                 record_lookup(true);
-                return Ok((overridden, dict_entries, cache_key, String::new()));
+                return Ok((overridden, dict_entries, cache_key, String::new(), snippet_expansions));
             }
             record_lookup(false);
         }
@@ -822,5 +826,5 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         }
     };
 
-    Ok((final_text, dict_entries, used_cache_key, cleanup_api_used))
+    Ok((final_text, dict_entries, used_cache_key, cleanup_api_used, snippet_expansions))
 }
