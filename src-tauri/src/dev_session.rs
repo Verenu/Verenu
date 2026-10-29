@@ -428,6 +428,7 @@ fn allowed(command: &str) -> bool {
             | "get_t3_skills"
             | "pull_t3_skills"
             | "select_t3_catalog"
+            | "set_t3_excluded_skills"
             | "get_sub_apps"
             | "create_sub_app"
             | "assign_sub_app"

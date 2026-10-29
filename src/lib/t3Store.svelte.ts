@@ -6,7 +6,7 @@ export type T3Skill = { name: string; displayName?: string; description?: string
 export type T3Catalog = { id: string; label: string; providerInstanceId: string; workspaceId: string; revision: string; skills: T3Skill[] };
 export type T3Connection = {
   id: string; label: string; version: string; expiresAt: number; fetchedAt: number;
-  selectedCatalog: string | null; catalogs: T3Catalog[]; error: string | null;
+  selectedCatalog: string | null; catalogs: T3Catalog[]; error: string | null; excludedSkills?: string[];
 };
 export type T3Status = { minimumVersion: string; connection: T3Connection | null; skills: T3Skill[] };
 export const t3State = $state({
@@ -26,6 +26,9 @@ let strongMutationEpoch = 0;
 let pendingStrongMutations = 0;
 let latestStrongMutation = 0;
 let latestPull = 0;
+let pendingExclusions = 0;
+let exclusionEpoch = 0;
+let exclusionQueue: Promise<void> = Promise.resolve();
 const STRONG_MUTATIONS = new Set(['connect_t3', 'select_t3_catalog', 'disconnect_t3']);
 
 export async function updateT3(command = 'get_t3_skills', args?: Record<string, unknown>, options: { background?: boolean } = {}): Promise<boolean> {
@@ -45,6 +48,8 @@ export async function updateT3(command = 'get_t3_skills', args?: Record<string, 
     latestPull = request;
   }
   const epoch = mutationEpoch;
+  const exclusionEpochAtStart = exclusionEpoch;
+  const exclusionPendingAtStart = pendingExclusions > 0;
   const strongEpoch = strongMutationEpoch;
   const pullStartedDuringStrongMutation = pull && pendingStrongMutations > 0;
   const readDuringMutation = !mutation && pendingMutations > 0;
@@ -62,7 +67,9 @@ export async function updateT3(command = 'get_t3_skills', args?: Record<string, 
   try {
     const result = await invoke<T3Status>(command, args);
     if (canApply()) {
+      const pendingSelection = pendingExclusions > 0 || exclusionPendingAtStart || exclusionEpoch !== exclusionEpochAtStart ? t3State.status?.connection?.excludedSkills : undefined;
       t3State.status = result;
+      if (pendingSelection && result.connection) result.connection.excludedSkills = pendingSelection;
       appliedSequence = Math.max(appliedSequence, request);
       t3State.error = '';
     }
@@ -100,4 +107,29 @@ export async function connectT3(pairingLink: string): Promise<boolean> {
 
 export function startT3Refresh(): () => void {
   return startPolling(() => updateT3('pull_t3_skills', { force: false }, { background: true }), 60_000, { hiddenIntervalMs: 15 * 60_000 }).stop;
+}
+
+
+/** Include or exclude skill names from what is sent to the cleanup model. Applies instantly, then saves in order. */
+export function setSkillsExcluded(names: readonly string[], excluded: boolean): Promise<void> {
+  const connection = t3State.status?.connection;
+  if (!connection) return Promise.resolve();
+  const touched = new Set(names.map((name) => name.toLowerCase()));
+  const kept = (connection.excludedSkills ?? []).filter((name) => !touched.has(name.toLowerCase()));
+  connection.excludedSkills = excluded ? [...kept, ...names] : kept;
+  pendingExclusions++;
+  exclusionEpoch++;
+  exclusionQueue = exclusionQueue.then(async () => {
+    try {
+      await invoke<T3Status>('set_t3_excluded_skills', { names: [...(t3State.status?.connection?.excludedSkills ?? [])] });
+    } catch (error) {
+      const message = formatIpcError(error, 'Could not save the skill selection.');
+      pendingExclusions--;
+      await updateT3('get_t3_skills', undefined, { background: true });
+      t3State.error = message;
+      return;
+    }
+    pendingExclusions--;
+  });
+  return exclusionQueue;
 }
