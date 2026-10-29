@@ -381,6 +381,9 @@ fn prune_transcriptions_conn(conn: &mut Connection, max_age_days: i64) -> Result
     let cutoff = (Utc::now().naive_utc() - Duration::days(max_age_days.max(1)))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
+    // Whole daily buckets are removed to avoid reporting partial days as complete.
+    tx.execute("DELETE FROM library_usage_daily WHERE day <= date(?1)", [&cutoff])?;
+    tx.execute("UPDATE library_usage_coverage SET started_at = MAX(started_at, datetime(?1, 'start of day', '+1 day')) WHERE id = 1", [&cutoff])?;
     tx.execute(
         "INSERT OR IGNORE INTO transcription_receipts(uuid, day, hour, context_uuid, words, spoken_words, duration_ms, counted)
          SELECT t.uuid, COALESCE(t.activity_day, date(t.created_at, 'localtime')), COALESCE(t.activity_hour, CAST(strftime('%H', t.created_at, 'localtime') AS INTEGER)),

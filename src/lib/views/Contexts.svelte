@@ -381,6 +381,8 @@
     let mounted = true;
     const stops: Array<() => void> = [];
     const registrations = [
+      listen('verenu:context-updated', () => { void loadSharedContexts(true); }),
+      listen('verenu:snippets-updated', () => { void loadContextItems(selectedContextId); }),
       listen<DictionaryUpdatedPayload>('verenu:dictionary-updated', (event) => {
         const contextId = selectedContextId;
         if (shouldRefreshContextDictionary(event.payload, contextId)) void loadContextItems(contextId);
@@ -896,6 +898,7 @@
           contextsStore.websites = [...contextsStore.websites.filter((item) => item.domain !== domain), site];
         }
       }
+      await loadSharedContexts(true);
       modal = null;
       window.dispatchEvent(new Event('verenu:context-saved'));
     } catch (error) {

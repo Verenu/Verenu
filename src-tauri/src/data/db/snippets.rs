@@ -168,9 +168,6 @@ pub fn update_snippet_if_unchanged(
     db: &Db, id: i64, trigger: &str, expansion: &str, instructions: &str,
     expected: Option<&ExpectedSnippet>,
 ) -> Result<()> {
-    let (normalized_trigger, normalized_expansion, normalized_instructions) =
-        normalize_snippet(trigger, expansion, instructions)?;
-
     let mut conn = lock_conn(db)?;
     let conn = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     if let Some(expected) = expected {
@@ -182,6 +179,14 @@ pub fn update_snippet_if_unchanged(
             anyhow::bail!("This snippet changed while you were editing. Close and reopen it before saving.");
         }
     }
+    update_snippet_conn(&conn, id, trigger, expansion, instructions)?;
+    conn.commit()?;
+    invalidate_snippet_cache();
+    Ok(())
+}
+
+pub(crate) fn update_snippet_conn(conn: &rusqlite::Connection, id: i64, trigger: &str, expansion: &str, instructions: &str) -> Result<()> {
+    let (normalized_trigger, normalized_expansion, normalized_instructions) = normalize_snippet(trigger, expansion, instructions)?;
     let changed = conn.execute(
         "UPDATE snippets SET trigger=?2, expansion=?3, instructions=?4 WHERE id=?1",
         params![
@@ -192,22 +197,25 @@ pub fn update_snippet_if_unchanged(
         ],
     )?;
     require_row_changed(changed, "Snippet", id)?;
-    conn.commit()?;
-    invalidate_snippet_cache();
     Ok(())
 }
 
 pub fn delete_snippet(db: &Db, id: i64) -> Result<()> {
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
+    delete_snippet_conn(&tx, id)?;
+    tx.commit()?;
+    invalidate_snippet_cache();
+    Ok(())
+}
+
+pub(crate) fn delete_snippet_conn(tx: &rusqlite::Connection, id: i64) -> Result<()> {
     let changed = tx.execute("DELETE FROM snippets WHERE id=?1", params![id])?;
     require_row_changed(changed, "Snippet", id)?;
     tx.execute(
         "DELETE FROM snippet_contexts WHERE snippet_id = ?1",
         params![id],
     )?;
-    tx.commit()?;
-    invalidate_snippet_cache();
     Ok(())
 }
 
@@ -364,12 +372,7 @@ pub fn move_snippet_entry_to_context(
 }
 
 pub fn increment_snippet_use(db: &Db, id: i64) -> Result<()> {
-    let conn = lock_conn(db)?;
-    conn.execute(
-        "UPDATE snippets SET use_count = use_count + 1 WHERE id=?1",
-        params![id],
-    )?;
-    Ok(())
+    increment_snippet_use_counts(db, &[(id, 1)])
 }
 
 pub fn increment_snippet_use_counts(db: &Db, counts: &[(i64, i64)]) -> Result<()> {
@@ -385,6 +388,7 @@ pub fn increment_snippet_use_counts(db: &Db, counts: &[(i64, i64)]) -> Result<()
                 continue;
             }
             stmt.execute(params![id, count])?;
+            super::library_usage::record_library_usage_conn(&tx, "snippet", id, count)?;
         }
     }
     tx.commit()?;
