@@ -87,7 +87,7 @@
           bind:this={inputEl}
           class="ui-input ui-input--dense"
           type="text"
-          placeholder="Search history or app..."
+          placeholder="Search history, app or website..."
           value={search}
           oninput={(event) => onSearchChange(event.currentTarget.value)}
           aria-label="Search history"
@@ -240,6 +240,8 @@
   .clear-filters-btn:hover { background: var(--control-hover); border-color: transparent; }
   @media (max-width: 560px) {
     .history-search-group.expanded { flex-basis: 100%; max-width: none; }
+    .history-app-trigger span { max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .clear-filters-wrap { display: none; }
   }
 
   .history-app-menu { animation: history-app-menu-enter var(--ui-duration-fast) var(--ui-ease-out); transform-origin: top right; will-change: opacity, transform; }

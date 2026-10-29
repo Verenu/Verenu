@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- New browser dictations include the detected website hostname in history when available, and history search matches websites. Earlier entries remain unchanged.
+
 - Fixed automatic Caps Lock detection on Hyprland so dictation follows the active keyboard's lock state.
 - Adjusted microphone gain automatically during detected speech to help keep the voice level consistent as its volume changes. The microphone gain setting sets the target level; the default is recommended for most microphones.
 - Verenu registers a small discovery guide for detected agent harnesses so an agent asked to manage Contexts or settings can find the packaged control skill. Saving the full control skill and enabling agent access remain separate user choices.

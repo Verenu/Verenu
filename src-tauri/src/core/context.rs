@@ -7,6 +7,7 @@ pub struct ResolvedContextIdentity {
     pub id: i64,
     pub label: String,
     pub t3_skills: Option<std::sync::Arc<crate::system::t3_skills::Catalog>>,
+    pub website_domain: Option<String>,
 }
 
 impl ResolvedContextIdentity {
@@ -15,6 +16,7 @@ impl ResolvedContextIdentity {
             id: context.id,
             label: context.name.clone(),
             t3_skills: None,
+            website_domain: None,
         }
     }
 
@@ -31,6 +33,7 @@ impl ResolvedContextIdentity {
             id: db::EVERYWHERE_CONTEXT_ID,
             label: "Everywhere".to_string(),
             t3_skills: None,
+            website_domain: None,
         }
     }
 }
@@ -317,6 +320,7 @@ mod tests {
             ResolvedContextIdentity::from_context(&context),
             ResolvedContextIdentity {
                 t3_skills: None,
+                website_domain: None,
                 id: 42,
                 label: "Development".to_string(),
             }
