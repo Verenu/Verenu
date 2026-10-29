@@ -156,6 +156,22 @@ describe('T3 store request ordering', () => {
       expect(t3State.status?.connection?.excludedSkills).toEqual(['a']);
     });
 
+    it('keeps a selection when a read started during the save finishes after it', async () => {
+      t3State.status = withSkills([]);
+      const save = deferred<ReturnType<typeof withSkills>>();
+      const read = deferred<ReturnType<typeof withSkills>>();
+      ipc.invoke.mockImplementation((command: string) =>
+        command === 'set_t3_excluded_skills' ? save.promise : read.promise,
+      );
+      const saving = setSkillsExcluded(['a'], true);
+      const reading = updateT3('get_t3_skills', undefined, { background: true });
+      save.resolve(withSkills(['a']));
+      await saving;
+      read.resolve(withSkills([]));
+      await reading;
+      expect(t3State.status?.connection?.excludedSkills).toEqual(['a']);
+    });
+
     it('restores the saved selection but keeps the error when saving fails', async () => {
       t3State.status = withSkills([]);
       ipc.invoke.mockImplementation((command: string) =>

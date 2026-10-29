@@ -49,6 +49,7 @@ export async function updateT3(command = 'get_t3_skills', args?: Record<string, 
   }
   const epoch = mutationEpoch;
   const exclusionEpochAtStart = exclusionEpoch;
+  const exclusionPendingAtStart = pendingExclusions > 0;
   const strongEpoch = strongMutationEpoch;
   const pullStartedDuringStrongMutation = pull && pendingStrongMutations > 0;
   const readDuringMutation = !mutation && pendingMutations > 0;
@@ -66,7 +67,7 @@ export async function updateT3(command = 'get_t3_skills', args?: Record<string, 
   try {
     const result = await invoke<T3Status>(command, args);
     if (canApply()) {
-      const pendingSelection = pendingExclusions > 0 || exclusionEpoch !== exclusionEpochAtStart ? t3State.status?.connection?.excludedSkills : undefined;
+      const pendingSelection = pendingExclusions > 0 || exclusionPendingAtStart || exclusionEpoch !== exclusionEpochAtStart ? t3State.status?.connection?.excludedSkills : undefined;
       t3State.status = result;
       if (pendingSelection && result.connection) result.connection.excludedSkills = pendingSelection;
       appliedSequence = Math.max(appliedSequence, request);
