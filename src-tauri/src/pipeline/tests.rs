@@ -765,6 +765,27 @@ async fn pipeline_basic_language_off_and_payload_contracts() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pipeline_records_each_vocabulary_and_snippet_match() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_intensity = "rules".into();
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("kubernetez and kubernetez greeting greeting"), None, None);
+    let db = db::open(":memory:").unwrap();
+    let mut request = base_request(config);
+    request.db = Some(db.clone());
+    request.dictionary.push(PipelineTestDictionaryEntry { term: "Kubernetes".into(), mistake: Some("kubernetez".into()) });
+    request.snippets.push(PipelineTestSnippet { trigger: "greeting".into(), expansion: "hello".into(), instructions: String::new() });
+    let result = run_pipeline_fixture(request).await.unwrap();
+    assert!(result.injected_text.contains("Kubernetes and Kubernetes"));
+    let cleanup = db::query_insights(&db, 7, None).unwrap().cleanup;
+    assert_eq!((cleanup.vocabulary_replacements, cleanup.snippet_expansions), (2, 2));
+    assert!(!cleanup.activity_incomplete);
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_basic_preserves_vocabulary_before_dictionary_canonicalization() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset();
@@ -833,13 +854,16 @@ async fn pipeline_basic_exact_snippet_ignores_saved_instructions() {
             config.cleanup_intensity = "rules".into();
             config.voice_commands_enabled = commands;
             fixture("transcription", "groq", "whisper-large-v3-turbo", Some("signoff."), None, None);
+            let db = db::open(":memory:").unwrap();
             let mut request = base_request(config);
+            request.db = Some(db.clone());
             request.snippets.push(PipelineTestSnippet {
                 trigger: "signoff".into(), expansion: "Thanks!".into(), instructions: instructions.into(),
             });
             let result = run_pipeline_fixture(request).await.unwrap();
             assert_eq!(result.injected_text, "Thanks!");
             assert_eq!(result.history_entry.clean_text, "Thanks!");
+            assert_eq!(db::query_insights(&db, 7, None).unwrap().cleanup.snippet_expansions, 1);
             assert!(result.cleanup_cache_key.is_empty());
             assert_eq!(fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"), 0);
         }

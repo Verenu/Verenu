@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn cleanup_activity_migration_preserves_history_as_untracked() {
+    let path = temp_db_path("cleanup_activity_v35");
+    {
+        let db = open(&path).unwrap();
+        insert_transcription_returning(&db, "synthetic raw", "synthetic clean", 0, 1000, "test", None, None).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("ALTER TABLE transcriptions DROP COLUMN vocabulary_replacements; ALTER TABLE transcriptions DROP COLUMN snippet_expansions; PRAGMA user_version = 35;").unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        let row: (String, String, Option<i64>, Option<i64>) = conn.query_row("SELECT raw_text, clean_text, vocabulary_replacements, snippet_expansions FROM transcriptions", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(row, ("synthetic raw".into(), "synthetic clean".into(), None, None));
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn t3_skill_opt_out_migrates_defaults_and_survives_reopen_and_duplicate() {
     let path = temp_db_path("t3_skills_v31");
     let context_id;
@@ -576,7 +594,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 35);
+    assert_eq!(version, 36);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);

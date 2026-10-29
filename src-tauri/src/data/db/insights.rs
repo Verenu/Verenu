@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use chrono::{Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +71,10 @@ pub struct InsightsCleanup {
     pub edits_applied: i64,
     pub dictionary_fixes: i64,
     pub auto_learned_terms: i64,
+    pub vocabulary_replacements: i64,
+    pub snippet_expansions: i64,
+    pub activity_incomplete: bool,
+    pub activity_tracked_dictations: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -105,8 +109,6 @@ const MIN_WORD_CHARS: usize = 3;
 struct DateRange {
     start_day: NaiveDate,
     end_day: NaiveDate,
-    start: String,
-    end: String,
 }
 
 #[derive(Debug)]
@@ -144,6 +146,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         clean_words,
         changed_words,
         cleanup_lifetime,
+        activity,
     ) = {
         let conn = lock_conn(db)?;
         let history_started_on = history_started_on_conn(&conn, context_id)?;
@@ -162,6 +165,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         let (words, raw_words, clean_words, changed_words) =
             query_text_metrics(&conn, &range, context_id)?;
         let cleanup_lifetime = query_cleanup_lifetime(&conn, context_id)?;
+        let activity = query_cleanup_activity(&conn, &range, context_id)?;
 
         (
             totals,
@@ -176,6 +180,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
             clean_words,
             changed_words,
             cleanup_lifetime,
+            activity,
         )
     };
 
@@ -185,6 +190,10 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         edits_applied: changed_words,
         dictionary_fixes: cleanup_lifetime.dictionary_fixes,
         auto_learned_terms: cleanup_lifetime.auto_learned_terms,
+        vocabulary_replacements: activity.0,
+        snippet_expansions: activity.1,
+        activity_incomplete: activity.2 || totals.total_transcriptions > activity.4,
+        activity_tracked_dictations: activity.3,
     };
     let streak = compute_streak(&lifetime_streak_daily);
 
@@ -359,33 +368,7 @@ fn previous_range(days: i64) -> Option<DateRange> {
 }
 
 fn make_date_range(start_day: NaiveDate, end_day: NaiveDate) -> DateRange {
-    let start = local_midnight_utc_naive(start_day);
-    let end = local_midnight_utc_naive(end_day + Duration::days(1));
-    DateRange {
-        start_day,
-        end_day,
-        start: start.format("%Y-%m-%d %H:%M:%S").to_string(),
-        end: end.format("%Y-%m-%d %H:%M:%S").to_string(),
-    }
-}
-
-fn local_midnight_utc_naive(day: NaiveDate) -> NaiveDateTime {
-    let midnight = day.and_hms_opt(0, 0, 0).expect("valid local midnight");
-    (0..6)
-        .find_map(|hour| {
-            let wall = day.and_hms_opt(hour, 0, 0)?;
-            Local
-                .from_local_datetime(&wall)
-                .earliest()
-                .map(|instant| instant.naive_utc())
-        })
-        .unwrap_or_else(|| {
-            Local
-                .from_local_datetime(&midnight)
-                .latest()
-                .expect("local timezone must resolve a day boundary")
-                .naive_utc()
-        })
+    DateRange { start_day, end_day }
 }
 
 fn query_totals(
@@ -739,7 +722,9 @@ fn query_cleanup_lifetime(conn: &Connection, context_id: Option<i64>) -> Result<
         )?,
     };
     let auto_learned_terms: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM dictionary WHERE auto_learned = 1",
+        "SELECT COUNT(*) FROM dictionary d WHERE
+           EXISTS (SELECT 1 FROM dictionary_corrections c WHERE c.dictionary_id = d.id AND c.auto_learned = 1)
+           OR (d.auto_learned = 1 AND NOT EXISTS (SELECT 1 FROM dictionary_corrections c WHERE c.dictionary_id = d.id))",
         [],
         |r| r.get(0),
     )?;
@@ -749,6 +734,20 @@ fn query_cleanup_lifetime(conn: &Connection, context_id: Option<i64>) -> Result<
     })
 }
 
+fn query_cleanup_activity(conn: &Connection, range: &DateRange, context_id: Option<i64>) -> Result<(i64, i64, bool, i64, i64)> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(vocabulary_replacements), 0), COALESCE(SUM(snippet_expansions), 0),
+                COALESCE(MAX(vocabulary_replacements IS NULL OR snippet_expansions IS NULL), 0),
+                COUNT(CASE WHEN vocabulary_replacements IS NOT NULL AND snippet_expansions IS NOT NULL THEN 1 END),
+                COUNT(CASE WHEN NOT EXISTS (SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid) THEN 1 END)
+           FROM transcriptions WHERE (activity_day BETWEEN ?1 AND ?2
+            OR (activity_day IS NULL AND date(created_at, 'localtime') BETWEEN ?1 AND ?2))
+            AND (?3 IS NULL OR context_id = ?3)",
+        params![range.start_day.to_string(), range.end_day.to_string(), context_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    ).map_err(Into::into)
+}
+
 fn query_text_metrics(
     conn: &Connection,
     range: &DateRange,
@@ -756,10 +755,11 @@ fn query_text_metrics(
 ) -> Result<(InsightsWords, i64, i64, i64)> {
     let mut stmt = conn.prepare(
         "SELECT raw_text, clean_text FROM transcriptions
-         WHERE created_at >= ?1 AND created_at < ?2
+         WHERE (activity_day BETWEEN ?1 AND ?2
+           OR (activity_day IS NULL AND date(created_at, 'localtime') BETWEEN ?1 AND ?2))
            AND (?3 IS NULL OR context_id = ?3)",
     )?;
-    let mut rows = stmt.query(params![range.start, range.end, context_id])?;
+    let mut rows = stmt.query(params![range.start_day.to_string(), range.end_day.to_string(), context_id])?;
     let mut counts: HashMap<String, i64> = HashMap::new();
     let mut longest: Option<String> = None;
     let mut longest_len = 0;
@@ -998,26 +998,13 @@ mod tests {
     }
 
     #[test]
-    fn insights_timestamp_range_predicate_uses_created_at_index() {
+    fn insights_activity_day_range_uses_index() {
         let db = test_db();
-        let conn = lock_conn(&db).expect("lock");
-        let plan: Vec<String> = conn
-            .prepare(
-                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM transcriptions
-                 WHERE created_at >= ?1 AND created_at < ?2",
-            )
-            .expect("explain")
-            .query_map(["2026-01-01 00:00:00", "2026-02-01 00:00:00"], |row| {
-                row.get(3)
-            })
-            .expect("plan rows")
-            .collect::<rusqlite::Result<_>>()
-            .expect("plan");
-        assert!(
-            plan.iter()
-                .any(|detail| detail.contains("idx_transcriptions_created_at")),
-            "expected created_at range seek, got {plan:?}"
-        );
+        let conn = lock_conn(&db).unwrap();
+        let plan: Vec<String> = conn.prepare("EXPLAIN QUERY PLAN SELECT raw_text, clean_text FROM transcriptions WHERE (activity_day BETWEEN ?1 AND ?2 OR (activity_day IS NULL AND date(created_at, 'localtime') BETWEEN ?1 AND ?2)) AND (?3 IS NULL OR context_id = ?3)").unwrap()
+            .query_map(params!["2026-01-01", "2026-02-01", Option::<i64>::None], |row| row.get(3)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        assert!(plan.iter().any(|detail| detail.contains("idx_transcriptions_activity_day")), "{plan:?}");
     }
 
     #[test]
@@ -1587,6 +1574,78 @@ mod tests {
         let insights = query_insights(&db, 7, None).expect("insights");
         assert_eq!(insights.cleanup.dictionary_fixes, 5);
         assert_eq!(insights.cleanup.edits_applied, 2);
+    }
+
+    #[test]
+    fn cleanup_activity_respects_range_and_context_and_marks_legacy_history() {
+        let db = test_db();
+        let work = insert_context_returning(&db, "Work", None, None, None, None, false).expect("context");
+        let other = insert_context_returning(&db, "Other", None, None, None, None, false).expect("context");
+        let recent = insert_on_day(&db, 0, "synthetic words", 2, 1000);
+        let legacy = insert_on_day(&db, 0, "older synthetic words", 3, 1000);
+        let outside = insert_on_day(&db, 10, "outside range", 2, 1000);
+        let elsewhere = insert_on_day(&db, 0, "other context", 2, 1000);
+        {
+            let conn = lock_conn(&db).unwrap();
+            for (id, context, fixes, snippets) in [
+                (recent, work.id, Some(3), Some(2)),
+                (legacy, work.id, None, None),
+                (outside, work.id, Some(20), Some(20)),
+                (elsewhere, other.id, Some(4), Some(5)),
+            ] {
+                conn.execute("UPDATE transcriptions SET context_id=?1, vocabulary_replacements=?2, snippet_expansions=?3 WHERE id=?4", params![context, fixes, snippets, id]).unwrap();
+            }
+        }
+        let scoped = query_insights(&db, 7, Some(work.id)).unwrap().cleanup;
+        assert_eq!((scoped.vocabulary_replacements, scoped.snippet_expansions), (3, 2));
+        assert!(scoped.activity_incomplete);
+        let all = query_insights(&db, 7, None).unwrap().cleanup;
+        assert_eq!((all.vocabulary_replacements, all.snippet_expansions), (7, 7));
+        assert!(all.activity_incomplete);
+        let other = query_insights(&db, 7, Some(other.id)).unwrap().cleanup;
+        assert_eq!((other.vocabulary_replacements, other.snippet_expansions), (4, 5));
+        assert!(!other.activity_incomplete);
+    }
+
+    #[test]
+    fn learned_terms_include_corrections_added_to_existing_manual_terms() {
+        let db = test_db();
+        let work = insert_context_returning(&db, "Work", None, None, None, None, false).unwrap();
+        let other = insert_context_returning(&db, "Other", None, None, None, None, false).unwrap();
+        insert_dictionary_entry_returning(&db, "Kubernetes", Some("kubernetes typo"), Some(work.id)).unwrap();
+        insert_dictionary_entry_auto_learned_for_context(&db, other.id, "Kubernetes", Some("kubernetez"), "high").unwrap();
+        assert_eq!(query_insights(&db, 7, None).unwrap().cleanup.auto_learned_terms, 1);
+    }
+
+    #[test]
+    fn cleanup_activity_marks_pruned_history_as_incomplete() {
+        let db = test_db();
+        let entry = insert_on_day(&db, 10, "synthetic words", 2, 1000);
+        lock_conn(&db).unwrap().execute("UPDATE transcriptions SET vocabulary_replacements=2, snippet_expansions=1 WHERE id=?1", [entry]).unwrap();
+        assert_eq!(prune_transcriptions_older_than(&db, 1).unwrap(), 1);
+        let cleanup = query_insights(&db, 30, None).unwrap().cleanup;
+        assert!(cleanup.activity_incomplete);
+        assert_eq!(cleanup.activity_tracked_dictations, 0);
+    }
+
+    #[test]
+    fn cleanup_activity_uses_preserved_day_for_imported_history() {
+        let db = test_db();
+        let entry = insert_on_day(&db, 10, "synthetic raw", 2, 1000);
+        let today = local_day_string(0);
+        lock_conn(&db).unwrap().execute("UPDATE transcriptions SET activity_day=?1, vocabulary_replacements=3, snippet_expansions=2 WHERE id=?2", params![today, entry]).unwrap();
+        let cleanup = query_insights(&db, 1, None).unwrap().cleanup;
+        assert_eq!((cleanup.vocabulary_replacements, cleanup.snippet_expansions), (3, 2));
+        assert_eq!(cleanup.raw_words, 2);
+    }
+
+    #[test]
+    fn learned_term_edited_to_manual_is_not_counted_as_learned() {
+        let db = test_db();
+        insert_dictionary_entry_auto_learned_for_context(&db, EVERYWHERE_CONTEXT_ID, "Kubernetes", Some("kubernetez"), "high").unwrap();
+        let entry = query_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID).unwrap().into_iter().find(|entry| entry.term == "Kubernetes").unwrap();
+        update_dictionary_entry_for_context(&db, EVERYWHERE_CONTEXT_ID, entry.id, "Kubernetes", Some("kubernetez")).unwrap();
+        assert_eq!(query_insights(&db, 7, None).unwrap().cleanup.auto_learned_terms, 0);
     }
 
     #[test]
