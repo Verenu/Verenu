@@ -894,7 +894,7 @@ async fn run_pipeline_with_delivery(
         state::leave_processing_if_owned(&state, generation);
         return;
     };
-    let Some((final_text, dict_entries, cleanup_cache_key, cleanup_api_used)) = cleanup_outcome
+    let Some((final_text, dict_entries, cleanup_cache_key, cleanup_cache_result_hash, cleanup_api_used)) = cleanup_outcome
     else {
         telemetry.failed(FailureCategory::Internal, false);
         if state::leave_processing_if_owned(&state, generation) {
@@ -963,6 +963,7 @@ async fn run_pipeline_with_delivery(
             profile: &profile,
             process_name: process_name.clone(),
             cleanup_cache_key,
+            cleanup_cache_result_hash,
             captured_at: retry_captured_at,
             event_only,
             caps_lock_on,
@@ -1192,7 +1193,7 @@ pub async fn retry_transcription_impl(
     let clipboard_instruction = clipboard_plan
         .as_ref()
         .map(clipboard_phrase::cleanup_instruction);
-    let Some((final_text, dict_entries, cleanup_cache_key, cleanup_api_used)) =
+    let Some((final_text, dict_entries, cleanup_cache_key, cleanup_cache_result_hash, cleanup_api_used)) =
         run_cleanup_and_snippets(
             app,
             &raw_for_cleanup,
@@ -1237,6 +1238,7 @@ pub async fn retry_transcription_impl(
             profile: &capture.profile,
             process_name: capture.process_name,
             cleanup_cache_key,
+            cleanup_cache_result_hash,
             captured_at: capture.captured_at,
             event_only: false,
             caps_lock_on: capture.caps_lock_on,

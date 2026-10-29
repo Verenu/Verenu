@@ -16,6 +16,7 @@ pub(super) struct PipelineCompletionContext<'a> {
     pub(super) profile: &'a str,
     pub(super) process_name: String,
     pub(super) cleanup_cache_key: String,
+    pub(super) cleanup_cache_result_hash: String,
     pub(super) captured_at: std::time::Instant,
     pub(super) event_only: bool,
     pub(super) caps_lock_on: bool,
@@ -362,10 +363,11 @@ pub(super) async fn finalize_pipeline_completion(
             "inject_failed" | "clipboard_fallback" | "android_accessibility_handoff"
         )
     {
-        if !ctx.cleanup_cache_key.is_empty() {
+        if !ctx.cleanup_cache_key.is_empty() && !ctx.cleanup_cache_result_hash.is_empty() {
             auto_learn::start_cache_rejection_monitor(
                 injected_text.clone(),
                 ctx.cleanup_cache_key,
+                ctx.cleanup_cache_result_hash,
                 ctx.target_hwnd,
                 db_handle.inner().clone(),
                 app.clone(),
