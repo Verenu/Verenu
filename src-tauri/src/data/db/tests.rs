@@ -1198,6 +1198,23 @@ fn cleanup_cache_prunes_expired_only() {
 }
 
 #[test]
+fn cleanup_cache_context_identity_is_portable() {
+    let a = test_db();
+    let b = test_db();
+    let uuid = "11111111-1111-4111-8111-111111111111";
+    for (db, id) in [(&a, 10), (&b, 20)] {
+        let conn = lock_conn(db).unwrap();
+        conn.execute("INSERT INTO contexts (id, uuid, name, is_everywhere) VALUES (?1, ?2, 'Synthetic', 0)", rusqlite::params![id, uuid]).unwrap();
+    }
+    assert_eq!(cleanup_cache_context_identity(&a, 10).unwrap(), cleanup_cache_context_identity(&b, 20).unwrap());
+    let everywhere_a = everywhere_context_id(&a).unwrap();
+    let everywhere_b = everywhere_context_id(&b).unwrap();
+    assert_eq!(cleanup_cache_context_identity(&a, everywhere_a).unwrap().as_deref(), Some("everywhere"));
+    assert_eq!(cleanup_cache_context_identity(&b, everywhere_b).unwrap().as_deref(), Some("everywhere"));
+    assert_eq!(cleanup_cache_context_identity(&a, 99999).unwrap(), None);
+}
+
+#[test]
 fn cleanup_cache_reads_and_pruning_share_idle_and_maximum_lifetimes() {
     let db = test_db();
     for (key, snippet) in [("idle", false), ("snippet-idle", true), ("old", false), ("snippet-old", true)] {

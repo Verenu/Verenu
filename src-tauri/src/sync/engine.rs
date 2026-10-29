@@ -38,6 +38,11 @@ pub const SYNCABLE_SETTINGS: &[&str] = &[
 const UNRESOLVED_APP_PREFIX: &str = "?::";
 const NATURAL_KEY_TOMBSTONE_TABLE: &str = "dictionary_natural_key";
 
+pub(crate) fn cleanup_cache_send_gate() -> &'static tokio::sync::RwLock<()> {
+    static GATE: std::sync::OnceLock<tokio::sync::RwLock<()>> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| tokio::sync::RwLock::new(()))
+}
+
 type ExistingCorrection = (i64, Option<String>, bool, i64, String, Option<String>);
 type CorrectionTarget = (i64, Option<String>, i64, bool);
 type CorrectionIdentity = (i64, i64, i64, String, bool);
@@ -415,6 +420,16 @@ pub fn append_self_log(
     row_uuid: &str,
     op: &str,
 ) -> Result<()> {
+    append_self_log_at(conn, table_name, row_uuid, op, sync_store::now_ms())
+}
+
+fn append_self_log_at(
+    conn: &Connection,
+    table_name: &str,
+    row_uuid: &str,
+    op: &str,
+    timestamp: i64,
+) -> Result<()> {
     let Some(origin) = sync_store::self_uuid(conn)? else {
         return Ok(());
     };
@@ -423,7 +438,12 @@ pub fn append_self_log(
         params![origin],
         |r| r.get(0),
     )?;
-    let ts = sync_store::now_ms();
+    let mut ts = timestamp;
+    if table_name == "cleanup_cache" {
+        if let Some((previous, _, _)) = latest_stamp(conn, table_name, row_uuid)? {
+            ts = ts.max(previous.saturating_add(1));
+        }
+    }
     sync_store::append_op(
         conn,
         &SyncOp {
@@ -672,6 +692,7 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
 
 fn row_payload(conn: &Connection, table: &str, uuid: &str) -> Result<Option<serde_json::Value>> {
     let mut payload = match table {
+        "cleanup_cache" => conn.query_row("SELECT clean_text, COALESCE(created_at_epoch, CAST(strftime('%s', created_at || 'Z') AS INTEGER)), COALESCE(expires_at_epoch, CAST(strftime('%s', expires_at || 'Z') AS INTEGER)), is_snippet FROM cleanup_cache WHERE key=?1 AND COALESCE(expires_at_epoch, CAST(strftime('%s', expires_at || 'Z') AS INTEGER)) > CAST(strftime('%s','now') AS INTEGER) AND COALESCE(created_at_epoch, CAST(strftime('%s', created_at || 'Z') AS INTEGER)) > CAST(strftime('%s','now','-7 days') AS INTEGER) AND COALESCE(last_hit_at_epoch, CAST(strftime('%s', last_hit_at || 'Z') AS INTEGER)) > CAST(strftime('%s','now','-2 days') AS INTEGER)", [uuid], |r| Ok(serde_json::json!({"clean_text":r.get::<_,String>(0)?, "created":r.get::<_,i64>(1)?, "expires":r.get::<_,i64>(2)?, "snippet":r.get::<_,bool>(3)?}))).optional().map_err(Into::into),
         "dictionary" => dictionary_payload(conn, uuid),
         "dictionary_corrections" => dictionary_correction_payload(conn, uuid),
         "snippets" => snippet_payload(conn, uuid),
@@ -720,6 +741,12 @@ fn resolve_entry(conn: &Connection, entry: sync_store::LogEntry) -> Result<Optio
     if entry.table_name == "transcriptions" && entry.op == "delete" {
         return Ok(None);
     }
+    if entry.table_name == "cleanup_cache"
+        && latest_stamp(conn, &entry.table_name, &entry.row_uuid)?
+            != Some((entry.ts_ms, entry.origin.clone(), entry.origin_seq))
+    {
+        return Ok(None);
+    }
     let table = if entry.op == "upsert" { sync_history_table(conn, &entry.table_name, &entry.row_uuid)? } else { &entry.table_name };
     let payload = if entry.op == "upsert" {
         row_payload(conn, table, &entry.row_uuid)?
@@ -730,7 +757,7 @@ fn resolve_entry(conn: &Connection, entry: sync_store::LogEntry) -> Result<Optio
         if matches!(entry.table_name.as_str(), "transcriptions" | "held_transcriptions" | "held_hourly_transcriptions" | "api_calls" | "held_api_calls" | "transcription_receipts" | "call_receipts") {
             return Ok(None);
         }
-        "delete".to_string()
+        if entry.table_name == "cleanup_cache" { "upsert".to_string() } else { "delete".to_string() }
     } else {
         entry.op
     };
@@ -754,6 +781,15 @@ pub fn collect_ops(
 ) -> Result<(Vec<SyncOp>, i64, bool)> {
     let limit = limit.max(1) as i64;
     if snapshot {
+        if progress.start_cursor.is_none() {
+            let mut stmt = conn.prepare("SELECT key, COALESCE(created_at_epoch, CAST(strftime('%s', created_at || 'Z') AS INTEGER)) * 1000 FROM cleanup_cache WHERE key LIKE 'cleanup-v3:%' AND NOT EXISTS (SELECT 1 FROM sync_log WHERE table_name='cleanup_cache' AND row_uuid=cleanup_cache.key)")?;
+            let unstamped = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            for (key, created) in unstamped {
+                if db::shareable_cache_key(&key) {
+                    append_self_log_at(conn, "cleanup_cache", &key, "upsert", created)?;
+                }
+            }
+        }
         let start_cursor = match progress.start_cursor {
             Some(cursor) => cursor,
             None => {
@@ -800,7 +836,7 @@ pub fn collect_ops(
             });
         };
 
-        while (ops.len() as i64) < limit && progress.stage <= 9 {
+        while (ops.len() as i64) < limit && progress.stage <= 10 {
             let capacity = limit - ops.len() as i64;
             let chunk = capacity.min(SNAPSHOT_ROW_CHUNK);
             let stage = progress.stage;
@@ -814,14 +850,15 @@ pub fn collect_ops(
                 6 => "transcription_receipts",
                 7 => "api_calls",
                 8 => "call_receipts",
-                9 => "tombstones",
+                9 => "cleanup_cache",
+                10 => "tombstones",
                 _ => unreachable!("snapshot stage is complete"),
             };
-            if stage == 9 {
+            if stage == 10 {
                 let mut stmt = conn.prepare_cached(
-                    "SELECT seq, table_name, row_uuid, ts_ms, origin, origin_seq
+                    "SELECT seq, table_name, row_uuid, ts_ms, origin, origin_seq, op
                      FROM sync_log AS current
-                     WHERE current.op = 'delete'
+                     WHERE (current.op = 'delete' OR (current.table_name='cleanup_cache' AND current.op='upsert' AND NOT EXISTS (SELECT 1 FROM cleanup_cache WHERE key=current.row_uuid)))
                        AND current.seq > ?1
                        AND current.seq = (
                          SELECT MAX(previous.seq) FROM sync_log AS previous
@@ -837,7 +874,7 @@ pub fn collect_ops(
                             SyncOp {
                                 table: r.get(1)?,
                                 row_uuid: r.get(2)?,
-                                op: "delete".to_string(),
+                                op: r.get(6)?,
                                 ts_ms: r.get(3)?,
                                 origin: r.get(4)?,
                                 origin_seq: r.get(5)?,
@@ -852,12 +889,29 @@ pub fn collect_ops(
                 }
                 ops.extend(rows.into_iter().map(|(_, op)| op));
                 if fetched < chunk {
-                    progress.stage = 10;
+                    progress.stage = 11;
                     progress.origin_seq = Some(origin_seq);
                     return Ok((ops, start_cursor, true));
                 }
                 progress.origin_seq = Some(origin_seq);
                 return Ok((ops, 0, false));
+            }
+            if stage == 9 {
+                let mut stmt = conn.prepare("SELECT rowid, key FROM cleanup_cache WHERE rowid > ?1 AND key LIKE 'cleanup-v3:%' ORDER BY rowid LIMIT ?2")?;
+                let rows = stmt.query_map(params![progress.last_id, chunk], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let fetched = rows.len() as i64;
+                for (id, key) in rows {
+                    progress.last_id = id;
+                    if db::shareable_cache_key(&key) {
+                        if let Some(stamp) = latest_stamp(conn, table, &key)? {
+                            let payload = row_payload(conn, table, &key)?;
+                            push(table, key, payload, Some(stamp), &mut ops);
+                        }
+                    }
+                }
+                if fetched < chunk { progress.stage += 1; progress.last_id = 0; }
+                else { progress.origin_seq = Some(origin_seq); return Ok((ops, 0, false)); }
+                continue;
             }
             let row_query = if matches!(table, "transcription_receipts" | "call_receipts") {
                 format!("SELECT rowid, uuid FROM {table} WHERE rowid > ?1 AND counted=1 ORDER BY rowid LIMIT ?2")
@@ -888,7 +942,7 @@ pub fn collect_ops(
             if fetched < chunk {
                 progress.stage += 1;
                 progress.last_id = 0;
-                if progress.stage > 9 {
+                if progress.stage > 10 {
                     progress.origin_seq = Some(origin_seq);
                     return Ok((ops, start_cursor, true));
                 }
@@ -897,7 +951,7 @@ pub fn collect_ops(
                 return Ok((ops, 0, false));
             }
         }
-        if progress.stage <= 9 {
+        if progress.stage <= 10 {
             progress.origin_seq = Some(origin_seq);
             return Ok((ops, 0, false));
         }
@@ -1005,6 +1059,8 @@ fn apply_ops_inner(conn: &Connection, ops: &[SyncOp], cutoff: Option<&str>) -> R
         }
         let op = normalized.as_ref().unwrap_or(original);
         let (applied, touched) = match op.table.as_str() {
+            "cleanup_cache" => (apply_cleanup_cache_op(conn, op)?, &mut summary.stats),
+            "cleanup_cache_rejection" => (apply_cleanup_cache_rejection(conn, op)?, &mut summary.stats),
             "dictionary" | NATURAL_KEY_TOMBSTONE_TABLE => {
                 (apply_dictionary_op(conn, op)?, &mut summary.dictionary)
             }
@@ -1413,6 +1469,77 @@ fn op_payload<'a, T: Deserialize<'a>>(
             .ok_or_else(|| anyhow!("{missing} upsert missing payload"))?,
     )
     .with_context(|| format!("invalid {invalid} payload"))
+}
+
+#[derive(Deserialize)]
+struct CleanupCacheRow {
+    clean_text: String,
+    created: i64,
+    expires: i64,
+    snippet: bool,
+}
+
+fn apply_cleanup_cache_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if !db::shareable_cache_key(&op.row_uuid) || !matches!(op.op.as_str(), "upsert" | "delete") {
+        return Ok(Applied::Skipped);
+    }
+    let mut restoring = false;
+    if let Some(stamp) = latest_stamp(conn, "cleanup_cache", &op.row_uuid)? {
+        if !op.newer_than(&stamp) {
+            let same_upsert = !op.is_delete()
+                && op.stamp() == (stamp.0, stamp.1.as_str(), stamp.2)
+                && latest_op_name(conn, "cleanup_cache", &op.row_uuid)?.as_deref() == Some("upsert")
+                && !conn.query_row("SELECT EXISTS(SELECT 1 FROM cleanup_cache WHERE key=?1)", [&op.row_uuid], |r| r.get::<_, bool>(0))?;
+            if !same_upsert || op.payload.is_none() { return Ok(Applied::Skipped); }
+            restoring = true;
+        }
+    }
+    if op.is_delete() {
+        conn.execute("DELETE FROM cleanup_cache WHERE key=?1", [&op.row_uuid])?;
+        log_applied(conn, op)?;
+        return Ok(Applied::Yes);
+    }
+    if !db::cleanup_cache_enabled_conn(conn)? { return Ok(Applied::Skipped); }
+    if op.payload.is_none() {
+        conn.execute("DELETE FROM cleanup_cache WHERE key=?1", [&op.row_uuid])?;
+        log_applied(conn, op)?;
+        return Ok(Applied::Yes);
+    }
+    let row: CleanupCacheRow = op_payload(op, "cleanup cache", "cleanup cache")?;
+    let now = chrono::Utc::now().timestamp();
+    let rejected = db::cleanup_cache_rejection_id(&op.row_uuid, &db::cleanup_cache_result_hash(&row.clean_text))
+        .map(|id| conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_log WHERE table_name='cleanup_cache_rejection' AND row_uuid=?1)", [id], |r| r.get::<_, bool>(0)))
+        .transpose()?.unwrap_or(false);
+    if rejected || row.clean_text.len() > 64 * 1024 || row.created > now + 300 || row.created <= now - 7 * 86400 || row.expires <= now {
+        if restoring { return Ok(Applied::Skipped); }
+        conn.execute("DELETE FROM cleanup_cache WHERE key=?1", [&op.row_uuid])?;
+        log_applied(conn, op)?;
+        return Ok(Applied::Yes);
+    }
+    let expires = row.expires.min(row.created + 7 * 86400);
+    conn.execute("INSERT INTO cleanup_cache(key, clean_text, hit_count, created_at, last_hit_at, expires_at, created_at_epoch, last_hit_at_epoch, expires_at_epoch, is_snippet) VALUES (?1, ?2, 1, datetime(?3,'unixepoch'), datetime('now'), datetime(?4,'unixepoch'), ?3, CAST(strftime('%s','now') AS INTEGER), ?4, ?5) ON CONFLICT(key) DO UPDATE SET clean_text=excluded.clean_text, hit_count=1, created_at=excluded.created_at, last_hit_at=excluded.last_hit_at, expires_at=excluded.expires_at, created_at_epoch=excluded.created_at_epoch, last_hit_at_epoch=excluded.last_hit_at_epoch, expires_at_epoch=excluded.expires_at_epoch, is_snippet=excluded.is_snippet", params![op.row_uuid, row.clean_text, row.created, expires, row.snippet])?;
+    db::cleanup_cache_enforce_budget_conn(conn)?;
+    if restoring && !conn.query_row("SELECT EXISTS(SELECT 1 FROM cleanup_cache WHERE key=?1)", [&op.row_uuid], |r| r.get::<_, bool>(0))? {
+        return Ok(Applied::Skipped);
+    }
+    log_applied(conn, op)?;
+    Ok(Applied::Yes)
+}
+
+fn apply_cleanup_cache_rejection(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    let Some((key, hash)) = op.row_uuid.rsplit_once(':') else { return Ok(Applied::Skipped); };
+    if !op.is_delete() || db::cleanup_cache_rejection_id(key, hash).as_deref() != Some(op.row_uuid.as_str()) {
+        return Ok(Applied::Skipped);
+    }
+    if latest_stamp(conn, "cleanup_cache_rejection", &op.row_uuid)?.is_some_and(|stamp| !op.newer_than(&stamp)) {
+        return Ok(Applied::Skipped);
+    }
+    let current: Option<String> = conn.query_row("SELECT clean_text FROM cleanup_cache WHERE key=?1", [key], |r| r.get(0)).optional()?;
+    if current.as_deref().is_some_and(|text| db::cleanup_cache_result_hash(text) == hash) {
+        conn.execute("DELETE FROM cleanup_cache WHERE key=?1", [key])?;
+    }
+    log_applied(conn, op)?;
+    Ok(Applied::Yes)
 }
 
 fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
@@ -2908,6 +3035,7 @@ fn hello(uuid: &str, name: &str, app_version: &str) -> Hello {
         protocol: PROTOCOL_VERSION,
         app_version: app_version.to_string(),
         activity_receipts: true,
+        cleanup_cache: true,
     }
 }
 
@@ -2917,6 +3045,15 @@ fn note_receipt_capability(conn: &Connection, peer: &str, supported: bool) -> Re
         conn.execute("UPDATE sync_peers SET needs_snapshot=1 WHERE device_uuid=?1", [peer])?;
     }
     conn.execute("INSERT INTO sync_peer_capabilities(device_uuid, activity_receipts) VALUES (?1, ?2) ON CONFLICT(device_uuid) DO UPDATE SET activity_receipts=excluded.activity_receipts", params![peer, supported])?;
+    Ok(())
+}
+
+fn note_cleanup_cache_capability(conn: &Connection, peer: &str, supported: bool) -> Result<()> {
+    let previous: Option<bool> = conn.query_row("SELECT cleanup_cache FROM sync_peer_capabilities WHERE device_uuid=?1", [peer], |r| r.get(0)).optional()?;
+    if supported && previous != Some(true) {
+        conn.execute("UPDATE sync_peers SET needs_snapshot=1, recv_cursor=0 WHERE device_uuid=?1", [peer])?;
+    }
+    conn.execute("INSERT INTO sync_peer_capabilities(device_uuid, activity_receipts, cleanup_cache) VALUES (?1, 0, ?2) ON CONFLICT(device_uuid) DO UPDATE SET cleanup_cache=excluded.cleanup_cache", params![peer, supported])?;
     Ok(())
 }
 
@@ -2986,6 +3123,7 @@ where
     {
         let conn = lock(db)?;
         note_receipt_capability(&conn, &peer.device_uuid, remote.activity_receipts)?;
+        note_cleanup_cache_capability(&conn, &peer.device_uuid, remote.cleanup_cache)?;
     }
 
     let mut summary = SessionSummary::default();
@@ -3022,9 +3160,9 @@ where
     let mut pulled = ApplySummary::default();
     if initiator {
         pulled.merge(pull_from_peer(db, host, stream, peer).await?);
-        serve_peer_pulls(db, stream, peer).await?;
+        serve_peer_pulls(db, stream, peer, remote.cleanup_cache).await?;
     } else {
-        serve_peer_pulls(db, stream, peer).await?;
+        serve_peer_pulls(db, stream, peer, remote.cleanup_cache).await?;
         pulled.merge(pull_from_peer(db, host, stream, peer).await?);
     }
     summary.applied.merge(pulled);
@@ -3121,13 +3259,13 @@ where
     Ok(summary)
 }
 
-async fn serve_peer_pulls<S>(db: &DbHandle, stream: &mut S, peer: &SyncPeer) -> Result<()>
+async fn serve_peer_pulls<S>(db: &DbHandle, stream: &mut S, peer: &SyncPeer, cache_supported: bool) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     match super::protocol::read_message(stream).await? {
         Message::PullRequest(request) => {
-            serve_one_pull(db, stream, peer, request.since_seq, request.snapshot).await
+            serve_one_pull(db, stream, peer, request.since_seq, request.snapshot, cache_supported).await
         }
         Message::SyncDone => Err(anyhow!("peer ended sync before requesting its pull")),
         Message::Error { message } => Err(anyhow!("peer error: {message}")),
@@ -3141,6 +3279,7 @@ async fn serve_one_pull<S>(
     peer: &SyncPeer,
     since_seq: i64,
     requested_snapshot: bool,
+    cache_supported: bool,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -3154,18 +3293,24 @@ where
     let mut progress = SnapshotProgress::default();
     let mut next_since_seq = since_seq;
     loop {
-        let (ops, cursor, done) = {
+        let send_guard = cleanup_cache_send_gate().read().await;
+        let (mut ops, cursor, done) = {
             let conn = lock(db)?;
-            collect_ops(
+            let (mut ops, cursor, done) = collect_ops(
                 &conn,
                 next_since_seq,
                 snapshot,
                 OPS_PER_BATCH,
                 &mut progress,
-            )?
+            )?;
+            if !db::cleanup_cache_enabled_conn(&conn)? {
+                ops.retain(|op| op.table != "cleanup_cache" || op.is_delete());
+            }
+            (ops, cursor, done)
         };
+        if !cache_supported { ops.retain(|op| !matches!(op.table.as_str(), "cleanup_cache" | "cleanup_cache_rejection")); }
         let final_cursor = cursor;
-        send_message(
+        tokio::time::timeout(std::time::Duration::from_secs(30), send_message(
             stream,
             &Message::Ops(OpsBatch {
                 ops,
@@ -3173,8 +3318,8 @@ where
                 done,
                 snapshot,
             }),
-        )
-        .await?;
+        )).await.map_err(|_| anyhow!("timed out while sending sync batch"))??;
+        drop(send_guard);
         match read_message(stream).await? {
             Message::Ack { seq } => {
                 if seq != final_cursor {
@@ -3859,6 +4004,7 @@ mod payload_tests {
             protocol: 2,
             app_version: "0.0.0".into(),
             activity_receipts: false,
+            cleanup_cache: false,
         };
         assert!(check_hello(&hello, "peer").is_err());
         hello.protocol = PROTOCOL_VERSION;
