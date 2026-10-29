@@ -329,3 +329,17 @@ pub async fn set_snippet_context_assignment(
     if result.is_ok() { let _ = app.emit("verenu:snippets-updated", ()); }
     result
 }
+
+#[tauri::command]
+pub async fn move_snippet_context_assignment(
+    app: AppHandle,
+    source_id: i64,
+    target_id: i64,
+    snippet_id: i64,
+) -> Result<(), String> {
+    let result = run_db(&app, "move_snippet_context_assignment", move |db| {
+        db::move_snippet_context_assignment(db, source_id, target_id, snippet_id)
+    }).await;
+    if result.is_ok() { let _ = app.emit("verenu:snippets-updated", ()); }
+    result
+}
