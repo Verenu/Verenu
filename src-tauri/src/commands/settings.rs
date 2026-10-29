@@ -93,6 +93,9 @@ enum SettingKind {
     Bool,
     MicGain,
     SoundEffectsVolume,
+    DuckTarget,
+    DuckFadeMs,
+    DuckCurve,
     AppMappings,
     Hotkey,
     ClipboardPhrase,
@@ -143,6 +146,13 @@ setting_specs! {
     CLEANUP_INTENSITY: CleanupIntensity = true,
     APP_MAPPINGS: AppMappings = true,
     NOISE_REDUCTION: Bool = true,
+    ECHO_CANCELLATION: Bool = true,
+    DUCK_AUDIO: Bool = true,
+    DUCK_TARGET: DuckTarget = true,
+    DUCK_FADE_DOWN_MS: DuckFadeMs = true,
+    DUCK_FADE_UP_MS: DuckFadeMs = true,
+    DUCK_FADE_DOWN_CURVE: DuckCurve = true,
+    DUCK_FADE_UP_CURVE: DuckCurve = true,
     MUTE_AUDIO: Bool = true,
     MIC_MUTE_BUTTON_DICTATION: Bool = true,
     EXCLUSIVE_MIC: Bool = true,
@@ -400,6 +410,9 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::SoundEffectsVolume => {
             value.as_f64().is_some_and(|v| (0.0..=100.0).contains(&v))
         }
+        SettingKind::DuckTarget => value.as_u64().is_some_and(|v| v <= 100),
+        SettingKind::DuckFadeMs => value.as_u64().is_some_and(|v| v <= 5000),
+        SettingKind::DuckCurve => value.as_str().is_some_and(|v| matches!(v, "linear" | "smooth")),
         SettingKind::AppMappings => is_valid_app_mappings(value),
         SettingKind::Hotkey => value.as_array().is_some_and(|keys| {
             let codes: Option<Vec<String>> = keys
@@ -525,6 +538,20 @@ mod setting_key_tests {
             &serde_json::json!("yes")
         )
         .is_err());
+    }
+
+    #[test]
+    fn output_duck_settings_reject_invalid_values() {
+        for value in [serde_json::json!(0), serde_json::json!(100)] {
+            assert!(validate_setting(store::DUCK_TARGET, &value).is_ok());
+        }
+        for value in [serde_json::json!(-1), serde_json::json!(101), serde_json::json!(0.5)] {
+            assert!(validate_setting(store::DUCK_TARGET, &value).is_err());
+        }
+        assert!(validate_setting(store::DUCK_FADE_DOWN_MS, &serde_json::json!(5000)).is_ok());
+        assert!(validate_setting(store::DUCK_FADE_UP_MS, &serde_json::json!(5001)).is_err());
+        assert!(validate_setting(store::DUCK_FADE_DOWN_CURVE, &serde_json::json!("smooth")).is_ok());
+        assert!(validate_setting(store::DUCK_FADE_UP_CURVE, &serde_json::json!("unknown")).is_err());
     }
 
     #[test]
@@ -1054,6 +1081,10 @@ async fn save_setting_inner(
         if let Some(expected) = expected {
             let affected = if key_clone == store::CONTEXTUAL_FORMATTING {
                 vec![store::CONTEXTUAL_FORMATTING, store::CONTEXTUAL_CAPS, store::AUTO_SPACING]
+            } else if cfg!(target_os = "linux") && key_clone == store::DUCK_TARGET {
+                vec![store::DUCK_TARGET, store::DUCK_AUDIO, store::MUTE_AUDIO]
+            } else if cfg!(target_os = "linux") && key_clone == store::DUCK_AUDIO {
+                vec![store::DUCK_AUDIO, store::MUTE_AUDIO]
             } else { vec![key_clone.as_str()] };
             if expected.len() != affected.len() || affected.iter().any(|key| !expected.contains_key(*key)) {
                 return Err("Expected values must include every affected setting; use describe".into());
@@ -1064,7 +1095,11 @@ async fn save_setting_inner(
             let github_changed = key_clone == store::GITHUB_USERNAME && github_identity_changed(
                 expected.get(&key_clone).and_then(|v| v.as_str()), value.as_str().unwrap_or_default());
             let mut values: Vec<(String, serde_json::Value)> = affected.iter()
-                .map(|key| ((*key).to_string(), value.clone())).collect();
+                .map(|key| ((*key).to_string(), if cfg!(target_os = "linux") && key_clone == store::DUCK_TARGET && *key == store::DUCK_AUDIO {
+                    true.into()
+                } else if cfg!(target_os = "linux") && (key_clone == store::DUCK_TARGET || key_clone == store::DUCK_AUDIO) && *key == store::MUTE_AUDIO {
+                    false.into()
+                } else { value.clone() })).collect();
             if github_changed { values.push((store::GITHUB_COMMIT_CACHE.into(), serde_json::Value::Null)); }
             settings.save_values_with_commit(values, |current| {
                 check_expected_settings(current, &expected)?;
@@ -1090,6 +1125,18 @@ async fn save_setting_inner(
                     || Ok(()),
                 )
                 .map(|_| ())
+        } else if cfg!(target_os = "linux") && key_clone == store::DUCK_TARGET {
+            settings.save_values([
+                (key_clone, value),
+                (store::DUCK_AUDIO.to_string(), true.into()),
+                (store::MUTE_AUDIO.to_string(), false.into()),
+            ])
+        } else if cfg!(target_os = "linux") && key_clone == store::DUCK_AUDIO {
+            // Changing the combined volume control replaces any legacy local mute.
+            settings.save_values([
+                (key_clone, value),
+                (store::MUTE_AUDIO.to_string(), false.into()),
+            ])
         } else if key_clone == store::GITHUB_USERNAME {
             save_github_username(&settings, value)
         } else if key_clone == store::CONTEXTUAL_FORMATTING {
@@ -1218,6 +1265,13 @@ pub struct AllSettings {
     pub voice_commands_enabled: Option<bool>,
     pub cleanup_cache_enabled: Option<bool>,
     pub noise_reduction: Option<bool>,
+    pub echo_cancellation: Option<bool>,
+    pub duck_audio: Option<bool>,
+    pub duck_target: Option<u64>,
+    pub duck_fade_down_ms: Option<u64>,
+    pub duck_fade_up_ms: Option<u64>,
+    pub duck_fade_down_curve: Option<String>,
+    pub duck_fade_up_curve: Option<String>,
     pub mute_audio: Option<bool>,
     pub mic_mute_button_dictation: Option<bool>,
     pub exclusive_mic: Option<bool>,
@@ -1272,6 +1326,7 @@ macro_rules! snapshot_value {
     ($s:ident, bool_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_bool) };
     ($s:ident, str_val, $key:path) => { $s.get($key).and_then(|v| v.as_str().map(String::from)) };
     ($s:ident, f64_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_f64) };
+    ($s:ident, u64_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_u64) };
     ($s:ident, json_val, $key:path) => { $s.get_cloned($key) };
     ($s:ident, str_array_val, $key:path) => {
         $s.get($key).and_then(|v| v.as_array().map(|arr| {
@@ -1310,6 +1365,13 @@ all_settings! {
     voice_commands_enabled = bool_val(store::VOICE_COMMANDS_ENABLED),
     cleanup_cache_enabled = bool_val(store::CLEANUP_CACHE_ENABLED),
     noise_reduction = bool_val(store::NOISE_REDUCTION),
+    echo_cancellation = bool_val(store::ECHO_CANCELLATION),
+    duck_audio = bool_val(store::DUCK_AUDIO),
+    duck_target = u64_val(store::DUCK_TARGET),
+    duck_fade_down_ms = u64_val(store::DUCK_FADE_DOWN_MS),
+    duck_fade_up_ms = u64_val(store::DUCK_FADE_UP_MS),
+    duck_fade_down_curve = str_val(store::DUCK_FADE_DOWN_CURVE),
+    duck_fade_up_curve = str_val(store::DUCK_FADE_UP_CURVE),
     mute_audio = bool_val(store::MUTE_AUDIO),
     mic_mute_button_dictation = bool_val(store::MIC_MUTE_BUTTON_DICTATION),
     exclusive_mic = bool_val(store::EXCLUSIVE_MIC),

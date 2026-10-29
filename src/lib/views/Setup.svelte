@@ -514,7 +514,7 @@
         cleanup_models_by_provider: cleanupModelsByProvider(cleanupDefaultModel, ...(target?.cleanupFallbacks ?? [])),
         cleanup_fallback_models: cleanupEnabled ? (target?.cleanupFallbacks ?? []) : [],
         appearance_mode: setupBaseline.appearance_mode ?? SETUP_APPEARANCE_MODE, mute_audio: silenceOtherAudio,
-        pause_media_during_dictation: setupBaseline.pause_media_during_dictation ?? silenceOtherAudio,
+        pause_media_during_dictation: silenceOtherAudio,
         noise_reduction: setupBaseline.noise_reduction ?? true,
         contextual_formatting_enabled: setupBaseline.contextual_formatting_enabled ?? true,
         contextual_caps_enabled: setupBaseline.contextual_caps_enabled ?? true,
