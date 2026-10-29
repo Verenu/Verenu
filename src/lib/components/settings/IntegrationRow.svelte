@@ -67,6 +67,7 @@
   .integration :global(.int-row .ui-input) { flex: 1; min-height: 34px; min-width: 0; }
   .integration :global(.int-row .btn-primary) { flex: 0 0 auto; }
   .integration :global(.int-help) { color: var(--ink-mute); font-size: 11.5px; line-height: 1.5; margin: 8px 0 0; }
+  .integration :global(.int-form .int-help.first) { margin: 0 0 10px; }
   .integration :global(.int-enter) { animation: int-enter var(--ui-duration-base) var(--ui-ease-out) both; }
 
   @keyframes int-spin { to { transform: rotate(360deg); } }
