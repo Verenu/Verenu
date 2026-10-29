@@ -94,7 +94,6 @@ export const cleanupCards: CleanupCard[] = [
   { id: 'light', name: 'Light', desc: 'Remove speech artifacts and fix basics. Keep wording, order, and structure.' },
   { id: 'medium', name: 'Medium', desc: 'Improve flow and remove redundancy while preserving every distinct detail.' },
   { id: 'high', name: 'Strong', desc: 'Rewrite concisely while preserving facts, constraints, qualifiers, and emphasis.' },
-  { id: 'rules', name: 'Basic', desc: 'On-device removal of English fillers and accidental repeats. Keeps punctuation. No AI tone or instructions.' },
 ];
 
 type ToneCard = { id: ToneId; name: string; desc: string };
