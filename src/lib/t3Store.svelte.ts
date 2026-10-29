@@ -26,6 +26,8 @@ let strongMutationEpoch = 0;
 let pendingStrongMutations = 0;
 let latestStrongMutation = 0;
 let latestPull = 0;
+let pendingExclusions = 0;
+let exclusionQueue: Promise<void> = Promise.resolve();
 const STRONG_MUTATIONS = new Set(['connect_t3', 'select_t3_catalog', 'disconnect_t3']);
 
 export async function updateT3(command = 'get_t3_skills', args?: Record<string, unknown>, options: { background?: boolean } = {}): Promise<boolean> {
@@ -62,7 +64,9 @@ export async function updateT3(command = 'get_t3_skills', args?: Record<string, 
   try {
     const result = await invoke<T3Status>(command, args);
     if (canApply()) {
+      const pendingSelection = pendingExclusions > 0 ? t3State.status?.connection?.excludedSkills : undefined;
       t3State.status = result;
+      if (pendingSelection && result.connection) result.connection.excludedSkills = pendingSelection;
       appliedSequence = Math.max(appliedSequence, request);
       t3State.error = '';
     }
@@ -102,7 +106,6 @@ export function startT3Refresh(): () => void {
   return startPolling(() => updateT3('pull_t3_skills', { force: false }, { background: true }), 60_000, { hiddenIntervalMs: 15 * 60_000 }).stop;
 }
 
-let exclusionQueue: Promise<void> = Promise.resolve();
 
 /** Include or exclude skill names from what is sent to the cleanup model. Applies instantly, then saves in order. */
 export function setSkillsExcluded(names: readonly string[], excluded: boolean): Promise<void> {
@@ -111,13 +114,18 @@ export function setSkillsExcluded(names: readonly string[], excluded: boolean): 
   const touched = new Set(names.map((name) => name.toLowerCase()));
   const kept = (connection.excludedSkills ?? []).filter((name) => !touched.has(name.toLowerCase()));
   connection.excludedSkills = excluded ? [...kept, ...names] : kept;
+  pendingExclusions++;
   exclusionQueue = exclusionQueue.then(async () => {
     try {
       await invoke<T3Status>('set_t3_excluded_skills', { names: [...(t3State.status?.connection?.excludedSkills ?? [])] });
     } catch (error) {
-      t3State.error = formatIpcError(error, 'Could not save the skill selection.');
+      const message = formatIpcError(error, 'Could not save the skill selection.');
+      pendingExclusions--;
       await updateT3('get_t3_skills', undefined, { background: true });
+      t3State.error = message;
+      return;
     }
+    pendingExclusions--;
   });
   return exclusionQueue;
 }
