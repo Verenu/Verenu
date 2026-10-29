@@ -214,10 +214,7 @@ export async function editContextDictionaryEntry(
   const dictionaryId = dictionaryEntryId(entry);
   await invoke('edit_dictionary_entry', {
     id: dictionaryId,
-    dictionaryId,
     contextId,
-    correctionId: dictionaryEntryCorrectionId(entry),
-    correctionIds: dictionaryEntryCorrectionIds(entry),
     term,
     mistake,
     expected,
@@ -228,10 +225,7 @@ export async function removeContextDictionaryEntry(entry: ContextDictionaryIdent
   const dictionaryId = dictionaryEntryId(entry);
   await invoke('remove_dictionary_entry', {
     id: dictionaryId,
-    dictionaryId,
     contextId,
-    correctionId: dictionaryEntryCorrectionId(entry),
-    correctionIds: dictionaryEntryCorrectionIds(entry),
   });
 }
 
@@ -245,7 +239,5 @@ export async function moveContextDictionaryEntry(
     dictionaryId,
     sourceContextId,
     targetContextId,
-    correctionId: dictionaryEntryCorrectionId(entry),
-    correctionIds: dictionaryEntryCorrectionIds(entry),
   });
 }

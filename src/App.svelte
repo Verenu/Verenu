@@ -275,6 +275,7 @@
     toastTimer = setTimeout(() => { errorToast = ''; errorToastKind = null; }, Math.min(20000, Math.max(8000, errorToast.length * 65)));
   }
 
+
   onMount(() => {
     const stopGithubRefresh = startGithubRefresh();
     const stopT3Refresh = startT3Refresh();
@@ -614,6 +615,7 @@
     };
   });
 </script>
+
 
 {#if isBrowserDevSession()}<DeferredView view={devPanel} />{/if}
 {#if !isAndroid}<AgentApproval />{/if}
