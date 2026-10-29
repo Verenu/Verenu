@@ -1626,12 +1626,24 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
         }
         return Ok(Applied::Deferred);
     };
+    // A newer correction can belong to a restored term whose UUID lost a
+    // natural-key conflict to a peer's recreation. Older corrections must
+    // still be discarded so a delayed operation cannot undo a deletion.
     let dictionary_is_deleted = latest_is_delete(conn, "dictionary", &row.dictionary_uuid)?;
-    if dictionary_is_deleted {
+    let restored_parent_conflicted = dictionary_is_deleted && conn.query_row(
+        "SELECT COALESCE((SELECT MAX(seq) FROM sync_log WHERE table_name=?1 AND row_uuid=?2),0) > COALESCE((SELECT MAX(seq) FROM sync_log WHERE table_name='dictionary' AND row_uuid=?2),0)",
+        params![NATURAL_KEY_TOMBSTONE_TABLE, row.dictionary_uuid], |r| r.get::<_, bool>(0),
+    )?;
+    let newer_than_delete = latest_stamp(conn, "dictionary", &row.dictionary_uuid)?.is_some_and(|stamp| op.newer_than(&stamp));
+    if dictionary_is_deleted && !(restored_parent_conflicted && newer_than_delete) {
         log_anti_entropy_delete(conn, "dictionary_corrections", &op.row_uuid)?;
         return Ok(Applied::Skipped);
     }
     let Some(dictionary_id) = resolve_correction_dictionary_id(conn, &row)? else {
+        if dictionary_is_deleted {
+            log_anti_entropy_delete(conn, "dictionary_corrections", &op.row_uuid)?;
+            return Ok(Applied::Skipped);
+        }
         return Ok(Applied::Deferred);
     };
 
@@ -3220,6 +3232,63 @@ impl ApplySummary {
 mod payload_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn agent_deleted_and_restored_library_syncs_to_peer() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        sync_store::ensure_self_identity(&source.lock().unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source").unwrap();
+        sync_store::ensure_self_identity(&dest.lock().unwrap(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "dest").unwrap();
+        db::insert_dictionary_entry_returning(&source, "Example", Some("Exampel"), None).unwrap();
+        db::insert_snippet_returning(&source, "shortcut", "some text", "", None).unwrap();
+        let (initial, mut cursor, _) = collect_ops(&source.lock().unwrap(), 0, false, 1000, &mut SnapshotProgress::default()).unwrap();
+        apply_ops(&dest.lock().unwrap(), &initial).unwrap();
+        let listed = db::list_library_items(&source).unwrap();
+        let items = listed["items"].as_array().unwrap().iter().map(|v| db::LibraryItem {
+            kind:v["kind"].as_str().unwrap().into(), uuid:v["uuid"].as_str().unwrap().into()
+        }).collect::<Vec<_>>();
+        let preview = db::preview_library_delete(&source, items.clone()).unwrap();
+        let request = "11111111-1111-4111-8111-111111111111";
+        db::apply_library_delete(&source, items, preview["basis"].as_str().unwrap(), request).unwrap();
+        let (deleted, next, _) = collect_ops(&source.lock().unwrap(), cursor, false, 1000, &mut SnapshotProgress::default()).unwrap();
+        cursor = next;
+        apply_ops(&dest.lock().unwrap(), &deleted).unwrap();
+        assert!(db::query_dictionary(&dest).unwrap().is_empty());
+        assert!(db::query_snippets(&dest).unwrap().is_empty());
+        db::undo_library_delete(&source, request).unwrap();
+        let (restored, _, _) = collect_ops(&source.lock().unwrap(), cursor, false, 1000, &mut SnapshotProgress::default()).unwrap();
+        apply_ops(&dest.lock().unwrap(), &restored).unwrap();
+        assert_eq!(db::query_dictionary(&dest).unwrap()[0].term, "Example");
+        assert_eq!(db::query_dictionary(&dest).unwrap()[0].mistake.as_deref(), Some("Exampel"));
+        assert_eq!(db::query_snippets(&dest).unwrap()[0].expansion, "some text");
+    }
+
+    #[test]
+    fn restored_term_merges_with_peer_recreation() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        sync_store::ensure_self_identity(&source.lock().unwrap(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "source").unwrap();
+        sync_store::ensure_self_identity(&dest.lock().unwrap(), "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "dest").unwrap();
+        db::insert_dictionary_entry_returning(&source, "Example", Some("Exampel"), None).unwrap();
+        let (initial, cursor, _) = collect_ops(&source.lock().unwrap(), 0, false, 1000, &mut SnapshotProgress::default()).unwrap();
+        apply_ops(&dest.lock().unwrap(), &initial).unwrap();
+        let item = &db::list_library_items(&source).unwrap()["items"][0];
+        let items = vec![db::LibraryItem { kind:"dictionary".into(), uuid:item["uuid"].as_str().unwrap().into() }];
+        let preview = db::preview_library_delete(&source, items.clone()).unwrap();
+        let request = "11111111-1111-4111-8111-111111111111";
+        db::apply_library_delete(&source, items, preview["basis"].as_str().unwrap(), request).unwrap();
+        let (deleted, cursor, _) = collect_ops(&source.lock().unwrap(), cursor, false, 1000, &mut SnapshotProgress::default()).unwrap();
+        apply_ops(&dest.lock().unwrap(), &deleted).unwrap();
+        db::insert_dictionary_entry_returning(&dest, "Example", Some("Exmple"), None).unwrap();
+        db::undo_library_delete(&source, request).unwrap();
+        let (restored, _, _) = collect_ops(&source.lock().unwrap(), cursor, false, 1000, &mut SnapshotProgress::default()).unwrap();
+        apply_ops(&dest.lock().unwrap(), &restored).unwrap();
+        let entries = db::query_dictionary(&dest).unwrap();
+        assert_eq!(entries.len(), 1);
+        let corrections: Vec<_> = entries[0].corrections.iter().map(|c| c.mistake.as_str()).collect();
+        assert!(corrections.contains(&"Exampel"));
+        assert!(corrections.contains(&"Exmple"));
+    }
 
     #[test]
     fn pending_history_sync_payload_keeps_context_identity() {

@@ -182,6 +182,70 @@ pub fn query_context(db: &Db, context_id: i64) -> Result<Context> {
     query_context_conn(&conn, context_id)
 }
 
+/// Patch settings under the database lock, rejecting changes since the caller's read.
+pub fn patch_context_settings_extended(
+    db: &Db,
+    context_id: i64,
+    expected: serde_json::Value,
+    patch: serde_json::Value,
+) -> Result<Context> {
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let current = query_context_conn(&tx, context_id)?;
+    if serde_json::to_value(&current)? != expected {
+        anyhow::bail!("Context changed since it was read; fetch it again before retrying");
+    }
+    let fields = patch.as_object().ok_or_else(|| anyhow::anyhow!("patch must be an object"))?;
+    for key in fields.keys() {
+        if !["name", "icon", "tone", "cleanup_intensity", "custom_instructions", "contextual_formatting_override", "paste_in_chunks", "color", "t3_skill_mentions_disabled"].contains(&key.as_str()) {
+            anyhow::bail!("Unknown patch field: {key}");
+        }
+    }
+    let string = |key: &str, existing: Option<String>| -> Result<Option<String>> {
+        match fields.get(key) {
+            None => Ok(existing),
+            Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::String(value)) => Ok(Some(value.clone())),
+            _ => anyhow::bail!("{key} must be a string or null"),
+        }
+    };
+    let override_value = match fields.get("contextual_formatting_override") {
+        None => current.contextual_formatting_override,
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Bool(value)) => Some(*value),
+        _ => anyhow::bail!("contextual_formatting_override must be a boolean or null"),
+    };
+    let paste = match fields.get("paste_in_chunks") {
+        None => current.paste_in_chunks,
+        Some(serde_json::Value::Bool(value)) => *value,
+        _ => anyhow::bail!("paste_in_chunks must be a boolean"),
+    };
+    let icon = string("icon", current.icon)?;
+    let tone = string("tone", current.tone)?;
+    let intensity = string("cleanup_intensity", current.cleanup_intensity)?;
+    let instructions = string("custom_instructions", current.custom_instructions)?;
+    if let Some(name) = fields.get("name") {
+        let name = name.as_str().ok_or_else(|| anyhow::anyhow!("name must be a string"))?;
+        let name = normalize_context_name(name)?;
+        tx.execute("UPDATE contexts SET name = ?2 WHERE id = ?1", params![context_id, name])?;
+    }
+    if fields.contains_key("color") {
+        let color = string("color", None)?;
+        tx.execute("UPDATE contexts SET color = ?2 WHERE id = ?1", params![context_id, normalize_optional_trimmed(color.as_deref())])?;
+    }
+    if let Some(value) = fields.get("t3_skill_mentions_disabled") {
+        let value = value.as_bool().ok_or_else(|| anyhow::anyhow!("t3_skill_mentions_disabled must be a boolean"))?;
+        tx.execute("UPDATE contexts SET t3_skill_mentions_disabled = ?2 WHERE id = ?1", params![context_id, value])?;
+    }
+    update_context_settings_with_override_and_delivery_conn(
+        &tx, context_id, icon.as_deref(), tone.as_deref(), intensity.as_deref(),
+        instructions.as_deref(), override_value, Some(paste),
+    )?;
+    let result = query_context_conn(&tx, context_id)?;
+    tx.commit()?;
+    Ok(result)
+}
+
 /// Returns instruction layers in application order: Everywhere first, then
 /// the selected group. Empty layers are omitted so callers can join this with
 /// snippet and protected instructions without introducing blank prompt gaps.
@@ -477,8 +541,16 @@ pub fn update_context_settings_with_override_and_delivery(
     db: &Db, context_id: i64, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
     custom_instructions: Option<&str>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool>,
 ) -> Result<()> {
-    let normalized_custom_instructions = normalize_custom_instructions(custom_instructions)?;
     let conn = lock_conn(db)?;
+    update_context_settings_with_override_and_delivery_conn(&conn, context_id, icon, tone, cleanup_intensity, custom_instructions, contextual_formatting_override, paste_in_chunks)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_context_settings_with_override_and_delivery_conn(
+    conn: &rusqlite::Connection, context_id: i64, icon: Option<&str>, tone: Option<&str>, cleanup_intensity: Option<&str>,
+    custom_instructions: Option<&str>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool>,
+) -> Result<()> {
+    let normalized_custom_instructions = normalize_custom_instructions(custom_instructions)?;
     let changed = conn.execute(
         "UPDATE contexts SET icon = ?2, tone = ?3, cleanup_intensity = ?4, custom_instructions = ?5, contextual_formatting_disabled = ?6, paste_in_chunks = COALESCE(?7, paste_in_chunks), contextual_formatting_override = ?8, updated_at = datetime('now') WHERE id = ?1",
         params![
@@ -1043,7 +1115,18 @@ pub fn set_dictionary_context_assignment(
 ) -> Result<()> {
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
-    query_context_conn(&tx, context_id)?;
+    set_dictionary_context_assignment_conn(&tx, context_id, dictionary_id, assigned)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn set_dictionary_context_assignment_conn(
+    tx: &rusqlite::Connection,
+    context_id: i64,
+    dictionary_id: i64,
+    assigned: bool,
+) -> Result<()> {
+    query_context_conn(tx, context_id)?;
     let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM dictionary WHERE id = ?1)",
         params![dictionary_id],
@@ -1063,14 +1146,13 @@ pub fn set_dictionary_context_assignment(
             params![context_id, dictionary_id],
         )?;
     } else {
-        remove_dictionary_corrections_for_context_conn(&tx, context_id, dictionary_id)?;
+        remove_dictionary_corrections_for_context_conn(tx, context_id, dictionary_id)?;
         tx.execute(
             "DELETE FROM dictionary_contexts WHERE context_id = ?1 AND dictionary_id = ?2",
             params![context_id, dictionary_id],
         )?;
-        cleanup_orphaned_auto_dictionary_conn(&tx, context_id, dictionary_id)?;
+        cleanup_orphaned_auto_dictionary_conn(tx, context_id, dictionary_id)?;
     }
-    tx.commit()?;
     Ok(())
 }
 
@@ -1081,7 +1163,18 @@ pub fn set_snippet_context_assignment(
     assigned: bool,
 ) -> Result<()> {
     let conn = lock_conn(db)?;
-    query_context_conn(&conn, context_id)?;
+    set_snippet_context_assignment_conn(&conn, context_id, snippet_id, assigned)?;
+    invalidate_snippet_cache();
+    Ok(())
+}
+
+pub(crate) fn set_snippet_context_assignment_conn(
+    conn: &rusqlite::Connection,
+    context_id: i64,
+    snippet_id: i64,
+    assigned: bool,
+) -> Result<()> {
+    query_context_conn(conn, context_id)?;
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM snippets WHERE id = ?1)",
         params![snippet_id],
@@ -1102,7 +1195,6 @@ pub fn set_snippet_context_assignment(
             params![context_id, snippet_id],
         )?;
     }
-    invalidate_snippet_cache();
     Ok(())
 }
 

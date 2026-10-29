@@ -113,23 +113,20 @@ pub async fn create_snippet(
     instructions: String,
     context_id: Option<i64>,
 ) -> Result<db::CreatedRecordMeta, String> {
-    run_db(&app, "create_snippet", move |db| {
+    let result = run_db(&app, "create_snippet", move |db| {
         log::info!(
             "snippets:create trigger_chars={} expansion_chars={} instructions_chars={}",
             trigger.chars().count(),
             expansion.chars().count(),
             instructions.chars().count()
         );
-        let created =
-            db::insert_snippet_returning(db, &trigger, &expansion, &instructions, context_id)
-                .map_err(|e| {
-                    log::warn!("snippets:create failed: {e}");
-                    e
-                })?;
+        let created = db::insert_snippet_returning(db, &trigger, &expansion, &instructions, context_id)?;
         log::info!("snippets:create ok id={}", created.id);
         Ok(created)
     })
-    .await
+    .await;
+    if result.is_ok() { let _ = app.emit("verenu:snippets-updated", ()); }
+    result
 }
 
 #[tauri::command]
@@ -141,15 +138,19 @@ pub async fn edit_snippet(
     instructions: String,
     expected: Option<db::ExpectedSnippet>,
 ) -> Result<(), String> {
-    run_db(&app, "edit_snippet", move |db| {
+    let result = run_db(&app, "edit_snippet", move |db| {
         db::update_snippet_if_unchanged(db, id, &trigger, &expansion, &instructions, expected.as_ref())
     })
-    .await
+    .await;
+    if result.is_ok() { let _ = app.emit("verenu:snippets-updated", ()); }
+    result
 }
 
 #[tauri::command]
 pub async fn remove_snippet(app: AppHandle, id: i64) -> Result<(), String> {
-    run_db(&app, "remove_snippet", move |db| db::delete_snippet(db, id)).await
+    let result = run_db(&app, "remove_snippet", move |db| db::delete_snippet(db, id)).await;
+    if result.is_ok() { let _ = app.emit("verenu:snippets-updated", ()); }
+    result
 }
 
 #[tauri::command]
@@ -164,38 +165,30 @@ pub async fn create_dictionary_entry(
     mistake: Option<String>,
     context_id: Option<i64>,
 ) -> Result<db::CreatedRecordMeta, String> {
-    run_db(&app, "create_dictionary_entry", move |db| {
+    let result = run_db(&app, "create_dictionary_entry", move |db| {
         log::info!(
             "dictionary:create term_chars={} mistake_chars={}",
             term.chars().count(),
             mistake.as_deref().map_or(0, |m| m.chars().count())
         );
-        db::insert_dictionary_entry_returning(db, &term, mistake.as_deref(), context_id).map_err(
-            |e| {
-                log::warn!("dictionary:create failed: {e}");
-                e
-            },
-        )
+        db::insert_dictionary_entry_returning(db, &term, mistake.as_deref(), context_id)
     })
-    .await
+    .await;
+    if let Ok(created) = &result { emit_dictionary_updated(&app, context_id, created.id); }
+    result
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn edit_dictionary_entry(
     app: AppHandle,
     id: i64,
     term: String,
     mistake: Option<String>,
-    dictionary_id: Option<i64>,
     context_id: Option<i64>,
-    correction_id: Option<i64>,
-    correction_ids: Option<Vec<i64>>,
     expected: Option<db::ExpectedDictionaryEntry>,
 ) -> Result<(), String> {
     let event_app = app.clone();
     run_db(&app, "edit_dictionary_entry", move |db| {
-        let _ = (dictionary_id, correction_id, correction_ids);
         let result = if let Some(expected) = expected.as_ref() {
             db::update_dictionary_entry_if_unchanged(db, context_id, id, &term, mistake.as_deref(), expected)
         } else { match context_id {
@@ -217,17 +210,23 @@ pub async fn edit_dictionary_entry(
 }
 
 #[tauri::command]
+pub async fn rename_dictionary_entry_global(app: AppHandle, id: i64, term: String, expected_term: String) -> Result<(), String> {
+    let event_app = app.clone();
+    run_db(&app, "rename_dictionary_entry_global", move |db| {
+        let result = db::rename_dictionary_entry_global(db, id, &term, &expected_term);
+        if result.is_ok() { emit_dictionary_updated(&event_app, None, id); }
+        result
+    }).await
+}
+
+#[tauri::command]
 pub async fn remove_dictionary_entry(
     app: AppHandle,
     id: i64,
-    dictionary_id: Option<i64>,
     context_id: Option<i64>,
-    correction_id: Option<i64>,
-    correction_ids: Option<Vec<i64>>,
 ) -> Result<(), String> {
     let event_app = app.clone();
     run_db(&app, "remove_dictionary_entry", move |db| {
-        let _ = (dictionary_id, correction_id, correction_ids);
         let result = match context_id {
             Some(context_id) => db::remove_dictionary_entry_from_context(db, context_id, id),
             None => db::delete_dictionary_entry(db, id),
@@ -246,12 +245,9 @@ pub async fn move_dictionary_entry_to_context(
     dictionary_id: i64,
     source_context_id: i64,
     target_context_id: i64,
-    correction_id: Option<i64>,
-    correction_ids: Option<Vec<i64>>,
 ) -> Result<(), String> {
     let event_app = app.clone();
     run_db(&app, "move_dictionary_entry_to_context", move |db| {
-        let _ = (correction_id, correction_ids);
         db::move_dictionary_entry_to_context(
             db,
             dictionary_id,

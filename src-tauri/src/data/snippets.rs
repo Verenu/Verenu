@@ -694,5 +694,7 @@ mod tests {
 
         let persisted = db::query_snippets(&db).expect("query persisted");
         assert_eq!(persisted[0].use_count, 2);
+        let usage = db::query_library_usage(&db).expect("query usage");
+        assert!(usage["items"].as_array().unwrap().iter().any(|item| item["kind"] == "snippet" && item["id"] == persisted[0].id && item["matches"] == 2));
     }
 }
