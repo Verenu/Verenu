@@ -25,6 +25,8 @@ pub struct Connection {
     pub selected_catalog: Option<String>,
     pub catalogs: Vec<Catalog>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub excluded_skills: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -68,7 +70,19 @@ fn status(settings: &store::SettingsSnapshot) -> Status {
 
 pub fn captured_catalog(settings: &store::SettingsSnapshot) -> Option<std::sync::Arc<Catalog>> {
     let connection = connection(settings)?;
-    merged_catalog(&connection.environment_id, &connection.catalogs).map(std::sync::Arc::new)
+    let mut catalog = merged_catalog(&connection.environment_id, &connection.catalogs)?;
+    catalog.skills.retain(|skill| !is_excluded(&connection, &skill.name));
+    if catalog.skills.is_empty() {
+        return None;
+    }
+    Some(std::sync::Arc::new(catalog))
+}
+
+fn is_excluded(connection: &Connection, name: &str) -> bool {
+    connection
+        .excluded_skills
+        .iter()
+        .any(|excluded| excluded.eq_ignore_ascii_case(name))
 }
 
 pub fn catalog_for_destination(
@@ -149,6 +163,11 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
         selected_catalog: selected,
         catalogs,
         error: None,
+        excluded_skills: previous
+            .as_ref()
+            .filter(|old| old.environment_id == environment)
+            .map(|old| old.excluded_skills.clone())
+            .unwrap_or_default(),
     };
     let value = serde_json::to_value(&current).map_err(|_| "Cannot save T3 connection.")?;
     let previous_token = run_blocking("read_previous_t3_credential", || {
@@ -267,6 +286,30 @@ pub async fn select_t3_catalog(app: AppHandle, catalog_id: String) -> Result<Sta
 }
 
 #[tauri::command]
+pub async fn set_t3_excluded_skills(
+    app: AppHandle,
+    names: Vec<String>,
+) -> Result<Status, String> {
+    let _guard = operation_lock().lock().await;
+    let settings = store::settings_handle(&app)?;
+    let mut current = connection(&settings.snapshot()?).ok_or("Connect T3 first.")?;
+    let mut excluded: Vec<String> = Vec::new();
+    for name in names {
+        if !excluded.iter().any(|seen| seen.eq_ignore_ascii_case(&name)) {
+            excluded.push(name);
+        }
+    }
+    excluded.truncate(crate::system::t3_skills::MAX_SKILLS);
+    current.excluded_skills = excluded;
+    settings.set(
+        store::T3_CONNECTION,
+        serde_json::to_value(&current).map_err(|_| "Cannot save T3 skill selection.")?,
+    )?;
+    settings.save()?;
+    Ok(status(&settings.snapshot()?))
+}
+
+#[tauri::command]
 pub async fn disconnect_t3(app: AppHandle) -> Result<Status, String> {
     if cfg!(target_os = "android") {
         return Err("T3 skill pairing requires desktop Verenu.".into());
@@ -314,6 +357,7 @@ mod tests {
             attempted_at: now(),
             selected_catalog: Some("catalog".into()),
             error: None,
+            excluded_skills: Vec::new(),
             catalogs: vec![Catalog {
                 environment_id: "sample".into(),
                 id: "catalog".into(),
@@ -383,6 +427,23 @@ mod tests {
         assert_eq!(*captured_catalog(&snapshot(&value)).unwrap(), *captured);
         value.selected_catalog = Some("removed-workspace".into());
         assert_eq!(*captured_catalog(&snapshot(&value)).unwrap(), *captured);
+    }
+
+    #[test]
+    fn t3_excluded_skills_are_hidden_from_captured_catalog_but_kept_in_status() {
+        let mut value = sample();
+        value.catalogs[0].skills.push(Skill {
+            name: "file-pr".into(),
+            display_name: None,
+            description: None,
+        });
+        value.excluded_skills = vec!["BABYSIT-PR".into()];
+        let captured = captured_catalog(&snapshot(&value)).unwrap();
+        assert_eq!(captured.skills.len(), 1);
+        assert_eq!(captured.skills[0].name, "file-pr");
+        assert_eq!(status(&snapshot(&value)).skills.len(), 2);
+        value.excluded_skills.push("file-pr".into());
+        assert!(captured_catalog(&snapshot(&value)).is_none());
     }
 
     #[test]

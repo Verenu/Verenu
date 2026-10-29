@@ -781,6 +781,7 @@ pub fn run() {
              commands::connect_t3,
              commands::pull_t3_skills,
              commands::select_t3_catalog,
+             commands::set_t3_excluded_skills,
              commands::disconnect_t3,
              commands::create_context,
              commands::update_context,
