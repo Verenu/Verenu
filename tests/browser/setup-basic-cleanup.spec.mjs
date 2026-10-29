@@ -223,6 +223,7 @@ test('Setup applies the selected speaker audio behavior', async ({ page, session
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 9, provider: 'local' } });
     await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: 'local/whisper-small' });
     await session.invoke('save_setting', { key: 'mute_audio', value: true });
     await page.route('**/__verenu_dev/invoke', async route => {
       if (route.request().postDataJSON().command !== 'get_all_settings') return route.fallback();
@@ -435,7 +436,7 @@ test('finishing setup refreshes the shared transcription model', async ({ page, 
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 9, provider: 'local' } });
     await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
-    await session.invoke('save_setting', { key: 'transcription_default_model', value: 'groq/whisper-large-v3' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: 'local/whisper-small' });
     await page.reload();
     await page.route('**/__verenu_dev/invoke', async route => {
       const request = route.request().postDataJSON();
@@ -466,6 +467,8 @@ test('finishing setup does not restore an older appearance after an agent change
     await session.invoke('save_setting', { key: 'appearance_mode', value: 'light' });
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 9, provider: 'local' } });
+    await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: 'local/whisper-small' });
     await page.reload();
     await page.route('**/__verenu_dev/invoke', async route => {
       const request = route.request().postDataJSON();
