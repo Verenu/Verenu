@@ -54,7 +54,9 @@ test('connection creates a private session grant and uses it for later requests'
     let input = '';
     for await (const chunk of req) input += chunk;
     res.setHeader('content-type', 'application/json');
-    if (req.url === '/v1/authorize') {
+    if (req.url === '/v1/status') {
+      res.end(JSON.stringify({ version: 1, instance: '80e46383-dfaf-4be9-8761-0b60477c9300' }));
+    } else if (req.url === '/v1/authorize') {
       token = JSON.parse(input).token;
       res.end(JSON.stringify({ code: 'A1B2C3', expires_in_seconds: 120 }));
     } else if (req.url === '/v1/invoke' && req.headers.authorization === `Bearer ${token}`) {
@@ -65,7 +67,7 @@ test('connection creates a private session grant and uses it for later requests'
   const grantFile = path.join(home, 'grant.json');
   const env = { VERENU_APP_DATA_DIR_OVERRIDE: home, VERENU_AGENT_GRANT_FILE: grantFile };
   try {
-    await fs.writeFile(path.join(home, 'agent-port'), String(server.address().port));
+    await fs.writeFile(path.join(home, 'agent-session.json'), JSON.stringify({ version: 1, port: server.address().port, instance: '80e46383-dfaf-4be9-8761-0b60477c9300' }), { mode: 0o600 });
     assert.deepEqual(await connect(env), { code: 'A1B2C3', expires_in_seconds: 120 });
     assert.match(token, /^[a-f0-9]{64}$/);
     if (process.platform !== 'win32') assert.equal((await fs.stat(grantFile)).mode & 0o077, 0);

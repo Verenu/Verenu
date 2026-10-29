@@ -22,8 +22,71 @@ use tauri::{AppHandle, Emitter, Manager};
 #[derive(Clone)]
 pub(crate) struct Agent {
     app: AppHandle,
+    instance: String,
     approvals: Arc<Mutex<Approvals>>,
     gate: Arc<tokio::sync::Semaphore>,
+}
+
+fn publish_discovery(port: u16, instance: &str) -> anyhow::Result<()> {
+    let path = crate::app_data_dir().join("agent-session.json");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let directory = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Missing agent directory"))?;
+        let metadata = std::fs::symlink_metadata(directory)?;
+        anyhow::ensure!(
+            metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o022 == 0,
+            "Agent profile directory is not private to this user"
+        );
+        let resolved = std::fs::canonicalize(directory)?;
+        for ancestor in directory.ancestors().chain(resolved.ancestors()) {
+            let entry = std::fs::symlink_metadata(ancestor)?;
+            let uid = entry.uid();
+            anyhow::ensure!(
+                (uid == 0 || uid == unsafe { libc::geteuid() })
+                    && (!entry.is_dir()
+                        || entry.mode() & 0o022 == 0
+                        || (uid == 0 && entry.mode() & 0o1000 != 0)),
+                "Agent profile has an untrusted ancestor"
+            );
+        }
+        anyhow::ensure!(
+            !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()),
+            "Agent descriptor cannot be a symbolic link"
+        );
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        let result = (|| -> anyhow::Result<()> {
+            file.write_all(&serde_json::to_vec(
+                &json!({"version": 1, "port": port, "instance": instance}),
+            )?)?;
+            file.sync_all()?;
+            std::fs::rename(&temp, &path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(temp);
+        }
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(
+            path,
+            serde_json::to_vec(&json!({"version": 1, "port": port, "instance": instance}))?,
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -132,8 +195,8 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))?;
     listener.set_nonblocking(true)?;
     let actual_port = listener.local_addr()?.port();
-    let discovery = crate::app_data_dir().join("agent-port");
-    std::fs::write(discovery, actual_port.to_string())?;
+    let instance = uuid::Uuid::new_v4().to_string();
+    publish_discovery(actual_port, &instance)?;
     let approvals = Arc::new(Mutex::new(Approvals {
         legacy_token: token,
         ..Approvals::default()
@@ -141,6 +204,7 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
     app.manage(approvals.clone());
     let state = Agent {
         app,
+        instance,
         approvals,
         gate: Arc::new(tokio::sync::Semaphore::new(1)),
     };
@@ -151,6 +215,7 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
         };
         let routes = Router::new()
             .route("/v1/invoke", post(invoke))
+            .route("/v1/status", get(status))
             .route("/v1/authorize", post(authorize))
             .route("/v1/authorization-status", post(authorization_status))
             .route("/v1/revoke", post(revoke))
@@ -161,6 +226,13 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
         }
     });
     Ok(())
+}
+
+async fn status(State(agent): State<Agent>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
+    if is_browser(&headers) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"Forbidden"})));
+    }
+    (StatusCode::OK, Json(json!({"version":1, "instance":agent.instance})))
 }
 
 #[derive(Deserialize)]
@@ -801,7 +873,7 @@ mod tests {
     #[test]
     fn agent_context_library_operations_are_discoverable() {
         let described = registry!(describe, unused_app, unused_request);
-        let commands = described.as_array().unwrap();
+        let commands = &described;
         for command in [
             "get_dictionary",
             "get_snippets",
