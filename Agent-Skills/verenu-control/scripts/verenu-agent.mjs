@@ -48,11 +48,51 @@ export async function installSkill(selected, { home = os.homedir(), permanent = 
   return destinations;
 }
 
-function appDataDir(env = process.env) {
-  if (env.VERENU_APP_DATA_DIR_OVERRIDE) return env.VERENU_APP_DATA_DIR_OVERRIDE;
-  if (process.platform === 'win32') return path.join(env.APPDATA || '.', 'Verenu');
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library/Application Support/Verenu');
-  return path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'Verenu');
+function sessionPaths(env) {
+  if (env.VERENU_APP_DATA_DIR_OVERRIDE) return [path.join(env.VERENU_APP_DATA_DIR_OVERRIDE, 'agent-session.json')];
+  const home = env.HOME || os.homedir();
+  if (process.platform === 'win32') return [path.join(env.APPDATA || '.', 'Verenu', 'agent-session.json')];
+  if (process.platform === 'darwin') return [path.join(home, 'Library/Application Support/Verenu/agent-session.json')];
+  const standard = path.join(home, '.config');
+  return [...new Set([env.XDG_CONFIG_HOME || standard, standard].map((base) => path.join(base, 'Verenu', 'agent-session.json')))];
+}
+
+async function readDescriptor(filename) {
+  let file;
+  try {
+    file = await fs.open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > 4096 || (process.getuid && (stat.uid !== process.getuid() || (stat.mode & 0o077)))) throw new Error('The agent session file is not private to this user.');
+    const value = JSON.parse(await file.readFile('utf8'));
+    if (value?.version !== 1 || !/^[a-f\d-]{36}$/i.test(value.instance ?? '') || !Number.isInteger(value.port) || value.port < 1 || value.port > 65535) throw new Error('Invalid Verenu agent session file.');
+    return value;
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  } finally { await file?.close(); }
+}
+
+async function resolveSession(env) {
+  const live = [];
+  for (const filename of sessionPaths(env)) {
+    const session = await readDescriptor(filename);
+    if (!session) continue;
+    try {
+      const response = await fetch(`http://127.0.0.1:${session.port}/v1/status`, { redirect: 'error', signal: AbortSignal.timeout(1000) });
+      const status = await response.json();
+      if (response.ok && status.version === 1 && status.instance === session.instance) live.push(session);
+    } catch { /* A stale descriptor is not a running profile. */ }
+  }
+  if (live.length > 1) throw new Error('More than one Verenu profile is running. Specify VERENU_APP_DATA_DIR_OVERRIDE before connecting.');
+  if (!live.length) throw new Error('No running Verenu agent session found. Open Verenu and try again.');
+  return live[0];
+}
+
+async function verifyInstance(port, instance) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid agent grant port');
+  const response = await fetch(`http://127.0.0.1:${port}/v1/status`, { redirect: 'error', signal: AbortSignal.timeout(1000) });
+  const status = await response.json();
+  if (!response.ok || status.version !== 1 || status.instance !== instance) throw new Error('Verenu restarted; request a new agent grant.');
 }
 
 async function grant(env = process.env) {
@@ -62,7 +102,10 @@ async function grant(env = process.env) {
   try {
     const stat = await file.stat();
     if (!stat.isFile() || stat.size > 1024 || (process.platform !== 'win32' && ((stat.mode & 0o077) || stat.uid !== process.getuid()))) throw new Error('Agent grant file must be a private regular file');
-    return JSON.parse(await file.readFile('utf8'));
+    const value = JSON.parse(await file.readFile('utf8'));
+    if (!/^[a-f\d-]{36}$/i.test(value.instance ?? '')) throw new Error('Invalid agent grant instance');
+    await verifyInstance(value.port, value.instance);
+    return value;
   } finally { await file.close(); }
 }
 
@@ -80,13 +123,14 @@ export async function connect(env = process.env) {
   if (!path.isAbsolute(env.VERENU_AGENT_GRANT_FILE)) throw new Error('Agent grant file path must be absolute');
   const parent = await fs.stat(path.dirname(env.VERENU_AGENT_GRANT_FILE));
   if (!parent.isDirectory() || (process.platform !== 'win32' && ((parent.mode & 0o077) || parent.uid !== process.getuid()))) throw new Error('Agent grant directory must be private and owned by this user');
-  const port = Number((await fs.readFile(path.join(appDataDir(env), 'agent-port'), 'utf8')).trim());
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid Verenu discovery file');
+  const { port, instance } = await resolveSession(env);
   const token = randomBytes(32).toString('hex');
   const file = await fs.open(env.VERENU_AGENT_GRANT_FILE, 'wx', 0o600);
   try {
-    await file.writeFile(JSON.stringify({ token, port }));
+    await file.writeFile(JSON.stringify({ token, port, instance }));
+    await verifyInstance(port, instance);
     const result = await authorizationRequest(port, 'authorize', token);
+    await verifyInstance(port, instance);
     return result;
   } catch (error) {
     await fs.unlink(env.VERENU_AGENT_GRANT_FILE).catch(() => {});
