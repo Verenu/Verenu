@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const ipc = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('./tauri', () => ipc);
 
-import { connectT3, t3State, updateT3 } from './t3Store.svelte';
+import { connectT3, setSkillsExcluded, t3State, updateT3 } from './t3Store.svelte';
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void };
 function deferred<T>(): Deferred<T> {
@@ -135,5 +135,51 @@ describe('T3 store request ordering', () => {
     expect(t3State.loading).toBe(false);
     expect(t3State.error).toBeTruthy();
     expect(t3State.notice).toBe('');
+  });
+
+  describe('skill exclusions', () => {
+    const withSkills = (excludedSkills: string[]) => {
+      const value = status('Synthetic workstation');
+      return { ...value, connection: { ...value.connection!, excludedSkills } };
+    };
+
+    it('keeps a selection when an older pull finishes after the save resolved', async () => {
+      t3State.status = withSkills([]);
+      const pull = deferred<ReturnType<typeof withSkills>>();
+      ipc.invoke.mockImplementation((command: string) =>
+        command === 'pull_t3_skills' ? pull.promise : Promise.resolve(withSkills(['a'])),
+      );
+      const pulling = updateT3('pull_t3_skills', { force: true });
+      await setSkillsExcluded(['a'], true);
+      pull.resolve(withSkills([]));
+      await pulling;
+      expect(t3State.status?.connection?.excludedSkills).toEqual(['a']);
+    });
+
+    it('keeps a selection when a read started during the save finishes after it', async () => {
+      t3State.status = withSkills([]);
+      const save = deferred<ReturnType<typeof withSkills>>();
+      const read = deferred<ReturnType<typeof withSkills>>();
+      ipc.invoke.mockImplementation((command: string) =>
+        command === 'set_t3_excluded_skills' ? save.promise : read.promise,
+      );
+      const saving = setSkillsExcluded(['a'], true);
+      const reading = updateT3('get_t3_skills', undefined, { background: true });
+      save.resolve(withSkills(['a']));
+      await saving;
+      read.resolve(withSkills([]));
+      await reading;
+      expect(t3State.status?.connection?.excludedSkills).toEqual(['a']);
+    });
+
+    it('restores the saved selection but keeps the error when saving fails', async () => {
+      t3State.status = withSkills([]);
+      ipc.invoke.mockImplementation((command: string) =>
+        command === 'set_t3_excluded_skills' ? Promise.reject(new Error('disk full')) : Promise.resolve(withSkills([])),
+      );
+      await setSkillsExcluded(['a'], true);
+      expect(t3State.status?.connection?.excludedSkills).toEqual([]);
+      expect(t3State.error).not.toBe('');
+    });
   });
 });
