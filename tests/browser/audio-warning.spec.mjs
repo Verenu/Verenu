@@ -26,6 +26,38 @@ async function expectFullWidthAdvice(page) {
   expect(bounds.x + bounds.width).toBeLessThanOrEqual(page.viewportSize().width);
 }
 
+test('a delayed gain save preserves a newer agent change', async ({ page, session }) => {
+  const initial = await session.invoke('get_setting', { key: 'mic_gain' });
+  let release;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const pending = new Promise(resolve => { captured = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'mic_gain', value: 2 });
+    await page.reload();
+    await openAudio(page);
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (request.command !== 'save_setting_if_unchanged' || request.args?.key !== 'mic_gain') return route.continue();
+      captured();
+      await held;
+      await route.continue();
+    });
+    const gain = page.getByRole('slider', { name: 'Microphone gain', exact: true });
+    await gain.fill('3');
+    await pending;
+    await session.invoke('save_setting', { key: 'mic_gain', value: 4 });
+    await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['mic_gain']));
+    release();
+    await expect.poll(() => session.invoke('get_setting', { key: 'mic_gain' })).toBe(4);
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not save microphone gain' })).toBeVisible();
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'mic_gain', value: initial ?? defaultMicGain(false) });
+  }
+});
+
 test('high-gain advice fills the Audio content width for both noise reduction states', async ({ page, session }, testInfo) => {
   const initial = await session.invoke('get_all_settings');
   // Browser sessions run a desktop Rust worker, including the phone viewport.

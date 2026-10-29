@@ -76,13 +76,18 @@ Even with that hardening, log exports can still contain sensitive operational de
 
 ### Optional local agent control
 
-Desktop builds can expose the versioned agent API only when they are launched
-with an explicit 64-character hexadecimal bearer grant (generate it from 32
-random bytes) and a port. The listener binds to `127.0.0.1`; Verenu does not
-save the grant. A local process holding it can read app settings (including
+Desktop builds offer a local agent API on `127.0.0.1`. An agent must request
+access and the user must approve the matching code in Verenu. Approval grants
+access for one hour or until the app closes; Settings > Privacy can revoke it
+sooner. Verenu keeps approved grant hashes in memory, and the agent keeps its
+grant in a private session file. Scripted launches can instead provide an
+explicit bearer grant and port. A local process holding a grant can read app settings (including
 prompt and custom-provider configuration), Contexts, the current redacted
-diagnostics snapshot, and retained history, and can change allowlisted settings
-and Contexts. It does not read API keys from the native credential store.
+diagnostics snapshot, and retained history, and can change allowlisted settings,
+Contexts, vocabulary, snippets, sub-apps and sync configuration. It can replace
+or delete API keys in the native credential store but cannot read them back.
+The grant is not a boundary against a malicious process running as the same OS
+user, which may be able to inspect process environments or access app data.
 History text is returned only when the caller explicitly requests it. The API
 has no credential-read, arbitrary SQL,
 shell, audio-capture, or text-injection operation. Requests stay on the device;

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { providerGuides, type WizardProviderId } from '../setupData';
+  import type { ProviderId } from '../../settings';
   import { isMac } from '../../platform';
   import { fade } from 'svelte/transition';
   import { onMount } from 'svelte';
@@ -25,7 +26,7 @@
     keyError,
     keyValidation,
   }: {
-    provider: WizardProviderId;
+    provider: ProviderId;
     providerName: string;
     apiKeyDraft: string;
     showKey: boolean;
@@ -36,7 +37,10 @@
     keyValidation: KeyValidation;
   } = $props();
 
-  let guide = $derived(providerGuides[provider]);
+  let guide = $derived(providerGuides[provider as WizardProviderId] ?? {
+    url: '',
+    steps: [{ caption: `Get an API key from ${providerName}`, alt: `${providerName} API key instructions` }],
+  });
 
   const shotModules = import.meta.glob('/src/assets/setup/*.png', {
     eager: true,
@@ -266,10 +270,12 @@
       </div>
 
       <div class="tutorial-actions">
+        {#if guide.url}
         <button class="btn-open" onclick={() => openExternal(guide.url)}>
           Open {guide.url}
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg>
         </button>
+        {/if}
       </div>
     </div>
 
@@ -288,10 +294,12 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           Show me where to find it
         </button>
+        {#if guide.url}
         <button class="help-btn" onclick={() => openExternal(guide.url)}>
           Open {guide.url}
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg>
         </button>
+        {/if}
       </div>
 
       {#if isMac}
