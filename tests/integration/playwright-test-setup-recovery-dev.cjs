@@ -131,6 +131,7 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
 
     const recoveredLocal = await completeLocalSetup({
       localSttModels: { 'parakeet-v3': { downloaded: true } }, presetName: 'Balanced', chooseMissingSpeech: true,
+      cleanupChoice: 'Medium',
     });
     await expect(recoveredLocal.locator('.done-model-warning')).toContainText('cleanup model');
     await recoveredLocal.getByRole('button', { name: 'Review models', exact: true }).click();
@@ -161,7 +162,7 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
       const androidDefaults = await open({
         setup_complete: false, force_setup_on_launch: true,
         setup_progress: { step: 8, provider: 'local' },
-        transcription_provider: 'local', cleanup_intensity: 'medium',
+        transcription_provider: 'local', cleanup_intensity: 'medium', cleanup_enabled: true,
       }, installed ? { 'parakeet-v3': { downloaded: true } } : {},
       installed ? { 'qwen2.5-3b-instruct': { downloaded: true } } : {}, installed, { android: true });
       await expect(androidDefaults.locator('.done-step')).toBeVisible();
@@ -516,6 +517,7 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
     const missingCleanupLocalDone = await completeLocalSetup({
       presetName: 'Fastest',
       chooseMissingSpeech: true,
+      cleanupChoice: 'Medium',
     });
     await expect(missingCleanupLocalDone.locator('.done-model-warning')).toContainText('cleanup model');
     await expect(missingCleanupLocalDone.locator('.done-model-warning')).toContainText('cleanup engine');

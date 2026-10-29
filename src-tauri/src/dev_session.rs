@@ -378,12 +378,16 @@ fn allowed(command: &str) -> bool {
         "frontend_ready"
             | "check_for_update"
             | "get_all_settings"
+            | "get_effective_transcription_model"
             | "get_setting"
             | "check_hotkey"
             | "set_hotkey_capture"
             | "save_hotkey"
+            | "save_hotkey_if_unchanged"
             | "get_shortcut_status"
             | "save_setting"
+            | "save_setting_if_unchanged"
+            | "save_model_settings_if_unchanged"
             | "delete_custom_provider"
             | "get_api_key_status"
             | "list_provider_models"
@@ -431,6 +435,7 @@ fn allowed(command: &str) -> bool {
             | "create_context"
             | "duplicate_context"
             | "update_context"
+            | "save_context_if_unchanged"
             | "update_context_settings"
             | "update_context_color"
             | "set_context_pinned"
@@ -503,10 +508,9 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
     if command.command == "get_microphones" && !bridge.host_mic {
         return Ok(Json(json!([])));
     }
-    if command.command == "save_setting" {
-        let key = command.args["key"].as_str().unwrap_or_default();
+    if command.command == "save_setting" || command.command == "save_setting_if_unchanged" || command.command == "save_model_settings_if_unchanged" {
         use crate::data::store;
-        if matches!(
+        let protected = |key: &str| matches!(
             key,
             store::KEY_GROQ
                 | store::KEY_OPENAI
@@ -520,7 +524,13 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
                 | store::PAUSE_MEDIA_DURING_DICTATION
                 | store::CLIPBOARD_PHRASE_ENABLED
                 | store::MIC_MUTE_BUTTON_DICTATION
-        ) {
+        );
+        let blocked = if command.command != "save_model_settings_if_unchanged" {
+            protected(command.args["key"].as_str().unwrap_or_default())
+        } else {
+            command.args["values"].as_object().is_some_and(|values| values.keys().any(|key| protected(key)))
+        };
+        if blocked {
             return Err(error(
                 StatusCode::FORBIDDEN,
                 "This setting is protected in dev sessions",

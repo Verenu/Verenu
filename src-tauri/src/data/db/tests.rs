@@ -2113,6 +2113,49 @@ fn snippet_update_normalizes_expansion_whitespace() {
 }
 
 #[test]
+fn stale_library_edit_cannot_overwrite_agent_change() {
+    let db = test_db();
+    let context = insert_context_returning(&db, "Synthetic", None, None, None, None, false).unwrap();
+    let entry = insert_dictionary_entry_returning(&db, "Before", Some("old"), Some(context.id)).unwrap();
+    let expected = ExpectedDictionaryEntry { term: "Before".into(), mistake: Some("old".into()) };
+    update_dictionary_entry_for_context(&db, context.id, entry.id, "Before", Some("new")).unwrap();
+    assert!(update_dictionary_entry_if_unchanged(&db, Some(context.id), entry.id, "Renamed", Some("old"), &expected).is_err());
+    let current = query_effective_dictionary_for_context(&db, context.id).unwrap();
+    assert_eq!(current[0].term, "Before");
+    assert_eq!(current[0].mistake.as_deref(), Some("new"));
+
+    let snippet = insert_snippet_returning(&db, "sig", "old", "", None).unwrap();
+    let expected = ExpectedSnippet { trigger: "sig".into(), expansion: "old".into(), instructions: "".into() };
+    update_snippet(&db, snippet.id, "sig", "new", "").unwrap();
+    assert!(update_snippet_if_unchanged(&db, snippet.id, "signature", "old", "", Some(&expected)).is_err());
+    let current = query_snippets(&db).unwrap();
+    assert_eq!(current[0].trigger, "sig");
+    assert_eq!(current[0].expansion, "new");
+
+    let global = insert_dictionary_entry_returning(&db, "Global", Some("global"), None).unwrap();
+    let expected = ExpectedDictionaryEntry { term: "Global".into(), mistake: None };
+    update_dictionary_entry_if_unchanged(&db, Some(context.id), global.id, "Global", Some("local"), &expected).unwrap();
+    assert!(update_dictionary_entry_if_unchanged(&db, Some(context.id), global.id, "Global", Some("stale"), &expected).is_err());
+    let current = query_effective_dictionary_for_context(&db, context.id).unwrap();
+    let global = current.into_iter().find(|entry| entry.id == global.id).unwrap();
+    assert_eq!(global.context_corrections[0].mistake, "local");
+}
+
+#[test]
+fn snippet_move_and_edit_rolls_back_when_source_assignment_changed() {
+    let db = test_db();
+    let target = insert_context_returning(&db, "Target", None, None, None, None, false).unwrap();
+    let other = insert_context_returning(&db, "Other", None, None, None, None, false).unwrap();
+    let snippet = insert_snippet_returning(&db, "sig", "old", "", None).unwrap();
+    let edit = SnippetMoveEdit { id: snippet.id, expected: ExpectedSnippet { trigger: "sig".into(), expansion: "old".into(), instructions: "".into() }, expansion: "draft".into(), instructions: "".into() };
+    move_snippet_entry_to_context(&db, "sig", other.id, None).unwrap();
+    assert!(move_snippet_entry_to_context(&db, "sig", target.id, Some(&edit)).is_err());
+    assert_eq!(query_snippets(&db).unwrap()[0].expansion, "old");
+    assert!(query_snippets_for_context(&db, target.id).unwrap().is_empty());
+    assert_eq!(query_snippets_for_context(&db, other.id).unwrap()[0].id, snippet.id);
+}
+
+#[test]
 fn deleting_missing_entries_returns_an_error() {
     let db = test_db();
     let dict_err = delete_dictionary_entry(&db, 999).expect_err("missing dictionary entry");

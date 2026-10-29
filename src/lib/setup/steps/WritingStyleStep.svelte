@@ -7,7 +7,8 @@
   let {
     intensity = $bindable(),
     tone = $bindable(),
-  }: { intensity: CleanupIntensity; tone: ToneId } = $props();
+    onIntensitySelect,
+  }: { intensity: CleanupIntensity; tone: ToneId; onIntensitySelect?: () => void } = $props();
 
   const cleanupOff = $derived(intensity === 'none');
   const toneInactive = $derived(cleanupOff || intensity === 'rules');
@@ -24,7 +25,7 @@
           class:wide={i >= 3}
           class:selected={intensity === c.id}
           aria-pressed={intensity === c.id}
-          onclick={() => { intensity = c.id; }}
+          onclick={() => { intensity = c.id; onIntensitySelect?.(); }}
         >
           <div class="card-top">
             <span class="card-name">{c.name}</span>

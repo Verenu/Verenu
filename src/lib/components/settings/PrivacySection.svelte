@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatIpcError } from '../../errors';
-  import { invoke } from '../../tauri';
+  import { invoke, isTauriRuntime } from '../../tauri';
+  import { isAndroid } from '../../platform';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import Toggle from '../Toggle.svelte';
@@ -12,6 +13,15 @@
 
   const historyOptions = ['7 days', '30 days', '90 days', 'Forever'];
   const HISTORY_MENU_ID = 'history-retention-menu';
+  let agentAccessMessage = $state('');
+  async function revokeAgentAccess() {
+    try {
+      await invoke('agent_revoke_all');
+      agentAccessMessage = 'Agent access revoked.';
+    } catch {
+      agentAccessMessage = 'Could not revoke agent access.';
+    }
+  }
   let confirmRetention = $state<{ value: string; count: number } | null>(null);
   type CleanupCacheStatus = {
     entry_count: number;
@@ -341,6 +351,17 @@
 <svelte:window onkeydown={handleRetentionModalKeydown} />
 
 <h2 class="settings-h">Privacy</h2>
+
+{#if !isAndroid && isTauriRuntime()}
+  <h3 class="settings-subhead first">Agent access</h3>
+  <div class="setting-row" data-setting-target="privacy-agent-access">
+    <div>
+      <div class="label">Connected agents</div>
+      <div class="desc">Approved agents can read and change Verenu data for up to one hour. Revoke all access at any time. {agentAccessMessage}</div>
+    </div>
+    <button class="btn-ghost" onclick={revokeAgentAccess}>Revoke access</button>
+  </div>
+{/if}
 
 <h3 class="settings-subhead first">Verenu services</h3>
 <div class="setting-row" data-setting-target="privacy-service-checks">

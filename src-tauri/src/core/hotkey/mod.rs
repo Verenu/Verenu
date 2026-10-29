@@ -1,3 +1,43 @@
+static SUB_APP_SHORTCUT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn with_sub_app_shortcut_lock<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    with_shortcut_lock(&SUB_APP_SHORTCUT_LOCK, work)
+}
+
+fn with_shortcut_lock<T>(lock: &std::sync::Mutex<()>, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _guard = lock.lock().map_err(|_| "Shortcut state unavailable")?;
+    work()
+}
+
+#[cfg(test)]
+mod sub_app_lock_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex, mpsc};
+
+    #[test]
+    fn reconnect_cannot_read_old_shortcut_during_a_save() {
+        let lock = Arc::new(Mutex::new(()));
+        let chord = Arc::new(Mutex::new("old"));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let writer_lock = lock.clone();
+        let writer_chord = chord.clone();
+        let writer = std::thread::spawn(move || with_shortcut_lock(&writer_lock, || {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            *writer_chord.lock().unwrap() = "new";
+            Ok(())
+        }).unwrap());
+        started_rx.recv().unwrap();
+        let reconnect = std::thread::spawn(move || with_shortcut_lock(&lock, || {
+            Ok(*chord.lock().unwrap())
+        }).unwrap());
+        release_tx.send(()).unwrap();
+        writer.join().unwrap();
+        assert_eq!(reconnect.join().unwrap(), "new");
+    }
+}
+
 pub fn is_known_key_code(code: &str) -> bool {
     match code {
         "" => false,
@@ -103,24 +143,161 @@ pub fn conflicts_with_chord(codes: &[String], chord: chord::Chord) -> bool {
     codes == other
 }
 
-static CAPTURE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn shortcut_conflicts(codes: &[String], chord: chord::Chord, windows: bool) -> bool {
+    if !windows { return conflicts_with_chord(codes, chord); }
+    if codes.iter().any(|code| code == &chord.web_code()) { return true; }
+    !codes.is_empty() && codes.iter().all(|code| match modifier_name(code) {
+        Some("Ctrl") => chord.ctrl,
+        Some("Alt") => chord.alt,
+        Some("Shift") => chord.shift,
+        Some("Super") => chord.super_key,
+        _ => false,
+    })
+}
 
-pub(super) fn capture_active() -> bool {
+pub fn copy_last_conflicts(chord: chord::Chord, windows: bool, macos: bool) -> bool {
+    if windows {
+        chord.ctrl && chord.alt && chord.key == chord::ChordKey::Letter('C')
+    } else {
+        chord == chord::Chord::parse(if macos { "Alt+Super+C" } else { "Ctrl+Alt+C" }).expect("copy shortcut")
+    }
+}
+
+pub fn copy_last_conflicts_with_keys(codes: &[String]) -> bool {
+    let base = if cfg!(target_os = "macos") { "Alt+Super+C" } else { "Ctrl+Alt+C" };
+    let mut chord = chord::Chord::parse(base).expect("copy shortcut");
+    for shift in [false, true] {
+        for super_key in [false, true] {
+            if cfg!(windows) {
+                chord.shift = shift;
+                chord.super_key = super_key;
+            } else if shift || super_key {
+                continue;
+            }
+            if shortcut_conflicts(codes, chord, cfg!(windows)) { return true; }
+        }
+    }
+    false
+}
+
+static CAPTURE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CAPTURE_TRANSITION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn capture_active() -> bool {
     CAPTURE_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 pub fn set_capture_active(active: bool) -> Result<(), String> {
-    let previous = CAPTURE_ACTIVE.swap(active, std::sync::atomic::Ordering::SeqCst);
-    if previous == active {
+    with_capture_transition_lock(|| {
+        transition_capture(&CAPTURE_ACTIVE, active, suspend_shortcuts, reset_chord_state)
+    })
+}
+
+pub(crate) fn with_capture_transition_lock<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    with_shortcut_lock(&CAPTURE_TRANSITION_LOCK, work)
+}
+
+fn transition_capture(
+    state: &std::sync::atomic::AtomicBool,
+    active: bool,
+    mut suspend: impl FnMut(bool) -> Result<(), String>,
+    reset: impl FnOnce(),
+) -> Result<(), String> {
+    let previous = state.swap(active, std::sync::atomic::Ordering::SeqCst);
+    if previous == active && active {
         return Ok(());
     }
-    if let Err(error) = suspend_shortcuts(active) {
-        let _ = suspend_shortcuts(previous);
-        CAPTURE_ACTIVE.store(previous, std::sync::atomic::Ordering::SeqCst);
+    if let Err(error) = suspend(active) {
+        if active {
+            let _ = suspend(previous);
+            state.store(previous, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            reset();
+        }
         return Err(error);
     }
-    reset_chord_state();
+    reset();
     Ok(())
+}
+
+#[cfg(test)]
+mod capture_transition_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn failed_exit_does_not_suspend_shortcuts_already_restored() {
+        let state = AtomicBool::new(true);
+        let mut calls = Vec::new();
+        let reset = std::cell::Cell::new(false);
+        let result = transition_capture(&state, false, |active| {
+            calls.push(active);
+            Err("Sub-app shortcut is unavailable".into())
+        }, || reset.set(true));
+        assert!(result.is_err());
+        assert_eq!(calls, vec![false]);
+        assert!(!state.load(Ordering::SeqCst));
+        assert!(reset.get());
+    }
+
+    #[test]
+    fn failed_capture_entry_restores_previous_state() {
+        let state = AtomicBool::new(false);
+        let mut calls = Vec::new();
+        assert!(transition_capture(&state, true, |active| {
+            calls.push(active);
+            if active { Err("Could not suspend shortcuts".into()) } else { Ok(()) }
+        }, || {}).is_err());
+        assert_eq!(calls, vec![true, false]);
+        assert!(!state.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn failed_exit_can_be_retried_while_capture_is_already_off() {
+        let state = AtomicBool::new(true);
+        let mut attempts = 0;
+        let mut restore = |active: bool| {
+            assert!(!active);
+            attempts += 1;
+            if attempts == 1 { Err("Shortcut unavailable".into()) } else { Ok(()) }
+        };
+        assert!(transition_capture(&state, false, &mut restore, || {}).is_err());
+        assert!(transition_capture(&state, false, &mut restore, || {}).is_ok());
+        assert_eq!(attempts, 2);
+        assert!(!state.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn overlapping_capture_transitions_complete_in_order() {
+        use std::sync::{Arc, Mutex, mpsc};
+        let state = Arc::new(AtomicBool::new(true));
+        let lock = Arc::new(Mutex::new(()));
+        let native = Arc::new(AtomicBool::new(true));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (first_state, first_lock, first_native) = (state.clone(), lock.clone(), native.clone());
+        let first = std::thread::spawn(move || with_shortcut_lock(&first_lock, || {
+            transition_capture(&first_state, false, |active| {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                first_native.store(active, Ordering::SeqCst);
+                Ok(())
+            }, || {})
+        }).unwrap());
+        started_rx.recv().unwrap();
+        let (next_state, next_lock, next_native) = (state.clone(), lock.clone(), native.clone());
+        let second = std::thread::spawn(move || with_shortcut_lock(&next_lock, || {
+            transition_capture(&next_state, true, |active| {
+                next_native.store(active, Ordering::SeqCst);
+                Ok(())
+            }, || {})
+        }).unwrap());
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        assert!(state.load(Ordering::SeqCst));
+        assert!(native.load(Ordering::SeqCst));
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +315,32 @@ mod known_key_code_tests {
             &codes,
             super::chord::Chord::parse("Ctrl+Alt+Shift+C").unwrap()
         ));
+        let mac_codes = ["F7", "MetaLeft", "AltRight"].map(String::from);
+        assert!(super::conflicts_with_chord(
+            &mac_codes,
+            super::chord::Chord::parse("Alt+Super+F7").unwrap()
+        ));
+    }
+
+    #[test]
+    fn windows_copy_shortcut_intercepts_additional_modifiers() {
+        for chord in ["Ctrl+Alt+C", "Ctrl+Alt+Shift+C", "Ctrl+Alt+Super+C", "Ctrl+Alt+Shift+Super+C"] {
+            assert!(super::copy_last_conflicts(super::chord::Chord::parse(chord).unwrap(), true, false));
+        }
+        assert!(!super::copy_last_conflicts(super::chord::Chord::parse("Ctrl+Shift+C").unwrap(), true, false));
+        assert!(!super::copy_last_conflicts(super::chord::Chord::parse("Ctrl+Alt+Shift+C").unwrap(), false, false));
+    }
+
+    #[test]
+    fn windows_dictation_owns_regular_keys_and_modifier_only_chords() {
+        let capture = super::chord::Chord::parse("Ctrl+Shift+A").unwrap();
+        let keys = ["ControlLeft", "AltLeft", "KeyA"].map(String::from);
+        assert!(super::shortcut_conflicts(&keys, capture, true));
+        assert!(!super::shortcut_conflicts(&keys, capture, false));
+        let copy = super::chord::Chord::parse("Ctrl+Alt+C").unwrap();
+        assert!(super::shortcut_conflicts(&["KeyA", "KeyC"].map(String::from), copy, true));
+        assert!(super::shortcut_conflicts(&["ControlLeft", "AltLeft"].map(String::from), copy, true));
+        assert!(!super::shortcut_conflicts(&["ControlLeft", "ShiftLeft"].map(String::from), copy, true));
     }
 
     #[test]
@@ -200,7 +403,7 @@ mod noop {
     pub fn update_keys(_keys: &[u32]) -> Result<(), String> {
         Err("Global shortcuts are unavailable on this platform".into())
     }
-    pub fn set_sub_app_capture_chord(_chord: super::chord::Chord) {}
+    pub fn set_sub_app_capture_chord(_chord: super::chord::Chord) -> Result<(), String> { Ok(()) }
     pub fn reset_chord_state() {}
     pub fn set_handless_active(_v: bool) {}
     pub fn begin_synthetic_paste_suppression(_duration_ms: u64) {}
