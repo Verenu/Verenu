@@ -22,6 +22,8 @@ pub(super) struct Transcription {
     pub(super) duration_ms: i64,
     api_used: String,
     app_name: Option<String>,
+    #[serde(default)]
+    website_domain: Option<String>,
     pub(super) context_uuid: Option<String>,
     pub(super) created_at: String,
     #[serde(default)]
@@ -61,7 +63,7 @@ pub(super) struct HistoryImportStats {
 }
 
 pub(super) fn export_history_conn(conn: &Connection) -> Result<BackupHistory> {
-    let mut stmt = conn.prepare("SELECT t.uuid, t.raw_text, t.clean_text, t.words, t.spoken_words, t.duration_ms, t.api_used, t.app_name, COALESCE(c.uuid, p.context_uuid), t.created_at, t.activity_day, t.activity_hour, EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = t.uuid) OR EXISTS(SELECT 1 FROM backup_preupgrade_history p WHERE p.uuid = t.uuid), EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid=t.uuid) FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid=t.uuid ORDER BY t.id")?;
+    let mut stmt = conn.prepare("SELECT t.uuid, t.raw_text, t.clean_text, t.words, t.spoken_words, t.duration_ms, t.api_used, t.app_name, COALESCE(c.uuid, p.context_uuid), t.created_at, t.activity_day, t.activity_hour, EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = t.uuid) OR EXISTS(SELECT 1 FROM backup_preupgrade_history p WHERE p.uuid = t.uuid), EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid=t.uuid), t.website_domain FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid=t.uuid ORDER BY t.id")?;
     let transcriptions = stmt
         .query_map([], |r| {
             Ok(Transcription {
@@ -79,6 +81,7 @@ pub(super) fn export_history_conn(conn: &Connection) -> Result<BackupHistory> {
                 activity_hour: r.get(11)?,
                 held: r.get(12)?,
                 hourly_held: r.get(13)?,
+                website_domain: r.get(14)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -280,7 +283,7 @@ pub(super) fn import_history_with_retention(
             conn.execute("INSERT OR IGNORE INTO backup_held_history(uuid) VALUES (?1)", [&row.uuid])?;
             stats.conflicts += usize::from(pruned_overlap);
         }
-        conn.execute("INSERT INTO transcriptions (uuid, raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, created_at, activity_day, activity_hour) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)", params![row.uuid, row.raw_text, row.clean_text, row.words, row.spoken_words, row.duration_ms, row.api_used, row.app_name, context, row.created_at, row.activity_day, row.activity_hour])?;
+        conn.execute("INSERT INTO transcriptions (uuid, raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, created_at, activity_day, activity_hour, website_domain) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)", params![row.uuid, row.raw_text, row.clean_text, row.words, row.spoken_words, row.duration_ms, row.api_used, row.app_name, context, row.created_at, row.activity_day, row.activity_hour, row.website_domain.as_deref().and_then(crate::core::browser_probe::extract_domain)])?;
         record_mapped_event(conn, &row.uuid, row.context_uuid.as_deref(), local_uuid.as_deref())?;
         if context.is_none() && row.context_uuid.is_some() {
             conn.execute("INSERT OR IGNORE INTO pending_transcription_contexts VALUES (?1,?2)", params![row.uuid,row.context_uuid])?;

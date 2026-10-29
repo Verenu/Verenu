@@ -341,8 +341,10 @@ pub(crate) async fn run_provided_audio(
     audio: CapturedAudio,
     context: crate::core::context::ResolvedContextIdentity,
     process_name: String,
-    _domain: Option<String>,
+    domain: Option<String>,
 ) -> Result<(), String> {
+    let mut context = context;
+    context.website_domain = domain.as_deref().and_then(crate::core::browser_probe::extract_domain);
     let generation = state::reserve_provided_capture(&state)?;
     if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
         let run_id = analytics.new_run_id();

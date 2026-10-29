@@ -364,7 +364,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // keys, so enable enforcement before schema work or application queries.
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    anyhow::ensure!(user_version <= 34, "This database was created by a newer version of Verenu");
+    anyhow::ensure!(user_version <= 35, "This database was created by a newer version of Verenu");
     if user_version < 2 && db_existed_before_open {
         let _ = std::fs::copy(db_path, db_path.with_extension("db.bak"));
     }
@@ -1026,6 +1026,13 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
                    );
                  PRAGMA user_version = 34;",
             )?;
+            Ok(())
+        })?;
+    }
+    if user_version < 35 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "transcriptions", "website_domain", "ALTER TABLE transcriptions ADD COLUMN website_domain TEXT;")?;
+            conn.execute_batch("PRAGMA user_version = 35;")?;
             Ok(())
         })?;
     }
