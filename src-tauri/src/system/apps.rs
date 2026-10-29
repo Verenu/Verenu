@@ -706,14 +706,13 @@ pub fn closest_installed_app<'a>(
     let source_executable = source_executable.trim_start_matches("?::");
     let source_keys = [source_executable, source_name.unwrap_or("")]
         .into_iter()
-        .map(app_match_key)
-        .filter(|key| key.len() >= 3)
+        .flat_map(app_match_keys)
         .collect::<Vec<_>>();
     if source_keys.is_empty() {
         return None;
     }
     let source_developer = normalized_metadata(source_developer);
-    apps.iter()
+    let mut candidates = apps.iter()
         .filter_map(|app| {
             let candidate_developer = normalized_metadata(app.developer.as_deref());
             if source_developer.is_some()
@@ -725,8 +724,7 @@ pub fn closest_installed_app<'a>(
             }
             let candidate_keys = [app.exe.as_str(), app.name.as_str()]
                 .into_iter()
-                .map(app_match_key)
-                .filter(|key| !key.is_empty())
+                .flat_map(app_match_keys)
                 .collect::<Vec<_>>();
             let score = source_keys
                 .iter()
@@ -752,15 +750,15 @@ pub fn closest_installed_app<'a>(
                 ranking_score,
             ))
         })
-        .max_by(
-            |(_, left_score, left_same, left_rank), (_, right_score, right_same, right_rank)| {
-                left_rank
-                    .total_cmp(right_rank)
-                    .then_with(|| left_score.total_cmp(right_score))
-                    .then_with(|| left_same.cmp(right_same))
-            },
-        )
-        .map(|(app, _, _, _)| app)
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.3.total_cmp(&left.3));
+    let best = candidates.first()?;
+    if candidates.iter().skip(1).any(|candidate| {
+        !candidate.0.exe.eq_ignore_ascii_case(&best.0.exe) && best.3 - candidate.3 < 0.05
+    }) {
+        return None;
+    }
+    Some(best.0)
 }
 
 fn normalized_metadata(value: Option<&str>) -> Option<String> {
@@ -805,6 +803,24 @@ fn app_match_key(value: &str) -> String {
         .or_else(|| basename.strip_suffix(".app"))
         .unwrap_or(basename.as_str());
     basename.chars().filter(|ch| ch.is_alphanumeric()).collect()
+}
+
+fn app_match_keys(value: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let key = app_match_key(value);
+    if key.len() >= 3 {
+        keys.push(key);
+    }
+    let name = value.rsplit(['/', '\\']).next().unwrap_or(value);
+    if name.split('.').count() >= 3 {
+        if let Some(component) = name.rsplit('.').next() {
+            let component = app_match_key(component);
+            if component.len() >= 3 && !matches!(component.as_str(), "app" | "desktop" | "exe") && !keys.contains(&component) {
+                keys.push(component);
+            }
+        }
+    }
+    keys
 }
 
 fn app_match_score(left: &str, right: &str) -> f32 {

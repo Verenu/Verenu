@@ -10,31 +10,66 @@ Requires Node 20+ for the dependency-free CLI. From a source checkout run
 follow Tauri's platform resource directory (inside the app on macOS and beside
 the installed resources on Windows/Linux).
 
-## Enable access
+## Connect an agent
 
-Close Verenu normally, then start it with a private grant. For example on Linux:
+Start Verenu normally. The agent creates a private session directory, sets
+`VERENU_AGENT_GRANT_FILE` to a new file there, and runs the CLI `connect`
+command. The CLI returns a code; compare it with the request in Verenu before
+approving. The agent runs `status` after approval and uses the same grant file
+for later commands. Grants expire after one hour or when Verenu closes. Revoke
+all agents from Settings > Privacy, or use `disconnect` for the current agent.
+The grant file is private: do not print its contents or send it in chat.
+
+The code identifies the request, not the executable or its publisher. Approve
+only when it matches the code from the agent you intended to connect. Local
+processes running as the same OS user may be able to inspect private files or
+modify Verenu's data directly; this is not a sandbox against such processes.
+
+## Scripted use
+
+Open Verenu normally, then request access from the bundled CLI:
 
 ```bash
-export VERENU_AGENT_PORT=17439
-export VERENU_AGENT_TOKEN="$(openssl rand -hex 32)"
-verenu &
+session_dir="$(mktemp -d)"
+export VERENU_AGENT_GRANT_FILE="$session_dir/grant.json"
+node Agent-Skills/verenu-control/scripts/verenu-agent.mjs connect
+# Compare the returned code with Verenu and approve it before continuing.
 node Agent-Skills/verenu-control/scripts/verenu-agent.mjs describe
 ```
 
-Use the executable inside the app bundle on macOS. PowerShell examples are in
-the CLI's `--help`. Keep the variables in the invoking shell; do not print the
-token, put it in a command argument, or commit it. It grants settings/Context
-writes and explicit transcript reads. Restarting without these variables revokes
+The agent performs this setup; the user does not need to launch a terminal. Use
+the executable inside the app bundle on macOS. For an explicit environment grant,
+PowerShell examples are in the CLI's `--help`. The CLI or agent must inherit the
+same variables as the app when using that explicit grant;
+exporting them in a different terminal does not give an existing agent session
+access. Keep the variables in the invoking shell; do not print the
+token, put it in a command argument, or commit it. It grants broad settings and
+data writes, credential replacement/deletion, sync control and explicit transcript
+reads. Restarting without these variables revokes
 access. Invalid configuration or an occupied port fails startup; no port fallback
-or automatic credential discovery occurs. The API is off in ordinary launches.
+or automatic credential discovery occurs for environment grants. Ordinary launches
+expose the approval, status, and revocation endpoints; data commands require an
+approved grant.
 
 The API binds only `127.0.0.1`, requires a 64-character random hex bearer token,
 rejects browser Origin/Fetch-Metadata requests, and provides no CORS access.
 Other processes with the grant can act as the user. Loopback is not a substitute
-for keeping the grant private. No credential, arbitrary SQL, shell, microphone
-capture, or text-injection endpoint exists.
+for keeping the grant private. The environment-based grant is not a security
+boundary against malware running as the same operating-system user: such a
+process may be able to inspect the app's environment or modify its data directly.
+Use OS account isolation for that threat. No credential-read, arbitrary SQL,
+shell, microphone capture, or text-injection endpoint exists.
 
 ## Discover and install the skill
+
+The app also bundles a small `agent-install-skill/` guide for agents handling
+Verenu requests. It explains how to use the control skill in place or, with the
+user's agreement, save it for the current harness and optionally selected
+other harnesses. On ordinary desktop startup, Verenu registers this discovery-only
+guide in detected harnesses. It does not overwrite existing skills, and it
+does not reinstall a guide the user removed. A harness detected later is
+registered on a subsequent startup. This does not enable the API or install
+the control skill.
 
 ```bash
 npm run agent -- harnesses
@@ -65,7 +100,8 @@ inclusive start and exclusive end.
 
 ```bash
 npm run agent -- get_contexts
-npm run agent -- save_setting '{"key":"mute_audio","value":true}'
+npm run agent -- get_setting '{"key":"mute_audio"}'
+npm run agent -- save_setting '{"key":"mute_audio","value":true,"expected":{"mute_audio":false}}'
 npm run agent -- history.report '{"start":"2026-01-01","end":"2026-04-01"}'
 npm run agent -- diagnostics.top '{"start":"2026-01-01","end":"2026-04-01"}'
 ```
@@ -77,23 +113,42 @@ failures have a non-2xx status and `error`. Requests are limited to 64 KiB, one
 active request and 60 seconds. After a timeout, read state before retrying a
 mutation: cancellation does not guarantee a native operation was undone.
 
-- Read settings and microphones; write the discovered allowlist of audio,
-  cleanup, caps, spacing, provider/model, language, prompt and history settings.
+- Read settings and microphones; write the discovered allowlist of validated
+  user settings. Use `save_hotkey` and `set_autostart` for their native effects;
+  pass the raw `hotkey` or `autostart_enabled` value read with `get_setting` as
+  `expected` (including `null` if unset). Stale values reject the change.
+  `save_setting` requires the current raw values in `expected`; when changing
+  `contextual_formatting_enabled`, include `contextual_caps_enabled` and
+  `auto_spacing_enabled`. A stale value rejects the complete write.
+- Create, edit, delete and assign dictionary entries and snippets; create,
+  assign and delete sub-apps. Inspect `describe` for the complete command list.
+  Entry edits require the original editable fields in `expected`; reread and
+  reconcile after a conflict.
+- `credentials.save` and `credentials.delete` manage saved provider keys through
+  the native credential store; `get_api_key_status` reports presence, never key
+  values. Pass secrets with `--stdin`, not command arguments, and do not log them.
+  Sync pairing and device-management commands can connect another device and
+  should be invoked only when the user has requested that operation. The same
+  applies to `t3.connect`, whose pairing link must be supplied via private stdin.
+  Use `delete_custom_provider` for removal so selected models are repaired.
 - Create, duplicate, rename, pin, color, edit or delete Context groups; inspect
   stats, dictionary and snippets; assign/remove apps and website targets.
-  Reassignment moves a target. `update_context_settings` replaces its settings:
-  read first and preserve fields you are not changing. Everywhere semantics
+  Reassignment moves a target. Use `context.patch_settings` for a partial edit
+  with `expected` set to the original Context from `get_contexts`.
+  Omitted fields remain unchanged; null clears a nullable setting. For a whole
+  Context replacement, use `save_context_if_unchanged` with its original and
+  updated records, including changes to T3 skill mentions. Pin or unpin with
+  `context.set_pinned`, passing the original Context as `expected`. Everywhere semantics
   remain owned by the existing native handlers. `create_context` and
-  `update_context_settings` accept the optional `pasteInChunks` preference.
+  `context.patch_settings` accept the optional `pasteInChunks` preference.
 - Read `diagnostics.snapshot`, lint current prompt templates using `prompts.lint`,
   or explicitly invoke `test_cleanup_prompt` with the existing saved provider
   credentials. That last command makes a live provider request and may cost
   money. Linting alone does not prove provider behavior.
-- Read `history.report`, bounded `history.page`, and `diagnostics.top`; configure
+- Read `history.report`, metadata-only `history.usage`, bounded `history.page`, and `diagnostics.top`; configure
   journal retention using `diagnostics.retention`.
 
-Read back mutations. Open/reload the relevant UI view to observe external edits;
-already-mounted UI state is not automatically refreshed by this interface.
+Read back mutations and reconcile any reported conflicts before retrying.
 
 ## Historical coverage and privacy
 

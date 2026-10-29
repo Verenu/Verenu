@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 mod backup_file;
+mod backup_history;
+mod backup_stats;
+pub(crate) use backup_stats::{import_sync_receipt, validate_totals};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 pub struct ExportStats {
@@ -135,8 +138,12 @@ pub struct ExportPayload {
     pub version: String,
     pub app_version: String,
     pub exported_at: String,
-    #[serde(default, skip_deserializing)]
+    #[serde(default)]
     pub stats: ExportStats,
+    #[serde(default)]
+    pub activity: Option<backup_stats::BackupActivity>,
+    #[serde(default)]
+    pub history: Option<backup_history::BackupHistory>,
     pub settings: serde_json::Value,
     #[serde(default)]
     pub dictionary: Vec<ExportDictionaryEntry>,
@@ -153,6 +160,7 @@ struct LibraryImportStats {
     contexts_inserted: usize,
     contexts_skipped: usize,
     contexts_already_existed: usize,
+    context_conflicts: usize,
     dictionary_inserted: usize,
     dictionary_skipped: usize,
     dictionary_already_existed: usize,
@@ -168,6 +176,7 @@ struct LibraryImportStats {
     app_targets_dropped: usize,
     sub_apps_imported: usize,
     sub_apps_dropped: usize,
+    website_targets_skipped: usize,
 }
 
 struct ImportCorrection<'a> {
@@ -191,6 +200,7 @@ pub struct ImportSummary {
     pub contexts_inserted: usize,
     pub contexts_skipped: usize,
     pub contexts_already_existed: usize,
+    pub context_conflicts: usize,
     pub dictionary_inserted: usize,
     pub dictionary_skipped: usize,
     pub dictionary_already_existed: usize,
@@ -206,6 +216,13 @@ pub struct ImportSummary {
     pub app_targets_dropped: usize,
     pub sub_apps_imported: usize,
     pub sub_apps_dropped: usize,
+    pub history_inserted: usize,
+    pub history_existing: usize,
+    pub history_conflicts: usize,
+    pub history_expired: usize,
+    pub history_context_unmatched: usize,
+    pub activity_conflicts: usize,
+    pub website_targets_skipped: usize,
 }
 
 #[tauri::command]
@@ -224,22 +241,37 @@ pub async fn export_data(
         }
 
         let stats = db::query_stats(&db).map_err(|e| e.to_string())?;
-        let (dictionary, contexts) = export_contextual_library(&db).map_err(|e| e.to_string())?;
+        let (dictionary, contexts, sub_apps, activity, history) = {
+            let conn = db
+                .lock()
+                .map_err(|_| "Database lock was poisoned".to_string())?;
+            let (dictionary, contexts) =
+                export_contextual_library_conn(&conn).map_err(|e| e.to_string())?;
+            (
+                dictionary,
+                contexts,
+                export_unassigned_sub_apps_conn(&conn).map_err(|e| e.to_string())?,
+                backup_stats::export_activity_conn(&conn).map_err(|e| e.to_string())?,
+                backup_history::export_history_conn(&conn).map_err(|e| e.to_string())?,
+            )
+        };
 
         let now = chrono::Local::now();
         let payload = ExportPayload {
-            version: "2".to_string(),
+            version: "3".to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             exported_at: now.to_rfc3339(),
             stats: ExportStats {
                 total_words: stats.total_words,
                 avg_wpm: stats.avg_wpm,
             },
+            activity: Some(activity),
+            history: Some(history),
             settings: serde_json::Value::Object(settings_map),
             dictionary,
             snippets: Vec::new(),
             contexts,
-            sub_apps: export_unassigned_sub_apps(&db).map_err(|e| e.to_string())?,
+            sub_apps,
         };
 
         let json = serde_json::to_string_pretty(&payload)
@@ -339,6 +371,10 @@ fn import_payload(
     #[cfg(target_os = "windows")]
     let mut appearance_setting_applied = false;
     let mut history_prune_days: Option<i64> = None;
+    let mut legacy_app_matched = 0;
+    let mut legacy_app_dropped = 0;
+    let initial_settings = settings.snapshot()?;
+    let mut effective_retention = initial_settings.get(store::HISTORY_RETENTION).and_then(|v| v.as_str()).unwrap_or("30 days").to_string();
 
     if !payload.settings.is_object() {
         log::warn!(
@@ -353,7 +389,31 @@ fn import_payload(
             }
             match validate_setting(key, value) {
                 Ok(()) => {
-                    let value_to_save = if key == store::CUSTOM_PROVIDERS {
+                    let value_to_save = if key == store::APP_MAPPINGS {
+                        let mut mappings: Vec<crate::system::apps::AppMapping> = initial_settings
+                            .get(key).cloned().and_then(|value| serde_json::from_value(value).ok()).unwrap_or_default();
+                        let incoming: Vec<crate::system::apps::AppMapping> = serde_json::from_value(value.clone())
+                            .map_err(|_| "Invalid app mappings in backup".to_string())?;
+                        for mut mapping in incoming {
+                            let source = ExportContextTarget {
+                                executable: mapping.exe.clone(), app_name: Some(mapping.name.clone()),
+                                developer: None, platform: None,
+                            };
+                            let Some(resolved) = resolve_import_target(&source, installed_apps, db::current_platform_tag()) else {
+                                legacy_app_dropped += 1;
+                                continue;
+                            };
+                            if mappings.iter().any(|existing| existing.exe.eq_ignore_ascii_case(&resolved.executable)) {
+                                legacy_app_dropped += 1;
+                                continue;
+                            }
+                            mapping.exe = resolved.executable;
+                            mapping.name = resolved.app_name.unwrap_or(mapping.name);
+                            mappings.push(mapping);
+                            legacy_app_matched += 1;
+                        }
+                        serde_json::to_value(mappings).map_err(|_| "Could not encode app mappings".to_string())?
+                    } else if key == store::CUSTOM_PROVIDERS {
                         let providers = crate::api::custom::normalize_list(value)?;
                         let encoded = serde_json::to_value(&providers)
                             .map_err(|_| "Could not encode restored providers.".to_string())?;
@@ -372,6 +432,7 @@ fn import_payload(
                     }
                     if key == store::HISTORY_RETENTION {
                         history_prune_days = value.as_str().and_then(store::history_retention_days);
+                        effective_retention = value.as_str().unwrap_or("30 days").to_string();
                     }
                     settings_applied += 1;
                 }
@@ -383,13 +444,21 @@ fn import_payload(
         }
     }
 
-    let mut library_stats = LibraryImportStats::default();
+    let mut library_stats = LibraryImportStats {
+        app_targets_matched: legacy_app_matched,
+        app_targets_dropped: legacy_app_dropped,
+        ..Default::default()
+    };
+    let mut history_stats = backup_history::HistoryImportStats::default();
+    let mut activity_conflicts = 0;
+    let imports_retention = pending_settings.iter().any(|(key, _)| key == store::HISTORY_RETENTION);
 
     {
         let mut conn = db
             .lock()
             .map_err(|_| "Database lock was poisoned".to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut existing_days = backup_stats::existing_days(&tx).map_err(|e| e.to_string())?;
 
         if payload.version == "1" {
             import_legacy_library_conn(&tx, &payload, &mut library_stats)
@@ -403,9 +472,28 @@ fn import_payload(
             }
         }
 
+        if let Some(activity) = &payload.activity {
+            backup_stats::import_context_aliases(&tx, activity, &payload.contexts).map_err(|e| e.to_string())?;
+        }
+        existing_days.extend(backup_stats::existing_days(&tx).map_err(|e| e.to_string())?);
+
+        if let Some(history) = &payload.history {
+            let cutoff = store::history_retention_days(&effective_retention).map(|days| (chrono::Utc::now().naive_utc() - chrono::Duration::days(days)).format("%Y-%m-%d %H:%M:%S").to_string());
+            history_stats = backup_history::import_history_with_retention(&tx, history, &payload.contexts, cutoff.as_deref()).map_err(|e| e.to_string())?;
+        }
+        if let Some(activity) = &payload.activity {
+            activity_conflicts = backup_stats::import_activity(&tx, activity, &payload.contexts, &existing_days).map_err(|e| e.to_string())?;
+        } else if payload.stats.total_words > 0 {
+            activity_conflicts += 1;
+        }
+        backup_stats::validate_totals(&tx).map_err(|e| e.to_string())?;
+
         settings.save_values_with_commit(
             pending_settings,
             |previous| {
+                if !imports_retention && previous.get(store::HISTORY_RETENTION) != initial_settings.get(store::HISTORY_RETENTION) {
+                    return Err("History retention changed during import; please retry".to_string());
+                }
                 if let Some(providers) = restored_providers {
                     clear_provider_keys(previous, &providers)?;
                 }
@@ -446,6 +534,7 @@ fn import_payload(
         contexts_inserted: library_stats.contexts_inserted,
         contexts_skipped: library_stats.contexts_skipped,
         contexts_already_existed: library_stats.contexts_already_existed,
+        context_conflicts: library_stats.context_conflicts,
         dictionary_inserted: library_stats.dictionary_inserted,
         dictionary_skipped: library_stats.dictionary_skipped,
         dictionary_already_existed: library_stats.dictionary_already_existed,
@@ -461,6 +550,13 @@ fn import_payload(
         app_targets_dropped: library_stats.app_targets_dropped,
         sub_apps_imported: library_stats.sub_apps_imported,
         sub_apps_dropped: library_stats.sub_apps_dropped,
+        history_inserted: history_stats.inserted,
+        history_existing: history_stats.existing,
+        history_conflicts: history_stats.conflicts,
+        history_expired: history_stats.expired,
+        history_context_unmatched: history_stats.context_unmatched,
+        activity_conflicts,
+        website_targets_skipped: library_stats.website_targets_skipped,
     })
 }
 
@@ -470,11 +566,14 @@ fn with_import_payload<T>(
 ) -> Result<T, String> {
     let payload: ExportPayload = serde_json::from_str(json)
         .map_err(|e| format!("Invalid backup file: {e}"))?;
-    if payload.version != "1" && payload.version != "2" {
+    if payload.version != "1" && payload.version != "2" && payload.version != "3" {
         return Err(format!(
-            "Unsupported backup version '{}'. Versions '1' and '2' are supported.",
+            "Unsupported backup version '{}'. Versions '1', '2' and '3' are supported.",
             payload.version
         ));
+    }
+    if payload.version == "3" && (payload.activity.is_none() || payload.history.is_none()) {
+        return Err("Invalid backup file: version 3 requires activity and history data.".to_string());
     }
     apply(payload)
 }
@@ -485,10 +584,15 @@ mod import_safety_tests;
 #[cfg(test)]
 mod cross_store_tests;
 
+#[cfg(test)]
 fn export_contextual_library(
     db: &db::Db,
 ) -> AnyhowResult<(Vec<ExportDictionaryEntry>, Vec<ExportContext>)> {
     let conn = db.lock().map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
+    export_contextual_library_conn(&conn)
+}
+
+fn export_contextual_library_conn(conn: &Connection) -> AnyhowResult<(Vec<ExportDictionaryEntry>, Vec<ExportContext>)> {
 
     let dictionary = {
         let mut stmt = conn.prepare(
@@ -608,7 +712,7 @@ fn export_contextual_library(
     let mut sub_app_stmt = conn.prepare(
         "SELECT executable, app_name, platform, label, icon, title_pattern, match_mode
            FROM context_sub_apps
-          WHERE context_id IS ?1 AND executable NOT LIKE '?::%'
+          WHERE context_id IS ?1
           ORDER BY id",
     )?;
 
@@ -689,14 +793,19 @@ fn export_sub_app_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExportSu
     })
 }
 
+#[cfg(test)]
 fn export_unassigned_sub_apps(db: &db::Db) -> AnyhowResult<Vec<ExportSubApp>> {
     let conn = db
         .lock()
         .map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?;
+    export_unassigned_sub_apps_conn(&conn)
+}
+
+fn export_unassigned_sub_apps_conn(conn: &Connection) -> AnyhowResult<Vec<ExportSubApp>> {
     let mut stmt = conn.prepare(
         "SELECT executable, app_name, platform, label, icon, title_pattern, match_mode
            FROM context_sub_apps
-          WHERE context_id IS NULL AND executable NOT LIKE '?::%'
+          WHERE context_id IS NULL
           ORDER BY id",
     )?;
     let rows = stmt
@@ -903,6 +1012,11 @@ fn import_contextual_library_conn(
                 stats.app_targets_dropped += 1;
                 continue;
             };
+            let assigned: Option<i64> = conn.query_row("SELECT context_id FROM context_targets WHERE executable = ?1", [&resolved.executable], |row| row.get(0)).optional()?;
+            if assigned.is_some_and(|id| id != context_id) {
+                stats.app_targets_dropped += 1;
+                continue;
+            }
             if resolved.matched {
                 stats.app_targets_matched += 1;
             } else {
@@ -931,6 +1045,11 @@ fn import_contextual_library_conn(
         for target in &context.website_targets {
             let domain = target.domain.trim().to_lowercase();
             if domain.is_empty() {
+                continue;
+            }
+            let assigned: Option<i64> = conn.query_row("SELECT context_id FROM context_website_targets WHERE domain = ?1", [&domain], |row| row.get(0)).optional()?;
+            if assigned.is_some_and(|id| id != context_id) {
+                stats.website_targets_skipped += 1;
                 continue;
             }
             conn.execute(
@@ -998,22 +1117,12 @@ struct ResolvedImportTarget {
     matched: bool,
 }
 
-fn looks_native_target(executable: &str, platform: Option<&str>) -> bool {
-    match platform {
-        Some("windows") => executable.ends_with(".exe"),
-        Some("macos") => executable.ends_with(".app"),
-        Some("linux") => !executable.ends_with(".exe") && !executable.ends_with(".app"),
-        _ => true,
-    }
-}
-
 fn resolve_import_target(
     target: &ExportContextTarget,
     installed_apps: &[crate::system::apps::InstalledApp],
     current_platform: Option<&str>,
 ) -> Option<ResolvedImportTarget> {
     let raw = target.executable.trim().to_lowercase();
-    let unresolved = raw.starts_with("?::");
     let executable = raw
         .trim_start_matches("?::")
         .split('#')
@@ -1032,19 +1141,6 @@ fn resolve_import_target(
             executable,
             app_name: target.app_name.clone().or_else(|| Some(app.name.clone())),
             developer: target.developer.clone().or_else(|| app.developer.clone()),
-            platform: current_platform.map(str::to_string),
-            matched: false,
-        });
-    }
-    let same_platform = match target.platform.as_deref() {
-        Some(platform) => current_platform == Some(platform),
-        None => looks_native_target(&executable, current_platform),
-    };
-    if !unresolved && same_platform {
-        return Some(ResolvedImportTarget {
-            executable,
-            app_name: target.app_name.clone(),
-            developer: target.developer.clone(),
             platform: current_platform.map(str::to_string),
             matched: false,
         });
@@ -1090,6 +1186,11 @@ fn import_sub_app_conn(
         stats.sub_apps_dropped += 1;
         return Ok(());
     }
+    let existing: Option<Option<i64>> = conn.query_row("SELECT context_id FROM context_sub_apps WHERE executable = ?1 AND title_pattern = ?2 AND match_mode = ?3", params![resolved.executable, pattern, mode.as_str()], |row| row.get(0)).optional()?;
+    if existing.is_some_and(|id| id.is_some() && id != context_id) {
+        stats.sub_apps_dropped += 1;
+        return Ok(());
+    }
     let inserted = conn.execute(
         "INSERT INTO context_sub_apps
            (uuid, context_id, executable, app_name, label, icon, title_pattern, match_mode, platform)
@@ -1131,6 +1232,9 @@ fn import_context_conn(
         .contextual_formatting_override
         .or_else(|| source.contextual_formatting_disabled.then_some(true));
     let name = source.name.trim();
+    if let Some(uuid) = source.uuid.as_deref() {
+        anyhow::ensure!(Uuid::parse_str(uuid).is_ok() || (source.is_everywhere && uuid == "everywhere-0000-0000-0000-000000000001"), "Invalid Context identity in backup");
+    }
     if name.is_empty() {
         stats.contexts_skipped += 1;
         return Ok(None);
@@ -1158,6 +1262,10 @@ fn import_context_conn(
             ],
         )?;
         stats.contexts_already_existed += 1;
+        if let Some(uuid) = source.uuid.as_deref() {
+            let local: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?;
+            db::resolve_pending_contexts(conn, uuid, id, &local)?;
+        }
         return Ok(Some(id));
     }
 
@@ -1182,9 +1290,36 @@ fn import_context_conn(
             |row| row.get(0),
         )
         .optional()?;
+    if existing_by_uuid.is_none() {
+        if let Some(uuid) = source.uuid.as_deref() {
+            let alias: Option<(i64, Option<String>)> = conn.query_row("SELECT c.id,a.source_name FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE a.source_uuid=?1", [uuid], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            if let Some((id, original_name)) = alias {
+                if original_name.as_deref().is_none_or(|original| original.eq_ignore_ascii_case(name)) {
+                    let local: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?;
+                    db::resolve_pending_contexts(conn, uuid, id, &local)?;
+                    stats.contexts_already_existed += 1;
+                    return Ok(Some(id));
+                }
+            }
+        }
+    }
     let existing: Option<i64> = existing_by_uuid.or(existing_by_name);
 
+    if existing_by_uuid.is_some() || existing_by_name.is_none() {
+        if let Some(uuid) = source.uuid.as_deref() {
+            conn.execute("DELETE FROM backup_context_aliases WHERE source_uuid=?1", [uuid])?;
+        }
+    }
+
     if let Some(id) = existing {
+        if source.uuid.is_some() && existing_by_uuid.is_none() {
+            conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid,source_name) SELECT ?1,uuid,?3 FROM contexts WHERE id=?2 ON CONFLICT(source_uuid) DO UPDATE SET local_uuid=excluded.local_uuid,source_name=excluded.source_name", params![source.uuid,id,name])?;
+            let local: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?;
+            db::resolve_pending_contexts(conn, source.uuid.as_deref().expect("source identity exists"), id, &local)?;
+            stats.contexts_already_existed += 1;
+            stats.context_conflicts += 1;
+            return Ok(Some(id));
+        }
         if existing_by_name.is_none() || existing_by_name == Some(id) {
             conn.execute(
                 "UPDATE contexts SET name = ?1, icon = ?2, tone = ?3,
@@ -1230,6 +1365,10 @@ fn import_context_conn(
             )?;
         }
         stats.contexts_already_existed += 1;
+        if let Some(uuid) = source.uuid.as_deref() {
+            let local: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [id], |r| r.get(0))?;
+            db::resolve_pending_contexts(conn, uuid, id, &local)?;
+        }
         return Ok(Some(id));
     }
 
@@ -1272,7 +1411,9 @@ fn import_context_conn(
     match inserted {
         Ok(_) => {
             stats.contexts_inserted += 1;
-            Ok(Some(conn.last_insert_rowid()))
+            let id = conn.last_insert_rowid();
+            db::resolve_pending_contexts(conn, &uuid, id, &uuid)?;
+            Ok(Some(id))
         }
         Err(error) if error.to_string().contains("UNIQUE constraint failed") => {
             let by_name: Option<i64> = conn
@@ -1662,6 +1803,8 @@ mod tests {
             app_version: "test".to_string(),
             exported_at: "test".to_string(),
             stats: ExportStats::default(),
+            activity: None,
+            history: None,
             settings: serde_json::Value::Null,
             dictionary,
             snippets: Vec::new(),
@@ -1672,7 +1815,7 @@ mod tests {
         {
             let mut conn = target.lock().expect("target lock");
             let tx = conn.transaction().expect("target transaction");
-            import_contextual_library_conn(&tx, &payload, &[], &mut first_stats).expect("import");
+            import_contextual_library_conn(&tx, &payload, &[app("Code", "code.exe")], &mut first_stats).expect("import");
             tx.commit().expect("commit");
         }
         let target_contexts = db::query_contexts(&target).expect("contexts");
@@ -1732,7 +1875,7 @@ mod tests {
         {
             let mut conn = target.lock().expect("target relock");
             let tx = conn.transaction().expect("repeat transaction");
-            import_contextual_library_conn(&tx, &payload, &[], &mut second_stats)
+            import_contextual_library_conn(&tx, &payload, &[app("Code", "code.exe")], &mut second_stats)
                 .expect("repeat import");
             tx.commit().expect("repeat commit");
         }
@@ -1780,6 +1923,26 @@ mod tests {
     }
 
     #[test]
+    fn activity_follows_context_matched_by_name_on_import() {
+        let source = db::open(":memory:").unwrap();
+        let source_context = db::insert_context_returning(&source, "Work", None, None, None, None, false).unwrap();
+        db::insert_transcription_returning(&source, "synthetic words", "synthetic words", 2, 1000, "test", None, Some(source_context.id)).unwrap();
+        let (_, contexts) = export_contextual_library(&source).unwrap();
+        let activity = backup_stats::export_activity(&source).unwrap();
+        let history = backup_history::export_history_conn(&source.lock().unwrap()).unwrap();
+        let dest = db::open(":memory:").unwrap();
+        let local_context = db::insert_context_returning(&dest, "Work", None, None, None, None, false).unwrap();
+        let conn = dest.lock().unwrap();
+        let local_uuid: String = conn.query_row("SELECT uuid FROM contexts WHERE id = ?1", [local_context.id], |r| r.get(0)).unwrap();
+        assert_ne!(contexts.iter().find(|context| context.name == "Work").unwrap().uuid.as_deref(), Some(local_uuid.as_str()));
+        backup_history::import_history(&conn, &history, &contexts).unwrap();
+        backup_stats::import_activity(&conn, &activity, &contexts, &Default::default()).unwrap();
+        backup_stats::import_activity(&conn, &activity, &contexts, &Default::default()).unwrap();
+        let words: i64 = conn.query_row("SELECT total_words FROM transcription_context_daily_stats WHERE context_uuid = ?1", [&local_uuid], |r| r.get(0)).unwrap();
+        assert_eq!(words, 2);
+    }
+
+    #[test]
     fn import_drops_foreign_targets_without_a_local_match() {
         let installed = [app("Slack", "slack")];
         assert_eq!(
@@ -1794,17 +1957,65 @@ mod tests {
     }
 
     #[test]
-    fn import_keeps_same_platform_targets_even_when_not_installed() {
-        let resolved = resolve_import_target(
-            &target("Obsidian.exe", Some("Obsidian"), Some("windows")),
-            &[],
-            Some("windows"),
-        )
-        .expect("native target kept");
-        assert_eq!(resolved.executable, "obsidian.exe");
-        assert!(!resolved.matched);
-        assert!(resolve_import_target(&target("code.exe", None, None), &[], Some("windows")).is_some());
-        assert!(resolve_import_target(&target("code.exe", None, None), &[], Some("linux")).is_none());
+    fn same_named_context_with_different_identity_keeps_local_settings() {
+        let source = db::open(":memory:").unwrap();
+        let imported = db::insert_context_returning(&source, "Work", None, Some("casual"), None, None, false).unwrap();
+        let (_, contexts) = export_contextual_library(&source).unwrap();
+        let context = contexts.iter().find(|context| context.name == imported.name).unwrap();
+        let dest = db::open(":memory:").unwrap();
+        let local = db::insert_context_returning(&dest, "Work", None, Some("formal"), None, None, false).unwrap();
+        let conn = dest.lock().unwrap();
+        let mut stats = LibraryImportStats::default();
+        assert_eq!(import_context_conn(&conn, context, &mut stats).unwrap(), Some(local.id));
+        let tone: String = conn.query_row("SELECT tone FROM contexts WHERE id = ?1", [local.id], |r| r.get(0)).unwrap();
+        assert_eq!(tone, "formal");
+        assert_eq!(stats.context_conflicts, 1);
+    }
+
+    #[test]
+    fn import_drops_ambiguous_foreign_matches() {
+        let installed = [app("Visual Studio Code", "code-one"), app("Visual Studio Code", "code-two")];
+        assert_eq!(resolve_import_target(&target("Code.exe", Some("Visual Studio Code"), Some("windows")), &installed, Some("macos")), None);
+    }
+
+    #[test]
+    fn import_matches_a_mac_bundle_to_windows_name() {
+        let installed = [app("Microsoft Word", "winword.exe")];
+        let matched = resolve_import_target(&target("com.microsoft.Word", Some("Microsoft Word"), Some("macos")), &installed, Some("windows")).unwrap();
+        assert_eq!(matched.executable, "winword.exe");
+        assert!(matched.matched);
+    }
+
+    #[test]
+    fn import_matches_a_bundle_component_without_an_app_name() {
+        let installed = [app("Microsoft Excel", "com.microsoft.Excel")];
+        let matched = resolve_import_target(&target("EXCEL.EXE", None, Some("windows")), &installed, Some("macos")).unwrap();
+        assert_eq!(matched.executable, "com.microsoft.excel");
+        let ambiguous = [app("Excel", "com.microsoft.Excel"), app("Excel", "org.example.Excel")];
+        assert!(resolve_import_target(&target("EXCEL.EXE", None, Some("windows")), &ambiguous, Some("macos")).is_none());
+    }
+
+    #[test]
+    fn import_does_not_move_an_existing_app_assignment() {
+        let source = db::open(":memory:").unwrap();
+        let incoming = db::insert_context_returning(&source, "Incoming", None, None, None, None, false).unwrap();
+        db::assign_context_target(&source, incoming.id, "code.exe").unwrap();
+        let (dictionary, contexts) = export_contextual_library(&source).unwrap();
+        let payload = ExportPayload { version: "2".into(), app_version: "test".into(), exported_at: "test".into(), stats: ExportStats::default(), activity: None, history: None, settings: serde_json::json!({}), dictionary, snippets: vec![], contexts, sub_apps: vec![] };
+        let dest = db::open(":memory:").unwrap();
+        let existing = db::insert_context_returning(&dest, "Existing", None, None, None, None, false).unwrap();
+        db::assign_context_target(&dest, existing.id, "code.exe").unwrap();
+        let conn = dest.lock().unwrap();
+        let mut stats = LibraryImportStats::default();
+        import_contextual_library_conn(&conn, &payload, &[app("Code", "code.exe")], &mut stats).unwrap();
+        let owner: i64 = conn.query_row("SELECT context_id FROM context_targets WHERE executable = 'code.exe'", [], |r| r.get(0)).unwrap();
+        assert_eq!(owner, existing.id);
+        assert_eq!(stats.app_targets_dropped, 1);
+    }
+
+    #[test]
+    fn import_drops_targets_that_are_not_installed_on_same_platform() {
+        assert!(resolve_import_target(&target("Obsidian.exe", Some("Obsidian"), Some("windows")), &[], Some("windows")).is_none());
     }
 
     #[test]
@@ -1850,6 +2061,8 @@ mod tests {
             app_version: "test".to_string(),
             exported_at: "test".to_string(),
             stats: ExportStats::default(),
+            activity: None,
+            history: None,
             settings: serde_json::Value::Null,
             dictionary,
             snippets: Vec::new(),
@@ -1875,7 +2088,7 @@ mod tests {
         assert_eq!(acme.icon.as_deref(), Some("briefcase"));
         let loose = imported.iter().find(|s| s.label == "Loose").expect("loose");
         assert!(loose.context_id.is_none(), "unassigned sub-app returns to the list");
-        let expected_dropped = if cfg!(target_os = "macos") { 0 } else { 1 };
+        let expected_dropped = 1;
         assert_eq!(stats.sub_apps_dropped, expected_dropped);
         assert_eq!(stats.sub_apps_imported, 3 - expected_dropped);
     }

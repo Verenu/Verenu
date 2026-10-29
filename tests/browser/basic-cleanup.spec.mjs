@@ -7,21 +7,19 @@ test('Context hints locate the independent voice commands control in Settings Ge
   await expect(dialog.locator('.field-hint').filter({ hasText: 'Voice commands' })).toContainText('Settings > General');
   const cleanup = dialog.locator('.field-col').filter({ hasText: 'Cleanup' }).getByRole('button');
   await cleanup.click();
-  await page.getByRole('option', { name: 'Basic', exact: true }).click();
-  const hint = dialog.getByRole('note');
-  await expect(hint).toContainText('Voice commands are a separate global option in Settings > General.');
-  await hint.scrollIntoViewIfNeeded();
-  await expect(hint).toBeVisible();
+  await expect(page.getByRole('option', { name: 'Basic', exact: true })).toHaveCount(0);
+  await page.getByRole('option', { name: 'Light', exact: true }).click();
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.locator('[data-debug-id="nav.settings"]').click();
   await expect(page.getByRole('switch', { name: 'Voice commands', exact: true })).toBeVisible();
 });
 
-test('Basic selection and independently opt-in commands persist without a prompt editor', async ({ page, session }, testInfo) => {
+test('Previous Basic remains active until a replacement is selected; voice commands persist independently', async ({ page, session }, testInfo) => {
   const previous = await session.invoke('get_all_settings');
   const previousIntensity = await session.invoke('get_setting', { key: 'cleanup_intensity' });
   try {
     await session.invoke('save_setting', { key: 'cleanup_enabled', value: true });
+    await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'rules' });
     await session.invoke('save_setting', { key: 'voice_commands_enabled', value: false });
     await page.reload();
     await page.locator('[data-debug-id="nav.style"]').click();
@@ -35,17 +33,21 @@ test('Basic selection and independently opt-in commands persist without a prompt
     await page.reload();
     await page.locator('[data-debug-id="nav.style"]').click();
     const basic = page.getByRole('button', { name: /^Basic / });
-    await basic.click();
-    await expect(basic).toHaveAttribute('aria-pressed', 'true');
+    await expect(basic).toHaveCount(0);
+    for (const level of ['Off', 'Light', 'Medium', 'Strong']) {
+      await expect(page.getByRole('button', { name: new RegExp(`^${level} `) })).toBeVisible();
+    }
     await expect(page.getByRole('button', { name: 'Edit Basic cleanup prompt' })).toHaveCount(0);
-    await expect(page.getByText('Tone and custom AI instructions do not apply', { exact: false })).toBeVisible();
+    await expect(page.getByText('Your previous Basic cleanup setting is still active', { exact: false })).toBeVisible();
     await page.reload();
     await page.locator('[data-debug-id="nav.settings"]').click();
     await expect(commands).toHaveAttribute('aria-checked', 'true');
     await page.reload();
     await page.locator('[data-debug-id="nav.style"]').click();
-    await expect(basic).toHaveAttribute('aria-pressed', 'true');
     expect(await session.invoke('get_setting', { key: 'cleanup_intensity' })).toBe('rules');
+    await page.getByRole('button', { name: /^Light / }).click();
+    await expect.poll(() => session.invoke('get_setting', { key: 'cleanup_intensity' })).toBe('light');
+    await expect(page.getByText('Your previous Basic cleanup setting is still active', { exact: false })).toHaveCount(0);
     await page.locator('[data-debug-id="nav.settings"]').click();
     await commands.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(path.dirname(process.env.VERENU_SESSION_ACCESS_FILE), `basic-cleanup-${testInfo.project.name}.png`) });
@@ -90,9 +92,6 @@ test('Context cleanup hint follows the effective cleanup when inheritance is sel
     await expectAi(dialog);
     await choose(dialog, 'Use inherited setting');
     await expectBasic(dialog, true);
-    await choose(dialog, 'Basic');
-    await expectBasic(dialog, false);
-    await choose(dialog, 'Use inherited setting');
     await dialog.getByLabel('Context group name').fill(name);
     await dialog.getByRole('button', { name: 'Create context group', exact: true }).click();
     await expect(dialog).toBeHidden();
@@ -104,8 +103,9 @@ test('Context cleanup hint follows the effective cleanup when inheritance is sel
     await page.reload();
     dialog = await openNew();
     await expectAi(dialog);
-    await choose(dialog, 'Basic');
-    await expectBasic(dialog, false);
+    await dialog.locator('.field-col').filter({ hasText: 'Cleanup' }).getByRole('button').click();
+    await expect(page.getByRole('option', { name: 'Basic', exact: true })).toHaveCount(0);
+    await page.getByRole('option', { name: 'Light', exact: true }).click();
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(dialog).toBeHidden();
   } finally {

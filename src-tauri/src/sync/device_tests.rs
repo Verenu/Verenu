@@ -406,6 +406,7 @@ async fn two_devices_resume_an_interrupted_snapshot_without_duplicates() {
                         device_name: "Fixture B".into(),
                         protocol: protocol::PROTOCOL_VERSION,
                         app_version: "test".into(),
+                        activity_receipts: false,
                     }),
                 )
                 .await

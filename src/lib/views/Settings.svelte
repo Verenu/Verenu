@@ -33,6 +33,8 @@
   let settingsPanelEl = $state<HTMLDivElement | null>(null);
   let previousFocusEl: HTMLElement | null = null;
   let searchHighlightTimer: ReturnType<typeof setTimeout> | null = null;
+  let externalSettingsChange = $state(false);
+  let settingsReload = $state(0);
 
   const sectionNavigation = navigation(
     () => appStore.settingsSection,
@@ -44,6 +46,7 @@
   let animDir = $state(1);
   $effect(() => {
     const next = section;
+    if (next !== previousSection) externalSettingsChange = false;
     animDir = directionFromOrder(previousSection, next, SETTINGS_SECTION_ORDER);
     previousSection = next;
   });
@@ -54,7 +57,6 @@
       isMac,
       devMode: appStore.devModeEnabled,
       legacyMode: appStore.legacyFeaturesEnabled,
-      syncEnabled: appStore.syncEnabled,
     })
   );
   const mobileSections = $derived(mobileGroups.flatMap((group) => group.items));
@@ -92,6 +94,10 @@
   const SETTINGS_SWAP_MS = 320;
 
   onMount(() => {
+    const onAgentSettingsChanged = () => {
+      if (appStore.settingsOpen && section !== 'models') externalSettingsChange = true;
+    };
+    window.addEventListener('verenu:agent-settings-changed', onAgentSettingsChanged);
     const unlistenPromise = listen<string>('open-flow:open-settings-section', (event) => {
       const target = event.payload;
       const hasTarget = !!target && isSettingsSectionId(target);
@@ -108,11 +114,12 @@
       appStore.settingsOpen = true;
     });
     return () => {
+      window.removeEventListener('verenu:agent-settings-changed', onAgentSettingsChanged);
       void unlistenPromise.then((unlisten) => unlisten());
     };
   });
 
-  function close() { appStore.settingsOpen = false; }
+  function close() { externalSettingsChange = false; appStore.settingsOpen = false; }
 
   let lastMobileList = appStore.settingsMobileList;
   $effect(() => {
@@ -157,12 +164,6 @@
 
   $effect(() => {
     if (!appStore.legacyFeaturesEnabled && appStore.settingsSection === 'apps') {
-      appStore.settingsSection = 'general';
-    }
-  });
-
-  $effect(() => {
-    if (!appStore.syncEnabled && appStore.settingsSection === 'sync') {
       appStore.settingsSection = 'general';
     }
   });
@@ -409,7 +410,7 @@
         {/if}
         <div class="fade-edge fade-edge-top" class:visible={fadeTop} aria-hidden="true"></div>
         <div class="fade-edge fade-edge-bottom" class:visible={fadeBottom} aria-hidden="true"></div>
-        {#key section}
+        {#key `${section}:${settingsReload}`}
           <div
             bind:this={settingsPanelEl}
             class="panel scroll-styled"
@@ -417,7 +418,13 @@
             in:pageSwap={{ axis: 'y', distance: animDir * motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel) }}
             out:pageSwap={{ axis: 'y', distance: -animDir * motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.base) }}
           >
-            <div class="panel-inner" inert={sectionNavigation.pending} aria-busy={sectionNavigation.pending}>
+            {#if externalSettingsChange && section !== 'models'}
+              <div class="panel-note" role="alert">
+                Settings changed outside this screen. Reload to see the latest values; unsaved edits on this page will be discarded.
+                <button class="btn-ghost" onclick={() => { externalSettingsChange = false; settingsReload += 1; }}>Reload settings</button>
+              </div>
+            {/if}
+            <div class="panel-inner" inert={sectionNavigation.pending || (externalSettingsChange && section !== 'models')} aria-busy={sectionNavigation.pending}>
               {#if section === 'about'}
                 <AboutSection {appVersion} />
               {:else if (section !== 'permissions' || isMac || isAndroid) && (section !== 'developer' || appStore.devModeEnabled)}

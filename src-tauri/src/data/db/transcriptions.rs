@@ -12,6 +12,7 @@ pub struct RecentEntry {
     pub words: i64,
     pub duration_ms: i64,
     pub app_name: Option<String>,
+    pub website_domain: Option<String>,
     pub created_at: String,
 }
 
@@ -30,10 +31,12 @@ fn recent_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentEntr
         duration_ms: row.get(3)?,
         app_name: row.get(4)?,
         created_at: row.get(5)?,
+        website_domain: row.get(6)?,
     })
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn insert_transcription_returning(
     db: &Db,
     raw: &str,
@@ -44,16 +47,34 @@ pub fn insert_transcription_returning(
     app_name: Option<&str>,
     context_id: Option<i64>,
 ) -> Result<RecentEntry> {
+    insert_transcription_with_website(db, raw, clean, words, duration_ms, api_used, app_name, context_id, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub fn insert_transcription_with_website(
+    db: &Db, raw: &str, clean: &str, words: i64, duration_ms: i64,
+    api_used: &str, app_name: Option<&str>, context_id: Option<i64>, website_domain: Option<&str>,
+) -> Result<RecentEntry> {
+    insert_transcription_with_metrics(db, raw, clean, words, duration_ms, api_used, app_name, context_id, website_domain, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn insert_transcription_with_metrics(
+    db: &Db, raw: &str, clean: &str, words: i64, duration_ms: i64,
+    api_used: &str, app_name: Option<&str>, context_id: Option<i64>, website_domain: Option<&str>,
+    metrics: Option<(i64, i64)>,
+) -> Result<RecentEntry> {
     let spoken_words = compute_spoken_words(db, raw)?;
     let _ = words;
     let words = spoken_words;
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
     let entry = tx.query_row(
-        "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
-         RETURNING id, clean_text, words, duration_ms, app_name, created_at",
-        params![raw, clean, words, spoken_words, duration_ms, api_used, app_name, context_id],
+        "INSERT INTO transcriptions (raw_text, clean_text, words, spoken_words, duration_ms, api_used, app_name, context_id, website_domain, vocabulary_replacements, snippet_expansions) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+         RETURNING id, clean_text, words, duration_ms, app_name, created_at, website_domain",
+        params![raw, clean, words, spoken_words, duration_ms, api_used, app_name, context_id, website_domain, metrics.map(|m| m.0), metrics.map(|m| m.1)],
         recent_entry_from_row,
     )?;
     tx.execute(
@@ -81,7 +102,7 @@ pub fn increment_lifetime_dictionary_fixes(db: &Db, count: i64) -> Result<()> {
 pub fn query_recent(db: &Db) -> Result<Vec<RecentEntry>> {
     let conn = lock_conn(db)?;
     let mut stmt = conn.prepare_cached(
-        "SELECT id, clean_text, words, duration_ms, app_name, created_at \
+        "SELECT id, clean_text, words, duration_ms, app_name, created_at, website_domain \
          FROM transcriptions ORDER BY id DESC",
     )?;
     let rows = stmt
@@ -137,12 +158,15 @@ fn query_recent_page_fts(
     app_name: Option<&str>,
 ) -> Result<Vec<RecentEntry>> {
     let mut sql = String::from(
-        "SELECT t.id, t.clean_text, t.words, t.duration_ms, t.app_name, t.created_at
-           FROM transcriptions_fts f
-           JOIN transcriptions t ON t.id = f.rowid
-          WHERE transcriptions_fts MATCH ?",
+        "SELECT t.id, t.clean_text, t.words, t.duration_ms, t.app_name, t.created_at, t.website_domain
+           FROM transcriptions t WHERE 1 = 1",
     );
-    let mut values = vec![rusqlite::types::Value::from(fts_match_query(search))];
+    let mut values = Vec::new();
+    for term in search.split_whitespace() {
+        sql.push_str(" AND (t.id IN (SELECT rowid FROM transcriptions_fts WHERE transcriptions_fts MATCH ?) OR lower(t.website_domain) LIKE '%' || lower(?) || '%' ESCAPE '\\')");
+        values.push(rusqlite::types::Value::from(fts_match_query(term)));
+        values.push(rusqlite::types::Value::from(escape_like(term)));
+    }
     if let Some(app_name) = app_name {
         sql.push_str(" AND t.app_name = ?");
         values.push(rusqlite::types::Value::from(app_name.to_string()));
@@ -225,12 +249,12 @@ fn query_recent_page_conn(
 
     let mut sql = if app_name.is_some() {
         String::from(
-            "SELECT id, clean_text, words, duration_ms, app_name, created_at
+            "SELECT id, clean_text, words, duration_ms, app_name, created_at, website_domain
              FROM transcriptions WHERE app_name = ?",
         )
     } else {
         String::from(
-            "SELECT id, clean_text, words, duration_ms, app_name, created_at
+            "SELECT id, clean_text, words, duration_ms, app_name, created_at, website_domain
              FROM transcriptions WHERE 1 = 1",
         )
     };
@@ -246,9 +270,10 @@ fn query_recent_page_conn(
         sql.push_str(
             " AND (lower(clean_text) LIKE '%' || lower(?) || '%' ESCAPE '\\'
              OR lower(raw_text) LIKE '%' || lower(?) || '%' ESCAPE '\\'
-             OR lower(app_name) LIKE '%' || lower(?) || '%' ESCAPE '\\')",
+             OR lower(app_name) LIKE '%' || lower(?) || '%' ESCAPE '\\'
+             OR lower(website_domain) LIKE '%' || lower(?) || '%' ESCAPE '\\')",
         );
-        for _ in 0..3 {
+        for _ in 0..4 {
             values.push(rusqlite::types::Value::from(term.clone()));
         }
     }
@@ -287,7 +312,7 @@ pub fn query_stats(db: &Db) -> Result<Stats> {
     let (total_words, avg_wpm): (i64, f64) = conn.query_row(
         "SELECT
            COALESCE((SELECT total_words FROM lifetime_stats WHERE id = 1), 0)
-             + COALESCE((SELECT SUM(total_words) FROM sync_remote_stats), 0),
+             + COALESCE((SELECT SUM(total_words) FROM combined_device_counters), 0),
            COALESCE((SELECT wpm_sum / NULLIF(wpm_count, 0)
                        FROM lifetime_stats WHERE id = 1), 0.0)",
         [],
@@ -368,21 +393,41 @@ fn prune_transcriptions_conn(conn: &mut Connection, max_age_days: i64) -> Result
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
     tx.execute(
+        "INSERT OR IGNORE INTO transcription_receipts(uuid, day, hour, context_uuid, words, spoken_words, duration_ms, counted)
+         SELECT t.uuid, COALESCE(t.activity_day, date(t.created_at, 'localtime')), COALESCE(t.activity_hour, CAST(strftime('%H', t.created_at, 'localtime') AS INTEGER)),
+                COALESCE(c.uuid, p.context_uuid), t.words, t.spoken_words, t.duration_ms, NOT EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = t.uuid) AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = t.uuid)
+           FROM transcriptions t LEFT JOIN contexts c ON c.id = t.context_id
+           LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid = t.uuid
+          WHERE t.created_at < ?1",
+        [&cutoff],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO call_receipts(uuid, transcription_uuid, day, context_uuid, model, provider, task, audio_ms, input_chars, output_chars, counted)
+         SELECT a.uuid, t.uuid, COALESCE(a.activity_day, date(a.created_at, 'localtime')), COALESCE(c.uuid, p.context_uuid), a.model, a.provider, a.task,
+                a.audio_ms, a.input_chars, a.output_chars, NOT EXISTS(SELECT 1 FROM backup_held_calls h WHERE h.uuid = a.uuid) AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = t.uuid)
+           FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
+           LEFT JOIN contexts c ON c.id = t.context_id
+           LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid = t.uuid
+          WHERE a.created_at < ?1 OR t.created_at < ?1 OR t.id IS NULL",
+        [&cutoff],
+    )?;
+    tx.execute(
         "INSERT INTO transcription_hourly_stats (day, hour, context_id, total_words)
-         SELECT date(created_at, 'localtime'), CAST(strftime('%H', created_at, 'localtime') AS INTEGER),
+         SELECT COALESCE(activity_day, date(created_at, 'localtime')), COALESCE(activity_hour, CAST(strftime('%H', created_at, 'localtime') AS INTEGER)),
                 COALESCE(context_id, 0), SUM(words)
            FROM transcriptions
-          WHERE created_at < ?1
+          WHERE created_at < ?1 AND NOT EXISTS(SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid) AND NOT EXISTS(SELECT 1 FROM backup_held_hourly_receipts h WHERE h.uuid = transcriptions.uuid)
           GROUP BY 1, 2, 3
          ON CONFLICT(day, hour, context_id) DO UPDATE SET total_words = total_words + excluded.total_words",
         [&cutoff],
     )?;
     tx.execute(
         "INSERT INTO provider_daily_stats (day, context_id, model, provider, task, calls, audio_ms, input_chars, output_chars)
-         SELECT date(a.created_at, 'localtime'), COALESCE(t.context_id, 0), a.model, a.provider, a.task,
+         SELECT COALESCE(a.activity_day, date(a.created_at, 'localtime')), COALESCE(t.context_id, 0), a.model, a.provider, a.task,
                 COUNT(*), COALESCE(SUM(a.audio_ms), 0), COALESCE(SUM(a.input_chars), 0), COALESCE(SUM(a.output_chars), 0)
            FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
-          WHERE a.created_at < ?1
+          WHERE (a.created_at < ?1 OR t.created_at < ?1 OR t.id IS NULL)
+            AND NOT EXISTS(SELECT 1 FROM backup_held_calls h WHERE h.uuid = a.uuid)
           GROUP BY 1, 2, 3, 4, 5
          ON CONFLICT(day, context_id, model, provider, task) DO UPDATE SET
            calls = calls + excluded.calls, audio_ms = audio_ms + excluded.audio_ms,
@@ -401,9 +446,13 @@ fn prune_transcriptions_conn(conn: &mut Connection, max_age_days: i64) -> Result
     )?;
     tx.execute(
         "DELETE FROM pending_transcription_contexts
-          WHERE transcription_uuid NOT IN (SELECT uuid FROM transcriptions)",
+          WHERE transcription_uuid NOT IN (SELECT uuid FROM transcriptions)
+            AND transcription_uuid NOT IN (SELECT uuid FROM transcription_receipts)
+            AND transcription_uuid NOT IN (SELECT transcription_uuid FROM call_receipts WHERE transcription_uuid IS NOT NULL)",
         [],
     )?;
+    tx.execute("DELETE FROM backup_held_history WHERE uuid NOT IN (SELECT uuid FROM transcriptions)", [])?;
+    tx.execute("DELETE FROM backup_held_calls WHERE uuid NOT IN (SELECT uuid FROM api_calls)", [])?;
     tx.execute(
         "UPDATE stats_maintenance SET retention_prune = 0 WHERE rowid = 1",
         [],
@@ -795,6 +844,44 @@ mod tests {
         let hits = query_recent_page(&db, 50, 0, Some("LOOK"), None).expect("search look");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clean_text, "Clean B");
+    }
+
+    #[test]
+    fn website_search_matches_history_in_both_search_paths() {
+        let db = crate::data::db::open(":memory:").unwrap();
+        super::insert_transcription_with_website(&db, "public words", "public words", 2, 1000, "test", Some("browser"), None, Some("docs.example.test")).unwrap();
+        insert_transcription_returning(&db, "other", "other", 1, 1000, "test", Some("browser"), None).unwrap();
+        for term in ["example", "EX", "public example"] {
+            let hits = query_recent_page(&db, 50, 0, Some(term), Some("browser")).unwrap();
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].website_domain.as_deref(), Some("docs.example.test"));
+        }
+        assert!(query_recent_page(&db, 50, 0, Some("example"), Some("other-app")).unwrap().is_empty());
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE transcription_fts_meta SET populated = 0 WHERE name = 'history'", []).unwrap();
+        drop(conn);
+        assert_eq!(query_recent_page(&db, 50, 0, Some("public example"), None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn website_migration_keeps_old_history_without_inventing_domains() {
+        let path = std::env::temp_dir().join(format!("verenu-website-migration-{}.db", uuid::Uuid::new_v4()));
+        let db = crate::data::db::open(&path).unwrap();
+        insert_transcription_returning(&db, "old words", "old words", 2, 1000, "test", Some("browser"), None).unwrap();
+        {
+            let conn = db.lock().unwrap();
+            conn.execute_batch("ALTER TABLE transcriptions DROP COLUMN website_domain; PRAGMA user_version = 34;").unwrap();
+        }
+        drop(db);
+        let migrated = crate::data::db::open(&path).unwrap();
+        let rows = super::query_recent(&migrated).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].clean_text, "old words");
+        assert_eq!(rows[0].website_domain, None);
+        drop(migrated);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[test]

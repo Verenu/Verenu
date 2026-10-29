@@ -341,8 +341,10 @@ pub(crate) async fn run_provided_audio(
     audio: CapturedAudio,
     context: crate::core::context::ResolvedContextIdentity,
     process_name: String,
-    _domain: Option<String>,
+    domain: Option<String>,
 ) -> Result<(), String> {
+    let mut context = context;
+    context.website_domain = domain.as_deref().and_then(crate::core::browser_probe::extract_domain);
     let generation = state::reserve_provided_capture(&state)?;
     if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
         let run_id = analytics.new_run_id();
@@ -892,7 +894,7 @@ async fn run_pipeline_with_delivery(
         state::leave_processing_if_owned(&state, generation);
         return;
     };
-    let Some((final_text, dict_entries, cleanup_cache_key, cleanup_api_used)) = cleanup_outcome
+    let Some((final_text, dict_entries, cleanup_cache_key, cleanup_api_used, snippet_expansions)) = cleanup_outcome
     else {
         telemetry.failed(FailureCategory::Internal, false);
         if state::leave_processing_if_owned(&state, generation) {
@@ -953,6 +955,7 @@ async fn run_pipeline_with_delivery(
             clipboard_plan: clipboard_plan.as_ref(),
             clipboard_warning,
             dict_entries: &dict_entries,
+            snippet_expansions,
             duration_ms: captured_audio.duration_ms,
             api_used: &api_used,
             target_hwnd: target.id,
@@ -1190,7 +1193,7 @@ pub async fn retry_transcription_impl(
     let clipboard_instruction = clipboard_plan
         .as_ref()
         .map(clipboard_phrase::cleanup_instruction);
-    let Some((final_text, dict_entries, cleanup_cache_key, cleanup_api_used)) =
+    let Some((final_text, dict_entries, cleanup_cache_key, cleanup_api_used, snippet_expansions)) =
         run_cleanup_and_snippets(
             app,
             &raw_for_cleanup,
@@ -1227,6 +1230,7 @@ pub async fn retry_transcription_impl(
             clipboard_plan: clipboard_plan.as_ref(),
             clipboard_warning,
             dict_entries: &dict_entries,
+            snippet_expansions,
             duration_ms: capture.audio.duration_ms,
             api_used: &api_used,
             target_hwnd: capture.target.id,

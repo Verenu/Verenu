@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn cleanup_activity_migration_preserves_history_as_untracked() {
+    let path = temp_db_path("cleanup_activity_v35");
+    {
+        let db = open(&path).unwrap();
+        insert_transcription_returning(&db, "synthetic raw", "synthetic clean", 0, 1000, "test", None, None).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("ALTER TABLE transcriptions DROP COLUMN vocabulary_replacements; ALTER TABLE transcriptions DROP COLUMN snippet_expansions; PRAGMA user_version = 35;").unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        let row: (String, String, Option<i64>, Option<i64>) = conn.query_row("SELECT raw_text, clean_text, vocabulary_replacements, snippet_expansions FROM transcriptions", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(row, ("synthetic raw".into(), "synthetic clean".into(), None, None));
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn t3_skill_opt_out_migrates_defaults_and_survives_reopen_and_duplicate() {
     let path = temp_db_path("t3_skills_v31");
     let context_id;
@@ -428,6 +446,83 @@ fn open_alone_does_not_seed_the_dictionary() {
 }
 
 #[test]
+fn reopen_existing_database_preserves_peer_counters_with_backup_view() {
+    let path = temp_db_path("backup_counter_view");
+    {
+        let db = open(&path).expect("create database");
+        let conn = lock_conn(&db).expect("lock");
+        conn.execute("INSERT INTO sync_remote_stats(device_id, total_words, dictionary_fixes) VALUES ('peer', 42, 3)", []).unwrap();
+        conn.execute_batch("DROP VIEW combined_device_counters; DROP TABLE backup_device_counters;").unwrap();
+    }
+    {
+        let db = open(&path).expect("reopen existing database");
+        let conn = lock_conn(&db).expect("lock");
+        let totals: (i64, i64) = conn.query_row("SELECT total_words, dictionary_fixes FROM combined_device_counters WHERE device_id = 'peer'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(totals, (42, 3));
+    }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn migration_marks_only_ambiguous_preupgrade_history() {
+    let path = temp_db_path("preupgrade_activity_identity");
+    {
+        let db = open(&path).unwrap();
+        insert_transcription_returning(&db, "synthetic", "synthetic", 1, 1000, "test", None, None).unwrap();
+        let conn = lock_conn(&db).unwrap();
+        conn.execute_batch("DELETE FROM backup_preupgrade_history; PRAGMA user_version=33;").unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let conn = lock_conn(&db).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_preupgrade_history", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        conn.execute("UPDATE transcription_daily_stats SET total_words=total_words+2, total_transcriptions=total_transcriptions+1", []).unwrap();
+        conn.execute_batch("PRAGMA user_version=33;").unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let conn = lock_conn(&db).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM backup_preupgrade_history", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn opening_a_newer_database_is_rejected_before_schema_changes() {
+    let path = temp_db_path("future_database");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE future_data(value TEXT); INSERT INTO future_data VALUES ('preserved'); PRAGMA user_version = 999;").unwrap();
+    }
+    assert!(open(&path).is_err());
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(conn.query_row("SELECT value FROM future_data", [], |r| r.get::<_, String>(0)).unwrap(), "preserved");
+    drop(conn);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn retention_keeps_statistical_receipts_and_newer_calls_without_text() {
+    let db = test_db();
+    let entry = insert_transcription_returning(&db, "synthetic", "synthetic", 1, 1000, "test", None, None).unwrap();
+    {
+        let conn = lock_conn(&db).unwrap();
+        conn.execute("UPDATE transcriptions SET created_at = '2020-01-01 12:00:00' WHERE id = ?1", [entry.id]).unwrap();
+        conn.execute("INSERT INTO api_calls(transcription_id, model, provider, task, created_at) VALUES (?1, 'synthetic', 'test', 'stt', datetime('now'))", [entry.id]).unwrap();
+    }
+    assert_eq!(prune_transcriptions_older_than(&db, 7).unwrap(), 1);
+    let conn = lock_conn(&db).unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcription_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM call_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(conn.query_row("SELECT SUM(calls) FROM provider_daily_stats", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM transcriptions", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
 fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let path = temp_db_path("v2_legacy_dictionary");
     {
@@ -484,6 +579,10 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
         "pending_corrections must be self-healed"
     );
     let conn = lock_conn(&db).expect("lock");
+    let counter_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM combined_device_counters", [], |r| r.get(0))
+        .expect("counter view is available after legacy migrations");
+    assert_eq!(counter_rows, 0);
     let spoken_words: i64 = conn
         .query_row(
             "SELECT spoken_words FROM transcriptions WHERE raw_text = 'hello sig world'",
@@ -495,7 +594,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 33);
+    assert_eq!(version, 36);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
@@ -2029,6 +2128,49 @@ fn snippet_update_normalizes_expansion_whitespace() {
         .next()
         .expect("updated");
     assert_eq!(updated.expansion, "Line one\nLine two");
+}
+
+#[test]
+fn stale_library_edit_cannot_overwrite_agent_change() {
+    let db = test_db();
+    let context = insert_context_returning(&db, "Synthetic", None, None, None, None, false).unwrap();
+    let entry = insert_dictionary_entry_returning(&db, "Before", Some("old"), Some(context.id)).unwrap();
+    let expected = ExpectedDictionaryEntry { term: "Before".into(), mistake: Some("old".into()) };
+    update_dictionary_entry_for_context(&db, context.id, entry.id, "Before", Some("new")).unwrap();
+    assert!(update_dictionary_entry_if_unchanged(&db, Some(context.id), entry.id, "Renamed", Some("old"), &expected).is_err());
+    let current = query_effective_dictionary_for_context(&db, context.id).unwrap();
+    assert_eq!(current[0].term, "Before");
+    assert_eq!(current[0].mistake.as_deref(), Some("new"));
+
+    let snippet = insert_snippet_returning(&db, "sig", "old", "", None).unwrap();
+    let expected = ExpectedSnippet { trigger: "sig".into(), expansion: "old".into(), instructions: "".into() };
+    update_snippet(&db, snippet.id, "sig", "new", "").unwrap();
+    assert!(update_snippet_if_unchanged(&db, snippet.id, "signature", "old", "", Some(&expected)).is_err());
+    let current = query_snippets(&db).unwrap();
+    assert_eq!(current[0].trigger, "sig");
+    assert_eq!(current[0].expansion, "new");
+
+    let global = insert_dictionary_entry_returning(&db, "Global", Some("global"), None).unwrap();
+    let expected = ExpectedDictionaryEntry { term: "Global".into(), mistake: None };
+    update_dictionary_entry_if_unchanged(&db, Some(context.id), global.id, "Global", Some("local"), &expected).unwrap();
+    assert!(update_dictionary_entry_if_unchanged(&db, Some(context.id), global.id, "Global", Some("stale"), &expected).is_err());
+    let current = query_effective_dictionary_for_context(&db, context.id).unwrap();
+    let global = current.into_iter().find(|entry| entry.id == global.id).unwrap();
+    assert_eq!(global.context_corrections[0].mistake, "local");
+}
+
+#[test]
+fn snippet_move_and_edit_rolls_back_when_source_assignment_changed() {
+    let db = test_db();
+    let target = insert_context_returning(&db, "Target", None, None, None, None, false).unwrap();
+    let other = insert_context_returning(&db, "Other", None, None, None, None, false).unwrap();
+    let snippet = insert_snippet_returning(&db, "sig", "old", "", None).unwrap();
+    let edit = SnippetMoveEdit { id: snippet.id, expected: ExpectedSnippet { trigger: "sig".into(), expansion: "old".into(), instructions: "".into() }, expansion: "draft".into(), instructions: "".into() };
+    move_snippet_entry_to_context(&db, "sig", other.id, None).unwrap();
+    assert!(move_snippet_entry_to_context(&db, "sig", target.id, Some(&edit)).is_err());
+    assert_eq!(query_snippets(&db).unwrap()[0].expansion, "old");
+    assert!(query_snippets_for_context(&db, target.id).unwrap().is_empty());
+    assert_eq!(query_snippets_for_context(&db, other.id).unwrap()[0].id, snippet.id);
 }
 
 #[test]

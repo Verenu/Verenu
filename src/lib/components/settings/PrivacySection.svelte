@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatIpcError } from '../../errors';
-  import { invoke } from '../../tauri';
+  import { invoke, isTauriRuntime } from '../../tauri';
+  import { isAndroid } from '../../platform';
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import Toggle from '../Toggle.svelte';
@@ -12,6 +13,15 @@
 
   const historyOptions = ['7 days', '30 days', '90 days', 'Forever'];
   const HISTORY_MENU_ID = 'history-retention-menu';
+  let agentAccessMessage = $state('');
+  async function revokeAgentAccess() {
+    try {
+      await invoke('agent_revoke_all');
+      agentAccessMessage = 'Agent access revoked.';
+    } catch {
+      agentAccessMessage = 'Could not revoke agent access.';
+    }
+  }
   let confirmRetention = $state<{ value: string; count: number } | null>(null);
   type CleanupCacheStatus = {
     entry_count: number;
@@ -201,6 +211,7 @@
     dictionary_already_existed: number;
     contexts_inserted?: number;
     contexts_already_existed?: number;
+    context_conflicts?: number;
     dictionary_corrections_inserted?: number;
     dictionary_corrections_skipped?: number;
     snippets_inserted: number;
@@ -211,6 +222,13 @@
     app_targets_dropped?: number;
     sub_apps_imported?: number;
     sub_apps_dropped?: number;
+    history_inserted?: number;
+    history_existing?: number;
+    history_conflicts?: number;
+    history_expired?: number;
+    history_context_unmatched?: number;
+    activity_conflicts?: number;
+    website_targets_skipped?: number;
   };
 
   let exporting = $state(false);
@@ -303,14 +321,22 @@
           ? `${(s.app_targets_kept ?? 0) + (s.app_targets_matched ?? 0)} apps linked`
           : '',
         s.app_targets_matched ? `${s.app_targets_matched} matched to apps on this device` : '',
-        s.app_targets_dropped ? `${s.app_targets_dropped} not installed here, left out` : '',
+        s.app_targets_dropped ? `${s.app_targets_dropped} unmatched or ambiguous, left out` : '',
         s.sub_apps_imported ? `${s.sub_apps_imported} sub-apps` : '',
         s.sub_apps_dropped ? `${s.sub_apps_dropped} sub-apps left out` : '',
+        s.website_targets_skipped ? `${s.website_targets_skipped} websites already assigned elsewhere` : '',
+        s.context_conflicts ? `${s.context_conflicts} existing Context settings kept` : '',
       ].filter(Boolean).join(', ');
-      const contextParts =
-        contextTotal > 0 ? ` Contexts: ${contextTotal}${appParts ? ` (${appParts})` : ''}.` : '';
+      const contextParts = contextTotal > 0 || appParts
+        ? ` Contexts: ${contextTotal}${appParts ? ` (${appParts})` : ''}.` : '';
       const correctionSummary = correctionParts ? ` Corrections: ${correctionParts}.` : '';
-      importMsg = `Applied ${s.settings_applied} settings.${contextParts} Dictionary: ${dictParts}.${correctionSummary} Snippets: ${snipParts}.`;
+      const historySummary = s.history_inserted || s.history_existing || s.history_conflicts || s.history_expired
+        ? ` History: ${s.history_inserted ?? 0} added, ${s.history_existing ?? 0} already on device${s.history_expired ? `, ${s.history_expired} outside your retention period` : ''}${s.history_conflicts ? `, ${s.history_conflicts} with unresolved conflicts` : ''}${s.history_context_unmatched ? `, ${s.history_context_unmatched} without a matching Context` : ''}.`
+        : '';
+      const activitySummary = s.activity_conflicts
+        ? ` ${s.activity_conflicts} activity summaries overlapped or could not be matched; some older totals may be incomplete.`
+        : '';
+      importMsg = `Applied ${s.settings_applied} settings.${contextParts} Dictionary: ${dictParts}.${correctionSummary} Snippets: ${snipParts}.${historySummary}${activitySummary}`;
       importMsgKind = 'ok';
     } catch (err: unknown) {
       importMsg = formatIpcError(err, 'Could not import this backup');
@@ -325,6 +351,17 @@
 <svelte:window onkeydown={handleRetentionModalKeydown} />
 
 <h2 class="settings-h">Privacy</h2>
+
+{#if !isAndroid && isTauriRuntime()}
+  <h3 class="settings-subhead first">Agent access</h3>
+  <div class="setting-row" data-setting-target="privacy-agent-access">
+    <div>
+      <div class="label">Connected agents</div>
+      <div class="desc">Approved agents can read and change Verenu data for up to one hour. Revoke all access at any time. {agentAccessMessage}</div>
+    </div>
+    <button class="btn-ghost" onclick={revokeAgentAccess}>Revoke access</button>
+  </div>
+{/if}
 
 <h3 class="settings-subhead first">Verenu services</h3>
 <div class="setting-row" data-setting-target="privacy-service-checks">
@@ -462,6 +499,7 @@
 <div class="setting-row" data-setting-target="privacy-export">
   <div>
     <div class="label">Export Backup</div>
+    <div class="desc">Includes settings, Contexts, Insights and transcription history. The file contains private text; API keys are excluded.</div>
     {#if exportMsg}
       <div
         class="desc data-status"
@@ -477,6 +515,7 @@
 <div class="setting-row" data-setting-target="privacy-import">
   <div>
     <div class="label">Import Backup</div>
+    <div class="desc">Merges data with this device. History retention can remove old imported entries.</div>
     {#if importMsg}
       <div
         class="desc data-status"

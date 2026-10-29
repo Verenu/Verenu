@@ -10,6 +10,7 @@
   import { navigation } from './lib/navigation.svelte';
   import { isBrowserDevSession } from './lib/devSession';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
+  import AgentApproval from './lib/components/AgentApproval.svelte';
   import Settings from './lib/views/Settings.svelte';
   import SubAppSheet from './lib/components/SubAppSheet.svelte';
   import { contextsStore, loadContexts } from './lib/contextsStore.svelte';
@@ -37,6 +38,7 @@
   import { OMARCHY_THEME_EVENT, applyOmarchyPalette, effectiveAccent, isOmarchyTheme, resolvePalette, type OmarchyTheme } from './lib/omarchyTheme';
   import { normalizeCustomTheme, normalizeSavedThemes } from './lib/customTheme';
   import { themeEditor } from './lib/themeEditor.svelte';
+  import { broadcastAppearance } from './lib/appearanceActions';
   import ThemeEditorDock from './lib/components/settings/ThemeEditorDock.svelte';
   import { isAndroid } from './lib/platform';
   import MobileNav from './lib/components/layout/MobileNav.svelte';
@@ -290,6 +292,53 @@
     let stopSyncListeners: (() => void) | undefined;
     let stopTitleBarMetricsListener: (() => void) | undefined;
     let stopModelNoticeListener: (() => void) | undefined;
+    let stopAgentContextsListener: (() => void) | undefined;
+    let stopAgentSettingsListener: (() => void) | undefined;
+    function refreshAgentAppearance() {
+      const version = ++appStore.appearanceChangeVersion;
+      if (themeEditor.open) {
+        themeEditor.externalChange = true;
+        themeEditor.error = 'Appearance changed outside this editor. Discard this draft and reopen the editor to use the latest settings.';
+        return;
+      }
+      void Promise.all([
+        invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
+        invoke<string | null>('get_setting', { key: 'accent_color' }),
+        invoke<unknown>('get_setting', { key: 'custom_theme' }),
+        invoke<unknown>('get_setting', { key: 'custom_themes' }),
+      ]).then(([mode, accent, theme, themes]) => {
+        if (!mounted || version !== appStore.appearanceChangeVersion || themeEditor.open) return;
+        if (mode === 'light' || mode === 'dark' || mode === 'system' || mode === 'omarchy' || mode === 'custom') appStore.appearanceMode = mode;
+        appStore.accentColor = normalizeAccentColor(accent);
+        appStore.customTheme = normalizeCustomTheme(theme);
+        appStore.savedThemes = normalizeSavedThemes(themes);
+        broadcastAppearance(appStore.appearanceMode, appStore.customTheme, appStore.accentColor);
+      }).catch(error => console.error('refresh appearance settings failed', error));
+    }
+    window.addEventListener('verenu:refresh-agent-appearance', refreshAgentAppearance);
+    void listen('verenu:agent-contexts-changed', () => { void loadContexts(true); })
+      .then(unlisten => { if (!mounted) unlisten(); else stopAgentContextsListener = unlisten; });
+    void listen<string[] | null>('verenu:agent-settings-changed', (event) => {
+      if (!event.payload || event.payload.includes('cleanup_enabled')) appStore.cleanupChangeVersion++;
+      if (!event.payload || event.payload.some(key => ['appearance_mode', 'accent_color', 'custom_theme', 'custom_themes'].includes(key))) refreshAgentAppearance();
+      if (!event.payload || event.payload.includes('legacy_features_enabled')) {
+        const version = ++appStore.legacyFeaturesChangeVersion;
+        void invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }).then(value => {
+          if (mounted && version === appStore.legacyFeaturesChangeVersion) appStore.legacyFeaturesEnabled = value ?? false;
+        }).catch(error => console.error('refresh legacy settings failed', error));
+      }
+      window.dispatchEvent(new Event('verenu:setting-saved'));
+      window.dispatchEvent(new CustomEvent('verenu:agent-settings-changed', { detail: event.payload }));
+      if (!event.payload || event.payload.some(key => ['transcription_default_model', 'transcription_model', 'transcription_provider'].includes(key))) {
+        void refreshTranscriptionModel();
+      }
+      if (!event.payload || event.payload.includes('cleanup_enabled')) {
+        const version = appStore.cleanupChangeVersion;
+        void invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }).then(value => {
+          if (mounted && version === appStore.cleanupChangeVersion && typeof value === 'boolean') appStore.cleanupEnabled = value;
+        }).catch(error => console.error('refresh cleanup setting failed', error));
+      }
+    }).then(unlisten => { if (!mounted) unlisten(); else stopAgentSettingsListener = unlisten; });
     void listen<string>('verenu:model-notice', (event) => {
       modelNotice = [modelNotice, event.payload].filter(Boolean).join(' ');
       clearTimeout(modelNoticeTimer);
@@ -332,10 +381,13 @@
 
     async function reloadGlobalSettings() {
       try {
+        const cleanupVersion = appStore.cleanupChangeVersion;
+        const appearanceVersion = appStore.appearanceChangeVersion;
+        const legacyVersion = appStore.legacyFeaturesChangeVersion;
         const savedThemesRead = readSettingsWithRetry(() =>
           invoke<unknown>('get_setting', { key: 'custom_themes' }),
         ).catch(() => null);
-        const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, syncEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await readSettingsWithRetry(() => Promise.all([
+        const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await readSettingsWithRetry(() => Promise.all([
           invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
           invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
           invoke<string | null>('get_setting', { key: 'accent_color' }),
@@ -344,24 +396,23 @@
           invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }),
-          invoke<boolean | null>('get_setting', { key: 'sync_enabled' }),
           invoke<boolean | null>('get_setting', { key: 'ruin_accessibility' }),
           invoke<boolean | null>('get_setting', { key: 'dev_mode_on_startup' }),
           invoke<string | null>('get_setting', { key: 'sub_app_capture_hotkey' }),
         ]));
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
-        appStore.savedThemes = normalizeSavedThemes(await savedThemesRead);
-        if (!themeEditor.open) {
+        const savedThemes = await savedThemesRead;
+        if (appearanceVersion === appStore.appearanceChangeVersion && !themeEditor.open) {
+          appStore.savedThemes = normalizeSavedThemes(savedThemes);
           if (appearance === 'light' || appearance === 'dark' || appearance === 'system' || appearance === 'omarchy' || appearance === 'custom') {
             appStore.appearanceMode = appearance;
           }
           appStore.accentColor = normalizeAccentColor(accentColor);
           appStore.customTheme = normalizeCustomTheme(customTheme);
         }
-        appStore.cleanupEnabled = cleanupEnabled ?? true;
+        if (cleanupVersion === appStore.cleanupChangeVersion) appStore.cleanupEnabled = cleanupEnabled ?? true;
         appStore.betaUpdatesEnabled = betaUpdatesEnabled ?? false;
-        appStore.legacyFeaturesEnabled = legacyFeaturesEnabled ?? false;
-        appStore.syncEnabled = syncEnabled ?? false;
+        if (legacyVersion === appStore.legacyFeaturesChangeVersion) appStore.legacyFeaturesEnabled = legacyFeaturesEnabled ?? false;
         appStore.ruinAccessibility = ruinAccessibility ?? false;
         appStore.devModeOnStartup = devModeOnStartup ?? false;
         appStore.subAppCaptureHotkey = typeof subAppCaptureHotkey === 'string' ? subAppCaptureHotkey : null;
@@ -374,10 +425,8 @@
     (async () => {
       await reloadGlobalSettings();
       if (!mounted) return;
-      if (appStore.syncEnabled) {
-        try { stopSyncListeners = startSyncListeners(); }
-        catch (error) { console.error('Failed to start sync listeners:', error); }
-      }
+      try { stopSyncListeners = startSyncListeners(); }
+      catch (error) { console.error('Failed to start sync listeners:', error); }
 
       const unlisten = await listen<string>('verenu:error', (ev) => {
         showErrorToast(ev.payload ?? '');
@@ -536,6 +585,7 @@
       stopGithubRefresh();
       stopT3Refresh();
       mounted = false;
+      window.removeEventListener('verenu:refresh-agent-appearance', refreshAgentAppearance);
       stopInsets();
       if (cleanupFn) cleanupFn();
       if (stopNotificationClickListener) stopNotificationClickListener();
@@ -550,6 +600,8 @@
       if (stopSyncListeners) stopSyncListeners();
       if (stopTitleBarMetricsListener) stopTitleBarMetricsListener();
       stopModelNoticeListener?.();
+      stopAgentContextsListener?.();
+      stopAgentSettingsListener?.();
       clearTimeout(modelNoticeTimer);
       window.removeEventListener(SETTINGS_SAVE_ERROR_EVENT, onSettingsSaveError);
       window.removeEventListener('error', onWindowError);
@@ -564,6 +616,7 @@
 </script>
 
 {#if isBrowserDevSession()}<DeferredView view={devPanel} />{/if}
+{#if !isAndroid}<AgentApproval />{/if}
 
 <div
   class="app"

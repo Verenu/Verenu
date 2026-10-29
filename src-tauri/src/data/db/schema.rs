@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS lifetime_stats (
   wpm_sum          REAL NOT NULL DEFAULT 0,
   wpm_count        INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS backup_device_counters (
+  device_id TEXT PRIMARY KEY,
+  total_words INTEGER NOT NULL DEFAULT 0,
+  dictionary_fixes INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS transcription_daily_stats (
   day                TEXT PRIMARY KEY,
   total_words        INTEGER NOT NULL DEFAULT 0,
@@ -359,6 +364,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // keys, so enable enforcement before schema work or application queries.
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    anyhow::ensure!(user_version <= 36, "This database was created by a newer version of Verenu");
     if user_version < 2 && db_existed_before_open {
         let _ = std::fs::copy(db_path, db_path.with_extension("db.bak"));
     }
@@ -978,17 +984,101 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
+    if user_version < 34 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "transcriptions", "activity_day", "ALTER TABLE transcriptions ADD COLUMN activity_day TEXT;")?;
+            ensure_table_column(conn, "transcriptions", "activity_hour", "ALTER TABLE transcriptions ADD COLUMN activity_hour INTEGER;")?;
+            ensure_table_column(conn, "api_calls", "activity_day", "ALTER TABLE api_calls ADD COLUMN activity_day TEXT;")?;
+            conn.execute_batch(
+                "UPDATE sync_state SET applying = 1;
+                 UPDATE transcriptions SET activity_day = date(created_at, 'localtime'), activity_hour = CAST(strftime('%H', created_at, 'localtime') AS INTEGER) WHERE activity_day IS NULL OR activity_hour IS NULL;
+                 UPDATE api_calls SET activity_day = date(created_at, 'localtime') WHERE activity_day IS NULL;
+                 UPDATE sync_state SET applying = 0;
+                 DROP TRIGGER IF EXISTS trg_sync_transcriptions_upd;
+                 DROP TRIGGER IF EXISTS trg_sync_api_calls_upd;
+                 CREATE TABLE IF NOT EXISTS transcription_receipts (
+                   uuid TEXT NOT NULL PRIMARY KEY, day TEXT NOT NULL, hour INTEGER NOT NULL CHECK(hour BETWEEN 0 AND 23),
+                   context_uuid TEXT, words INTEGER NOT NULL CHECK(words >= 0), spoken_words INTEGER CHECK(spoken_words IS NULL OR spoken_words >= 0),
+                   duration_ms INTEGER NOT NULL CHECK(duration_ms >= 0), counted INTEGER NOT NULL DEFAULT 1 CHECK(counted IN (0,1))
+                 );
+                 CREATE TABLE IF NOT EXISTS call_receipts (
+                   uuid TEXT NOT NULL PRIMARY KEY, transcription_uuid TEXT, day TEXT NOT NULL,
+                   context_uuid TEXT, model TEXT NOT NULL, provider TEXT NOT NULL,
+                   task TEXT NOT NULL, audio_ms INTEGER NOT NULL CHECK(audio_ms >= 0), input_chars INTEGER NOT NULL CHECK(input_chars >= 0),
+                   output_chars INTEGER NOT NULL CHECK(output_chars >= 0), counted INTEGER NOT NULL DEFAULT 1 CHECK(counted IN (0,1))
+                 );
+                 CREATE TABLE IF NOT EXISTS legacy_pruned_days (day TEXT PRIMARY KEY);
+                 CREATE TABLE IF NOT EXISTS backup_held_history (uuid TEXT NOT NULL PRIMARY KEY);
+                 CREATE TABLE IF NOT EXISTS backup_preupgrade_history (uuid TEXT NOT NULL PRIMARY KEY);
+                 CREATE TABLE IF NOT EXISTS backup_lifetime_wpm_contributions (source_id TEXT NOT NULL PRIMARY KEY, wpm_sum REAL NOT NULL, wpm_count INTEGER NOT NULL);
+                 INSERT OR IGNORE INTO legacy_pruned_days(day)
+                   SELECT s.day FROM transcription_daily_stats s
+                   LEFT JOIN (SELECT date(created_at, 'localtime') AS day, COUNT(*) AS retained
+                                FROM transcriptions GROUP BY 1) t ON t.day = s.day
+                   WHERE s.total_transcriptions > COALESCE(t.retained, 0);
+                 INSERT OR IGNORE INTO backup_preupgrade_history(uuid)
+                   SELECT t.uuid FROM transcriptions t
+                   LEFT JOIN transcription_daily_stats s ON s.day = t.activity_day
+                   WHERE t.uuid IS NOT NULL AND (
+                     s.day IS NULL OR EXISTS (SELECT 1 FROM legacy_pruned_days l WHERE l.day = t.activity_day)
+                     OR s.total_transcriptions != (SELECT COUNT(*) FROM transcriptions x WHERE x.activity_day = t.activity_day)
+                     OR s.total_words != (SELECT COALESCE(SUM(x.words), 0) FROM transcriptions x WHERE x.activity_day = t.activity_day)
+                   );
+                 PRAGMA user_version = 34;",
+            )?;
+            Ok(())
+        })?;
+    }
+    if user_version < 35 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "transcriptions", "website_domain", "ALTER TABLE transcriptions ADD COLUMN website_domain TEXT;")?;
+            conn.execute_batch("PRAGMA user_version = 35;")?;
+            Ok(())
+        })?;
+    }
+    if user_version < 36 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "transcriptions", "vocabulary_replacements", "ALTER TABLE transcriptions ADD COLUMN vocabulary_replacements INTEGER;")?;
+            ensure_table_column(conn, "transcriptions", "snippet_expansions", "ALTER TABLE transcriptions ADD COLUMN snippet_expansions INTEGER;")?;
+            conn.execute_batch("PRAGMA user_version = 36;")?;
+            Ok(())
+        })?;
+    }
     conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_transcriptions_context_created_at
+        "CREATE VIEW IF NOT EXISTS combined_device_counters AS
+           SELECT device_id, MAX(total_words) AS total_words, MAX(dictionary_fixes) AS dictionary_fixes
+             FROM (SELECT device_id, total_words, dictionary_fixes FROM sync_remote_stats
+                   UNION ALL SELECT device_id, total_words, dictionary_fixes FROM backup_device_counters)
+            GROUP BY device_id;
+         CREATE INDEX IF NOT EXISTS idx_transcriptions_context_created_at
            ON transcriptions(context_id, created_at);
+         CREATE INDEX IF NOT EXISTS idx_transcriptions_activity_day
+           ON transcriptions(activity_day);
          CREATE INDEX IF NOT EXISTS idx_transcription_context_daily_stats_context_day
            ON transcription_context_daily_stats(context_uuid, day);
+         CREATE INDEX IF NOT EXISTS idx_transcription_receipts_day_hour
+           ON transcription_receipts(day, hour);
+         CREATE INDEX IF NOT EXISTS idx_call_receipts_parent
+           ON call_receipts(transcription_uuid);
+         CREATE INDEX IF NOT EXISTS idx_call_receipts_bucket
+           ON call_receipts(day, model, provider, task);
+         CREATE INDEX IF NOT EXISTS idx_pending_transcription_context
+           ON pending_transcription_contexts(context_uuid);
          CREATE INDEX IF NOT EXISTS idx_pending_words
            ON pending_corrections(context_id, wrong_word, correct_word, created_at);
          CREATE INDEX IF NOT EXISTS idx_auto_learn_candidates_seen
            ON auto_learn_candidates(context_id, last_seen_at);",
     )?;
     ensure_dictionary_correction_membership_trigger(&conn)?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS backup_held_calls (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS backup_held_hourly_receipts (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS sync_rejected_history (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS sync_everywhere_aliases (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS backup_context_aliases (source_uuid TEXT NOT NULL PRIMARY KEY, local_uuid TEXT NOT NULL); CREATE TABLE IF NOT EXISTS backup_context_event_sources (transcription_uuid TEXT NOT NULL, source_uuid TEXT NOT NULL, PRIMARY KEY(transcription_uuid,source_uuid));")?;
+    ensure_table_column(&conn, "backup_context_aliases", "source_name", "ALTER TABLE backup_context_aliases ADD COLUMN source_name TEXT;")?;
+    ensure_table_column(&conn, "backup_context_event_sources", "local_uuid", "ALTER TABLE backup_context_event_sources ADD COLUMN local_uuid TEXT;")?;
+    ensure_table_column(&conn, "backup_context_event_sources", "source_name", "ALTER TABLE backup_context_event_sources ADD COLUMN source_name TEXT;")?;
+    let old_context_events: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='backup_context_events')", [], |r| r.get(0))?;
+    if old_context_events {
+        conn.execute_batch("INSERT OR IGNORE INTO backup_context_event_sources(transcription_uuid,source_uuid) SELECT transcription_uuid,source_uuid FROM backup_context_events; DROP TABLE backup_context_events;")?;
+    }
+    conn.execute_batch("UPDATE backup_context_event_sources SET local_uuid=(SELECT local_uuid FROM backup_context_aliases WHERE source_uuid=backup_context_event_sources.source_uuid), source_name=(SELECT source_name FROM backup_context_aliases WHERE source_uuid=backup_context_event_sources.source_uuid) WHERE local_uuid IS NULL;")?;
     ensure_table_column(
         &conn,
         "sync_peers",
@@ -997,7 +1087,23 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     )?;
     ensure_sync_identity_placeholder(&conn)?;
     backfill_canonical_uuids(&conn, "dictionary_corrections")?;
+    conn.execute_batch("DROP TRIGGER IF EXISTS trg_sync_transcriptions_upd; DROP TRIGGER IF EXISTS trg_sync_api_calls_upd;")?;
     conn.execute_batch(SYNC_TRIGGER_SQL)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_peer_capabilities (device_uuid TEXT PRIMARY KEY, activity_receipts INTEGER NOT NULL);
+         CREATE TRIGGER IF NOT EXISTS trg_sync_transcription_receipt_ins AFTER INSERT ON transcription_receipts WHEN NEW.counted = 1 BEGIN
+           INSERT INTO sync_log(table_name, row_uuid, op, ts_ms, origin, origin_seq)
+           SELECT 'transcription_receipts', NEW.uuid, 'upsert', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER), uuid,
+                  COALESCE((SELECT MAX(origin_seq) FROM sync_log WHERE origin = sync_identity.uuid), 0) + 1
+             FROM sync_identity WHERE (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
+         END;
+         CREATE TRIGGER IF NOT EXISTS trg_sync_call_receipt_ins AFTER INSERT ON call_receipts WHEN NEW.counted = 1 BEGIN
+           INSERT INTO sync_log(table_name, row_uuid, op, ts_ms, origin, origin_seq)
+           SELECT 'call_receipts', NEW.uuid, 'upsert', CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER), uuid,
+                  COALESCE((SELECT MAX(origin_seq) FROM sync_log WHERE origin = sync_identity.uuid), 0) + 1
+             FROM sync_identity WHERE (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
+         END;",
+    )?;
     ensure_cleanup_cache_schema(&conn)?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_api_calls_transcription_id
@@ -1062,12 +1168,22 @@ pub fn compact_api_calls_older_than(db: &Db, max_age_days: i64) -> Result<usize>
         [],
     )?;
     tx.execute(
+        "INSERT OR IGNORE INTO call_receipts(uuid, transcription_uuid, day, context_uuid, model, provider, task, audio_ms, input_chars, output_chars, counted)
+         SELECT a.uuid, t.uuid, COALESCE(a.activity_day, date(a.created_at, 'localtime')), COALESCE(c.uuid, p.context_uuid), a.model, a.provider, a.task,
+                a.audio_ms, a.input_chars, a.output_chars, NOT EXISTS(SELECT 1 FROM backup_held_calls h WHERE h.uuid = a.uuid) AND NOT EXISTS(SELECT 1 FROM backup_preupgrade_history h WHERE h.uuid = t.uuid)
+           FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
+           LEFT JOIN contexts c ON c.id = t.context_id
+           LEFT JOIN pending_transcription_contexts p ON p.transcription_uuid = t.uuid
+          WHERE a.created_at < ?1 OR t.id IS NULL",
+        [&cutoff],
+    )?;
+    tx.execute(
         "INSERT INTO provider_daily_stats (day, context_id, model, provider, task, calls, audio_ms, input_chars, output_chars)
-         SELECT date(a.created_at, 'localtime'), COALESCE(t.context_id, 0), a.model, a.provider, a.task,
+         SELECT COALESCE(a.activity_day, date(a.created_at, 'localtime')), COALESCE(t.context_id, 0), a.model, a.provider, a.task,
                 COUNT(*), COALESCE(SUM(a.audio_ms), 0), COALESCE(SUM(a.input_chars), 0), COALESCE(SUM(a.output_chars), 0)
            FROM api_calls a LEFT JOIN transcriptions t ON t.id = a.transcription_id
-          WHERE a.created_at < ?1
-             OR NOT EXISTS (SELECT 1 FROM transcriptions t2 WHERE t2.id = a.transcription_id)
+          WHERE (a.created_at < ?1 OR NOT EXISTS (SELECT 1 FROM transcriptions t2 WHERE t2.id = a.transcription_id))
+            AND NOT EXISTS(SELECT 1 FROM backup_held_calls h WHERE h.uuid = a.uuid)
           GROUP BY 1, 2, 3, 4, 5
          ON CONFLICT(day, context_id, model, provider, task) DO UPDATE SET
            calls = calls + excluded.calls, audio_ms = audio_ms + excluded.audio_ms,
@@ -1080,6 +1196,7 @@ pub fn compact_api_calls_older_than(db: &Db, max_age_days: i64) -> Result<usize>
              OR NOT EXISTS (SELECT 1 FROM transcriptions t WHERE t.id = api_calls.transcription_id)",
         [&cutoff],
     )?;
+    tx.execute("DELETE FROM backup_held_calls WHERE uuid NOT IN (SELECT uuid FROM api_calls)", [])?;
     tx.execute(
         "UPDATE stats_maintenance SET retention_prune = 0 WHERE rowid = 1",
         [],
@@ -1789,7 +1906,7 @@ CREATE TRIGGER IF NOT EXISTS trg_sync_transcriptions_ins AFTER INSERT ON transcr
     AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
 END;
 CREATE TRIGGER IF NOT EXISTS trg_sync_transcriptions_upd AFTER UPDATE ON transcriptions
-  WHEN NEW.uuid IS OLD.uuid BEGIN
+  WHEN NEW.uuid IS OLD.uuid AND NEW.uuid IS NOT NULL BEGIN
   INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)
   SELECT 'transcriptions', NEW.uuid, 'upsert',
          CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
@@ -1811,7 +1928,7 @@ CREATE TRIGGER IF NOT EXISTS trg_sync_api_calls_ins AFTER INSERT ON api_calls BE
     AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0;
 END;
 CREATE TRIGGER IF NOT EXISTS trg_sync_api_calls_upd AFTER UPDATE ON api_calls
-  WHEN NEW.uuid IS OLD.uuid BEGIN
+  WHEN NEW.uuid IS OLD.uuid AND NEW.uuid IS NOT NULL BEGIN
   INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq)
   SELECT 'api_calls', NEW.uuid, 'upsert',
          CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
@@ -2037,6 +2154,20 @@ fn ensure_cleanup_cache_schema(conn: &Connection) -> Result<()> {
 fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "DROP TRIGGER IF EXISTS trg_transcriptions_daily_ins;
+         DROP TRIGGER IF EXISTS trg_transcriptions_activity_bucket_ins;
+         DROP TRIGGER IF EXISTS trg_transcriptions_activity_bucket_upd;
+         DROP TRIGGER IF EXISTS trg_api_calls_activity_bucket_ins;
+         CREATE TRIGGER trg_transcriptions_activity_bucket_ins AFTER INSERT ON transcriptions BEGIN
+           UPDATE transcriptions SET activity_day = COALESCE(activity_day, date(NEW.created_at, 'localtime')),
+             activity_hour = COALESCE(activity_hour, CAST(strftime('%H', NEW.created_at, 'localtime') AS INTEGER)) WHERE id = NEW.id;
+         END;
+         CREATE TRIGGER trg_transcriptions_activity_bucket_upd AFTER UPDATE OF created_at ON transcriptions
+         WHEN NEW.created_at IS NOT OLD.created_at BEGIN
+           UPDATE transcriptions SET activity_day = date(NEW.created_at, 'localtime'), activity_hour = CAST(strftime('%H', NEW.created_at, 'localtime') AS INTEGER) WHERE id = NEW.id;
+         END;
+         CREATE TRIGGER trg_api_calls_activity_bucket_ins AFTER INSERT ON api_calls BEGIN
+           UPDATE api_calls SET activity_day = COALESCE(activity_day, date(NEW.created_at, 'localtime')) WHERE id = NEW.id;
+         END;
          DROP TRIGGER IF EXISTS trg_transcriptions_daily_del;
          DROP TRIGGER IF EXISTS trg_transcriptions_daily_update;
          DROP TRIGGER IF EXISTS trg_transcriptions_context_daily_ins;
@@ -2046,9 +2177,9 @@ fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
          DROP TRIGGER IF EXISTS trg_transcriptions_wpm_del;
          DROP TRIGGER IF EXISTS trg_transcriptions_wpm_upd;
          CREATE TRIGGER trg_transcriptions_daily_ins
-           AFTER INSERT ON transcriptions BEGIN
+           AFTER INSERT ON transcriptions WHEN NOT EXISTS (SELECT 1 FROM backup_held_history WHERE uuid = NEW.uuid) BEGIN
              INSERT INTO transcription_daily_stats (day, total_words, total_transcriptions, speaking_ms, wpm_sum, wpm_count, best_wpm)
-             VALUES (date(NEW.created_at, 'localtime'), NEW.words, 1, NEW.duration_ms,
+             VALUES (COALESCE(NEW.activity_day, date(NEW.created_at, 'localtime')), NEW.words, 1, NEW.duration_ms,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms ELSE 0 END,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN 1 ELSE 0 END,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms ELSE 0 END)
@@ -2061,10 +2192,10 @@ fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
                best_wpm = MAX(best_wpm, excluded.best_wpm);
            END;
          CREATE TRIGGER trg_transcriptions_context_daily_ins
-           AFTER INSERT ON transcriptions BEGIN
+           AFTER INSERT ON transcriptions WHEN NOT EXISTS (SELECT 1 FROM backup_held_history WHERE uuid = NEW.uuid) BEGIN
              INSERT INTO transcription_context_daily_stats
                (day, context_uuid, total_words, total_transcriptions, speaking_ms, wpm_sum, wpm_count, best_wpm)
-             VALUES (date(NEW.created_at, 'localtime'), COALESCE((SELECT uuid FROM contexts WHERE id = NEW.context_id), 'unscoped'), NEW.words, 1, NEW.duration_ms,
+             VALUES (COALESCE(NEW.activity_day, date(NEW.created_at, 'localtime')), COALESCE((SELECT uuid FROM contexts WHERE id = NEW.context_id), 'unscoped'), NEW.words, 1, NEW.duration_ms,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms ELSE 0 END,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN 1 ELSE 0 END,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms ELSE 0 END)
@@ -2077,68 +2208,68 @@ fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
                best_wpm = MAX(best_wpm, excluded.best_wpm);
            END;
          CREATE TRIGGER IF NOT EXISTS trg_transcriptions_daily_del
-           AFTER DELETE ON transcriptions BEGIN
+           AFTER DELETE ON transcriptions WHEN NOT EXISTS (SELECT 1 FROM backup_held_history WHERE uuid = OLD.uuid) BEGIN
              UPDATE transcription_daily_stats
                 SET total_words = total_words - OLD.words,
                     total_transcriptions = total_transcriptions - 1,
                     speaking_ms = speaking_ms - OLD.duration_ms,
                     wpm_sum = wpm_sum - CASE WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0 THEN CAST(COALESCE(OLD.spoken_words, OLD.words) AS REAL) * 60000.0 / OLD.duration_ms ELSE 0 END,
                     wpm_count = wpm_count - CASE WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0 THEN 1 ELSE 0 END
-              WHERE day = date(OLD.created_at, 'localtime')
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND NOT EXISTS (SELECT 1 FROM stats_maintenance WHERE retention_prune = 1);
              DELETE FROM transcription_daily_stats
-              WHERE day = date(OLD.created_at, 'localtime')
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND total_transcriptions <= 0
                 AND NOT EXISTS (SELECT 1 FROM stats_maintenance WHERE retention_prune = 1);
              UPDATE transcription_daily_stats
-                SET best_wpm = COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words, words) > 0 THEN CAST(COALESCE(spoken_words, words) AS REAL) * 60000.0 / duration_ms ELSE 0 END) FROM transcriptions WHERE date(created_at, 'localtime') = date(OLD.created_at, 'localtime')), 0)
-              WHERE day = date(OLD.created_at, 'localtime')
+                SET best_wpm = MAX(COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words, words) > 0 THEN CAST(COALESCE(spoken_words, words) AS REAL) * 60000.0 / duration_ms ELSE 0 END) FROM transcriptions WHERE NOT EXISTS (SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid) AND COALESCE(activity_day, date(created_at, 'localtime')) = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))), 0), COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words,words) > 0 THEN CAST(COALESCE(spoken_words,words) AS REAL)*60000.0/duration_ms ELSE 0 END) FROM transcription_receipts WHERE counted=1 AND day=COALESCE(OLD.activity_day,date(OLD.created_at,'localtime'))),0))
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND NOT EXISTS (SELECT 1 FROM stats_maintenance WHERE retention_prune = 1);
            END;
          CREATE TRIGGER trg_transcriptions_context_daily_del
-           AFTER DELETE ON transcriptions BEGIN
+           AFTER DELETE ON transcriptions WHEN NOT EXISTS (SELECT 1 FROM backup_held_history WHERE uuid = OLD.uuid) BEGIN
              UPDATE transcription_context_daily_stats
                 SET total_words = total_words - OLD.words,
                     total_transcriptions = total_transcriptions - 1,
                     speaking_ms = speaking_ms - OLD.duration_ms,
                     wpm_sum = wpm_sum - CASE WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0 THEN CAST(COALESCE(OLD.spoken_words, OLD.words) AS REAL) * 60000.0 / OLD.duration_ms ELSE 0 END,
                     wpm_count = wpm_count - CASE WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0 THEN 1 ELSE 0 END
-              WHERE day = date(OLD.created_at, 'localtime')
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND context_uuid = COALESCE((SELECT uuid FROM contexts WHERE id = OLD.context_id), 'unscoped')
                 AND NOT EXISTS (SELECT 1 FROM stats_maintenance WHERE retention_prune = 1);
              DELETE FROM transcription_context_daily_stats
-              WHERE day = date(OLD.created_at, 'localtime')
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND context_uuid = COALESCE((SELECT uuid FROM contexts WHERE id = OLD.context_id), 'unscoped')
                 AND total_transcriptions <= 0
                 AND NOT EXISTS (SELECT 1 FROM stats_maintenance WHERE retention_prune = 1);
              UPDATE transcription_context_daily_stats
-                SET best_wpm = COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words, words) > 0 THEN CAST(COALESCE(spoken_words, words) AS REAL) * 60000.0 / duration_ms ELSE 0 END) FROM transcriptions WHERE date(created_at, 'localtime') = day AND COALESCE((SELECT uuid FROM contexts WHERE id = context_id), 'unscoped') = context_uuid), 0)
-              WHERE day = date(OLD.created_at, 'localtime')
+                SET best_wpm = MAX(COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words, words) > 0 THEN CAST(COALESCE(spoken_words, words) AS REAL) * 60000.0 / duration_ms ELSE 0 END) FROM transcriptions WHERE NOT EXISTS (SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid) AND COALESCE(activity_day, date(created_at, 'localtime')) = day AND COALESCE((SELECT uuid FROM contexts WHERE id = context_id), 'unscoped') = context_uuid), 0), COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words,words) > 0 THEN CAST(COALESCE(spoken_words,words) AS REAL)*60000.0/duration_ms ELSE 0 END) FROM transcription_receipts r WHERE r.counted=1 AND r.day=transcription_context_daily_stats.day AND (CASE WHEN EXISTS(SELECT 1 FROM pending_transcription_contexts p WHERE p.transcription_uuid=r.uuid) THEN 'unscoped' ELSE COALESCE(r.context_uuid,'unscoped') END)=transcription_context_daily_stats.context_uuid),0))
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND context_uuid = COALESCE((SELECT uuid FROM contexts WHERE id = OLD.context_id), 'unscoped')
                 AND NOT EXISTS (SELECT 1 FROM stats_maintenance WHERE retention_prune = 1);
            END;
          CREATE TRIGGER trg_transcriptions_context_daily_update
-           AFTER UPDATE OF created_at, words, duration_ms, spoken_words, context_id ON transcriptions BEGIN
+           AFTER UPDATE OF created_at, words, duration_ms, spoken_words, context_id ON transcriptions WHEN NOT EXISTS (SELECT 1 FROM backup_held_history WHERE uuid = NEW.uuid) BEGIN
              UPDATE transcription_context_daily_stats
                 SET total_words = total_words - OLD.words,
                     total_transcriptions = total_transcriptions - 1,
                     speaking_ms = speaking_ms - OLD.duration_ms,
                     wpm_sum = wpm_sum - CASE WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0 THEN CAST(COALESCE(OLD.spoken_words, OLD.words) AS REAL) * 60000.0 / OLD.duration_ms ELSE 0 END,
                     wpm_count = wpm_count - CASE WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0 THEN 1 ELSE 0 END
-              WHERE day = date(OLD.created_at, 'localtime')
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND context_uuid = COALESCE((SELECT uuid FROM contexts WHERE id = OLD.context_id), 'unscoped');
              DELETE FROM transcription_context_daily_stats
               WHERE total_transcriptions <= 0
-                AND day = date(OLD.created_at, 'localtime')
+                AND day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND context_uuid = COALESCE((SELECT uuid FROM contexts WHERE id = OLD.context_id), 'unscoped');
              UPDATE transcription_context_daily_stats
-                SET best_wpm = COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words, words) > 0 THEN CAST(COALESCE(spoken_words, words) AS REAL) * 60000.0 / duration_ms ELSE 0 END) FROM transcriptions WHERE date(created_at, 'localtime') = day AND COALESCE((SELECT uuid FROM contexts WHERE id = context_id), 'unscoped') = context_uuid), 0)
-              WHERE day = date(OLD.created_at, 'localtime')
+                SET best_wpm = MAX(COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words, words) > 0 THEN CAST(COALESCE(spoken_words, words) AS REAL) * 60000.0 / duration_ms ELSE 0 END) FROM transcriptions WHERE NOT EXISTS (SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid) AND COALESCE(activity_day, date(created_at, 'localtime')) = day AND COALESCE((SELECT uuid FROM contexts WHERE id = context_id), 'unscoped') = context_uuid), 0), COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words,words) > 0 THEN CAST(COALESCE(spoken_words,words) AS REAL)*60000.0/duration_ms ELSE 0 END) FROM transcription_receipts r WHERE r.counted=1 AND r.day=transcription_context_daily_stats.day AND (CASE WHEN EXISTS(SELECT 1 FROM pending_transcription_contexts p WHERE p.transcription_uuid=r.uuid) THEN 'unscoped' ELSE COALESCE(r.context_uuid,'unscoped') END)=transcription_context_daily_stats.context_uuid),0))
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND context_uuid = COALESCE((SELECT uuid FROM contexts WHERE id = OLD.context_id), 'unscoped')
                 AND NOT EXISTS (SELECT 1 FROM stats_maintenance WHERE retention_prune = 1);
              INSERT INTO transcription_context_daily_stats
                (day, context_uuid, total_words, total_transcriptions, speaking_ms, wpm_sum, wpm_count, best_wpm)
-             VALUES (date(NEW.created_at, 'localtime'), COALESCE((SELECT uuid FROM contexts WHERE id = NEW.context_id), 'unscoped'), NEW.words, 1, NEW.duration_ms,
+             VALUES (CASE WHEN NEW.created_at IS NOT OLD.created_at THEN date(NEW.created_at, 'localtime') ELSE COALESCE(NEW.activity_day, date(NEW.created_at, 'localtime')) END, COALESCE((SELECT uuid FROM contexts WHERE id = NEW.context_id), 'unscoped'), NEW.words, 1, NEW.duration_ms,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms ELSE 0 END,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN 1 ELSE 0 END,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms ELSE 0 END)
@@ -2151,23 +2282,23 @@ fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
                best_wpm = MAX(best_wpm, excluded.best_wpm);
            END;
          CREATE TRIGGER IF NOT EXISTS trg_transcriptions_daily_update
-           AFTER UPDATE OF created_at, words, duration_ms, spoken_words ON transcriptions BEGIN
+           AFTER UPDATE OF created_at, words, duration_ms, spoken_words ON transcriptions WHEN NOT EXISTS (SELECT 1 FROM backup_held_history WHERE uuid = NEW.uuid) BEGIN
              UPDATE transcription_daily_stats
                 SET total_words = total_words - OLD.words,
                     total_transcriptions = total_transcriptions - 1,
                     speaking_ms = speaking_ms - OLD.duration_ms,
                     wpm_sum = wpm_sum - CASE WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0 THEN CAST(COALESCE(OLD.spoken_words, OLD.words) AS REAL) * 60000.0 / OLD.duration_ms ELSE 0 END,
                     wpm_count = wpm_count - CASE WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0 THEN 1 ELSE 0 END
-              WHERE day = date(OLD.created_at, 'localtime');
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'));
              DELETE FROM transcription_daily_stats
-              WHERE day = date(OLD.created_at, 'localtime')
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND total_transcriptions <= 0;
              UPDATE transcription_daily_stats
-                SET best_wpm = COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words, words) > 0 THEN CAST(COALESCE(spoken_words, words) AS REAL) * 60000.0 / duration_ms ELSE 0 END) FROM transcriptions WHERE date(created_at, 'localtime') = date(OLD.created_at, 'localtime')), 0)
-              WHERE day = date(OLD.created_at, 'localtime')
+                SET best_wpm = MAX(COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words, words) > 0 THEN CAST(COALESCE(spoken_words, words) AS REAL) * 60000.0 / duration_ms ELSE 0 END) FROM transcriptions WHERE NOT EXISTS (SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid) AND COALESCE(activity_day, date(created_at, 'localtime')) = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))), 0), COALESCE((SELECT MAX(CASE WHEN duration_ms > 0 AND COALESCE(spoken_words,words) > 0 THEN CAST(COALESCE(spoken_words,words) AS REAL)*60000.0/duration_ms ELSE 0 END) FROM transcription_receipts WHERE counted=1 AND day=COALESCE(OLD.activity_day,date(OLD.created_at,'localtime'))),0))
+              WHERE day = COALESCE(OLD.activity_day, date(OLD.created_at, 'localtime'))
                 AND NOT EXISTS (SELECT 1 FROM stats_maintenance WHERE retention_prune = 1);
              INSERT INTO transcription_daily_stats (day, total_words, total_transcriptions, speaking_ms, wpm_sum, wpm_count, best_wpm)
-             VALUES (date(NEW.created_at, 'localtime'), NEW.words, 1, NEW.duration_ms,
+             VALUES (CASE WHEN NEW.created_at IS NOT OLD.created_at THEN date(NEW.created_at, 'localtime') ELSE COALESCE(NEW.activity_day, date(NEW.created_at, 'localtime')) END, NEW.words, 1, NEW.duration_ms,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms ELSE 0 END,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN 1 ELSE 0 END,
                      CASE WHEN NEW.duration_ms > 0 AND COALESCE(NEW.spoken_words, NEW.words) > 0 THEN CAST(COALESCE(NEW.spoken_words, NEW.words) AS REAL) * 60000.0 / NEW.duration_ms ELSE 0 END)
@@ -2180,7 +2311,7 @@ fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
                best_wpm = MAX(best_wpm, excluded.best_wpm);
            END;
          CREATE TRIGGER IF NOT EXISTS trg_transcriptions_wpm_ins
-           AFTER INSERT ON transcriptions BEGIN
+           AFTER INSERT ON transcriptions WHEN NOT EXISTS (SELECT 1 FROM backup_held_history WHERE uuid = NEW.uuid) BEGIN
              INSERT INTO lifetime_stats (id, wpm_sum, wpm_count)
              VALUES (
                1,
@@ -2195,7 +2326,7 @@ fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
                wpm_count = lifetime_stats.wpm_count + excluded.wpm_count;
            END;
          CREATE TRIGGER IF NOT EXISTS trg_transcriptions_wpm_del
-           AFTER DELETE ON transcriptions BEGIN
+           AFTER DELETE ON transcriptions WHEN NOT EXISTS (SELECT 1 FROM backup_held_history WHERE uuid = OLD.uuid) BEGIN
              UPDATE lifetime_stats
                 SET wpm_sum = MAX(0, wpm_sum - CASE
                               WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0
@@ -2208,7 +2339,7 @@ fn ensure_stats_summary_triggers(conn: &Connection) -> Result<()> {
                 AND NOT EXISTS (SELECT 1 FROM stats_maintenance WHERE retention_prune = 1);
            END;
          CREATE TRIGGER IF NOT EXISTS trg_transcriptions_wpm_upd
-           AFTER UPDATE OF duration_ms, spoken_words, words ON transcriptions BEGIN
+           AFTER UPDATE OF duration_ms, spoken_words, words ON transcriptions WHEN NOT EXISTS (SELECT 1 FROM backup_held_history WHERE uuid = NEW.uuid) BEGIN
              UPDATE lifetime_stats
                 SET wpm_sum = MAX(0, wpm_sum - CASE
                               WHEN OLD.duration_ms > 0 AND COALESCE(OLD.spoken_words, OLD.words) > 0

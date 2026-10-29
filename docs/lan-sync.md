@@ -3,6 +3,9 @@
 Verenu pairs devices on the same local network without an account or cloud
 server. Discovery uses mDNS. Data travels over TLS, and paired devices verify
 the certificate fingerprint recorded during the code-based SPAKE2 exchange.
+If discovery fails to start, saved connections continue to sync and Verenu
+retries discovery periodically. Nearby advertisements follow supported LAN
+interface addresses as they appear and disappear.
 The approval wait uses the full three-minute pairing deadline. The responder
 only sends pairing confirmation after peer trust and initial settings stamps
 are committed together.
@@ -86,7 +89,7 @@ sync listener, not the browser development backend or HTTP.
 ### Setup
 
 1. Install Tailscale on each device and connect them to the same tailnet.
-   Enable Sync in Verenu, then open **Settings > Sync > Connect through Tailscale**.
+   Open **Settings > Sync > Connect through Tailscale** in Verenu.
 2. Check this device's Tailscale IPv4 address against the Tailscale app. If
    Verenu cannot detect it, paste it into the address field. The sync port is
    shown on this page; no Tailscale Serve or HTTPS configuration is required.
@@ -106,6 +109,15 @@ details include a device ID and listener address, never a secret or API key.
 They do not grant access without the code exchange. The editor rejects details
 for a different paired device. An empty connection restores LAN-only routing.
 MagicDNS names and HTTPS URLs are not accepted by this raw TLS transport.
+
+Tailscale Serve can also forward this raw TLS connection. On the receiving
+device, configure a private TCP forwarder to `tcp://127.0.0.1:<sync-port>` using
+`tailscale serve --bg --tcp=<serve-port> tcp://127.0.0.1:<sync-port>`. Use the
+device's Tailscale IPv4 address and the Serve port in its connection details;
+the copied details normally contain the sync port, so replace that port with
+the Serve port before pairing or saving the route. Use raw `--tcp` forwarding,
+not HTTPS or TLS termination, so Verenu can verify its own certificate pin.
+Choose an unused Serve port and remove only that forwarder when finished.
 
 Both devices must be running Verenu and connected to Tailscale. Firewalls and
 tailnet access rules must allow the shown TCP sync port from the other device.
@@ -180,7 +192,7 @@ rows rather than re-pairing before each session.
 ## Physical two-device check
 
 Use the same app build on both devices and a private network that permits
-local device traffic. Enable sync, open Settings > Sync, pair using the code,
+local device traffic. Open Settings > Sync, pair using the code,
 and wait for both devices to report completion.
 
 1. Create a Context with vocabulary, a correction, a snippet, and a website

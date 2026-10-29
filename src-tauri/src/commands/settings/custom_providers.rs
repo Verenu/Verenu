@@ -1,5 +1,24 @@
 use super::*;
 
+const PROVIDER_DELETION_KEYS: &[&str] = &[
+    store::CUSTOM_PROVIDERS,
+    store::TRANSCRIPTION_DEFAULT_MODEL, store::TRANSCRIPTION_FALLBACK_MODELS,
+    store::TRANSCRIPTION_MODELS_BY_PROVIDER, store::TRANSCRIPTION_PROVIDER, store::TRANSCRIPTION_MODEL,
+    store::CLEANUP_DEFAULT_MODEL, store::CLEANUP_FALLBACK_MODELS,
+    store::CLEANUP_MODELS_BY_PROVIDER, store::CLEANUP_PROVIDER, store::CLEANUP_MODEL,
+];
+
+fn prepare_provider_deletion(
+    snapshot: &store::SettingsSnapshot,
+    current: &store::SettingsSnapshot,
+    clear_credentials: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if PROVIDER_DELETION_KEYS.iter().any(|key| snapshot.get(key) != current.get(key)) {
+        return Err("Settings changed while deleting the provider. Reload and try again.".into());
+    }
+    clear_credentials()
+}
+
 pub(super) fn clear_changed_custom_provider_keys(
     app: &AppHandle,
     previous: &store::SettingsSnapshot,
@@ -100,10 +119,37 @@ pub async fn delete_custom_provider(app: AppHandle, provider: String) -> Result<
         settings
             .save_values_with_commit(
                 changes,
-                |previous| clear_changed_custom_provider_keys(&app, previous, &providers),
+                |previous| prepare_provider_deletion(&snapshot, previous, || clear_changed_custom_provider_keys(&app, previous, &providers)),
                 || Ok(()),
             )
             .map(|_| ())
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use serde_json::json;
+
+    #[test]
+    fn provider_deletion_rejects_concurrent_model_or_provider_changes_before_credentials() {
+        for key in PROVIDER_DELETION_KEYS {
+            let path = std::env::temp_dir().join(format!("verenu-provider-conflict-{}.json", uuid::Uuid::new_v4()));
+            let settings = store::SettingsHandle::empty_for_test(path.clone());
+            let original = settings.snapshot().unwrap();
+            settings.save_value(*key, json!("concurrent change")).unwrap();
+            let cleared = Cell::new(false);
+            let result = settings.save_values_with_commit(
+                [(store::CUSTOM_PROVIDERS, json!([]))],
+                |current| prepare_provider_deletion(&original, current, || { cleared.set(true); Ok(()) }),
+                || Ok(()),
+            );
+            assert!(result.is_err(), "{key}");
+            assert!(!cleared.get(), "credential deletion for {key}");
+            assert_eq!(settings.get(key), Some(json!("concurrent change")));
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }

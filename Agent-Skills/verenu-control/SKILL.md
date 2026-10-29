@@ -5,32 +5,76 @@ description: "Use for Verenu dictation problems, top recurring issues over a dat
 
 # Control and diagnose Verenu
 
+For first-time setup after onboarding, requests to optimize Verenu or learn its
+features, or recommendations for Context groups, also read
+`setup/SKILL.md` next to this file before collecting evidence or making changes.
+
 1. Locate this skill's `scripts/verenu-agent.mjs`. Run it with Node 20+ and
-   `--help`, then `describe`. Use the user's existing local grant through
-   `VERENU_AGENT_TOKEN` and `VERENU_AGENT_PORT`. If unavailable, explain how to
-   start Verenu with a grant; never request or print the token in chat. The
+   `--help`, then `describe`. If this session has no grant, create a private
+   session directory and set `VERENU_AGENT_GRANT_FILE` to a new file inside it.
+   Run `connect`, tell the user the returned code, and ask them to compare it
+   with the approval prompt in Verenu. After they approve, run `status` and
+   continue only if it says `approved`. Pass the same grant-file path on each
+   CLI invocation. If the request is rejected or expires, remove the grant file
+   and make a fresh request. `disconnect` revokes and removes the session grant.
+   Do not ask the user to restart Verenu or paste a token. Never print the grant
+   file contents. Existing `VERENU_AGENT_TOKEN` and `VERENU_AGENT_PORT` grants
+   remain supported for scripted launches. The
    native app remains responsible for SQLite and native credential storage.
    The grant enables private reads and writes: do not enable it without the
    user's agreement. A missing grant does not require permanent skill installation.
 2. Read `get_all_settings`, `get_contexts`, `get_context_targets` and
-   `get_context_websites` before proposing changes. Native arguments use
+   `get_context_websites` before proposing changes. For Context cleanup, also
+   inspect `get_sub_apps` and each relevant group's `get_context_dictionary`
+   and `get_context_snippets`. Native arguments use
    camelCase: e.g. `{"contextId": 4}`. `describe` lists available fields and
-   writable settings. Omitted optional fields in `update_context_settings`
-   become null, so preserve existing fields when editing one property.
-3. For a period, run `history.report` and `diagnostics.top` with
+   writable settings. Use `context.patch_settings` for partial Context edits with
+   `expected` set to the original Context from `get_contexts`; omitted fields
+   are preserved and explicit null clears a nullable override. For whole-record
+   replacement use `save_context_if_unchanged` with the original and updated
+   Context records. A conflict requires a fresh read.
+   For a request to recommend, clean up, optimize, or add Contexts, collect
+   evidence before recommending specific changes as well as before editing.
+   Do not guess plausible categories while approval is pending or unavailable:
+   explain the missing evidence and offer to retry instead. Inspect retained
+   usage and the existing configuration even when the user describes their
+   workflow, and investigate independently while waiting for any clarification.
+   For Context work, collect evidence before deciding:
+   inspect retained history metadata over its available date range with
+   `history.usage` and, if truncated, all pages of `history.page`. Aggregate app
+   identifiers and their current Contexts by frequency; report retention gaps.
+   History's app identifier does not establish which website was open in a
+   browser. Never invent an executable, application, website, or usage pattern
+   from an app name or a plausible workflow. Verify exact identifiers against
+   recorded history and existing assignments, and check that an app is installed
+   or running before assigning it. Treat identifier aliases as uncertain until
+   verified; do not create a duplicate based on a guessed alias.
+
+   Inventory `get_dictionary` and `get_snippets`, then inspect effective items
+   for each relevant Context and explicit assignments via
+   `get_dictionary_entry_contexts` and `get_snippet_entry_contexts`. Respect
+   Everywhere inheritance: an inherited item is already available, not missing.
+   Propose an assignment only when the item's meaning and the user's actual
+   workflow support it. Do not infer which Contexts need an item from counts
+   alone, and ask a focused question if that intent cannot be established.
+   Check the live API's `describe` before promising a supported write; if an
+   assignment operation is unavailable, report the gap instead of editing SQL.
+   Avoid speculative groups, target moves, and instruction changes. If history
+   cannot establish a useful addition, explain that rather than inventing one.
+3. For a troubleshooting or error-analysis request, run `history.report` and `diagnostics.top` with
    `{"start":"2026-01-01","end":"2026-04-01"}` for January through March
    (UTC calendar dates, exclusive end; state the assumed year).
    Check report `oldest`, `newest`, `retained_count`, `truncated`, and journal
    `retention_days`, `oldest_retained_day`, `dropped_this_process`.
    Report missing coverage explicitly. Failure events are not unique failed
    dictations. Capitalization/spacing changes are signals, not proven errors.
-4. Use `history.page` with the same dates and `limit` (1..500), advancing
+4. For that investigation, use `history.page` with the same dates and `limit` (1..500), advancing
    `after_id` to `next_after_id` while `has_more` is true. Metadata is default.
    Only request `include_text:true` when the user's investigation needs raw and
    cleaned text. Keep that output local/private; never upload it as evidence.
    Stored history has no original prompt/settings snapshot or final user edit.
    Do not treat today's settings as proof of the historical prompt.
-5. Correlate current `diagnostics.snapshot` with historical failure fingerprints
+5. For that investigation, correlate current `diagnostics.snapshot` with historical failure fingerprints
    while the originating session is still available. Read current prompt
    overrides/context instructions through settings and Contexts. Recommend up
    to ten issues backed by observed examples/counts; give fewer when evidence
@@ -47,13 +91,26 @@ description: "Use for Verenu dictation problems, top recurring issues over a dat
    For earlier launches inspect the private session files in
    `docs/TROUBLESHOOTING.md#session-logs-for-agents`; the opt-in daily journal
    contains counts and fingerprints, not historical log messages.
-6. For authorized edits, use `save_setting`, Context CRUD and target commands;
+6. For authorized edits, use `save_setting`, Context CRUD, target commands,
+   dictionary and snippet CRUD/assignments, and sub-app commands.
+   `save_setting` requires an `expected` object mapping each affected key to
+   its raw `get_setting` value; for `contextual_formatting_enabled` include
+   `contextual_caps_enabled` and `auto_spacing_enabled` too. Dictionary and
+   snippet edits require the original editable fields in `expected`. If a
+   conflict occurs, reread and reconcile rather than blindly retrying. Use the native
+   `save_hotkey` and `set_autostart` commands for shortcut and startup changes,
+   passing the raw `hotkey` or `autostart_enabled` value from `get_setting` as
+   `expected` (including `null` if unset); stale values reject the change.
    never write live SQLite or settings.json. Read back changed values, reload
    the relevant app view, and check persistence after a normal restart when
    practical. Target reassignment moves the existing target. Preserve Everywhere
    semantics. A request to fix spacing authorizes investigating and changing
    `auto_spacing` when evidence supports it; read its current value first.
-   No arbitrary SQL, shell execution, credential reads/writes,
+   Credential replacement/deletion uses `credentials.save` or
+   `credentials.delete`; never print a key or place it in command arguments.
+   Use private stdin and the native credential store. Sync pairing can grant
+   another device access; invoke it only for the user's requested operation.
+   No arbitrary SQL, shell execution, credential reads,
    microphone capture or clipboard injection is exposed by this API.
 7. Historical failure recording is off by default. Explain the metadata-only
    journal and retention choice before enabling `diagnostics.retention` with
@@ -72,6 +129,10 @@ with `pactl`. Supply `--mute-output TEXT` and/or `--unmute-output TEXT` matching
 the user's output names or ports. Run its dry run first; `--apply` changes and
 reads back `mute_audio`.
 
-Installation is optional: run `harnesses` or `install-skill`. Interactive setup
-asks whether installation is permanent and which detected harnesses to use.
-Never choose every harness silently or change generated global instructions.
+Installation is optional. If the current harness already has this skill, use
+it. Otherwise, if this has not already been settled for the current request,
+ask whether to save it for the current harness or use it in place. If the user
+chooses to save it, install it only
+for the current detected harness first, then offer the other detected harnesses
+and install only those the user selects. Never choose every harness silently,
+replace an existing skill without consent, or change global instructions.

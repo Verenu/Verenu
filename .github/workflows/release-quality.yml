@@ -11,8 +11,32 @@ permissions:
   contents: read
 
 jobs:
-  regression:
-    name: Release deterministic and browser checks
+  fast:
+    name: Release fast regression suites (${{ matrix.suites }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: preflight-contract, suites: 'preflight,contract' }
+          - { label: unit-frontend, suites: 'unit,frontend' }
+          - { label: rust, suites: 'rust' }
+          - { label: ui, suites: 'ui' }
+          - { label: accessibility-state, suites: 'accessibility,state' }
+          - { label: performance, suites: 'performance' }
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source-ref }}
+      - name: Run selected fast regression suites
+        uses: ./.github/actions/regression-checks
+        with:
+          report-prefix: release-fast-${{ matrix.label }}
+          profile: fast
+          fast-suites: ${{ matrix.suites }}
+  linux:
+    name: Release Linux native regressions
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -21,13 +45,49 @@ jobs:
           ref: ${{ inputs.source-ref }}
       - uses: ./.github/actions/regression-checks
         with:
-          report-prefix: release
+          report-prefix: release-linux
+          profile: linux
+  owned:
+    name: ${{ matrix.suite == 'node' && 'Release Rust-backed Node integration tests' || format('Release Rust-backed {0} browser tests', matrix.project) }} (shard ${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: node-1, suite: node, shard: '1/6', project: all }
+          - { label: node-2, suite: node, shard: '2/6', project: all }
+          - { label: node-3, suite: node, shard: '3/6', project: all }
+          - { label: node-4, suite: node, shard: '4/6', project: all }
+          - { label: node-5, suite: node, shard: '5/6', project: all }
+          - { label: node-6, suite: node, shard: '6/6', project: all }
+          - { label: desktop-1, suite: browser, shard: '1/4', project: desktop }
+          - { label: desktop-2, suite: browser, shard: '2/4', project: desktop }
+          - { label: desktop-3, suite: browser, shard: '3/4', project: desktop }
+          - { label: desktop-4, suite: browser, shard: '4/4', project: desktop }
+          - { label: phone-1, suite: browser, shard: '1/4', project: phone }
+          - { label: phone-2, suite: browser, shard: '2/4', project: phone }
+          - { label: phone-3, suite: browser, shard: '3/4', project: phone }
+          - { label: phone-4, suite: browser, shard: '4/4', project: phone }
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source-ref }}
+      - name: Run selected isolated session tests
+        uses: ./.github/actions/regression-checks
+        with:
+          report-prefix: release-${{ matrix.label }}
+          profile: owned
+          suite: ${{ matrix.suite }}
+          shard: ${{ matrix.shard }}
+          project: ${{ matrix.project }}
   rust:
-    name: Release Rust (${{ matrix.os }})
+    name: Release ${{ matrix.check == 'clippy' && 'Rust lint' || 'Rust tests' }} (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
+        check: [test, clippy]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -38,5 +98,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked -- -D warnings
+          shared-key: release-${{ matrix.check }}
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+        if: matrix.check == 'test'
+      - name: Lint Rust with Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked -- -D warnings
+        if: matrix.check == 'clippy'

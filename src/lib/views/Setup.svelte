@@ -3,7 +3,8 @@
   import { invoke } from '../tauri';
   import { onMount } from 'svelte';
   import { appStore } from '../stores';
-  import { saveSetting, type CleanupIntensity, type ProviderId, type ProviderModelMap, type ToneId } from '../settings';
+  import { loadSettingsSnapshot, saveSetting, type CleanupIntensity, type ProviderId, type ProviderModelMap, type ToneId } from '../settings';
+  import { refreshTranscriptionModel } from '../transcriptionModelStore.svelte';
   import { getTranscriptionLanguageLabel, transcriptionLanguages, type TranscriptionLanguageCode } from '../transcriptionLanguages';
   import { isMac, isAndroid } from '../platform';
   import { motionMs, pageSwap } from '../motion';
@@ -49,6 +50,26 @@
   const audioEnvStep = isAndroid ? -1 : hasOsPermissionStep ? 8 : 7;
   const tryItStep = isAndroid ? 7 : hasOsPermissionStep ? 9 : 8;
   const doneStep = onboardingTotalSteps + 1;
+  const setupKeys = [
+    'cleanup_intensity', 'default_tone', 'cleanup_enabled', 'transcription_provider',
+    'transcription_model', 'transcription_default_model', 'transcription_models_by_provider',
+    'transcription_fallback_models', 'dual_transcription_enabled', 'transcription_language',
+    'cleanup_provider', 'cleanup_model', 'cleanup_default_model', 'cleanup_models_by_provider',
+    'cleanup_fallback_models', 'appearance_mode', 'mute_audio', 'pause_media_during_dictation',
+    'noise_reduction', 'contextual_formatting_enabled', 'contextual_caps_enabled',
+    'auto_spacing_enabled', 'caps_lock_uppercase_enabled', 'auto_learn_enabled',
+  ] as const;
+  let setupBaseline = $state<Record<string, unknown> | null>(null);
+  let setupConflict = $state(false);
+  let preserveModels = $state(false);
+  let preserveProvider = $state(false);
+  let preserveDisabledIntensity = $state(false);
+  const modelKeys = [
+    'transcription_provider', 'transcription_model', 'transcription_default_model',
+    'transcription_models_by_provider', 'transcription_fallback_models', 'dual_transcription_enabled',
+    'cleanup_provider', 'cleanup_model', 'cleanup_default_model', 'cleanup_models_by_provider',
+    'cleanup_fallback_models',
+  ] as const;
 
   let step = $state(0);
   let progressLoaded = false;
@@ -81,12 +102,17 @@
 
   let allCoreGranted = $state(false);
   let modelPreset = $state<Preset | null>(null);
+  let providerExplicitlySelected = $state(false);
+  let presetKeyStatus = $derived.by(() => {
+    if (!providerExplicitlySelected) return providerKeyStatus;
+    return Object.fromEntries(Object.entries(providerKeyStatus).map(([id, present]) =>
+      [id, id === provider && present])) as Record<ProviderId, boolean>;
+  });
   let appleCleanupChoice = $state(false);
 
   let cleanupIntensity = $state<CleanupIntensity>('medium');
   const aiCleanupSelected = $derived(cleanupIntensity !== 'none' && cleanupIntensity !== 'rules');
   const useAppleCleanup = $derived(appleCleanupChoice && aiCleanupSelected);
-  const appleReadiness = $derived(appleCleanupReadiness(appleCleanupChoice, aiCleanupSelected, appleIntelligence.status));
   let tone = $state<ToneId>('casual');
   let language = $state<TranscriptionLanguageCode>('en');
   let usesHeadphones = $state(true);
@@ -97,32 +123,48 @@
   const setupStepEnteredAt = new Map<number, number>();
 
   let providerDisplayName = $derived(providers.find((p) => p.id === provider)?.name ?? '');
-  let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
+  let cleanupName = $derived(cleanupIntensity === 'rules' ? 'Basic' : cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
   let defaultModels = $derived(applyAppleCleanupDefaults(setupDefaultModels(provider), useAppleCleanup));
   let effectiveTarget = $derived(applyAppleCleanup(modelPreset?.target, useAppleCleanup));
-  let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, effectiveTarget));
+  let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, preserveModels ? null : effectiveTarget));
   let effectiveCleanupName = $derived(effectiveCleanupEnabled ? cleanupName : 'Off');
-  let doneProvider = $derived(splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider ?? provider);
+  function savedModel(current: unknown, legacy: unknown, fallback: string): string {
+    for (const value of [current, legacy]) {
+      if (typeof value === 'string' && splitModelId(value)) return value;
+    }
+    return fallback;
+  }
+  let retainedModels = $derived({
+    transcriptionDefaultModel: savedModel(setupBaseline?.transcription_default_model, setupBaseline?.transcription_model, 'groq/whisper-large-v3-turbo'),
+    cleanupDefaultModel: savedModel(setupBaseline?.cleanup_default_model, setupBaseline?.cleanup_model, 'groq/qwen/qwen3.8-27b'),
+  });
+  const activeAppleCleanup = $derived(preserveModels ? retainedModels.cleanupDefaultModel === 'apple-intelligence/system' : appleCleanupChoice);
+  const appleReadiness = $derived(appleCleanupReadiness(activeAppleCleanup, aiCleanupSelected, appleIntelligence.status));
+  let doneProvider = $derived(
+    (preserveModels
+      ? splitModelId(retainedModels.transcriptionDefaultModel)?.provider
+      : splitModelId(modelPreset?.target?.transcriptionDefaultModel ?? '')?.provider) ?? provider
+  );
+  let keyProvider = $derived(doneProvider);
   let doneHasKey = $derived(doneProvider === 'local' || !!providerKeyStatus[doneProvider]);
-  let doneModelReadiness = $derived(setupModelReadiness(effectiveTarget, {
+  let doneModelReadiness = $derived(setupModelReadiness(preserveModels ? null : effectiveTarget, {
     speechModels: localSttStore.models,
     cleanupModels: localLlmStore.models,
     transcriptionState: localSttStore.state,
     cleanupState: localLlmStore.state,
     cleanupRuntime: localLlmStore.runtime,
-  }, effectiveCleanupEnabled && cleanupIntensity !== 'rules', defaultModels));
+  }, effectiveCleanupEnabled && cleanupIntensity !== 'rules', preserveModels ? retainedModels : defaultModels));
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
   onMount(async () => {
     sendSetupEvent('setup_started');
+    preserveModels = localStorage.getItem('verenu-setup-reconcile') === '1';
     void loadHotkey();
-    if (isAndroid) {
-      await Promise.all([
-        refreshLocalModels(), refreshLocalState(),
-        refreshLocalLlmModels(), refreshLocalLlmState(), refreshLocalLlmRuntimeInfo(),
-      ]);
-    }
+    void Promise.allSettled([
+      refreshLocalModels(), refreshLocalState(),
+      refreshLocalLlmModels(), refreshLocalLlmState(), refreshLocalLlmRuntimeInfo(),
+    ]);
     if (isAndroid && typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window)) {
       localAiSupported = true;
     } else if (isAndroid) {
@@ -138,27 +180,41 @@
     }
     try {
       const [
-        savedLanguage, savedProvider, savedIntensity, savedTone, keyStatus, savedMute, savedAnalytics, savedProgress,
+        snapshot, keyStatus, savedAnalytics, savedProgress,
       ] = await Promise.all([
-        invoke<TranscriptionLanguageCode | null>('get_setting', { key: 'transcription_language' }),
-        invoke<ProviderId | null>('get_setting', { key: 'transcription_provider' }),
-        invoke<CleanupIntensity | null>('get_setting', { key: 'cleanup_intensity' }),
-        invoke<ToneId | null>('get_setting', { key: 'default_tone' }),
+        loadSettingsSnapshot(),
         invoke<Record<ProviderId, boolean> | null>('get_api_key_status'),
-        invoke<boolean | null>('get_setting', { key: 'mute_audio' }),
         invoke<boolean | null>('get_setting', { key: 'analytics_enabled' }),
         invoke<unknown>('get_setting', { key: 'setup_progress' }),
       ]);
+      setupBaseline = Object.fromEntries(setupKeys.map(key => [key, snapshot[key] ?? null]));
+      const progress = parseSetupProgress(savedProgress, providers.map((p) => p.id));
+      preserveProvider = snapshot.transcription_provider != null;
+      if (modelKeys.some(key => key !== 'transcription_provider' && snapshot[key] != null)) {
+        preserveModels = true;
+      }
+      // A provider outside the wizard cannot be represented by its presets.
+      // Keep its model fields unset until the user makes an explicit choice.
+      if (snapshot.transcription_provider && !providers.some(p => p.id === snapshot.transcription_provider)) {
+        preserveModels = true;
+      }
+      const { transcription_language: savedLanguage, transcription_provider: savedProvider,
+        cleanup_intensity: savedIntensity, cleanup_enabled: savedCleanupEnabled,
+        default_tone: savedTone, mute_audio: savedMute } = snapshot;
       if (savedLanguage && transcriptionLanguages.some((o) => o.code === savedLanguage)) language = savedLanguage;
-      if (savedProvider && providers.some((p) => p.id === savedProvider) && (savedProvider !== 'local' || localAiSupported)) provider = savedProvider as WizardProviderId;
-      if (savedIntensity && cleanupCards.some((c) => c.id === savedIntensity)) cleanupIntensity = savedIntensity;
+      const retainedProvider = splitModelId(savedModel(snapshot.transcription_default_model, snapshot.transcription_model, 'groq/whisper-large-v3-turbo'))?.provider;
+      const initialProvider = preserveModels ? retainedProvider : savedProvider;
+      if (initialProvider && providers.some((p) => p.id === initialProvider) && (initialProvider !== 'local' || localAiSupported)) provider = initialProvider as WizardProviderId;
+      if (savedIntensity && (savedIntensity === 'rules' || cleanupCards.some((c) => c.id === savedIntensity))) cleanupIntensity = savedIntensity;
+      if (savedCleanupEnabled === false) cleanupIntensity = 'none';
+      preserveDisabledIntensity = savedCleanupEnabled === false;
       if (savedTone && toneCards.some((t) => t.id === savedTone)) tone = savedTone;
       if (keyStatus) {
         providerKeyStatus = { ...providerKeyStatus, ...keyStatus, local: true };
       }
       if (savedMute === true) usesHeadphones = false;
       analyticsEnabled = savedAnalytics ?? true;
-      await resumeSavedProgress(parseSetupProgress(savedProgress, providers.map((p) => p.id)), keyStatus);
+      await resumeSavedProgress(progress, keyStatus);
     } catch {}
     progressLoaded = true;
   });
@@ -181,7 +237,7 @@
 
   async function resumeSavedProgress(saved: ReturnType<typeof parseSetupProgress>, keyStatus: Record<ProviderId, boolean> | null) {
     if (!saved) return;
-    if (saved.provider && providers.some((p) => p.id === saved.provider) && (saved.provider !== 'local' || localAiSupported)) {
+    if (!preserveModels && !preserveProvider && saved.provider && providers.some((p) => p.id === saved.provider) && (saved.provider !== 'local' || localAiSupported)) {
       provider = saved.provider as WizardProviderId;
     }
     let keys: Partial<Record<ProviderId, boolean>> = { ...(keyStatus ?? {}) };
@@ -195,7 +251,7 @@
     step = resumeStep(saved.step, {
       apiKeyStep,
       doneStep,
-      keyReady: provider === 'local' || !!keys[provider],
+      keyReady: keyProvider === 'local' || !!keys[keyProvider],
     });
   }
 
@@ -213,15 +269,15 @@
   });
 
   $effect(() => {
-    if (previousProvider !== null && previousProvider !== provider) {
+    if (previousProvider !== null && previousProvider !== keyProvider) {
       apiKeyDraft = '';
       keyError = '';
       keyValidation = { status: 'idle', message: '' };
       apiKeyMode = 'fork';
     }
-    previousProvider = provider;
-    keySaved = provider === 'local' ? true : !!providerKeyStatus[provider];
-    if (provider === 'local') {
+    previousProvider = keyProvider;
+    keySaved = keyProvider === 'local' ? true : !!providerKeyStatus[keyProvider];
+    if (keyProvider === 'local') {
       keyError = '';
       keyValidation = { status: 'idle', message: '' };
     }
@@ -314,6 +370,8 @@
   }
 
   function chooseCloudProviderFromModels(localSupport: 'unsupported' | 'unknown') {
+    preserveModels = false;
+    preserveProvider = false;
     modelPreset = null;
     provider = 'groq';
     localAiSupported = false;
@@ -326,7 +384,7 @@
   }
 
   async function saveKey() {
-    if (provider === 'local') return;
+    if (keyProvider === 'local') return;
     const trimmed = apiKeyDraft.trim();
     if (!trimmed) return;
     keySaving = true;
@@ -335,18 +393,19 @@
     try {
       if (isAndroid) {
         try {
-          await invoke('plugin:verenu-security|saveCredential', { provider, key: trimmed });
+          await invoke('plugin:verenu-security|saveCredential', { provider: keyProvider, key: trimmed });
         } catch (error) {
           console.warn('direct Android credential save unavailable; using bridge rotation', error);
         }
       }
       try {
-        await invoke('save_api_key', { provider, key: trimmed });
+        await invoke('save_api_key', { provider: keyProvider, key: trimmed });
       } catch (error) {
+        if (!isAndroid) throw error;
         console.warn('Android in-memory credential cache unavailable; continuing with rotation', error);
       }
-      if (isAndroid) await invoke('android_keystore_save', { provider, key: trimmed });
-      providerKeyStatus = { ...providerKeyStatus, [provider]: true };
+      if (isAndroid) await invoke('android_keystore_save', { provider: keyProvider, key: trimmed });
+      providerKeyStatus = { ...providerKeyStatus, [keyProvider]: true };
       keySaved = true;
       apiKeyDraft = '';
     } catch (err) {
@@ -359,13 +418,13 @@
   }
 
   async function validateKey(key: string) {
-    if (provider === 'local') {
+    if (keyProvider === 'local') {
       keyValidation = { status: 'idle', message: '' };
       return;
     }
     keyValidation = { status: 'checking', message: '' };
     try {
-      const result = await invoke<{ ok: boolean; status: 'valid' | 'invalid' | 'unknown'; message: string }>('validate_api_key', { provider, key });
+      const result = await invoke<{ ok: boolean; status: 'valid' | 'invalid' | 'unknown'; message: string }>('validate_api_key', { provider: keyProvider, key });
       keyValidation = { status: result.status, message: result.message };
     } catch (err) {
       keyValidation = { status: 'unknown', message: formatIpcError(err, 'Could not verify this API key') };
@@ -416,10 +475,15 @@
 
   async function finish() {
     if (finishing) return;
+    if (setupConflict) return;
+    if (!setupBaseline) {
+      saveError = 'Could not load your settings. Reload setup and try again.';
+      return;
+    }
     finishing = true;
     saveError = '';
-    const readiness = useAppleCleanup
-      ? appleCleanupReadiness(appleCleanupChoice, aiCleanupSelected, await refreshAppleIntelligence())
+    const readiness = activeAppleCleanup && aiCleanupSelected
+      ? appleCleanupReadiness(activeAppleCleanup, aiCleanupSelected, await refreshAppleIntelligence())
       : appleReadiness;
     if (!readiness.ready) {
       saveError = readiness.message;
@@ -439,35 +503,47 @@
     const silenceOtherAudio = !usesHeadphones;
 
     try {
-      const settingsToSave: Array<() => Promise<unknown>> = [
-        () => saveSetting('cleanup_intensity', cleanupIntensity),
-        () => saveSetting('default_tone', tone),
-        () => saveSetting('cleanup_enabled', cleanupEnabled),
-        () => saveSetting('transcription_provider', transcriptionProvider),
-        () => saveSetting('transcription_model', transcriptionDefaultModel),
-        () => saveSetting('transcription_default_model', transcriptionDefaultModel),
-        () => saveSetting('transcription_models_by_provider', modelsByProvider(transcriptionDefaultModel, ...(target?.transcriptionFallbacks ?? []))),
-        () => saveSetting('transcription_fallback_models', target?.transcriptionFallbacks ?? []),
-        () => saveSetting('dual_transcription_enabled', target?.dualTranscription ?? false),
-        () => saveSetting('transcription_language', language),
-        () => saveSetting('cleanup_provider', cleanupProvider),
-        () => saveSetting('cleanup_model', cleanupDefaultModel),
-        () => saveSetting('cleanup_default_model', cleanupDefaultModel),
-        () => saveSetting('cleanup_models_by_provider', cleanupModelsByProvider(cleanupDefaultModel, ...(target?.cleanupFallbacks ?? []))),
-        () => saveSetting('cleanup_fallback_models', cleanupEnabled ? (target?.cleanupFallbacks ?? []) : []),
-        () => saveSetting('appearance_mode', SETUP_APPEARANCE_MODE),
-        () => saveSetting('mute_audio', silenceOtherAudio),
-        () => saveSetting('pause_media_during_dictation', silenceOtherAudio),
-        () => saveSetting('noise_reduction', true),
-        () => saveSetting('contextual_formatting_enabled', true),
-        () => saveSetting('caps_lock_uppercase_enabled', true),
-        () => saveSetting('auto_learn_enabled', true),
-      ];
-      for (const save of settingsToSave) await save();
-      if (!isAndroid) await invoke('set_autostart', { enabled: true });
+      const values: Record<string, unknown> = {
+        cleanup_intensity: cleanupIntensity, default_tone: tone, cleanup_enabled: cleanupEnabled,
+        transcription_provider: transcriptionProvider, transcription_model: transcriptionDefaultModel,
+        transcription_default_model: transcriptionDefaultModel,
+        transcription_models_by_provider: modelsByProvider(transcriptionDefaultModel, ...(target?.transcriptionFallbacks ?? [])),
+        transcription_fallback_models: target?.transcriptionFallbacks ?? [],
+        dual_transcription_enabled: target?.dualTranscription ?? false, transcription_language: language,
+        cleanup_provider: cleanupProvider, cleanup_model: cleanupDefaultModel, cleanup_default_model: cleanupDefaultModel,
+        cleanup_models_by_provider: cleanupModelsByProvider(cleanupDefaultModel, ...(target?.cleanupFallbacks ?? [])),
+        cleanup_fallback_models: cleanupEnabled ? (target?.cleanupFallbacks ?? []) : [],
+        appearance_mode: setupBaseline.appearance_mode ?? SETUP_APPEARANCE_MODE, mute_audio: silenceOtherAudio,
+        pause_media_during_dictation: silenceOtherAudio,
+        noise_reduction: setupBaseline.noise_reduction ?? true,
+        contextual_formatting_enabled: setupBaseline.contextual_formatting_enabled ?? true,
+        contextual_caps_enabled: setupBaseline.contextual_caps_enabled ?? true,
+        auto_spacing_enabled: setupBaseline.auto_spacing_enabled ?? true,
+        caps_lock_uppercase_enabled: setupBaseline.caps_lock_uppercase_enabled ?? true,
+        auto_learn_enabled: setupBaseline.auto_learn_enabled ?? true,
+      };
+      if (preserveModels) {
+        for (const key of modelKeys) values[key] = setupBaseline[key];
+      } else if (preserveProvider) {
+        values.transcription_provider = setupBaseline.transcription_provider;
+      }
+      if (preserveDisabledIntensity) values.cleanup_intensity = setupBaseline.cleanup_intensity;
+      ++appStore.cleanupChangeVersion;
+      await invoke('save_model_settings_if_unchanged', { expected: setupBaseline, values });
+      setupBaseline = values;
+      window.dispatchEvent(new Event('verenu:setting-saved'));
+      void refreshTranscriptionModel().catch((error) => console.error('Failed to refresh transcription model:', error));
+      const version = ++appStore.cleanupChangeVersion;
+      const saved = await invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' });
+      if (version === appStore.cleanupChangeVersion) appStore.cleanupEnabled = saved ?? true;
+      if (!isAndroid) await invoke('initialize_autostart');
     } catch (err) {
       console.error('Failed to save setup settings:', err);
-      saveError = formatIpcError(err, 'Could not save your setup choices');
+      setupConflict = String(err).includes('changed while you were editing');
+      if (setupConflict) localStorage.setItem('verenu-setup-reconcile', '1');
+      saveError = setupConflict
+        ? 'Settings changed outside setup. Reload setup to review them; your current choices will be discarded.'
+        : formatIpcError(err, 'Could not save your setup choices');
       finishing = false;
       return;
     }
@@ -475,6 +551,7 @@
     try {
       await saveSetting('setup_complete', true);
       void saveSetting('setup_progress', null).catch(() => {});
+      localStorage.removeItem('verenu-setup-reconcile');
       sendSetupEvent('setup_completed');
     } catch (err) {
       console.error('Failed to mark setup complete:', err);
@@ -483,8 +560,7 @@
       return;
     }
 
-    appStore.appearanceMode = SETUP_APPEARANCE_MODE;
-    appStore.cleanupEnabled = cleanupEnabled;
+    window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
     appStore.setupComplete = true;
     finishing = false;
   }
@@ -494,16 +570,17 @@
     if (s === providerStep) return { name: 'Provider', title: 'Choose your AI provider', subtitle: 'This powers both transcription and text cleanup. You can switch anytime in Settings.' };
     if (s === analyticsStep) return { name: 'Analytics', title: 'Choose whether to share product analytics', subtitle: 'This helps us find reliability problems and improve Verenu. You can change it anytime in Settings.' };
     if (s === apiKeyStep) {
-      if (provider === 'local') {
+      const keyProviderName = providers.find((p) => p.id === keyProvider)?.name ?? keyProvider;
+      if (keyProvider === 'local') {
         return { name: 'Local', title: 'Set up private, on-device dictation', subtitle: 'Download the speech model here. Nothing is sent to a cloud provider.' };
       }
       if (apiKeyMode === 'tutorial') {
-        return { name: 'API Key', title: `Creating a ${providerDisplayName} API key`, subtitle: 'Follow along in your browser, then come back and paste the key.' };
+        return { name: 'API Key', title: `Creating a ${keyProviderName} API key`, subtitle: 'Follow along in your browser, then come back and paste the key.' };
       }
       if (apiKeyMode === 'paste') {
-        return { name: 'API Key', title: `Paste your ${providerDisplayName} API key`, subtitle: 'Stored in your OS credential manager — it never leaves this machine.' };
+        return { name: 'API Key', title: `Paste your ${keyProviderName} API key`, subtitle: 'Stored in your OS credential manager — it never leaves this machine.' };
       }
-      return { name: 'API Key', title: `Connect ${providerDisplayName}`, subtitle: 'Verenu needs a key to send audio for transcription.' };
+      return { name: 'API Key', title: `Connect ${keyProviderName}`, subtitle: 'Verenu needs a key to send audio for transcription.' };
     }
     if (isMac && s === permissionStep) return { name: 'Permissions', title: 'Check your macOS permissions', subtitle: 'Verenu needs these to hear your voice and type for you.' };
     if (isAndroid && s === permissionStep) return { name: 'Permissions', title: 'Grant a few permissions', subtitle: 'Verenu needs these to hear you, show the pill above your keyboard, and keep recordings alive.' };
@@ -544,7 +621,7 @@
     if (step === analyticsStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === providerStep) return bar({ rightLabel: 'Next', onRight: goNext });
     if (step === apiKeyStep) {
-      if (provider === 'local') return bar({ rightLabel: 'Continue', onRight: goNext });
+      if (keyProvider === 'local') return bar({ rightLabel: 'Continue', onRight: goNext });
       if (keySaving) return bar({ leftLabel: 'Skip for now', rightLabel: 'Saving…', rightDisabled: true, onRight: () => {} });
       if (apiKeyDraft.trim()) return bar({ leftLabel: 'Skip for now', rightLabel: 'Save Key', onRight: saveKey });
       if (apiKeyMode === 'fork' && !keySaved) return bar({ rightLabel: "I'll add it later", onRight: goNext });
@@ -568,7 +645,7 @@
       });
     }
     if (step === modelsStep) {
-      const localNeedsChoice = provider === 'local' && modelPreset === null;
+      const localNeedsChoice = provider === 'local' && modelPreset === null && !preserveModels;
       return bar({
         rightLabel: localNeedsChoice ? 'Choose a setup' : 'Next',
         rightDisabled: localNeedsChoice,
@@ -633,13 +710,17 @@
     {#if saveError}
       <span class="setup-save-error" role="alert">{saveError}</span>
     {/if}
-    <button
-      class="btn-primary ui-focus-ring"
-      class:btn-lg={actionBar.rightLg}
-      class:btn-primary--glow={actionBar.rightGlow}
-      onclick={actionBar.onRight}
-      disabled={actionBar.rightDisabled || animating}
-    >{actionBar.rightLabel}</button>
+    {#if setupConflict}
+      <button class="btn-primary ui-focus-ring" onclick={() => { localStorage.setItem('verenu-setup-reconcile', '1'); window.location.reload(); }}>Reload setup</button>
+    {:else}
+      <button
+        class="btn-primary ui-focus-ring"
+        class:btn-lg={actionBar.rightLg}
+        class:btn-primary--glow={actionBar.rightGlow}
+        onclick={actionBar.onRight}
+        disabled={actionBar.rightDisabled || animating}
+      >{actionBar.rightLabel}</button>
+    {/if}
   {/snippet}
 
   {#key step}
@@ -651,13 +732,14 @@
     {:else if step === providerStep}
       <ProviderStep
         bind:provider
+        onSelect={() => { preserveModels = false; preserveProvider = false; modelPreset = null; providerExplicitlySelected = true; }}
         localSupported={localAiSupported}
         localUnsupportedReason={localAiUnsupportedReason}
       />
     {:else if step === apiKeyStep}
       <ApiKeyStep
-        {provider}
-        providerName={providerDisplayName}
+        provider={keyProvider}
+        providerName={providers.find((p) => p.id === keyProvider)?.name ?? keyProvider}
         bind:apiKeyDraft
         bind:showKey
         bind:mode={apiKeyMode}
@@ -673,8 +755,9 @@
     {:else if step === modelsStep}
       <ModelsStep
         {provider}
-        apiKeyStatus={providerKeyStatus}
+        apiKeyStatus={presetKeyStatus}
         bind:preset={modelPreset}
+        onSelect={() => { preserveModels = false; preserveProvider = false; }}
         bind:appleCleanup={appleCleanupChoice}
         cleanupRequested={aiCleanupSelected}
         basicCleanup={cleanupIntensity === 'rules'}
@@ -682,7 +765,7 @@
         onChooseCloudProvider={chooseCloudProviderFromModels}
       />
     {:else if step === writingStyleStep}
-      <WritingStyleStep bind:intensity={cleanupIntensity} bind:tone />
+      <WritingStyleStep bind:intensity={cleanupIntensity} bind:tone onIntensitySelect={() => { preserveDisabledIntensity = false; }} cleanupModelMissing={modelsStep >= 0 && effectiveTarget?.cleanupEnabled === false} onReviewModels={() => jumpToStep(modelsStep)} />
     {:else if step === languageStep}
       <LanguageStep bind:language />
     {:else if step === audioEnvStep}
@@ -691,7 +774,7 @@
       <TryItStep />
     {:else if step === onboardingDoneStep}
       <DoneStep
-        providerName={providerDisplayName}
+        providerName={providers.find((p) => p.id === doneProvider)?.name ?? doneProvider}
         cleanupName={effectiveCleanupName}
         toneName={cleanupIntensity === 'rules' ? 'No AI tone' : toneName}
         {languageLabel}
@@ -699,7 +782,7 @@
         hasKey={doneHasKey}
         modelsReady={doneModelReadiness.ready && appleReadiness.ready}
         modelReadinessMessage={appleReadiness.ready ? doneModelReadiness.message : appleReadiness.message}
-        presetName={modelPreset?.name ?? ''}
+        presetName={preserveModels ? 'Saved model settings' : modelPreset?.name ?? ''}
         onReviewModels={() => jumpToStep(modelsStep >= 0 ? modelsStep : providerStep)}
         modelRecoveryDisabled={animating || finishing}
       />

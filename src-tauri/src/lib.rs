@@ -8,6 +8,8 @@ mod posthog_build_support;
 mod analytics;
 #[cfg(desktop)]
 mod agent_api;
+#[cfg(desktop)]
+mod agent_discovery;
 mod android;
 mod api;
 mod app_hotkey;
@@ -42,6 +44,14 @@ mod pipeline;
 mod single_instance;
 mod sync;
 mod system;
+#[cfg(target_os = "linux")]
+pub fn run_internal_output_guardian() -> bool {
+    system::output_duck::internal_entry()
+}
+#[cfg(target_os = "linux")]
+pub fn recover_output_volume() {
+    system::output_duck::start_recovery();
+}
 #[cfg(any(test, debug_assertions))]
 mod testing;
 
@@ -415,7 +425,31 @@ pub fn run() {
             };
 
             #[cfg(desktop)]
-            agent_api::start(app.handle().clone())?;
+            if let Err(error) = agent_api::start(app.handle().clone()) {
+                log::warn!("Agent access is unavailable: {error}");
+            }
+
+            #[cfg(desktop)]
+            if !is_dev_session() {
+                match app.path().home_dir() {
+                    Ok(home) => {
+                        if let Err(error) = agent_discovery::register(&home, &app_data_dir()) {
+                            log::warn!("Could not register agent discovery skill: {error}");
+                        }
+                    }
+                    Err(error) => log::warn!("Could not locate home for agent discovery: {error}"),
+                }
+            }
+
+            #[cfg(desktop)]
+            if !crate::is_dev_session() {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = commands::reconcile_autostart(app_handle).await {
+                        log::warn!("Failed to reconcile autostart at startup: {error}");
+                    }
+                });
+            }
 
             #[cfg(desktop)]
             if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
@@ -441,18 +475,10 @@ pub fn run() {
                 }
             }
 
-            let sync_enabled = settings
-                .get(crate::data::store::SYNC_ENABLED)
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            if sync_enabled {
-                app.manage(sync::SyncManager::start(
-                    app.handle().clone(),
-                    app.state::<DbHandle>().inner().clone(),
-                ));
-            } else {
-                log::info!("sync: disabled by setting");
-            }
+            app.manage(sync::SyncManager::start(
+                app.handle().clone(),
+                app.state::<DbHandle>().inner().clone(),
+            ));
             #[cfg(target_os = "android")]
             {
                 match crate::android::bridge::start_bridge(app.handle().clone()) {
@@ -645,10 +671,14 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(desktop)] agent_api::agent_pending_request,
+            #[cfg(desktop)] agent_api::agent_respond,
+            #[cfg(desktop)] agent_api::agent_revoke_all,
             system::windows_titlebar::get_native_titlebar_metrics,
             system::windows_titlebar::set_native_titlebar_theme,
             system::omarchy_theme::get_omarchy_theme,
             commands::save_hotkey,
+            commands::save_hotkey_if_unchanged,
             core::hotkey::shortcut_status::get_shortcut_status,
             commands::check_hotkey,
             commands::set_hotkey_capture,
@@ -664,12 +694,15 @@ pub fn run() {
             commands::request_notification_permission,
             commands::check_keychain_access,
             commands::save_setting,
+            commands::save_model_settings_if_unchanged,
+            commands::save_setting_if_unchanged,
             commands::analytics_setup_event,
             commands::analytics_frontend_exception,
             commands::get_setting,
             commands::set_storage_full_simulation,
             commands::get_storage_full_simulation,
             commands::get_all_settings,
+            commands::get_effective_transcription_model,
             commands::list_local_stt_models,
             commands::list_local_llm_models,
             commands::download_local_stt_model,
@@ -688,6 +721,8 @@ pub fn run() {
             commands::cancel_local_llm_runtime_download,
             commands::delete_local_llm_runtime,
             commands::set_autostart,
+            commands::set_autostart_if_unchanged,
+            commands::initialize_autostart,
             commands::get_macos_permission_snapshot,
             commands::request_accessibility_permission,
             commands::open_accessibility_settings,
@@ -749,6 +784,7 @@ pub fn run() {
              commands::disconnect_t3,
              commands::create_context,
              commands::update_context,
+             commands::save_context_if_unchanged,
              commands::update_context_settings,
              commands::update_context_color,
              commands::set_context_pinned,
