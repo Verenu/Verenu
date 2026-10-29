@@ -77,6 +77,39 @@ async function restoreSetup(session, previous) {
   for (const key of SETUP_KEYS) await session.invoke('save_setting', { key, value: previous[key] ?? defaults[key] ?? null });
 }
 
+test('A transcription-only preset explains why an AI cleanup level is off and links back to models', async ({ page, session }) => {
+  const previous = await snapshotSetup(session);
+  try {
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'medium' });
+    await session.invoke('save_setting', { key: 'cleanup_enabled', value: true });
+    await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
+    await session.invoke('save_setting', { key: 'transcription_default_model', value: 'local/whisper-small' });
+    await session.invoke('save_setting', { key: 'setup_progress', value: { step: 4, provider: 'local' } });
+    await session.invoke('save_setting', { key: 'setup_complete', value: false });
+    const progressLoaded = page.waitForResponse(response => response.url().endsWith('/__verenu_dev/invoke')
+      && response.request().postDataJSON()?.command === 'get_setting'
+      && response.request().postDataJSON()?.args?.key === 'setup_progress');
+    await page.goto(session.access.localAccessUrl);
+    await progressLoaded;
+    await expect(page.getByRole('button', { name: 'Use local Transcription only' })).toBeAttached();
+    await page.evaluate(async () => {
+      const { localSttStore } = await import('/src/lib/localSttStore.svelte.ts');
+      const { invoke } = await import('/src/lib/tauri.ts');
+      localSttStore.models = (await invoke('list_local_stt_models')).map(model => ({ ...model, is_downloaded: true, is_downloading: false }));
+    });
+    await page.getByRole('button', { name: 'Use local Transcription only' }).click();
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.getByRole('button', { name: /^Light / }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'Cleanup is off with your transcription-only model choice.' })).toBeVisible();
+    await page.getByRole('button', { name: 'Choose a preset with a cleanup model' }).click();
+    await expect(page.getByRole('button', { name: 'Use local Transcription only' })).toBeVisible();
+  } finally {
+    await restoreSetup(session, previous);
+    await page.reload();
+  }
+});
+
 test('Setup preserves an agent change and offers to reload on a save conflict', async ({ page, session }) => {
   const previous = await snapshotSetup(session);
   let release;
@@ -104,7 +137,7 @@ test('Setup preserves an agent change and offers to reload on a save conflict', 
     });
     await page.getByRole('button', { name: 'Use local Transcription only' }).click();
     await page.getByRole('button', { name: 'Next', exact: true }).click();
-    await page.getByRole('button', { name: /^Basic / }).click();
+    await page.getByRole('button', { name: /^Light / }).click();
     for (let i = 0; i < 6 && !(await page.getByText('Finish setup', { exact: true }).isVisible()); i++) {
       await page.getByRole('button', { name: 'Next', exact: true }).click();
     }
@@ -465,11 +498,18 @@ test(`Setup keeps Basic cleanup on after a transcription-only preset${priorApple
   const previous = await snapshotSetup(session);
   try {
     await installAppleAvailabilityProbe(page);
-    await session.invoke('save_setting', { key: 'setup_complete', value: false });
-    await session.invoke('save_setting', { key: 'setup_progress', value: { step: 4, provider: 'local' } });
+    await page.goto('about:blank');
+    await session.invoke('save_setting', { key: 'cleanup_intensity', value: 'rules' });
+    await session.invoke('save_setting', { key: 'cleanup_enabled', value: true });
     await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
     await session.invoke('save_setting', { key: 'transcription_default_model', value: 'local/whisper-small' });
-    await page.reload();
+    await session.invoke('save_setting', { key: 'setup_progress', value: { step: 4, provider: 'local' } });
+    await session.invoke('save_setting', { key: 'setup_complete', value: false });
+    const progressLoaded = page.waitForResponse(response => response.url().endsWith('/__verenu_dev/invoke')
+      && response.request().postDataJSON()?.command === 'get_setting'
+      && response.request().postDataJSON()?.args?.key === 'setup_progress');
+    await page.goto(session.access.localAccessUrl);
+    await progressLoaded;
 
     await expect(page.getByRole('button', { name: 'Use local Transcription only' })).toBeAttached();
     await page.evaluate(async () => {
@@ -491,8 +531,11 @@ test(`Setup keeps Basic cleanup on after a transcription-only preset${priorApple
     await expect(page.getByRole('button', { name: 'Use local Transcription only' })).toHaveAttribute('aria-pressed', 'true');
     await page.getByRole('button', { name: 'Next', exact: true }).click();
 
-    await page.getByRole('button', { name: /^Basic / }).click();
-    await expect(page.getByRole('button', { name: /^Basic / })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: /^Basic / })).toHaveCount(0);
+    for (const level of ['Off', 'Light', 'Medium', 'Strong']) {
+      await expect(page.getByRole('button', { name: new RegExp(`^${level} `) })).toBeVisible();
+    }
+    await expect(page.getByText('Your previous Basic setting is still active', { exact: false })).toBeVisible();
     if (priorAppleChoice) {
       await page.evaluate(async () => {
         (await import('/src/lib/appleIntelligence.svelte.ts')).appleIntelligence.status = {
@@ -533,10 +576,17 @@ test(`Setup keeps Basic cleanup on after a transcription-only preset${priorApple
       return payload?.command === 'save_model_settings_if_unchanged';
     });
     await page.getByRole('button', { name: 'Finish setup', exact: true }).click();
-    expect((await protectedSetting).status()).toBe(403);
+    const saveResponse = await protectedSetting;
+    expect(saveResponse.status()).toBe(403);
+    const saveRequest = saveResponse.request().postDataJSON().args;
+    expect(saveRequest.expected.cleanup_intensity).toBe('rules');
+    expect(saveRequest.expected.cleanup_enabled).toBe(true);
+    expect(saveRequest.values.cleanup_intensity).toBe('rules');
+    expect(saveRequest.values.cleanup_enabled).toBe(true);
+    expect(saveRequest.values.cleanup_default_model).not.toBe('apple-intelligence/system');
     await expect(page.getByRole('alert').filter({ hasText: 'Could not save your setup choices.' })).toContainText('This setting is protected in dev sessions');
-    expect(await session.invoke('get_setting', { key: 'cleanup_enabled' })).toBe(previous.cleanup_enabled);
-    expect(await session.invoke('get_setting', { key: 'cleanup_intensity' })).toBe(previous.cleanup_intensity);
+    expect(await session.invoke('get_setting', { key: 'cleanup_enabled' })).toBe(true);
+    expect(await session.invoke('get_setting', { key: 'cleanup_intensity' })).toBe('rules');
     expect(await session.invoke('get_setting', { key: 'setup_complete' })).toBe(false);
     if (priorAppleChoice) {
       const finishOrigins = (await appleAvailabilityOrigins(page)).slice(originsBeforeFinish);
