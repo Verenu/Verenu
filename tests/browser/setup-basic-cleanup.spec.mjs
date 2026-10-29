@@ -182,6 +182,38 @@ test('resuming setup preserves saved model settings after an interrupted session
   }
 });
 
+test('Setup applies the selected speaker audio behavior', async ({ page, session }) => {
+  const previous = await snapshotSetup(session);
+  let capture;
+  const requestCaptured = new Promise(resolve => { capture = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'setup_complete', value: false });
+    await session.invoke('save_setting', { key: 'setup_progress', value: { step: 9, provider: 'local' } });
+    await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
+    await session.invoke('save_setting', { key: 'mute_audio', value: true });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      if (route.request().postDataJSON().command !== 'get_all_settings') return route.fallback();
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...await response.json(), pause_media_during_dictation: false } });
+    });
+    await page.reload();
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (request.command !== 'save_model_settings_if_unchanged') return route.fallback();
+      capture(request);
+      await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: 'Settings changed while you were editing.' }) });
+    });
+    await page.getByRole('button', { name: 'Finish setup', exact: true }).click();
+    const request = await requestCaptured;
+    expect(request.args.expected.pause_media_during_dictation).toBe(false);
+    expect(request.args.values.pause_media_during_dictation).toBe(true);
+  } finally {
+    await page.unrouteAll({ behavior: 'wait' });
+    await restoreSetup(session, previous);
+    await page.reload();
+  }
+});
+
 for (const progress of [null, { step: 4, provider: 'local' }]) {
   test(`Setup retains an existing model from ${progress ? 'the models step' : 'the first launch'}`, async ({ page, session }) => {
     const previous = await snapshotSetup(session);

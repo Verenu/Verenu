@@ -484,6 +484,8 @@ pub trait DurableSink: Send {
 }
 
 pub struct RecordingSession {
+    #[cfg(target_os = "linux")]
+    output_duck: Option<crate::system::output_duck::DuckGuard>,
     stop_tx: mpsc::SyncSender<()>,
     result_rx: mpsc::Receiver<Result<RecordingResult>>,
     pub level: Arc<AtomicU32>,
@@ -651,6 +653,8 @@ impl RecordingSession {
         let (stop_tx, _) = mpsc::sync_channel(1);
         let (_, result_rx) = mpsc::channel();
         Self {
+            #[cfg(target_os = "linux")]
+            output_duck: None,
             stop_tx,
             result_rx,
             level: Arc::new(AtomicU32::new(0)),
@@ -668,6 +672,7 @@ impl RecordingSession {
         gain: f32,
         durable: Option<Box<dyn DurableSink>>,
         max_output_samples: Option<usize>,
+        echo_cancellation: bool,
     ) -> Result<Self> {
         Self::start_inner(
             device_name,
@@ -675,6 +680,7 @@ impl RecordingSession {
             gain,
             durable,
             max_output_samples,
+            echo_cancellation,
         )
         .map_err(recording_start_error)
     }
@@ -685,8 +691,22 @@ impl RecordingSession {
         gain: f32,
         durable: Option<Box<dyn DurableSink>>,
         max_output_samples: Option<usize>,
+        echo_cancellation: bool,
     ) -> Result<Self> {
         ensure_configured_capture_profile();
+        #[cfg(target_os = "linux")]
+        let echo_source = if echo_cancellation {
+            if device_name.is_some() {
+                anyhow::bail!("Echo cancellation currently requires the default microphone");
+            }
+            Some(crate::media::pipewire_echo::EchoSource::start()?)
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "linux"))]
+        if echo_cancellation {
+            anyhow::bail!("Echo cancellation is not available on this platform");
+        }
         let host = cpal::default_host();
         let device = if let Some(name) = device_name {
             host.input_devices()?
@@ -698,8 +718,12 @@ impl RecordingSession {
                 .context("No input device available")?
         };
         let config = device.default_input_config()?;
-        let sample_rate = config.sample_rate().0;
-        let channels = config.channels() as usize;
+        #[cfg(target_os = "linux")]
+        let using_echo = echo_source.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let using_echo = false;
+        let sample_rate = if using_echo { 48_000 } else { config.sample_rate().0 };
+        let channels = if using_echo { 1 } else { config.channels() as usize };
         if channels == 0 {
             return Err(anyhow::anyhow!("Audio device reported zero channels"));
         }
@@ -932,6 +956,32 @@ impl RecordingSession {
                 handle: Some(worker),
             };
 
+            #[cfg(target_os = "linux")]
+            let echo_capture = if let Some(source) = echo_source {
+                let queue = Arc::clone(&queue);
+                let dropped = Arc::clone(&dropped_samples);
+                let level = Arc::clone(&level_w);
+                let raw_level = Arc::clone(&raw_level_w);
+                let wake = Arc::clone(&wake);
+                let stream_error = Arc::clone(&stream_error_w);
+                let active = Arc::clone(&active_w);
+                match crate::media::pipewire_echo::EchoCapture::start(source, move |data| {
+                    enqueue_f32_buffer(data, 1, CaptureBuffer {
+                        queue: &queue, dropped: &dropped, level: &level,
+                        raw_level: &raw_level, display_gain, wake: &wake,
+                    });
+                }, move || {
+                    stream_error.store(true, Ordering::Release);
+                    active.store(false, Ordering::Release);
+                }) {
+                    Ok(capture) => Some(capture),
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                        return;
+                    }
+                }
+            } else { None };
+
             let level_cb = Arc::clone(&level_w);
             let queue_cb = Arc::clone(&queue);
             let dropped_cb = Arc::clone(&dropped_samples);
@@ -944,7 +994,7 @@ impl RecordingSession {
                 active_cb.store(false, Ordering::Release);
             };
 
-            let stream = match config.sample_format() {
+            let stream = if using_echo { None } else { Some(match config.sample_format() {
                 cpal::SampleFormat::F32 => device.build_input_stream(
                     &config.into(),
                     move |data: &[f32], _| {
@@ -988,24 +1038,29 @@ impl RecordingSession {
                         ready_tx.send(Err(anyhow::anyhow!("Unsupported sample format: {fmt:?}")));
                     return;
                 }
-            };
+            }) };
 
             let stream = match stream {
-                Ok(s) => s,
-                Err(e) => {
+                Some(Ok(s)) => Some(s),
+                Some(Err(e)) => {
                     let _ = ready_tx.send(Err(e.into()));
                     return;
                 }
+                None => None,
             };
 
-            if let Err(e) = stream.play() {
-                let _ = ready_tx.send(Err(e.into()));
-                return;
+            if let Some(stream) = &stream {
+                if let Err(e) = stream.play() {
+                    let _ = ready_tx.send(Err(e.into()));
+                    return;
+                }
             }
 
             let _ = ready_tx.send(Ok(()));
             let _ = stop_rx.recv();
             drop(stream);
+            #[cfg(target_os = "linux")]
+            drop(echo_capture);
 
             active_w.store(false, Ordering::Relaxed);
             level_w.store(0f32.to_bits(), Ordering::Relaxed);
@@ -1058,6 +1113,8 @@ impl RecordingSession {
             .context("recording thread exited before signalling ready")??;
 
         Ok(RecordingSession {
+            #[cfg(target_os = "linux")]
+            output_duck: None,
             stop_tx,
             result_rx,
             level,
@@ -1074,6 +1131,12 @@ impl RecordingSession {
         self.result_rx
             .recv()
             .context("Recording thread dropped channel")?
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn start_output_duck(&mut self, settings: crate::system::output_duck::DuckSettings) -> Result<()> {
+        self.output_duck = Some(crate::system::output_duck::DuckGuard::start(settings)?);
+        Ok(())
     }
 }
 
@@ -1323,6 +1386,17 @@ mod tests {
             );
         }
         assert!(high.gain > normal.gain);
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a disposable PipeWire server and microphone"]
+    fn private_pipewire_echo_recording_completes() {
+        let session = super::RecordingSession::start(None, false, 1.0, None, None, true)
+            .expect("start echo-cancelled recording");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let result = session.stop().expect("finish echo-cancelled recording");
+        assert_eq!(result.termination, super::RecordingTermination::Complete);
+        assert!(!result.samples_16k.is_empty());
     }
     #[cfg(target_os = "linux")]
     #[test]
