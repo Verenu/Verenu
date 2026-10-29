@@ -876,6 +876,12 @@ fn register_temporary_controls() {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn available_dictation_shortcut(requested: &[u32], desktop_bindings: &[conflicts::Binding]) -> Option<Vec<u32>> {
+    shortcut_configuration_for(requested)
+        .filter(|(_, triggers)| conflicts::free(desktop_bindings, triggers, false))
+        .map(|_| requested.to_vec())
+}
+
 pub fn start<P, R, H, C, E, L, S>(
     on_press: P,
     on_release: R,
@@ -931,22 +937,9 @@ where
                         continue;
                     }
                 };
-                let available = std::iter::once(requested.clone())
-                        .chain([
-                            vec![CTRL, SUPER],
-                            vec![CTRL, 105],
-                            vec![ALT, 106],
-                            vec![CTRL, 107],
-                            vec![SUPER, 108],
-                            vec![ALT, 109],
-                        ])
-                        .find(|keys| {
-                            shortcut_configuration_for(keys).is_some_and(|(_, triggers)| {
-                                conflicts::free(&desktop_bindings, &triggers, false)
-                            })
-                        });
+                let available = available_dictation_shortcut(&requested, &desktop_bindings);
                 let Some(keys) = available else {
-                    registration_failure(portal::Failure::new("Finding available shortcut", "The saved shortcut and every fallback are already assigned on this desktop"));
+                    registration_failure(portal::Failure::new("Finding available shortcut", "The saved dictation shortcut is already assigned on this desktop. Change the desktop binding or choose another shortcut in Settings > General."));
                     let _ = shortcuts::remove_block(
                         "-- >>> Verenu managed global shortcut (do not edit) <<<",
                         "-- <<< End Verenu managed global shortcut >>>",
@@ -1480,6 +1473,17 @@ fn pick_portal_id(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn conflicting_dictation_shortcut_is_not_replaced() {
+        let requested = vec![super::CTRL, super::SUPER];
+        assert_eq!(super::available_dictation_shortcut(&requested, &[]), Some(requested.clone()));
+        let bindings = vec![super::conflicts::Binding {
+            modmask: 4,
+            key: "SUPER_L".into(),
+            ..Default::default()
+        }];
+        assert!(super::available_dictation_shortcut(&requested, &bindings).is_none());
+    }
     #[test]
     fn restarted_portal_actions_never_select_a_stale_editor_identity() {
         let listing = parse_portal_shortcuts(

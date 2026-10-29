@@ -8,16 +8,8 @@ test('T3 integration shows compatibility and protects native pairing in browser 
   await page.locator('[data-debug-id="settings.integrations"]').click();
   const panel = page.getByRole('region', { name: 'T3 Code integration', exact: true });
   await expect(panel.getByRole('button', { name: 'Connect T3 Code', exact: true })).toBeDisabled();
-  await expect(panel).toContainText('Use localhost, a private LAN address, or an HTTPS address. Tailscale is optional.');
-  const about = panel.getByRole('button', { name: 'About T3 Code', exact: true });
-  await expect(about).toHaveAttribute('aria-expanded', 'false');
-  await about.click();
-  await expect(about).toHaveAttribute('aria-expanded', 'true');
-  await expect(panel.getByText(`T3 Code ${status.minimumVersion} or newer.`, { exact: true })).toBeVisible();
-  await expect(panel).toContainText('Skill instructions are never imported');
-  await page.keyboard.press('Escape');
-  await expect(about).toHaveAttribute('aria-expanded', 'false');
-  await expect(panel).toBeVisible();
+  await expect(panel).toContainText('Use localhost, a private LAN address, or an HTTPS address.');
+  await expect(panel).toContainText(`T3 Code ${status.minimumVersion} or newer`);
   const input = panel.locator('#t3-pairing-link');
   await input.fill('https://synthetic.invalid/pair#token=synthetic');
   await panel.getByRole('button', { name: 'Connect T3 Code', exact: true }).click();

@@ -67,12 +67,20 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings, closeSettings } = requi
     const dictionaryModal = page.locator('.modal-card');
     const dictionaryFocusInside = await dictionaryModal.evaluate((el) => el.contains(document.activeElement));
     if (!dictionaryFocusInside) errors.push('Dictionary modal did not move focus inside the dialog');
+    if (!(await page.locator('#dict-term').evaluate((el) => document.activeElement === el))) {
+      errors.push('Dictionary modal did not initially focus the term field');
+    }
     await page.keyboard.press('Escape');
     await dictionaryModal.waitFor({ state: 'hidden', timeout: TIMEOUT });
     if (!(await addTermButton.evaluate((el) => document.activeElement === el))) {
       errors.push('Dictionary modal did not restore focus to the trigger');
     }
     await addTermButton.click();
+    await page.locator('#dict-mistake').focus();
+    await page.waitForTimeout(100);
+    if (!(await page.locator('#dict-mistake').evaluate((el) => document.activeElement === el))) {
+      throw new Error('Dictionary modal stole focus from the mistake field');
+    }
     await page.locator('#dict-term').fill('Verenu');
     await page.locator('#dict-mistake').fill('verenu');
     await page.locator('.modal-card .btn-primary:has-text("Add term")').click();
