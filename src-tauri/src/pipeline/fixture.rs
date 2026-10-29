@@ -143,7 +143,7 @@ pub async fn run_pipeline_fixture(
         })
     })?;
 
-    let (final_text_before_dictionary, dict_entries, cleanup_cache_key, cleanup_api_used) =
+    let (final_text_before_dictionary, dict_entries, cleanup_cache_key, cleanup_api_used, snippet_expansions) =
         run_cleanup_and_snippets_for_db(
             &db_handle,
             &raw_text,
@@ -163,8 +163,8 @@ pub async fn run_pipeline_fixture(
     if !has_deliverable_cleanup(&final_text_before_dictionary, &request.config, &cleanup_api_used) {
         anyhow::bail!("No spoken content remained after cleanup");
     }
-    let (injected_text, _applied_dict_ids) =
-        dictionary::apply_substitutions_from(&final_text_before_dictionary, &dict_entries);
+    let (injected_text, _applied_dict_ids, vocabulary_replacements) =
+        dictionary::apply_substitutions_counted(&final_text_before_dictionary, &dict_entries);
     let injected_text = if apply_caps_lock_upper {
         injected_text.to_uppercase()
     } else {
@@ -175,7 +175,7 @@ pub async fn run_pipeline_fixture(
         |catalog| catalog.normalize_mentions(&injected_text),
     );
     let clean_for_insert = injected_text.clone();
-    let history_entry = db::insert_transcription_returning(
+    let history_entry = db::insert_transcription_with_metrics(
         &db_handle,
         &raw_text,
         &clean_for_insert,
@@ -184,6 +184,8 @@ pub async fn run_pipeline_fixture(
         &api_used,
         None,
         Some(context_id),
+        None,
+        Some((vocabulary_replacements, snippet_expansions)),
     )?;
     let injected = injection::inject_text(
         &injected_text,
