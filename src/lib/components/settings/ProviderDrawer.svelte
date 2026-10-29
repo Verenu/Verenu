@@ -33,6 +33,7 @@
   let drawerEl = $state<HTMLElement | null>(null);
   let view = $state<'closed' | 'pick' | 'builtin' | 'custom'>('closed');
   let fromPicker = $state(false);
+  let urlUpfront = $state(false);
   let search = $state('');
   let showMore = $state(false);
   let builtin = $state<BuiltinProvider | null>(null);
@@ -93,6 +94,7 @@
       transcription_models: from?.transcription_models.slice(0, 1) ?? [], cleanup_models: from?.cleanup_models.slice(0, 1) ?? [],
     };
     fromPicker = !provider;
+    urlUpfront = !provider && !!from && from.group === 'local';
     key = '';
     transcriptionModels = [...editing.transcription_models];
     cleanupModels = [...editing.cleanup_models];
@@ -120,7 +122,7 @@
   const matchCount = $derived(matches.builtins.length + matches.presets.length);
 
   const showAll = $derived(!preset || preset.id === 'blank' || !!savedOriginal);
-  const needsUrl = $derived(!showAll && !editing?.base_url.trim() && preset?.group === 'local');
+  const needsUrl = $derived(!showAll && urlUpfront);
   const urlExample = $derived(preset?.group === 'local' && !savedOriginal && preset.base_url ? preset.base_url.replace('localhost', '192.168.1.50') : 'https://api.example.com/v1');
   const isLocalUrl = (url: string) => { try { const h = new URL(url).hostname; return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h); } catch { return false; } };
   async function openExternal(url: string) {
@@ -153,6 +155,16 @@
     try { value = JSON.parse(text || '{}'); } catch { throw new Error(`${label} isn't valid JSON.`); }
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object.`);
     return value as Record<string, unknown>;
+  }
+
+  async function clearSavedKey() {
+    if (!savedOriginal || busy) return;
+    busy = true; error = '';
+    try {
+      await invoke('delete_api_key', { provider: savedOriginal.id });
+      await onchange();
+    } catch (e) { error = formatIpcError(e, 'Could not remove this API key'); }
+    finally { busy = false; }
   }
 
   async function saveBuiltin() {
@@ -245,6 +257,13 @@
       </span>
       <input type="password" bind:value={key} autocomplete="off" placeholder={keyStatus[editing.id] ? 'Saved. Enter a new key to replace it' : preset?.key_hint ?? 'Enter your API key'} disabled={busy} />
     </label>
+    {@render clearKey()}
+  {/if}
+{/snippet}
+
+{#snippet clearKey()}
+  {#if savedOriginal && keyStatus[savedOriginal.id]}
+    <button type="button" class="link clear" disabled={busy} onclick={clearSavedKey}>Clear saved key</button>
   {/if}
 {/snippet}
 
@@ -490,6 +509,7 @@
 
   .link { padding: 0; border: 0; background: none; color: var(--ink-mute); text-decoration: underline; cursor: pointer; font: inherit; font-size: 11px; }
   .link:hover { color: var(--ink); }
+  .link.clear { align-self: flex-start; font-size: 12px; color: var(--danger); }
 
   details { border-top: 1px solid var(--line-soft); padding-top: 12px; display: flex; flex-direction: column; gap: 14px; }
   details > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--ink-soft); }

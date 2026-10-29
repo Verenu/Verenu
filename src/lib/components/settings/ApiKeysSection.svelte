@@ -139,7 +139,7 @@
 
 <div class="page-head">
   <h2 class="settings-h page-title">Providers</h2>
-  <button class="btn-primary btn-compact add" type="button" data-setting-target="custom-providers" disabled={atLimit} onclick={() => drawer?.openPicker()}>
+  <button class="btn-primary btn-compact add" type="button" data-setting-target="custom-providers" onclick={() => drawer?.openPicker()}>
     <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>
     Add provider
   </button>
@@ -210,7 +210,7 @@
   bind:this={drawer}
   builtins={BUILTIN_PROVIDERS}
   {keyStatus}
-  allowCustom={!isAndroid}
+  allowCustom={!isAndroid && !atLimit}
   {saveBuiltinKey}
   onchange={refresh}
   onnotice={flash}
