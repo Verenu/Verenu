@@ -5,10 +5,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 mod cleanup_cache;
 mod activity;
+mod agent_audit;
+mod agent_library;
 mod contexts;
 mod dictionary;
 mod agent_history;
 mod insights;
+mod library_usage;
 mod pricing;
 mod schema;
 mod snippets;
@@ -18,10 +21,13 @@ mod validation;
 
 pub use cleanup_cache::*;
 pub(crate) use activity::*;
+pub use agent_audit::*;
+pub use agent_library::*;
 pub use contexts::*;
 pub use dictionary::*;
 pub use agent_history::*;
 pub use insights::*;
+pub use library_usage::*;
 pub use pricing::*;
 pub use schema::*;
 pub use snippets::*;

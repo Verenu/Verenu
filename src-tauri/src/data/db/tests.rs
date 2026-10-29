@@ -1,6 +1,123 @@
 use super::*;
 
 #[test]
+fn agent_audit_records_pending_and_completed_without_change_contents() {
+    let db = open(":memory:").unwrap();
+    let id = begin_agent_change(&db, "edit_snippet", Some(17)).unwrap();
+    let pending = query_agent_changes(&db, 10).unwrap();
+    assert_eq!(pending["entries"][0]["status"], "pending");
+    assert_eq!(pending["atomic_with_change"], false);
+    finish_agent_change(&db, id, true).unwrap();
+    let done = query_agent_changes(&db, 10).unwrap();
+    assert_eq!(done["entries"][0]["status"], "succeeded");
+    assert_eq!(done["entries"][0]["target_id"], 17);
+    assert!(done["entries"][0].get("value").is_none());
+    assert!(query_agent_changes(&db, 0).is_err());
+}
+
+#[test]
+fn library_usage_tracks_mechanical_matches_and_prunes_with_history() {
+    let db = open(":memory:").unwrap();
+    let term = insert_dictionary_entry_returning(&db, "Kubernetes", Some("kubernetez"), None).unwrap();
+    let snippet = insert_snippet_returning(&db, "greeting", "Hello", "", None).unwrap();
+    record_dictionary_usage(&db, &[term.id]).unwrap();
+    increment_snippet_use_counts(&db, &[(snippet.id, 2)]).unwrap();
+    let report = query_library_usage(&db).unwrap();
+    assert_eq!(report["coverage"]["proves_unused"], false);
+    let items = report["items"].as_array().unwrap();
+    assert!(items.iter().any(|item| item["kind"] == "dictionary" && item["id"] == term.id && item["matches"] == 1));
+    assert!(items.iter().any(|item| item["kind"] == "snippet" && item["id"] == snippet.id && item["matches"] == 2));
+    {
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE library_usage_daily SET day = '2000-01-01'", []).unwrap();
+    }
+    prune_transcriptions_older_than(&db, 30).unwrap();
+    assert!(query_library_usage(&db).unwrap()["items"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn failed_dictionary_edits_do_not_change_other_contexts_or_assign_orphans() {
+    let path = temp_db_path("agent_dictionary_edit_scope");
+    let db = open(path.to_str().unwrap()).unwrap();
+    let first = insert_context_returning(&db, "First", None, None, None, None, false).unwrap();
+    let second = insert_context_returning(&db, "Second", None, None, None, None, false).unwrap();
+    let shared = insert_dictionary_entry_returning(&db, "Shared", Some("wrongone"), Some(first.id)).unwrap();
+    insert_dictionary_entry_returning(&db, "Shared", Some("wrongtwo"), Some(second.id)).unwrap();
+    assert!(update_dictionary_entry_for_context(&db, first.id, shared.id, "Renamed", None).is_err());
+    assert_eq!(query_dictionary(&db).unwrap().iter().find(|entry| entry.id == shared.id).unwrap().term, "Shared");
+    rename_dictionary_entry_global(&db, shared.id, "Renamed").unwrap();
+    for (context, correction) in [(first.id, "wrongone"), (second.id, "wrongtwo")] {
+        let entries = query_effective_dictionary_for_context(&db, context).unwrap();
+        let entry = entries.iter().find(|entry| entry.id == shared.id).unwrap();
+        assert_eq!(entry.term, "Renamed");
+        assert_eq!(entry.mistake.as_deref(), Some(correction));
+    }
+    let orphan = insert_dictionary_entry_returning(&db, "Orphan", None, None).unwrap();
+    remove_dictionary_entry_from_context(&db, EVERYWHERE_CONTEXT_ID, orphan.id).unwrap();
+    assert!(update_dictionary_entry(&db, orphan.id, "", None).is_err());
+    let conn = db.lock().unwrap();
+    let assignments: i64 = conn.query_row("SELECT COUNT(*) FROM dictionary_contexts WHERE dictionary_id = ?1", [orphan.id], |row| row.get(0)).unwrap();
+    assert_eq!(assignments, 0);
+    drop(conn);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn global_rename_clears_old_learning_evidence_in_inheriting_contexts() {
+    let db = test_db();
+    let context = insert_context_returning(&db, "Inheriting", None, None, None, None, false).unwrap();
+    let term = insert_dictionary_entry_returning(&db, "Original", Some("Origional"), None).unwrap();
+    insert_dictionary_entry_returning(&db, "Existing", None, None).unwrap();
+    {
+        let conn = db.lock().unwrap();
+        for context_id in [EVERYWHERE_CONTEXT_ID, context.id] {
+            for table in ["pending_corrections", "auto_learn_candidates"] {
+                conn.execute(&format!("INSERT INTO {table} (context_id, wrong_word, correct_word) VALUES (?1, 'mistake', 'Original')"), [context_id]).unwrap();
+                conn.execute(&format!("INSERT INTO {table} (context_id, wrong_word, correct_word) VALUES (?1, 'unrelated', 'Other')"), [context_id]).unwrap();
+            }
+        }
+    }
+    assert!(rename_dictionary_entry_global(&db, term.id, "Existing").is_err());
+    {
+        let conn = db.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM pending_corrections WHERE correct_word = 'Original'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 2);
+    }
+    rename_dictionary_entry_global(&db, term.id, "Renamed").unwrap();
+    let conn = db.lock().unwrap();
+    for table in ["pending_corrections", "auto_learn_candidates"] {
+        let old: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE correct_word = 'Original'"), [], |r| r.get(0)).unwrap();
+        let unrelated: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE correct_word = 'Other'"), [], |r| r.get(0)).unwrap();
+        assert_eq!((old, unrelated), (0, 2));
+    }
+}
+
+#[test]
+fn agent_context_patch_preserves_omitted_fields_and_rejects_stale_input() {
+    let path = temp_db_path("agent_context_patch");
+    let db = open(path.to_str().unwrap()).unwrap();
+    let context = insert_context_returning(&db, "Synthetic", Some("star"), Some("friendly"), None, Some("instructions"), false).unwrap();
+    let expected = serde_json::to_value(&context).unwrap();
+    let updated = patch_context_settings_extended(&db, context.id, expected.clone(), serde_json::json!({"tone": null, "paste_in_chunks": true, "color": "blue", "t3_skill_mentions_disabled": true})).unwrap();
+    assert_eq!(updated.icon.as_deref(), Some("star"));
+    assert_eq!(updated.custom_instructions.as_deref(), Some("instructions"));
+    assert_eq!(updated.tone, None);
+    assert!(updated.paste_in_chunks);
+    assert_eq!(updated.color.as_deref(), Some("blue"));
+    assert!(updated.t3_skill_mentions_disabled);
+    assert!(patch_context_settings_extended(&db, context.id, expected, serde_json::json!({"icon": "other"})).is_err());
+    assert_eq!(query_context(&db, context.id).unwrap().icon.as_deref(), Some("star"));
+    insert_context_returning(&db, "Existing", None, None, None, None, false).unwrap();
+    let fresh = serde_json::to_value(query_context(&db, context.id).unwrap()).unwrap();
+    assert!(patch_context_settings_extended(&db, context.id, fresh, serde_json::json!({"name": "Existing", "tone": "formal", "color": "red"})).is_err());
+    assert_eq!(query_context(&db, context.id).unwrap().tone, None);
+    assert_eq!(query_context(&db, context.id).unwrap().color.as_deref(), Some("blue"));
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn t3_skill_opt_out_migrates_defaults_and_survives_reopen_and_duplicate() {
     let path = temp_db_path("t3_skills_v31");
     let context_id;
@@ -70,6 +187,76 @@ fn paste_chunks_migrates_v30_defaults_and_survives_reopen() {
 
 fn test_db() -> Db {
     open(":memory:").expect("test db")
+}
+
+#[test]
+fn stale_snippet_editor_cannot_overwrite_new_content() {
+    let db = test_db();
+    let entry = insert_snippet_returning(&db, "shortcut", "Original", "", None).unwrap();
+    update_snippet(&db, entry.id, "shortcut", "Agent change", "").unwrap();
+    let stale = ExpectedSnippet { trigger: "shortcut".into(), expansion: "Original".into(), instructions: "".into() };
+    assert!(update_snippet_if_unchanged(&db, entry.id, "shortcut", "UI change", "", Some(&stale)).is_err());
+    assert_eq!(query_snippets(&db).unwrap()[0].expansion, "Agent change");
+}
+
+#[test]
+fn library_operations_can_be_rolled_back_together() {
+    let db = test_db();
+    let original = insert_dictionary_entry_returning(&db, "Original", Some("Orignal"), None)
+        .unwrap();
+    let snippet = insert_snippet_returning(&db, "shortcut", "Original text", "", None).unwrap();
+    {
+        let mut conn = db.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        delete_dictionary_entry_conn(&tx, original.id).unwrap();
+        insert_dictionary_entry_returning_conn(&tx, "New term", None, None).unwrap();
+        update_snippet_conn(&tx, snippet.id, "changed", "Changed text", "").unwrap();
+        tx.rollback().unwrap();
+    }
+    let dictionary = query_dictionary(&db).unwrap();
+    assert!(dictionary.iter().any(|entry| entry.id == original.id));
+    assert!(!dictionary.iter().any(|entry| entry.term == "New term"));
+    let snippets = query_snippets(&db).unwrap();
+    assert!(snippets.iter().any(|entry| entry.id == snippet.id && entry.trigger == "shortcut"));
+}
+
+#[test]
+fn agent_bulk_delete_previews_retries_and_restores_atomically() {
+    let db = test_db();
+    let term = insert_dictionary_entry_returning(&db, "Example", Some("Exampel"), None).unwrap();
+    let snippet = insert_snippet_returning(&db, "shortcut", "Some text", "", None).unwrap();
+    let listed = list_library_items(&db).unwrap();
+    let items: Vec<LibraryItem> = listed["items"].as_array().unwrap().iter().map(|v| LibraryItem {
+        kind: v["kind"].as_str().unwrap().into(), uuid: v["uuid"].as_str().unwrap().into(),
+    }).collect();
+    let preview = preview_library_delete(&db, items.clone()).unwrap();
+    let basis = preview["basis"].as_str().unwrap().to_owned();
+    record_dictionary_usage(&db, &[term.id]).unwrap();
+    assert!(apply_library_delete(&db, items.clone(), &basis, "00000000-0000-4000-8000-000000000001").is_err());
+    let preview = preview_library_delete(&db, items.clone()).unwrap();
+    assert_eq!(preview["items"].as_array().unwrap().iter().find(|item| item["kind"] == "dictionary").unwrap()["local_matches"], 1);
+    let basis = preview["basis"].as_str().unwrap().to_owned();
+    update_snippet(&db, snippet.id, "shortcut", "Changed", "").unwrap();
+    assert!(apply_library_delete(&db, items.clone(), &basis, "00000000-0000-4000-8000-000000000001").is_err());
+    assert_eq!(query_dictionary(&db).unwrap().len(), 1);
+    let preview = preview_library_delete(&db, items.clone()).unwrap();
+    let basis = preview["basis"].as_str().unwrap();
+    let request = "00000000-0000-4000-8000-000000000001";
+    assert_eq!(apply_library_delete(&db, items.clone(), basis, request).unwrap()["deleted"], 2);
+    assert!(query_dictionary(&db).unwrap().is_empty());
+    assert!(query_snippets(&db).unwrap().is_empty());
+    assert_eq!(apply_library_delete(&db, items, basis, request).unwrap()["replayed"], true);
+    insert_snippet_returning(&db, "shortcut", "Replacement", "", None).unwrap();
+    assert!(undo_library_delete(&db, request).is_err());
+    assert!(query_dictionary(&db).unwrap().is_empty());
+    delete_snippet(&db, query_snippets(&db).unwrap()[0].id).unwrap();
+    assert_eq!(undo_library_delete(&db, request).unwrap()["restored"], 2);
+    let restored = query_dictionary(&db).unwrap();
+    assert_eq!(restored[0].term, "Example");
+    assert_eq!(restored[0].mistake.as_deref(), Some("Exampel"));
+    assert_eq!(query_snippets(&db).unwrap()[0].expansion, "Changed");
+    assert_eq!(undo_library_delete(&db, request).unwrap()["replayed"], true);
+    assert_ne!(restored[0].id, term.id);
 }
 
 #[test]
@@ -576,7 +763,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 35);
+    assert_eq!(version, 37);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);

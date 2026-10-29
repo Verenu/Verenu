@@ -343,6 +343,9 @@ pub fn run() {
             if is_dev_session() {
                 app.manage(settings.clone());
                 dev_session::start(app.handle().clone())?;
+                if std::env::var("VERENU_AGENT_TEST_SYNTHETIC").as_deref() == Ok("1") {
+                    agent_api::start(app.handle().clone())?;
+                }
                 return Ok(());
             }
             if let Err(error) = crate::data::store::migrate_contextual_formatting(&settings) {
@@ -813,6 +816,7 @@ pub fn run() {
             commands::get_dictionary,
             commands::create_dictionary_entry,
             commands::edit_dictionary_entry,
+            commands::rename_dictionary_entry_global,
             commands::remove_dictionary_entry,
             commands::move_dictionary_entry_to_context,
             commands::duplicate_context,
