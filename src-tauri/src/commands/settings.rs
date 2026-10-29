@@ -1070,6 +1070,7 @@ async fn save_setting_inner(
         };
     }
     let disable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == false;
+    let enable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == true;
     if key == store::CUSTOM_PROVIDERS {
         let providers = crate::api::custom::normalize_list(&value)?;
         value = serde_json::to_value(&providers)
@@ -1091,6 +1092,11 @@ async fn save_setting_inner(
         None
     };
     let settings = store::settings_handle(&app)?;
+    let _cache_send_guard = if disable_cleanup_cache || enable_cleanup_cache {
+        Some(crate::sync::engine::cleanup_cache_send_gate().write().await)
+    } else {
+        None
+    };
     let credential_app = app.clone();
     let key_clone = key.clone();
     let save_result = run_blocking("save_setting", move || {
@@ -1173,10 +1179,10 @@ async fn save_setting_inner(
     })
     .await;
     save_result?;
-    if disable_cleanup_cache {
+    if disable_cleanup_cache || enable_cleanup_cache {
         let db = db_state(&app);
-        run_blocking("disable_cleanup_cache", move || {
-            db::cleanup_cache_clear_all(&db).map_err(|e| e.to_string())
+        run_blocking("set_cleanup_cache_enabled", move || {
+            db::cleanup_cache_set_enabled(&db, enable_cleanup_cache).map_err(|e| e.to_string())
         })
         .await?;
     }
