@@ -123,7 +123,7 @@
   const setupStepEnteredAt = new Map<number, number>();
 
   let providerDisplayName = $derived(providers.find((p) => p.id === provider)?.name ?? '');
-  let cleanupName = $derived(cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
+  let cleanupName = $derived(cleanupIntensity === 'rules' ? 'Basic' : cleanupCards.find((c) => c.id === cleanupIntensity)?.name ?? '');
   let defaultModels = $derived(applyAppleCleanupDefaults(setupDefaultModels(provider), useAppleCleanup));
   let effectiveTarget = $derived(applyAppleCleanup(modelPreset?.target, useAppleCleanup));
   let effectiveCleanupEnabled = $derived(setupCleanupEnabled(cleanupIntensity, preserveModels ? null : effectiveTarget));
@@ -205,7 +205,7 @@
       const retainedProvider = splitModelId(savedModel(snapshot.transcription_default_model, snapshot.transcription_model, 'groq/whisper-large-v3-turbo'))?.provider;
       const initialProvider = preserveModels ? retainedProvider : savedProvider;
       if (initialProvider && providers.some((p) => p.id === initialProvider) && (initialProvider !== 'local' || localAiSupported)) provider = initialProvider as WizardProviderId;
-      if (savedIntensity && cleanupCards.some((c) => c.id === savedIntensity)) cleanupIntensity = savedIntensity;
+      if (savedIntensity && (savedIntensity === 'rules' || cleanupCards.some((c) => c.id === savedIntensity))) cleanupIntensity = savedIntensity;
       if (savedCleanupEnabled === false) cleanupIntensity = 'none';
       preserveDisabledIntensity = savedCleanupEnabled === false;
       if (savedTone && toneCards.some((t) => t.id === savedTone)) tone = savedTone;
@@ -765,7 +765,7 @@
         onChooseCloudProvider={chooseCloudProviderFromModels}
       />
     {:else if step === writingStyleStep}
-      <WritingStyleStep bind:intensity={cleanupIntensity} bind:tone onIntensitySelect={() => { preserveDisabledIntensity = false; }} />
+      <WritingStyleStep bind:intensity={cleanupIntensity} bind:tone onIntensitySelect={() => { preserveDisabledIntensity = false; }} cleanupModelMissing={modelsStep >= 0 && effectiveTarget?.cleanupEnabled === false} onReviewModels={() => jumpToStep(modelsStep)} />
     {:else if step === languageStep}
       <LanguageStep bind:language />
     {:else if step === audioEnvStep}
