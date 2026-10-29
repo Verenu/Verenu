@@ -17,8 +17,6 @@
 
   let { data }: { data: InsightsPayload } = $props();
 
-  const scoped = $derived(data.context_id !== null);
-
   const TICKS = PACE_TICKS;
   const tickIndices = Array.from({ length: TICKS }, (_, i) => i);
   let rulerW = $state(0);
@@ -117,19 +115,17 @@
       <span class="big"><AnimatedNumber value={data.cleanup.edits_applied} /></span>
     </div>
     <p class="tile-label">words changed by Verenu</p>
-    {#if scoped}
-      <p class="tile-note tile-note-dim">dictionary and learned totals across all contexts</p>
-    {/if}
     <div class="sub-rows">
       <div class="stat-line">
-        <span class="stat-num"><AnimatedNumber value={data.cleanup.dictionary_fixes} /></span>
-        <span class="stat-label">dictionary fixes</span>
+        <span class="stat-num">{#if data.cleanup.activity_incomplete && !data.cleanup.activity_tracked_dictations}—{:else}{#if data.cleanup.activity_incomplete}≥{/if}<AnimatedNumber value={data.cleanup.vocabulary_replacements} />{/if}</span>
+        <span class="stat-label">vocabulary fixes</span>
       </div>
       <div class="stat-line">
-        <span class="stat-num"><AnimatedNumber value={data.cleanup.auto_learned_terms} /></span>
-        <span class="stat-label">terms auto-learned</span>
+        <span class="stat-num">{#if data.cleanup.activity_incomplete && !data.cleanup.activity_tracked_dictations}—{:else}{#if data.cleanup.activity_incomplete}≥{/if}<AnimatedNumber value={data.cleanup.snippet_expansions} />{/if}</span>
+        <span class="stat-label">snippet expansions</span>
       </div>
     </div>
+    <p class="tile-note tile-note-dim">Counts use saved history and track explicit replacements and snippet triggers.{#if data.cleanup.activity_incomplete}{' '}Some dictations lack detail or have expired from history.{/if}</p>
   </section>
 </div>
 
