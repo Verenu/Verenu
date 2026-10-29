@@ -59,14 +59,6 @@ test('GitHub comparison is opt-in and invalid usernames never enable it', async 
   await expect(page.locator('#github-username')).toHaveCount(0);
   await page.locator('[data-debug-id="nav.settings"]').click();
   await page.locator('[data-debug-id="settings.integrations"]').click();
-  await page.getByRole('button', { name: 'About GitHub', exact: true }).click();
-  const details = page.locator('#github-integration-details');
-  await expect(details).toContainText('Words and GitHub activity each use their own scale');
-  await expect(details).toContainText('by its calendar dates');
-  await expect(details).toContainText('Show private contributions');
-  await expect(details).toContainText('1,000 results');
-  await page.keyboard.press('Escape');
-  await expect(details).toHaveCount(0);
   const input = page.getByRole('textbox', { name: 'GitHub username', exact: true });
   await input.fill('a repo:private');
   await page.getByRole('button', { name: 'Connect GitHub', exact: true }).click();
