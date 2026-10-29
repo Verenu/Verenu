@@ -1,9 +1,7 @@
 import { appStore } from './stores';
 import {
-  applyPalette,
   broadcastAppearance,
   withAppearanceLock,
-  persistSavedThemes,
   snapshotAppearance,
   type AppearanceSnapshot,
 } from './appearanceActions';
@@ -15,12 +13,29 @@ import {
   uniqueThemeName,
   validateThemeName,
   upsertSavedTheme,
+  normalizeCustomTheme,
+  normalizeSavedThemes,
   type CustomTheme,
   type SavedTheme,
 } from './customTheme';
 import { formatIpcError } from './errors';
+import { normalizeAccentColor } from './accentTheme';
+import { invoke } from './tauri';
 
 type Draft = { name: string; palette: CustomTheme; accent: string | null };
+type AppearanceSettings = { appearance_mode: unknown; accent_color: unknown; custom_theme: unknown; custom_themes: unknown };
+let settingsBaseline: Promise<AppearanceSettings | null> | null = null;
+let transitionVersion = 0;
+
+async function readAppearanceSettings(): Promise<AppearanceSettings> {
+  const [appearance_mode, accent_color, custom_theme, custom_themes] = await Promise.all([
+    invoke('get_setting', { key: 'appearance_mode' }),
+    invoke('get_setting', { key: 'accent_color' }),
+    invoke('get_setting', { key: 'custom_theme' }),
+    invoke('get_setting', { key: 'custom_themes' }),
+  ]);
+  return { appearance_mode, accent_color, custom_theme, custom_themes };
+}
 
 export const themeEditor = $state({
   open: false,
@@ -31,6 +46,7 @@ export const themeEditor = $state({
   baseline: null as AppearanceSnapshot | null,
   saving: false,
   error: '',
+  externalChange: false,
   confirmingDelete: false,
   pendingAction: null as (() => void) | null,
 });
@@ -75,9 +91,28 @@ function close() {
   themeEditor.confirmingDelete = false;
   themeEditor.pendingAction = null;
   themeEditor.saving = false;
+  if (themeEditor.externalChange) {
+    themeEditor.externalChange = false;
+    window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
+  }
 }
 
 export function openThemeEditor(source: { theme: SavedTheme } | { seed: CustomTheme; name: string; accent?: string | null }) {
+  appStore.appearanceChangeVersion++;
+  const baseline = snapshotAppearance();
+  const saved = JSON.stringify(appStore.savedThemes);
+  const session = themeEditor.session + 1;
+  settingsBaseline = readAppearanceSettings().then(settings => {
+    if ((settings.appearance_mode ?? 'system') !== baseline.mode
+      || normalizeAccentColor(settings.accent_color) !== baseline.accent
+      || JSON.stringify(normalizeCustomTheme(settings.custom_theme)) !== JSON.stringify(baseline.customTheme)
+      || JSON.stringify(normalizeSavedThemes(settings.custom_themes)) !== saved) {
+      if (themeEditor.session !== session) return settings;
+      if (themeEditor.open) themeEditor.externalChange = true;
+      else window.dispatchEvent(new Event('verenu:refresh-agent-appearance'));
+    }
+    return settings;
+  }).catch(() => null);
   const keepBaseline = themeEditor.open ? themeEditor.baseline : null;
   const draft: Draft = 'theme' in source
     ? { name: source.theme.name, palette: themeColors(source.theme.palette), accent: source.theme.accent }
@@ -91,6 +126,7 @@ export function openThemeEditor(source: { theme: SavedTheme } | { seed: CustomTh
   themeEditor.draft = copyDraft(draft);
   themeEditor.original = copyDraft(draft);
   themeEditor.error = '';
+  themeEditor.externalChange = false;
   themeEditor.confirmingDelete = false;
   themeEditor.pendingAction = null;
   themeEditor.saving = false;
@@ -101,6 +137,7 @@ export function openThemeEditor(source: { theme: SavedTheme } | { seed: CustomTh
 
 export function updateThemeDraft(patch: Partial<Draft>) {
   if (!themeEditor.open || themeEditor.saving) return;
+  transitionVersion++;
   const appearanceChanged = patch.palette !== undefined || patch.accent !== undefined;
   themeEditor.draft = {
     ...themeEditor.draft,
@@ -117,30 +154,44 @@ export function cancelThemeEditor() {
   close();
 }
 
-export function requestCloseThemeEditor() {
+export async function requestCloseThemeEditor() {
   if (!themeEditor.open || themeEditor.saving) return;
   if (isThemeEditorDirty()) themeEditor.pendingAction = () => {};
-  else cancelThemeEditor();
+  else await finishTransition();
 }
 
-export function guardThemeEditor(action: () => void) {
+async function finishTransition(action?: () => void, confirmed = false) {
+  const session = themeEditor.session;
+  const version = ++transitionVersion;
+  const baseline = await settingsBaseline;
+  if (!themeEditor.open || themeEditor.session !== session || version !== transitionVersion) return;
+  if (!confirmed && isThemeEditorDirty()) {
+    themeEditor.pendingAction = action ?? (() => {});
+    return;
+  }
+  if (!baseline) themeEditor.externalChange = true;
+  const conflicted = themeEditor.externalChange;
+  cancelThemeEditor();
+  if (!conflicted) action?.();
+}
+
+export async function guardThemeEditor(action: () => void) {
   if (!themeEditor.open) return action();
   if (themeEditor.saving) return;
   if (isThemeEditorDirty()) {
     themeEditor.pendingAction = action;
     return;
   }
-  cancelThemeEditor();
-  action();
+  await finishTransition(action);
 }
 
-export function confirmDiscardThemeEditor() {
+export async function confirmDiscardThemeEditor() {
   const action = themeEditor.pendingAction;
-  cancelThemeEditor();
-  action?.();
+  if (action) await finishTransition(action, true);
 }
 
 export function keepEditingTheme() {
+  transitionVersion++;
   themeEditor.pendingAction = null;
 }
 
@@ -154,6 +205,10 @@ export async function saveThemeEditor() {
 
 async function saveThemeEditorLocked() {
   if (!themeEditor.open || themeEditor.saving) return;
+  if (themeEditor.externalChange) {
+    themeEditor.error = 'Appearance changed outside this editor. Discard this draft and reopen the editor to use the latest settings.';
+    return;
+  }
   const nameError = themeNameError();
   if (nameError) {
     themeEditor.error = nameError;
@@ -163,7 +218,6 @@ async function saveThemeEditorLocked() {
     themeEditor.error = `You can keep up to ${MAX_SAVED_THEMES} themes. Delete one first.`;
     return;
   }
-  const baseline = themeEditor.baseline ?? snapshotAppearance();
   const previousList = appStore.savedThemes;
   const theme: SavedTheme = {
     id: themeEditor.editingId ?? newThemeId(),
@@ -174,23 +228,19 @@ async function saveThemeEditorLocked() {
   themeEditor.saving = true;
   themeEditor.error = '';
   try {
-    await persistSavedThemes(upsertSavedTheme(previousList, theme));
+    const expected = await settingsBaseline;
+    if (!expected || themeEditor.externalChange) throw new Error('Appearance changed. Discard this draft and reopen the editor.');
+    const values = { ...expected, custom_themes: upsertSavedTheme(previousList, theme), custom_theme: theme.palette, appearance_mode: 'custom', accent_color: theme.accent };
+    await invoke('save_model_settings_if_unchanged', { expected, values });
+    appStore.savedThemes = values.custom_themes;
+    appStore.appearanceMode = 'custom';
+    appStore.customTheme = theme.palette;
+    appStore.accentColor = theme.accent;
+    appStore.activeThemeId = theme.id;
+    broadcastAppearance('custom', theme.palette, theme.accent);
   } catch (err) {
     themeEditor.saving = false;
     themeEditor.error = formatIpcError(err, 'Could not save this theme. Your changes are still here.');
-    return;
-  }
-  const applied = await applyPalette(theme.palette, { accent: theme.accent, themeId: theme.id, from: baseline });
-  if (!applied) {
-    try {
-      await persistSavedThemes(previousList);
-    } catch (err) {
-      console.error('restore custom_themes after apply failure failed:', err);
-      appStore.savedThemes = previousList;
-    }
-    themeEditor.saving = false;
-    themeEditor.error = 'The theme was saved but could not be applied, so nothing changed. Try again.';
-    previewDraft();
     return;
   }
   close();
@@ -203,9 +253,17 @@ export async function deleteThemeFromEditor() {
 async function deleteLocked() {
   const id = themeEditor.editingId;
   if (!themeEditor.open || !id || themeEditor.saving) return;
+  if (themeEditor.externalChange) {
+    themeEditor.error = 'Appearance changed outside this editor. Discard this draft and reopen the editor to use the latest settings.';
+    return;
+  }
   themeEditor.saving = true;
   try {
-    await persistSavedThemes(appStore.savedThemes.filter((t) => t.id !== id));
+    const expected = await settingsBaseline;
+    if (!expected || themeEditor.externalChange) throw new Error('Appearance changed. Discard this draft and reopen the editor.');
+    const next = appStore.savedThemes.filter((t) => t.id !== id);
+    await invoke('save_model_settings_if_unchanged', { expected, values: { ...expected, custom_themes: next } });
+    appStore.savedThemes = next;
   } catch (err) {
     themeEditor.saving = false;
     themeEditor.confirmingDelete = false;

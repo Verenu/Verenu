@@ -6,7 +6,8 @@
     provider = $bindable(),
     localSupported = true,
     localUnsupportedReason = '',
-  }: { provider: WizardProviderId; localSupported?: boolean; localUnsupportedReason?: string } = $props();
+    onSelect,
+  }: { provider: WizardProviderId; localSupported?: boolean; localUnsupportedReason?: string; onSelect?: () => void } = $props();
 
   const visibleProviders = $derived(providers.filter((candidate) => candidate.id !== 'local' || localSupported));
 
@@ -25,7 +26,7 @@
         class="pick-card provider-card"
         class:selected={provider === p.id}
         aria-pressed={provider === p.id}
-        onclick={() => { provider = p.id; }}
+        onclick={() => { provider = p.id; onSelect?.(); }}
       >
         <div class="provider-icon">{@html getProviderLogo(p.id)}</div>
         <div class="provider-info">

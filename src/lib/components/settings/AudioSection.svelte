@@ -3,7 +3,7 @@
   import { onDestroy } from 'svelte';
   import Toggle from '../Toggle.svelte';
   import { isAndroid, isLinux, isMac, isWindows } from '../../platform';
-  import { booleanSettingHandler, loadSettingsSnapshot, saveSetting } from '../../settings';
+  import { booleanSettingHandler, loadSettingsSnapshot, saveSetting, saveSettingIfUnchanged } from '../../settings';
   import { MOTION_MS, motionMs } from '../../motion';
   import { defaultMicGain, micGainAdvice, shouldPersistMicGain } from './audioGain';
 
@@ -23,6 +23,9 @@
   let micGainSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSavedMicGain: number | null = null;
   let micGainChangedByUser = false;
+  let micGainLoaded = false;
+  let micGainSaving: Promise<void> | null = null;
+  let micGainError = $state(false);
   const gainAdvice = $derived(micGainAdvice(micGain, noiseReduction));
 
   async function loadSettings() {
@@ -49,10 +52,11 @@
         : legacySounds === false ? 0 : 100;
       if (savedGain !== null && savedGain !== undefined) {
         micGain = Math.max(1, Math.min(8, savedGain));
-        lastSavedMicGain = micGain;
+        lastSavedMicGain = savedGain;
       } else {
         lastSavedMicGain = null;
       }
+      micGainLoaded = true;
     } catch (err) {
       console.error('AudioSection load failed:', err);
     }
@@ -96,18 +100,23 @@
   }
 
   async function persistMicGain() {
+    while (micGainSaving) await micGainSaving;
+    if (!micGainLoaded || micGainError) return;
     const value = micGain;
     if (!shouldPersistMicGain(value, lastSavedMicGain, micGainChangedByUser)) return;
-    lastSavedMicGain = value;
-    try {
-      await saveSetting('mic_gain', value);
-      if (micGain === value) {
-        micGainChangedByUser = false;
+    const expected = lastSavedMicGain;
+    micGainSaving = (async () => {
+      try {
+        await saveSettingIfUnchanged('mic_gain', value, { mic_gain: expected });
+        lastSavedMicGain = value;
+        if (micGain === value) micGainChangedByUser = false;
+      } catch (err) {
+        micGainError = true;
+        console.error('saveMicGain failed:', err);
       }
-    } catch (err) {
-      lastSavedMicGain = null;
-      console.error('saveMicGain failed:', err);
-    }
+    })();
+    await micGainSaving;
+    micGainSaving = null;
   }
 
   function scheduleMicGainSave() {
@@ -169,6 +178,7 @@
       <span>8×</span>
     </div>
   </div>
+  {#if micGainError}<div class="desc" role="alert">Could not save microphone gain. Reload Audio settings before trying again.</div>{/if}
   {#if gainAdvice}
     <div class="gain-tip" role="note" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
