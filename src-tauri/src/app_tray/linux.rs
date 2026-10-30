@@ -82,8 +82,8 @@ fn icon(mut rgba: Vec<u8>, size: u32) -> ksni::Icon {
     }
 }
 
-pub(super) fn setup(app: &mut tauri::App) -> tauri::Result<()> {
-    let owner = app.handle().clone();
+pub(super) fn setup(app: &AppHandle) -> tauri::Result<()> {
+    let owner = app.clone();
     let theme = super::resolve_icon_theme(&owner, None);
     let image = super::runtime_tray_icon_image(theme, super::runtime_icon_foreground(theme), 32);
     let icon_revision = Arc::new(AtomicU64::new(0));
@@ -107,7 +107,7 @@ pub(super) fn setup(app: &mut tauri::App) -> tauri::Result<()> {
         }),
     };
     // Login startup can precede the shell's watcher; reconnect when it appears.
-    let tray_owner = app.handle().clone();
+    let tray_owner = app.clone();
     tauri::async_runtime::spawn(async move {
         match tray.assume_sni_available(true).spawn().await {
             Ok(handle) => {
@@ -141,6 +141,28 @@ pub(super) fn update_icon(app: &AppHandle, rgba: Vec<u8>, size: u32) {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires an isolated graphical and D-Bus session"]
+    fn tray_can_start_and_stop_through_the_app_handle() {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        super::setup(app.handle()).unwrap();
+        tauri::async_runtime::block_on(async {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if let Some(handle) = app.try_state::<ksni::Handle<LinuxTray>>() {
+                    handle.shutdown().await;
+                    break;
+                }
+                assert!(tokio::time::Instant::now() < deadline, "tray did not start");
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        });
+    }
 
     #[test]
     fn identity_click_and_menu_contract() {

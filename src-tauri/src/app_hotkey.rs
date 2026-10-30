@@ -93,11 +93,11 @@ impl HandsfreeConversionGuard {
     }
 }
 
-pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
+pub(crate) fn setup_hotkey(app: &tauri::AppHandle, shared: SharedState) {
     #[cfg(target_os = "linux")]
-    crate::core::hotkey::shortcut_status::initialize(app.handle().clone());
+    crate::core::hotkey::shortcut_status::initialize(app.clone());
     #[cfg(target_os = "linux")]
-    if let Err(error) = crate::commands::apply_linux_control_keys(app.handle()) {
+    if let Err(error) = crate::commands::apply_linux_control_keys(app) {
         log::warn!("Could not load secondary shortcuts: {error}");
     }
     #[cfg(target_os = "linux")]
@@ -147,11 +147,11 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
     ) {
         Ok(_handle) => {
             log::info!("hotkey: hook installed");
-            crate::commands::apply_sub_app_capture_hotkey(app.handle());
+            crate::commands::apply_sub_app_capture_hotkey(app);
         }
         Err(e) => {
             log::error!("Hotkey hook failed to start: {e}");
-            let app_h = app.handle().clone();
+            let app_h = app.clone();
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 app_h
@@ -165,7 +165,7 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
         }
     }
 
-    let app_hk = app.handle().clone();
+    let app_hk = app.clone();
     let state_hk = shared;
 
     tauri::async_runtime::spawn(async move {
