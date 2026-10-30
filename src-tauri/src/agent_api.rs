@@ -27,6 +27,21 @@ pub(crate) struct Agent {
     gate: Arc<tokio::sync::Semaphore>,
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) struct AgentDrain(Arc<tokio::sync::Semaphore>);
+
+#[cfg(target_os = "linux")]
+impl AgentDrain {
+    #[allow(dead_code)]
+    pub(crate) async fn pause(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        self.0
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "The agent service is unavailable.".to_owned())
+    }
+}
+
 fn publish_discovery(port: u16, instance: &str) -> anyhow::Result<()> {
     let path = crate::app_data_dir().join("agent-session.json");
     #[cfg(unix)]
@@ -257,11 +272,14 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
         ..Approvals::default()
     }));
     app.manage(approvals.clone());
+    let gate = Arc::new(tokio::sync::Semaphore::new(1));
+    #[cfg(target_os = "linux")]
+    app.manage(AgentDrain(gate.clone()));
     let state = Agent {
         app,
         instance,
         approvals,
-        gate: Arc::new(tokio::sync::Semaphore::new(1)),
+        gate,
     };
     tauri::async_runtime::spawn(async move {
         let listener = match tokio::net::TcpListener::from_std(listener) {
@@ -1067,6 +1085,30 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn restart_drain_waits_for_detached_agent_request_and_blocks_new_requests() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = gate.clone().try_acquire_owned().unwrap();
+        let (finish, waiting) = tokio::sync::oneshot::channel::<()>();
+        let task = spawn_with_permit(permit, async move { waiting.await.unwrap() });
+        drop(task);
+        let drain = AgentDrain(gate.clone());
+        let mut pause = Box::pin(drain.pause());
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut pause)
+            .await
+            .is_err());
+        assert!(gate.clone().try_acquire_owned().is_err());
+        finish.send(()).unwrap();
+        let paused = tokio::time::timeout(Duration::from_secs(2), pause)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(gate.clone().try_acquire_owned().is_err());
+        drop(paused);
+        assert!(gate.clone().try_acquire_owned().is_ok());
+    }
+
     #[tokio::test]
     async fn timed_out_request_keeps_the_gate_until_work_finishes() {
         let gate = Arc::new(tokio::sync::Semaphore::new(1));
