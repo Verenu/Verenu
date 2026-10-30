@@ -139,8 +139,17 @@ mod common {
         let state_hk = shared;
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
+                #[cfg(target_os = "linux")]
+                let activity = crate::commands::linux_activity(&app_hk).await;
                 if matches!(event, MuteTriggerEvent::BecameUnmuted { .. }) {
-                    let _ = tauri::async_runtime::spawn_blocking(release_active_pcm).await;
+                    #[cfg(target_os = "linux")]
+                    let worker_activity = activity.clone();
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        #[cfg(target_os = "linux")]
+                        let _activity = worker_activity;
+                        release_active_pcm();
+                    })
+                    .await;
                 }
                 dispatch_event(&app_hk, &state_hk, event);
             }
@@ -318,6 +327,8 @@ mod common {
     pub(super) struct PcmMonitorGuard {
         pub(super) stop: Arc<AtomicBool>,
         pub(super) join: Option<std::thread::JoinHandle<()>>,
+        #[cfg(target_os = "linux")]
+        pub(super) _activity: Option<Arc<crate::linux_activity::Activity>>,
     }
 
     impl Drop for PcmMonitorGuard {
@@ -372,9 +383,45 @@ mod common {
                 }
                 worker_completed.store(true, Ordering::SeqCst);
             });
-            drop(PcmMonitorGuard { stop: stop.clone(), join: Some(join) });
+            drop(PcmMonitorGuard {
+                stop: stop.clone(),
+                join: Some(join),
+                #[cfg(target_os = "linux")]
+                _activity: None,
+            });
             assert!(stop.load(Ordering::SeqCst));
             assert!(completed.load(Ordering::SeqCst));
+        }
+
+        #[cfg(target_os = "linux")]
+        #[tokio::test]
+        async fn restart_waits_for_pcm_monitor_to_stop() {
+            let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+            let activity = Arc::new(gate.try_enter().unwrap());
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let worker = std::thread::spawn(move || {
+                while !worker_stop.load(Ordering::SeqCst) {
+                    std::thread::yield_now();
+                }
+            });
+            let monitor = PcmMonitorGuard {
+                stop,
+                join: Some(worker),
+                _activity: Some(activity),
+            };
+            let pause_gate = gate.clone();
+            let pause = tokio::spawn(async move { pause_gate.pause().await.unwrap() });
+            tokio::task::yield_now().await;
+            assert!(gate.try_enter().is_none());
+            assert!(!pause.is_finished());
+            drop(monitor);
+            let lease = tokio::time::timeout(Duration::from_secs(2), pause)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(gate.try_enter().is_none());
+            drop(lease);
         }
     }
 }
@@ -1054,7 +1101,7 @@ mod linux {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
-    use tauri::AppHandle;
+    use tauri::{AppHandle, Manager};
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -1254,8 +1301,23 @@ mod linux {
         let mut last_rebind_check = Instant::now();
         let mut last_drift_poll = Instant::now();
         const DRIFT_POLL: Duration = Duration::from_secs(2);
+        let activity_gate = app
+            .try_state::<Arc<crate::linux_activity::ActivityGate>>()
+            .map(|gate| gate.inner().clone());
 
         loop {
+            let activity = if let Some(gate) = &activity_gate {
+                match gate.try_enter() {
+                    Some(activity) => Some(Arc::new(activity)),
+                    None => {
+                        release_active_pcm();
+                        std::thread::sleep(POLL_INTERVAL);
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
             if GENERATION.load(Ordering::SeqCst) != gen {
                 log::info!("mic_mute_trigger: generation changed — rebinding");
                 break;
@@ -1375,7 +1437,10 @@ mod linux {
                     if can_retry {
                         log::info!("mic_mute_trigger: starting digital-silence PCM monitor");
                         last_pcm_start_at = Some(Instant::now());
-                        install_active_pcm(start_pcm_monitor(selected_device_name(app)));
+                        install_active_pcm(start_pcm_monitor(
+                            selected_device_name(app),
+                            activity.clone(),
+                        ));
                     }
                 }
             }
@@ -1388,7 +1453,10 @@ mod linux {
         Ok(())
     }
 
-    fn start_pcm_monitor(device_name: Option<String>) -> PcmMonitorGuard {
+    fn start_pcm_monitor(
+        device_name: Option<String>,
+        activity: Option<Arc<crate::linux_activity::Activity>>,
+    ) -> PcmMonitorGuard {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let join = std::thread::Builder::new()
@@ -1399,7 +1467,11 @@ mod linux {
                 }
             })
             .ok();
-        PcmMonitorGuard { stop, join }
+        PcmMonitorGuard {
+            stop,
+            join,
+            _activity: activity,
+        }
     }
 
     fn run_pcm_monitor(
