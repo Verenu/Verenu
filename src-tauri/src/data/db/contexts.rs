@@ -1198,9 +1198,61 @@ pub(crate) fn set_snippet_context_assignment_conn(
     Ok(())
 }
 
+pub fn move_snippet_context_assignment(
+    db: &Db,
+    source_id: i64,
+    target_id: i64,
+    snippet_id: i64,
+) -> Result<()> {
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    query_context_conn(&tx, source_id)?;
+    query_context_conn(&tx, target_id)?;
+    let assigned: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM snippet_contexts WHERE context_id = ?1 AND snippet_id = ?2)",
+        params![source_id, snippet_id],
+        |row| row.get(0),
+    )?;
+    if !assigned {
+        anyhow::bail!("Snippet {snippet_id} is no longer assigned to the source context");
+    }
+    if source_id != target_id {
+        tx.execute(
+            "INSERT OR IGNORE INTO snippet_contexts (context_id, snippet_id) VALUES (?1, ?2)",
+            params![target_id, snippet_id],
+        )?;
+        tx.execute(
+            "DELETE FROM snippet_contexts WHERE context_id = ?1 AND snippet_id = ?2",
+            params![source_id, snippet_id],
+        )?;
+    }
+    tx.commit()?;
+    invalidate_snippet_cache();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snippet_move_is_atomic_when_removal_fails() {
+        let db = open(":memory:").unwrap();
+        let source = insert_context_returning(&db, "Source", None, None, None, None, false).unwrap();
+        let target = insert_context_returning(&db, "Target", None, None, None, None, false).unwrap();
+        let snippet = insert_snippet_returning(&db, "sig", "Regards", "", Some(source.id)).unwrap();
+        lock_conn(&db).unwrap().execute_batch("CREATE TRIGGER fail_snippet_move BEFORE DELETE ON snippet_contexts BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
+        assert!(move_snippet_context_assignment(&db, source.id, target.id, snippet.id).is_err());
+        assert!(query_snippets_for_context(&db, source.id).unwrap().iter().any(|row| row.id == snippet.id));
+        assert!(!query_snippets_for_context(&db, target.id).unwrap().iter().any(|row| row.id == snippet.id));
+        lock_conn(&db).unwrap().execute_batch("DROP TRIGGER fail_snippet_move").unwrap();
+        move_snippet_context_assignment(&db, source.id, target.id, snippet.id).unwrap();
+        assert!(!query_snippets_for_context(&db, source.id).unwrap().iter().any(|row| row.id == snippet.id));
+        assert!(query_snippets_for_context(&db, target.id).unwrap().iter().any(|row| row.id == snippet.id));
+        assert!(move_snippet_context_assignment(&db, source.id, target.id, snippet.id).is_err());
+        move_snippet_context_assignment(&db, target.id, target.id, snippet.id).unwrap();
+        assert!(query_snippets_for_context(&db, target.id).unwrap().iter().any(|row| row.id == snippet.id));
+    }
 
     #[test]
     fn context_editor_rejects_stale_save_without_overwriting_agent_change() {
