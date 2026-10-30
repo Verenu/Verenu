@@ -46,6 +46,35 @@ fn handoff_settings_reject_all_mutations_without_touching_disk() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn handoff_rejects_settings_changed_after_the_initial_snapshot() {
+    let path = unique_tmp_path();
+    std::fs::write(&path, br#"{"value":1}"#).unwrap();
+    let settings = SettingsHandle::open_for_handoff(path.clone()).unwrap();
+    std::fs::write(&path, br#"{ "value": 1 }"#).unwrap();
+    settings.validate_handoff_snapshot().unwrap();
+    std::fs::write(&path, br#"{"value":2}"#).unwrap();
+    assert!(settings.validate_handoff_snapshot().is_err());
+    assert_eq!(settings.get("value"), Some(json!(1)));
+    assert_eq!(std::fs::read(&path).unwrap(), br#"{"value":2}"#);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn handoff_rejects_unsaved_settings_in_the_running_app() {
+    let path = unique_tmp_path();
+    std::fs::write(&path, b"{}").unwrap();
+    let settings = SettingsHandle::empty_for_test(path.clone());
+    settings.set("value", json!(1)).unwrap();
+    assert!(settings.validate_handoff_snapshot().is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+    settings.save().unwrap();
+    settings.validate_handoff_snapshot().unwrap();
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn handoff_settings_reload_before_all_clones_become_writable() {
     let path = unique_tmp_path();
     std::fs::write(&path, br#"{"value":1}"#).unwrap();
