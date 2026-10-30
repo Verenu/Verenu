@@ -101,6 +101,43 @@ fn navigation_cannot_inherit_a_racing_old_settings_acknowledgement() {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn listing_local_models_does_not_create_a_data_directory() {
+    const CHILD_MARKER: &str = "VERENU_TEST_READ_ONLY_MODEL_LIST";
+    if std::env::var_os(CHILD_MARKER).is_some() {
+        let root = app_data_dir();
+        assert!(!root.exists());
+        assert!(!crate::local_stt::LocalTranscriptionManager::new()
+            .list_models()
+            .unwrap()
+            .is_empty());
+        assert!(!crate::local_llm::LocalLlmManager::new()
+            .list_models()
+            .unwrap()
+            .is_empty());
+        assert!(!root.exists());
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("verenu-read-only-models-{}", uuid::Uuid::new_v4()));
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "app_setup::listing_local_models_does_not_create_a_data_directory",
+            "--nocapture",
+        ])
+        .env(CHILD_MARKER, "1")
+        .env("VERENU_APP_DATA_DIR_OVERRIDE", &root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!root.exists());
+}
+
 #[cfg(target_os = "windows")]
 impl FrontendReadiness {
     fn main_ready(&self) -> bool {

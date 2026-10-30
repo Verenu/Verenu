@@ -86,7 +86,7 @@ impl LocalTranscriptionManager {
     }
 
     pub fn list_models(&self) -> anyhow::Result<Vec<LocalSttModelInfo>> {
-        let root = self.prepare_models_dir()?;
+        let root = Self::models_root();
         let downloading_model_id = self
             .download_task
             .lock()
