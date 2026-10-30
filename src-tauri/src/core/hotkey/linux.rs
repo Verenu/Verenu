@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 mod conflicts;
 #[path = "linux_portal.rs"]
 mod portal;
+#[path = "linux_portal_control.rs"]
+#[allow(dead_code)]
+mod portal_control;
 #[path = "linux_shortcuts.rs"]
 mod shortcuts;
 #[cfg(test)]
@@ -86,6 +89,166 @@ static CANCEL_PORTAL_ID: Mutex<Option<String>> = Mutex::new(None);
 static HANDSFREE_PORTAL_ID: Mutex<Option<String>> = Mutex::new(None);
 static SPACE_ARMED: AtomicBool = AtomicBool::new(false);
 static GESTURE: OnceLock<Mutex<PortalGesture>> = OnceLock::new();
+static PORTAL_CONTROL: OnceLock<portal_control::Control> = OnceLock::new();
+type PortalSession = ashpd::desktop::Session<ashpd::desktop::global_shortcuts::GlobalShortcuts>;
+
+#[derive(Default)]
+struct PortalSessionLifecycle {
+    session: Mutex<Option<std::sync::Arc<PortalSession>>>,
+    creating: AtomicBool,
+}
+
+#[allow(dead_code)]
+pub(crate) struct ShortcutPause(portal_control::Pause);
+
+#[allow(dead_code)]
+impl ShortcutPause {
+    pub(crate) fn begin() -> Result<Self, String> {
+        let control = PORTAL_CONTROL.get().ok_or("Global shortcuts are unavailable")?;
+        portal_control::Pause::begin(control).map(Self)
+    }
+
+    pub(crate) async fn wait(&self) -> Result<(), String> {
+        self.0.wait().await
+    }
+
+    pub(crate) async fn resume(self) -> Result<(), String> {
+        self.0.resume().await
+    }
+}
+
+#[cfg(all(test, feature = "native-testing"))]
+pub(crate) async fn install_test_shortcut_control() -> tauri::async_runtime::JoinHandle<()> {
+    let (control, mut driver) = portal_control::Control::new();
+    assert!(PORTAL_CONTROL.set(control.clone()).is_ok());
+    let task = tauri::async_runtime::spawn(async move {
+        loop {
+            let request = *driver.requests.borrow_and_update();
+            driver.acknowledge(request, if request.active {
+                portal_control::State::Active
+            } else {
+                portal_control::State::Suspended
+            });
+            if driver.requests.changed().await.is_err() { break; }
+        }
+    });
+    assert_eq!(control.wait_for(0).await.unwrap(), portal_control::State::Active);
+    task
+}
+
+#[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_shortcuts_active() -> bool {
+    PORTAL_CONTROL.get().is_some_and(|control| control.current().state == portal_control::State::Active)
+}
+
+#[cfg(all(test, feature = "native-testing"))]
+mod portal_lifecycle_tests {
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::{oneshot, Notify};
+
+    struct Registry {
+        entered: Mutex<Option<oneshot::Sender<String>>>,
+        release: Arc<Notify>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.host.portal.Registry")]
+    impl Registry {
+        async fn register(
+            &self,
+            _app_id: &str,
+            _options: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+            #[zbus(header)] header: zbus::message::Header<'_>,
+        ) {
+            let entered = self.entered.lock().unwrap().take();
+            if let Some(entered) = entered {
+                let _ = entered.send(header.sender().unwrap().to_string());
+            }
+            self.release.notified().await;
+        }
+    }
+
+    struct Shortcuts;
+    #[zbus::interface(name = "org.freedesktop.portal.GlobalShortcuts")]
+    impl Shortcuts {
+        #[zbus(property)]
+        fn version(&self) -> u32 { 1 }
+    }
+
+    struct DelayedShortcuts { entered: Mutex<Option<oneshot::Sender<()>>> }
+    #[zbus::interface(name = "org.freedesktop.portal.GlobalShortcuts")]
+    impl DelayedShortcuts {
+        #[zbus(property)]
+        fn version(&self) -> u32 { 1 }
+
+        async fn create_session(
+            &self,
+            _options: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+        ) -> zbus::zvariant::OwnedObjectPath {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                let _ = entered.send(());
+            }
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn pause_during_connection_waits_until_real_listener_disconnects() {
+        let (entered, registered) = oneshot::channel();
+        let release = Arc::new(Notify::new());
+        let _portal = zbus::connection::Builder::session().unwrap()
+            .name("org.freedesktop.portal.Desktop").unwrap()
+            .serve_at("/org/freedesktop/portal/desktop", Registry {
+                entered: Mutex::new(Some(entered)), release: release.clone(),
+            }).unwrap()
+            .serve_at("/org/freedesktop/portal/desktop", Shortcuts).unwrap()
+            .build().await.unwrap();
+        let observer = zbus::Connection::session().await.unwrap();
+        let (control, mut driver) = super::portal_control::Control::new();
+        let listener = tokio::spawn(async move {
+            super::run_portal_session(None, &[], 0, &mut driver).await
+        });
+        let name = tokio::time::timeout(std::time::Duration::from_secs(5), registered)
+            .await.unwrap().unwrap();
+        control.request(false).unwrap();
+        assert!(!listener.is_finished());
+        release.notify_one();
+        let (_, closed) = tokio::time::timeout(std::time::Duration::from_secs(10), listener)
+            .await.unwrap().unwrap();
+        assert_eq!(closed, Some(true));
+        let owned: bool = observer.call_method(
+            Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"), "NameHasOwner", &(name.as_str(),),
+        ).await.unwrap().body().deserialize().unwrap();
+        assert!(!owned);
+    }
+
+    #[tokio::test]
+    async fn interrupted_session_creation_is_not_reported_safe() {
+        let (registered, _) = oneshot::channel();
+        let release = Arc::new(Notify::new());
+        release.notify_one();
+        let (entered, creating) = oneshot::channel();
+        let _portal = zbus::connection::Builder::session().unwrap()
+            .name("org.freedesktop.portal.Desktop").unwrap()
+            .serve_at("/org/freedesktop/portal/desktop", Registry {
+                entered: Mutex::new(Some(registered)), release,
+            }).unwrap()
+            .serve_at("/org/freedesktop/portal/desktop", DelayedShortcuts {
+                entered: Mutex::new(Some(entered)),
+            }).unwrap()
+            .build().await.unwrap();
+        let (control, mut driver) = super::portal_control::Control::new();
+        let listener = tokio::spawn(async move {
+            super::run_portal_session(None, &[], 0, &mut driver).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), creating)
+            .await.unwrap().unwrap();
+        control.request(false).unwrap();
+        let (_, closed) = tokio::time::timeout(std::time::Duration::from_secs(10), listener)
+            .await.unwrap().unwrap();
+        assert_eq!(closed, Some(false));
+    }
+}
 
 static PRESS: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static RELEASE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
@@ -912,6 +1075,8 @@ where
         registration_failure(portal::Failure::new("Reading dictation shortcut", reason));
         return Err(reason.into());
     }
+    let (control, mut driver) = portal_control::Control::new();
+    PORTAL_CONTROL.set(control).map_err(|_| "Shortcut listener is already running")?;
     Ok(std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -927,13 +1092,24 @@ where
             }
         };
         runtime.block_on(async move {
+            let mut safe_to_suspend = true;
             loop {
+                let request = *driver.requests.borrow_and_update();
+                if !request.active {
+                    let state = if safe_to_suspend { portal_control::State::Suspended } else {
+                        portal_control::State::Unavailable("Could not verify shortcut session shutdown".into())
+                    };
+                    driver.acknowledge(request, state);
+                    if driver.requests.changed().await.is_err() { break; }
+                    continue;
+                }
+                driver.acknowledge(request, portal_control::State::Starting);
                 let requested = configured_keys(&KEYS);
                 let desktop_bindings = match conflicts::bindings("dictation") {
                     Ok(bindings) => bindings,
                     Err(error) => {
                         registration_failure(portal::Failure::new("Checking desktop shortcuts", error));
-                        tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
+                        tokio::select! { _ = tokio::time::sleep(PORTAL_RECONNECT_DELAY) => {}, _ = driver.requests.changed() => {} }
                         continue;
                     }
                 };
@@ -944,7 +1120,7 @@ where
                         "-- >>> Verenu managed global shortcut (do not edit) <<<",
                         "-- <<< End Verenu managed global shortcut >>>",
                     );
-                    tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
+                    tokio::select! { _ = tokio::time::sleep(PORTAL_RECONNECT_DELAY) => {}, _ = driver.requests.changed() => {} }
                     continue;
                 };
                 if let Ok(mut effective) = EFFECTIVE_KEYS.lock() {
@@ -952,7 +1128,7 @@ where
                 }
                 let Some((preferred_trigger, bindings)) = shortcut_configuration_for(&keys) else {
                     registration_failure(portal::Failure::new("Reading dictation shortcut", "The saved key combination is not supported on Linux. Choose another dictation hotkey in Settings > General."));
-                    tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
+                    tokio::select! { _ = tokio::time::sleep(PORTAL_RECONNECT_DELAY) => {}, _ = driver.requests.changed() => {} }
                     continue;
                 };
                 log::info!(
@@ -962,12 +1138,23 @@ where
                         .unwrap_or("Hyprland modifier chord")
                 );
                 let generation = CONFIG_GENERATION.load(Ordering::SeqCst);
-                if run_portal_session(preferred_trigger.as_deref(), &bindings, generation).await {
+                let (reconnect, closed) = run_portal_session(preferred_trigger.as_deref(), &bindings, generation, &mut driver).await;
+                if let Some(closed) = closed { safe_to_suspend &= closed; }
+                if !safe_to_suspend && !driver.current().active {
+                    let current = driver.current();
+                    driver.acknowledge(current, portal_control::State::Unavailable("Could not close the shortcut portal connection".into()));
+                    while !driver.current().active {
+                        if driver.requests.changed().await.is_err() { return; }
+                    }
+                    continue;
+                }
+                if !driver.current().active { continue; }
+                if reconnect {
                     log::info!("linux hotkey: portal session ended, reconnecting");
-                    tokio::time::sleep(PORTAL_RECONNECT_DELAY).await;
+                    tokio::select! { _ = tokio::time::sleep(PORTAL_RECONNECT_DELAY) => {}, _ = driver.requests.changed() => {} }
                 } else {
                     log::info!("linux hotkey: shortcut changed, rebinding");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::select! { _ = tokio::time::sleep(Duration::from_millis(100)) => {}, _ = driver.requests.changed() => {} }
                 }
             }
         });
@@ -978,22 +1165,60 @@ async fn run_portal_session(
     preferred_trigger: Option<&str>,
     bindings: &[String],
     generation: u64,
-) -> bool {
+    driver: &mut portal_control::Driver,
+) -> (bool, Option<bool>) {
+    let mut requests = driver.requests.clone();
     let (portal, connection) = match portal::connect().await {
         Ok(v) => v,
         Err(e) => {
             registration_failure(e);
-            return true;
+            return (true, None);
         }
     };
-    let result =
-        run_connected_portal_session(&portal, preferred_trigger, bindings, generation).await;
-    match tokio::time::timeout(Duration::from_secs(5), connection.close()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => log::warn!("linux hotkey: closing portal connection failed: {error}"),
-        Err(_) => log::warn!("linux hotkey: portal connection did not close within five seconds"),
+    let lifecycle = PortalSessionLifecycle::default();
+    let starting_request = *requests.borrow();
+    let result = tokio::select! {
+        biased;
+        _ = requests.changed() => false,
+        result = run_connected_portal_session(&portal, preferred_trigger, bindings, generation, driver, starting_request, &lifecycle) => result,
+    };
+    let unique_name = connection.unique_name().cloned();
+    let observer = tokio::time::timeout(Duration::from_secs(5), zbus::Connection::session())
+        .await.ok().and_then(Result::ok);
+    let active_session = lifecycle.session.lock().ok().and_then(|session| session.clone());
+    let mut session_closed = !lifecycle.creating.load(Ordering::SeqCst);
+    if let Some(session) = active_session {
+        if !matches!(tokio::time::timeout(Duration::from_secs(5), session.close()).await, Ok(Ok(()))) {
+            log::warn!("linux hotkey: closing shortcut session failed or timed out");
+            session_closed = false;
+        }
     }
-    result
+    let mut closed = match tokio::time::timeout(Duration::from_secs(5), connection.close()).await {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => { log::warn!("linux hotkey: closing portal connection failed: {error}"); false },
+        Err(_) => { log::warn!("linux hotkey: portal connection did not close within five seconds"); false },
+    };
+    if closed {
+        closed = match (observer, unique_name) {
+            (Some(observer), Some(name)) => {
+                let wait = async {
+                    loop {
+                        let owned: bool = observer.call_method(
+                            Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
+                            Some("org.freedesktop.DBus"), "NameHasOwner", &(name.as_str(),),
+                        ).await.map_err(|error| error.to_string())?.body()
+                            .deserialize().map_err(|error: zbus::Error| error.to_string())?;
+                        if !owned { return Ok::<(), String>(()); }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                };
+                matches!(tokio::time::timeout(Duration::from_secs(5), wait).await, Ok(Ok(())))
+            }
+            _ => false,
+        };
+        closed &= session_closed;
+    }
+    (result, Some(closed))
 }
 
 async fn run_connected_portal_session(
@@ -1001,6 +1226,9 @@ async fn run_connected_portal_session(
     preferred_trigger: Option<&str>,
     bindings: &[String],
     generation: u64,
+    driver: &portal_control::Driver,
+    starting_request: portal_control::Request,
+    lifecycle: &PortalSessionLifecycle,
 ) -> bool {
     let mut owner_changes = match portal::request(
         "Watching the desktop portal",
@@ -1014,18 +1242,25 @@ async fn run_connected_portal_session(
             return true;
         }
     };
+    lifecycle.creating.store(true, Ordering::SeqCst);
     let session = match portal::request(
         "Creating shortcut session",
         portal.create_session(Default::default()),
     )
     .await
     {
-        Ok(v) => v,
+        Ok(v) => std::sync::Arc::new(v),
         Err(e) => {
             registration_failure(e);
             return true;
         }
     };
+    if let Ok(mut slot) = lifecycle.session.lock() {
+        *slot = Some(session.clone());
+    } else {
+        return true;
+    }
+    lifecycle.creating.store(false, Ordering::SeqCst);
     let before = list_portal_shortcuts();
     let mut dictate_shortcut = NewShortcut::new(PORTAL_SHORTCUT_ID, PORTAL_SHORTCUT_DESCRIPTION);
     if let Some(trigger) = preferred_trigger {
@@ -1204,6 +1439,10 @@ async fn run_connected_portal_session(
     }
     register_temporary_controls();
     refresh_escape_listening();
+    let request = driver.current();
+    if request.active && request == starting_request {
+        driver.acknowledge(request, portal_control::State::Active);
+    }
     let gesture = GESTURE.get_or_init(|| Mutex::new(PortalGesture::default()));
     if let Ok(mut state) = gesture.lock() {
         *state = PortalGesture::default();
