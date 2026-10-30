@@ -40,6 +40,16 @@ pub async fn delete_local_llm_model(
     manager: tauri::State<'_, crate::local_llm::LocalLlmManager>,
     model_id: String,
 ) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let activity = linux_try_activity(&app)?;
+        let manager = manager.inner().clone();
+        tokio::spawn(async move {
+            let _activity = activity;
+            manager.delete_model(&app, &model_id).await.map_err(|error| error.to_string())
+        }).await.map_err(|error| format!("Model deletion failed: {error}"))?
+    }
+    #[cfg(not(target_os = "linux"))]
     manager
         .delete_model(&app, &model_id)
         .await
@@ -48,6 +58,8 @@ pub async fn delete_local_llm_model(
 
 #[tauri::command]
 pub async fn open_local_models_folder(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let _activity = linux_try_activity(&app)?;
     let root = crate::local_llm::LocalLlmManager::shared_models_root();
     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     #[allow(deprecated)]

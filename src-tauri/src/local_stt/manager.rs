@@ -167,6 +167,8 @@ impl LocalTranscriptionManager {
     }
 
     pub fn download_model(&self, app: &AppHandle, model_id: &str) -> anyhow::Result<()> {
+        #[cfg(target_os = "linux")]
+        let activity = crate::commands::linux_try_activity(app).map_err(anyhow::Error::msg)?;
         let manifest = manifest_by_id(model_id)
             .ok_or_else(|| anyhow::anyhow!("unknown local model: {model_id}"))?;
         let url = manifest.url.ok_or_else(|| {
@@ -225,6 +227,8 @@ impl LocalTranscriptionManager {
         let manager = self.clone();
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
+            #[cfg(target_os = "linux")]
+            let _activity = activity;
             let result = download_model(&app_handle, &manifest, &root, Arc::clone(&cancel)).await;
 
             if let Ok(mut guard) = manager.download_task.lock() {
