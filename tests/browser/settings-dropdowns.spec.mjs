@@ -107,6 +107,12 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
     await waitForPanelMotion(strategy);
     await expect(strategy).toHaveClass(/ui-dropdown-trigger--compact/);
     await expect(strategy).not.toHaveClass(/btn-ghost/);
+    const memory = page.getByRole('button', { name: 'Local model memory policy' });
+    const panelWidth = await strategy.evaluate((element) => element.closest('.panel-inner').clientWidth);
+    for (const trigger of [strategy, memory]) {
+      const minHeight = await trigger.evaluate((element) => parseFloat(getComputedStyle(element).minHeight));
+      expect(minHeight).toBe(panelWidth <= 440 ? 44 : 28);
+    }
     await strategy.evaluate((element) => element.scrollIntoView({ block: 'center', inline: 'nearest' }));
     await waitForPanelMotion(strategy);
     await strategy.click();
@@ -116,6 +122,18 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
     await expect(strategyMenu).toHaveClass(/ui-dropdown-menu--padded/);
     await waitForPanelMotion(strategyMenu);
     await expectMenuInsideViewport(strategyMenu, page);
+    const strategyOption = strategyMenu.locator('.models-dropdown-item').first();
+    const optionMetrics = await strategyOption.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        minHeight: style.minHeight,
+        paddingTop: parseFloat(style.paddingTop),
+        paddingBottom: parseFloat(style.paddingBottom),
+      };
+    });
+    expect(optionMetrics.minHeight).toBe(panelWidth <= 440 ? '44px' : 'auto');
+    expect(optionMetrics.paddingTop).toBe(panelWidth <= 440 ? 10 : 6);
+    expect(optionMetrics.paddingBottom).toBe(panelWidth <= 440 ? 10 : 6);
     const strategyMenuWidth = await strategyMenu.evaluate((element) => element.getBoundingClientRect().width);
     expect(strategyMenuWidth).toBeGreaterThanOrEqual(240);
     await expectMenuOptionsNotClipped(strategyMenu);
