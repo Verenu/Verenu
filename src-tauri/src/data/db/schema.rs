@@ -316,6 +316,12 @@ pub fn open_with_recovery(path: impl AsRef<std::path::Path>) -> Result<Db> {
 
 #[cfg(target_os = "linux")]
 pub(crate) fn open_for_handoff(path: impl AsRef<std::path::Path>) -> Result<Db> {
+    let path = path.as_ref();
+    for suffix in ["-wal", "-shm"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        anyhow::ensure!(std::path::Path::new(&name).is_file(), "Database is not ready for a read-only restart.");
+    }
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA query_only = ON;")?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -342,12 +348,13 @@ fn handoff_database_open_never_migrates_or_writes() {
     assert!(open_for_handoff(&path).is_err());
     assert!(!path.exists());
     let original = Connection::open(&path).unwrap();
-    original
-        .execute_batch("CREATE TABLE fixture (value TEXT); INSERT INTO fixture VALUES ('original'); PRAGMA user_version = 1;")
-        .unwrap();
-    drop(original);
     assert!(open_for_handoff(&path).is_err());
-    let original = Connection::open(&path).unwrap();
+    assert!(!std::path::PathBuf::from(format!("{}-wal", path.display())).exists());
+    assert!(!std::path::PathBuf::from(format!("{}-shm", path.display())).exists());
+    original
+        .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE fixture (value TEXT); INSERT INTO fixture VALUES ('original'); PRAGMA user_version = 1;")
+        .unwrap();
+    assert!(open_for_handoff(&path).is_err());
     assert_eq!(
         original.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)).unwrap(),
         1
@@ -355,7 +362,6 @@ fn handoff_database_open_never_migrates_or_writes() {
     original
         .pragma_update(None, "user_version", HANDOFF_SCHEMA_VERSION)
         .unwrap();
-    drop(original);
     let handoff = open_for_handoff(&path).unwrap();
     let conn = handoff.lock().unwrap();
     assert_eq!(
@@ -372,7 +378,6 @@ fn handoff_database_open_never_migrates_or_writes() {
         .is_err());
     drop(conn);
     drop(handoff);
-    let original = Connection::open(&path).unwrap();
     let count: i64 = original
         .query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get(0))
         .unwrap();

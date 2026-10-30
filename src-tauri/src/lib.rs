@@ -42,6 +42,8 @@ mod linux_activity;
 #[cfg(target_os = "linux")]
 mod linux_handoff;
 #[cfg(target_os = "linux")]
+mod linux_handoff_child;
+#[cfg(target_os = "linux")]
 mod linux_handoff_transport;
 #[cfg(target_os = "linux")]
 mod linux_single_instance;
@@ -180,8 +182,42 @@ fn init_android_audio_context() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn new_shared_state() -> SharedState {
+    Arc::new(Mutex::new(AppState {
+        lifecycle: pipeline::DictationLifecycle::Idle,
+        analytics_run_id: None,
+        target: WindowTarget::default(),
+        pill_placement: None,
+        pill_placement_stale: false,
+        pill_width_points: pipeline::DEFAULT_PILL_WIDTH_POINTS,
+        pill_height_points: pipeline::DEFAULT_PILL_HEIGHT_POINTS,
+        recording_context: None,
+        retry_capture: None,
+        cancelled_capture: None,
+        paste_failure: None,
+        adaptive_sensitivity_level: 0,
+        sensitivity_retry_available: false,
+        sensitivity_rejected_at: None,
+        failover_session_id: None,
+        failover_reuse_id: false,
+        failover_started_at_unix: 0,
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    match linux_handoff_transport::Child::from_environment(std::time::Duration::from_secs(30)) {
+        Ok(Some(child)) => {
+            linux_handoff_child::run(child);
+            return;
+        }
+        Ok(None) => recover_output_volume(),
+        Err(error) => {
+            eprintln!("Could not start update replacement: {error}");
+            return;
+        }
+    }
     #[cfg(target_os = "linux")]
     crate::core::hyprland::initialize_app_identity();
     #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
@@ -208,25 +244,7 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     let single_instance = (!is_dev_session()).then(crate::single_instance::acquire);
 
-    let shared: SharedState = Arc::new(Mutex::new(AppState {
-        lifecycle: pipeline::DictationLifecycle::Idle,
-        analytics_run_id: None,
-        target: WindowTarget::default(),
-        pill_placement: None,
-        pill_placement_stale: false,
-        pill_width_points: pipeline::DEFAULT_PILL_WIDTH_POINTS,
-        pill_height_points: pipeline::DEFAULT_PILL_HEIGHT_POINTS,
-        recording_context: None,
-        retry_capture: None,
-        cancelled_capture: None,
-        paste_failure: None,
-        adaptive_sensitivity_level: 0,
-        sensitivity_retry_available: false,
-        sensitivity_rejected_at: None,
-        failover_session_id: None,
-        failover_reuse_id: false,
-        failover_started_at_unix: 0,
-    }));
+    let shared = new_shared_state();
 
     crate::system::logger::init_early();
     pipeline::failover::restore_into_state(&shared);
