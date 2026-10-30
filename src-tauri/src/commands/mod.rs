@@ -68,6 +68,14 @@ fn db_state(app: &AppHandle) -> DbHandle {
     app.state::<DbHandle>().inner().clone()
 }
 
+#[cfg(target_os = "linux")]
+async fn linux_activity(
+    app: &AppHandle,
+) -> Option<std::sync::Arc<crate::linux_activity::Activity>> {
+    let gate = app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()?;
+    Some(std::sync::Arc::new(gate.inner().clone().enter().await))
+}
+
 async fn run_db<T, F>(app: &AppHandle, label: &'static str, f: F) -> Result<T, String>
 where
     T: Send + 'static,
