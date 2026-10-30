@@ -20,6 +20,12 @@ pub(crate) struct Activity(Arc<ActivityGate>);
 #[allow(dead_code)]
 pub(crate) struct Pause(Arc<ActivityGate>);
 
+impl Pause {
+    pub(crate) fn belongs_to(&self, gate: &Arc<ActivityGate>) -> bool {
+        Arc::ptr_eq(&self.0, gate)
+    }
+}
+
 impl ActivityGate {
     pub(crate) fn try_enter(self: &Arc<Self>) -> Option<Activity> {
         let mut state = self.state.lock().expect("activity gate lock");
