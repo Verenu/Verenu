@@ -69,6 +69,18 @@ pub fn start_recording_session_ex_with_context(
     options: RecordingStartOptions,
     captured_context: Option<ResolvedContextIdentity>,
 ) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let _activity = if let Some(gate) = app.try_state::<Arc<crate::linux_activity::ActivityGate>>() {
+        match gate.try_enter() {
+            Some(activity) => Some(activity),
+            None => {
+                release_starting_reservation(state);
+                return Err("Verenu is preparing to restart. Try recording again shortly.".into());
+            }
+        }
+    } else {
+        None
+    };
     let settings = store::settings_snapshot(app);
     let audio_config = match settings {
         Ok(ref settings) => store::load_audio_config(settings),
