@@ -753,6 +753,19 @@ pub fn insert_dictionary_entry_returning(
     mistake: Option<&str>,
     context_id: Option<i64>,
 ) -> Result<CreatedRecordMeta> {
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let created = insert_dictionary_entry_returning_conn(&tx, term, mistake, context_id)?;
+    tx.commit()?;
+    Ok(created)
+}
+
+pub(crate) fn insert_dictionary_entry_returning_conn(
+    tx: &rusqlite::Connection,
+    term: &str,
+    mistake: Option<&str>,
+    context_id: Option<i64>,
+) -> Result<CreatedRecordMeta> {
     let normalized_term = require_nonempty_trimmed("Term", term)?;
     let normalized_mistake = normalize_optional_trimmed(mistake);
     validate_char_limit("Term", &normalized_term, DICTIONARY_ENTRY_CHAR_LIMIT)?;
@@ -760,9 +773,7 @@ pub fn insert_dictionary_entry_returning(
         validate_char_limit("Often mistranscribed as", m, DICTIONARY_ENTRY_CHAR_LIMIT)?;
     }
 
-    let mut conn = lock_conn(db)?;
-    let tx = conn.transaction()?;
-    let everywhere_id = ensure_everywhere_context_conn(&tx)?;
+    let everywhere_id = ensure_everywhere_context_conn(tx)?;
     let target_context = context_id.unwrap_or(everywhere_id);
     let exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM contexts WHERE id = ?1)",
@@ -792,7 +803,7 @@ pub fn insert_dictionary_entry_returning(
             anyhow::bail!("\"{normalized_term}\" is already in this context");
         }
         check_dictionary_mistake_conflicts(
-            &tx,
+            tx,
             target_context,
             Some(id),
             normalized_mistake.as_deref(),
@@ -806,7 +817,7 @@ pub fn insert_dictionary_entry_returning(
             params![id],
         )?;
         insert_correction_mappings_conn(
-            &tx,
+            tx,
             target_context,
             id,
             CorrectionMappingSeed {
@@ -824,7 +835,7 @@ pub fn insert_dictionary_entry_returning(
             )?;
         }
         purge_auto_learn_evidence_for_mistake_list_conn(
-            &tx,
+            tx,
             target_context,
             normalized_mistake.as_deref(),
             &normalized_term,
@@ -834,11 +845,10 @@ pub fn insert_dictionary_entry_returning(
             params![id],
             |r| r.get(0),
         )?;
-        tx.commit()?;
         return Ok(CreatedRecordMeta { id, created_at });
     }
 
-    check_dictionary_mistake_conflicts(&tx, target_context, None, normalized_mistake.as_deref())?;
+    check_dictionary_mistake_conflicts(tx, target_context, None, normalized_mistake.as_deref())?;
     tx.execute(
         "INSERT INTO dictionary (term, mistake, confidence_tier, last_seen_at) VALUES (?1, NULL, 'manual', datetime('now'))",
         params![normalized_term],
@@ -849,7 +859,7 @@ pub fn insert_dictionary_entry_returning(
         params![target_context, id],
     )?;
     insert_correction_mappings_conn(
-        &tx,
+        tx,
         target_context,
         id,
         CorrectionMappingSeed {
@@ -867,7 +877,7 @@ pub fn insert_dictionary_entry_returning(
         )?;
     }
     purge_auto_learn_evidence_for_mistake_list_conn(
-        &tx,
+        tx,
         target_context,
         normalized_mistake.as_deref(),
         &normalized_term,
@@ -877,7 +887,6 @@ pub fn insert_dictionary_entry_returning(
         params![id],
         |r| r.get(0),
     )?;
-    tx.commit()?;
     Ok(CreatedRecordMeta { id, created_at })
 }
 
@@ -1573,26 +1582,9 @@ pub fn update_dictionary_entry_for_context(
     term: &str,
     mistake: Option<&str>,
 ) -> Result<()> {
-    let normalized_term = require_nonempty_trimmed("Term", term)?;
-    let normalized_mistake = normalize_optional_trimmed(mistake);
-    validate_char_limit("Term", &normalized_term, DICTIONARY_ENTRY_CHAR_LIMIT)?;
-    if let Some(mistake) = normalized_mistake.as_deref() {
-        validate_char_limit(
-            "Often mistranscribed as",
-            mistake,
-            DICTIONARY_ENTRY_CHAR_LIMIT,
-        )?;
-    }
-
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
-    update_dictionary_entry_for_context_conn(
-        &tx,
-        context_id,
-        id,
-        &normalized_term,
-        normalized_mistake.as_deref(),
-    )?;
+    update_dictionary_entry_for_context_conn(&tx, context_id, id, term, mistake)?;
     tx.commit()?;
     Ok(())
 }
@@ -1651,13 +1643,27 @@ pub fn update_dictionary_entry_if_unchanged(
     Ok(())
 }
 
-fn update_dictionary_entry_for_context_conn(
+
+pub(crate) fn update_dictionary_entry_for_context_conn(
     conn: &rusqlite::Connection,
     context_id: i64,
     id: i64,
-    normalized_term: &str,
-    normalized_mistake: Option<&str>,
+    term: &str,
+    mistake: Option<&str>,
 ) -> Result<()> {
+    let normalized_term = require_nonempty_trimmed("Term", term)?;
+    let normalized_mistake = normalize_optional_trimmed(mistake);
+    validate_char_limit("Term", &normalized_term, DICTIONARY_ENTRY_CHAR_LIMIT)?;
+    if let Some(mistake) = normalized_mistake.as_deref() {
+        validate_char_limit(
+            "Often mistranscribed as",
+            mistake,
+            DICTIONARY_ENTRY_CHAR_LIMIT,
+        )?;
+    }
+
+    let normalized_term = normalized_term.as_str();
+    let normalized_mistake = normalized_mistake.as_deref();
     let context_exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM contexts WHERE id = ?1)",
         params![context_id],
@@ -1674,14 +1680,18 @@ fn update_dictionary_entry_for_context_conn(
             params![everywhere_id, id],
             |row| row.get(0),
         )?;
-    if inherited {
-        let canonical: String = conn.query_row(
-            "SELECT term FROM dictionary WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
+    let canonical: String = conn.query_row(
+        "SELECT term FROM dictionary WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )?;
+    if normalized_term != canonical {
+        let other_assignments: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM dictionary_contexts WHERE dictionary_id = ?1 AND context_id != ?2)",
+            params![id, context_id], |row| row.get(0),
         )?;
-        if normalized_term != canonical {
-            anyhow::bail!("Rename inherited terms in Everywhere; only correction patterns can be customized here");
+        if inherited || other_assignments {
+            anyhow::bail!("Cannot rename vocabulary shared with other Contexts from a scoped edit");
         }
     }
     let assigned: bool = conn.query_row(
@@ -1745,14 +1755,41 @@ fn update_dictionary_entry_for_context_conn(
     Ok(())
 }
 
+/// Rename the canonical term in every Context without changing its corrections.
+pub fn rename_dictionary_entry_global(db: &Db, id: i64, term: &str, expected_term: &str) -> Result<()> {
+    let term = require_nonempty_trimmed("Term", term)?;
+    validate_char_limit("Term", &term, DICTIONARY_ENTRY_CHAR_LIMIT)?;
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let old_term: String = tx.query_row("SELECT term FROM dictionary WHERE id = ?1", [id], |row| row.get(0))?;
+    anyhow::ensure!(old_term == expected_term, "This vocabulary entry changed while you were editing. Read it again before renaming.");
+    let context_ids: Vec<i64> = tx.prepare("SELECT context_id FROM dictionary_contexts WHERE dictionary_id = ?1")?
+        .query_map([id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    for context_id in context_ids {
+        purge_auto_learn_evidence_for_dictionary_conn(&tx, context_id, id)?;
+    }
+    if old_term != term {
+        let all_contexts: Vec<i64> = tx.prepare("SELECT id FROM contexts")?
+            .query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for context_id in all_contexts {
+            purge_auto_learn_evidence_for_term_conn(&tx, context_id, &old_term)?;
+        }
+    }
+    let changed = tx.execute("UPDATE dictionary SET term = ?2 WHERE id = ?1", params![id, term])?;
+    require_row_changed(changed, "Dictionary entry", id)?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&str>) -> Result<()> {
-    let conn = lock_conn(db)?;
-    let context_ids: Vec<i64> = conn
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let context_ids: Vec<i64> = tx
         .prepare("SELECT context_id FROM dictionary_contexts WHERE dictionary_id = ?1 ORDER BY context_id")?
         .query_map(params![id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let context_id = if context_ids.is_empty() {
-        let exists: bool = conn.query_row(
+        let exists: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM dictionary WHERE id = ?1)",
             params![id],
             |row| row.get(0),
@@ -1760,12 +1797,12 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
         if !exists {
             anyhow::bail!("Dictionary entry {id} was not found");
         }
-        let everywhere_id: i64 = conn.query_row(
+        let everywhere_id: i64 = tx.query_row(
             "SELECT id FROM contexts WHERE is_everywhere = 1 ORDER BY id LIMIT 1",
             [],
             |row| row.get(0),
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO dictionary_contexts (context_id, dictionary_id)
              VALUES (?1, ?2)",
             params![everywhere_id, id],
@@ -1778,8 +1815,9 @@ pub fn update_dictionary_entry(db: &Db, id: i64, term: &str, mistake: Option<&st
     } else {
         context_ids[0]
     };
-    drop(conn);
-    update_dictionary_entry_for_context(db, context_id, id, term, mistake)
+    update_dictionary_entry_for_context_conn(&tx, context_id, id, term, mistake)?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn remove_dictionary_entry_from_context(
@@ -1789,6 +1827,16 @@ pub fn remove_dictionary_entry_from_context(
 ) -> Result<()> {
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
+    remove_dictionary_entry_from_context_conn(&tx, context_id, dictionary_id)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn remove_dictionary_entry_from_context_conn(
+    tx: &rusqlite::Connection,
+    context_id: i64,
+    dictionary_id: i64,
+) -> Result<()> {
     let assigned: bool = tx.query_row(
         "SELECT EXISTS(
              SELECT 1 FROM dictionary_contexts
@@ -1800,13 +1848,12 @@ pub fn remove_dictionary_entry_from_context(
     if !assigned {
         anyhow::bail!("Dictionary entry {dictionary_id} is not assigned to this context");
     }
-    remove_dictionary_corrections_for_context_conn(&tx, context_id, dictionary_id)?;
+    remove_dictionary_corrections_for_context_conn(tx, context_id, dictionary_id)?;
     tx.execute(
         "DELETE FROM dictionary_contexts WHERE context_id = ?1 AND dictionary_id = ?2",
         params![context_id, dictionary_id],
     )?;
-    cleanup_orphaned_auto_dictionary_conn(&tx, context_id, dictionary_id)?;
-    tx.commit()?;
+    cleanup_orphaned_auto_dictionary_conn(tx, context_id, dictionary_id)?;
     Ok(())
 }
 
@@ -1933,7 +1980,12 @@ fn purge_auto_learn_evidence_for_dictionary_conn(
 pub fn delete_dictionary_entry(db: &Db, id: i64) -> Result<()> {
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
+    delete_dictionary_entry_conn(&tx, id)?;
+    tx.commit()?;
+    Ok(())
+}
 
+pub(crate) fn delete_dictionary_entry_conn(tx: &rusqlite::Connection, id: i64) -> Result<()> {
     let info: Option<(String, Option<String>, i64)> = tx
         .query_row(
             "SELECT term, mistake, auto_learned FROM dictionary WHERE id=?1",
@@ -1969,13 +2021,13 @@ pub fn delete_dictionary_entry(db: &Db, id: i64) -> Result<()> {
 
     if let Some((term, _, _)) = &info {
         for context_id in &assigned_contexts {
-            purge_auto_learn_evidence_for_term_conn(&tx, *context_id, term)?;
+            purge_auto_learn_evidence_for_term_conn(tx, *context_id, term)?;
         }
     }
 
     for (context_id, mistake, term) in evidence {
         for variant in dictionary_mistake_variants(&mistake) {
-            purge_auto_learn_evidence_for_pair_conn(&tx, context_id, variant, &term)?;
+            purge_auto_learn_evidence_for_pair_conn(tx, context_id, variant, &term)?;
         }
     }
 
@@ -1986,7 +2038,6 @@ pub fn delete_dictionary_entry(db: &Db, id: i64) -> Result<()> {
     let changed = tx.execute("DELETE FROM dictionary WHERE id=?1", params![id])?;
     require_row_changed(changed, "Dictionary entry", id)?;
 
-    tx.commit()?;
     Ok(())
 }
 

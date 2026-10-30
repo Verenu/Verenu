@@ -415,15 +415,38 @@ pub fn backup_sqlite_database(
     conn: &rusqlite::Connection,
     backup_path: &std::path::Path,
 ) -> Result<(), String> {
-    let mut backup_conn = rusqlite::Connection::open(backup_path).map_err(|e| e.to_string())?;
-    let backup =
-        rusqlite::backup::Backup::new(conn, &mut backup_conn).map_err(|e| e.to_string())?;
-    match backup.step(-1).map_err(|e| e.to_string())? {
-        rusqlite::backup::StepResult::Done => Ok(()),
-        other => Err(format!(
-            "Backup did not complete in a single step: {other:?}"
-        )),
-    }
+    let temp_path = backup_path.with_extension(format!("backup-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut sanitized = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string())?;
+        {
+            let backup = rusqlite::backup::Backup::new(conn, &mut sanitized).map_err(|e| e.to_string())?;
+            if !matches!(backup.step(-1).map_err(|e| e.to_string())?, rusqlite::backup::StepResult::Done) {
+                return Err("Could not complete the in-memory backup".to_string());
+            }
+        }
+        sanitized.execute_batch("PRAGMA secure_delete = ON; PRAGMA temp_store = MEMORY;").map_err(|e| e.to_string())?;
+        for table in ["agent_library_changes", "library_usage_daily", "library_usage_coverage"] {
+            let exists: bool = sanitized.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table], |row| row.get(0),
+            ).map_err(|e| e.to_string())?;
+            if exists {
+                sanitized.execute(&format!("DELETE FROM {table}"), []).map_err(|e| e.to_string())?;
+            }
+        }
+        sanitized.execute_batch("VACUUM;").map_err(|e| e.to_string())?;
+        let mut output = rusqlite::Connection::open(&temp_path).map_err(|e| e.to_string())?;
+        {
+            let backup = rusqlite::backup::Backup::new(&sanitized, &mut output).map_err(|e| e.to_string())?;
+            if !matches!(backup.step(-1).map_err(|e| e.to_string())?, rusqlite::backup::StepResult::Done) {
+                return Err("Could not complete the sanitized backup".to_string());
+            }
+        }
+        drop(output);
+        std::fs::rename(&temp_path, backup_path).map_err(|e| e.to_string())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temp_path); }
+    result
 }
 
 #[cfg(test)]

@@ -28,6 +28,14 @@ mod system;
 mod t3_skills;
 mod updater;
 
+fn diagnostic_failure_cause(label: &str, error: &str) -> String {
+    if label.contains("dictionary") || label.contains("snippet") {
+        "Library operation failed".to_owned()
+    } else {
+        error.to_owned()
+    }
+}
+
 pub(crate) async fn run_blocking<T, F>(label: &'static str, f: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -45,7 +53,7 @@ where
             crate::system::diagnostics::record_failure(crate::system::diagnostics::FailureInput {
                 subsystem: "tauri".to_owned(),
                 operation: Some(label.to_owned()),
-                cause: error.clone(),
+                cause: diagnostic_failure_cause(label, &error),
                 ..Default::default()
             });
             Err(error)
@@ -100,6 +108,14 @@ pub use updater::*;
 mod tests {
     use super::{backup_sqlite_database, classify_validation_response, validate_setting};
     use serde_json::json;
+
+    #[test]
+    fn library_errors_do_not_record_private_input_in_diagnostics() {
+        let private = "conflicting synthetic private vocabulary";
+        assert!(!super::diagnostic_failure_cause("create_dictionary_entry", private).contains(private));
+        assert!(!super::diagnostic_failure_cause("edit_snippet", private).contains(private));
+        assert_eq!(super::diagnostic_failure_cause("unrelated_operation", "failure"), "failure");
+    }
 
     #[test]
     fn classify_validation_response_accepts_2xx() {
@@ -316,6 +332,9 @@ mod tests {
             .expect("create table");
         conn.execute("INSERT INTO t (val) VALUES ('hello')", [])
             .expect("insert row");
+        conn.execute_batch("CREATE TABLE agent_library_changes (snapshot TEXT); INSERT INTO agent_library_changes VALUES ('synthetic-recovery-marker-19e257cb');")
+            .expect("insert recovery snapshot");
+        conn.execute_batch("CREATE TABLE library_usage_daily (marker TEXT); INSERT INTO library_usage_daily VALUES ('synthetic-usage-marker'); CREATE TABLE library_usage_coverage (started_at TEXT); INSERT INTO library_usage_coverage VALUES ('synthetic-coverage-marker');").unwrap();
 
         backup_sqlite_database(&conn, &backup_path).expect("backup succeeds");
 
@@ -324,9 +343,34 @@ mod tests {
             .query_row("SELECT val FROM t WHERE id = 1", [], |r| r.get(0))
             .expect("read backed-up row");
         assert_eq!(val, "hello");
+        let count: i64 = backup_conn.query_row("SELECT COUNT(*) FROM agent_library_changes", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+        for table in ["library_usage_daily", "library_usage_coverage"] {
+            let count: i64 = backup_conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap();
+            assert_eq!(count, 0);
+        }
+        let source_count: i64 = conn.query_row("SELECT COUNT(*) FROM agent_library_changes", [], |r| r.get(0)).unwrap();
+        assert_eq!(source_count, 1);
 
         drop(conn);
         drop(backup_conn);
+        assert!(!std::fs::read(&backup_path).unwrap().windows(b"synthetic-recovery-marker-19e257cb".len()).any(|window| window == b"synthetic-recovery-marker-19e257cb"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn restored_backup_starts_fresh_local_usage_coverage() {
+        let root = std::env::temp_dir().join(format!("verenu-backup-coverage-{}-{}", std::process::id(), uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = crate::data::db::open(root.join("source.db").to_str().unwrap()).unwrap();
+        let path = root.join("restored.db");
+        backup_sqlite_database(&source.lock().unwrap(), &path).unwrap();
+        let restored = crate::data::db::open(path.to_str().unwrap()).unwrap();
+        let report = crate::data::db::query_library_usage(&restored).unwrap();
+        assert!(report["coverage"]["started_at"].is_string());
+        assert!(report["items"].as_array().unwrap().is_empty());
+        drop(restored);
+        drop(source);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

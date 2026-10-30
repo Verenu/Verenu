@@ -2206,6 +2206,7 @@ async fn messages_roundtrip_through_the_framer() {
         protocol: super::protocol::PROTOCOL_VERSION,
         app_version: "0.0.0".to_string(),
         activity_receipts: true,
+        cleanup_cache: true,
     });
     let (send, read) = tokio::join!(send_message(&mut client, &hello), async {
         let message: Message = read_message(&mut server).await.expect("read");

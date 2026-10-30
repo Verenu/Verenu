@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke, isTauriRuntime } from '../tauri';
-  import IntegrationConfirmDialog from './settings/IntegrationConfirmDialog.svelte';
+  import AgentPairDialog from './AgentPairDialog.svelte';
 
   let request = $state<{ code: string; id: string } | null>(null);
   let busy = $state(false);
@@ -12,10 +12,10 @@
     catch { request = null; }
   }
 
-  async function respond(approve: boolean) {
+  async function respond(approve: boolean, scopes: string[] = []) {
     if (!request || busy) return;
     busy = true;
-    try { await invoke('agent_respond', { id: request.id, approve }); }
+    try { await invoke('agent_respond', { id: request.id, approve, scopes }); }
     finally { request = null; busy = false; }
   }
 
@@ -27,14 +27,10 @@
 </script>
 
 {#if request}
-  <IntegrationConfirmDialog
-    title="Allow agent access?"
-    body="An agent is requesting access. Check that its code matches: {request.code}. An approved agent can read and change your Verenu data and settings, including transcripts, replace or delete saved API keys, and manage sync. Access expires after one hour or when Verenu closes."
-    confirmLabel="Allow access"
-    priority={true}
+  <AgentPairDialog
+    code={request.code}
     {busy}
-    oncancel={() => void respond(false)}
-    onconfirm={() => void respond(true)}
-    restoreFocus={() => null}
+    ondeny={() => void respond(false)}
+    onapprove={(scopes) => void respond(true, scopes)}
   />
 {/if}
