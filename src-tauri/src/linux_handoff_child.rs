@@ -149,6 +149,14 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                     && readiness.main_and_home_ready();
                 if acquired && ready {
                     if let Ok(services) = activation.ownership_acquired() {
+                        if let Err(error) =
+                            crate::data::db::probe_writable_for_handoff(crate::app_db_path())
+                        {
+                            let _ = services
+                                .fail(format!("Replacement cannot prepare the database: {error}"));
+                            handle.exit(1);
+                            return;
+                        }
                         let (sent, received) = std::sync::mpsc::sync_channel(1);
                         let owner = handle.clone();
                         let scheduled = handle.run_on_main_thread(move || {

@@ -332,6 +332,25 @@ pub(crate) fn open_for_handoff(path: impl AsRef<std::path::Path>) -> Result<Db> 
     Ok(Arc::new(Mutex::new(conn)))
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn probe_writable_for_handoff(path: impl AsRef<std::path::Path>) -> Result<()> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    anyhow::ensure!(
+        !conn.is_readonly(rusqlite::DatabaseName::Main)?,
+        "The database is not writable for restart."
+    );
+    conn.busy_timeout(std::time::Duration::ZERO)?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    anyhow::ensure!(
+        version == HANDOFF_SCHEMA_VERSION,
+        "This update needs a manual restart to migrate its database."
+    );
+    // Acquire the write reservation without changing data. Dropping the
+    // connection also rolls back if either statement fails.
+    conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")?;
+    Ok(())
+}
+
 #[cfg(all(test, target_os = "linux"))]
 #[test]
 fn handoff_database_open_never_migrates_or_writes() {
@@ -382,6 +401,38 @@ fn handoff_database_open_never_migrates_or_writes() {
         .query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 1);
+    drop(original);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn handoff_write_probe_leaves_data_untouched_and_rejects_a_busy_database() {
+    let path = std::env::temp_dir().join(format!("verenu-handoff-probe-{}.db", Uuid::new_v4()));
+    assert!(probe_writable_for_handoff(&path).is_err());
+    assert!(!path.exists());
+    let original = Connection::open(&path).unwrap();
+    original
+        .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE fixture (value TEXT); INSERT INTO fixture VALUES ('original');")
+        .unwrap();
+    original
+        .pragma_update(None, "user_version", HANDOFF_SCHEMA_VERSION)
+        .unwrap();
+    let wal = std::path::PathBuf::from(format!("{}-wal", path.display()));
+    let db_before = std::fs::read(&path).unwrap();
+    let wal_before = std::fs::read(&wal).unwrap();
+    probe_writable_for_handoff(&path).unwrap();
+    original.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    assert!(probe_writable_for_handoff(&path).is_err());
+    original.execute_batch("ROLLBACK;").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), db_before);
+    assert_eq!(std::fs::read(&wal).unwrap(), wal_before);
+    let value: String = original
+        .query_row("SELECT value FROM fixture", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(value, "original");
+    original.pragma_update(None, "user_version", 1).unwrap();
+    assert!(probe_writable_for_handoff(&path).is_err());
     drop(original);
     std::fs::remove_file(path).unwrap();
 }

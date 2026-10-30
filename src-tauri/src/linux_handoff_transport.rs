@@ -1021,7 +1021,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         original_files.sort();
-        let mut command = Command::new(binary);
+        let mut command = Command::new(&binary);
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
             .env("XDG_STATE_HOME", &state);
@@ -1134,6 +1134,54 @@ mod tests {
         assert!(
             !state.exists(),
             "replacement started output-volume recovery"
+        );
+
+        // A competing writer must abort activation before the replacement
+        // registers its tray, leaving the original instance in control.
+        let writer = parent_db.lock().unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let mut command = Command::new(&binary);
+        command
+            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+            .env("XDG_STATE_HOME", &state);
+        let replacement = Replacement::spawn(
+            command,
+            crate::data::db::HANDOFF_SCHEMA_VERSION,
+            KeyAvailability::new(),
+            Duration::from_secs(25),
+        )
+        .unwrap()
+        .with_parent_unique_name(owner.unique_name().unwrap());
+        let ready = replacement.prepare().unwrap();
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        owner
+            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
+            .unwrap();
+        let outcome = ready.acquire_ownership().unwrap().activate();
+        assert!(matches!(outcome, Err(reason) if reason.contains("cannot prepare the database")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !owner.owns_name().unwrap_or(false) {
+            assert!(
+                Instant::now() < deadline,
+                "parent did not regain ownership after database failure"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owner
+            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
+            .unwrap();
+        assert_eq!(registrations.lock().unwrap().len(), 1);
+        writer.execute_batch("ROLLBACK;").unwrap();
+        drop(writer);
+        drop(pause);
+        assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), original_db);
+        assert_eq!(
+            std::fs::read(data.join("verenu.db-wal")).unwrap(),
+            original_wal
+        );
+        assert_eq!(
+            std::fs::read(data.join("settings.json")).unwrap(),
+            original_settings
         );
         drop(parent_db);
         std::fs::remove_dir_all(root).unwrap();

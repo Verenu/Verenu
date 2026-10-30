@@ -37,7 +37,10 @@ pub(crate) fn setup_probation_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
-pub(crate) async fn activate_after_handoff(app: &AppHandle) -> Result<(), String> {
+pub(crate) async fn activate_after_handoff(
+    app: &AppHandle,
+    _parent_exited: &crate::linux_handoff_transport::ParentExited,
+) -> Result<(), String> {
     linux::activate_after_handoff(app).await
 }
 
