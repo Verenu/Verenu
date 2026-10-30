@@ -114,12 +114,12 @@ describe('Context dictionary mutations', () => {
     }], 7);
     await editContextDictionaryEntry(entry, 7, 'Acme', 'Acmee');
     expect(ipc.invoke).toHaveBeenLastCalledWith('edit_dictionary_entry', expect.objectContaining({
-      contextId: 7, correctionId: null, correctionIds: [],
+      id: 41, contextId: 7, term: 'Acme', mistake: 'Acmee',
     }));
     expect(shouldRefreshContextDictionary({ context_id: 1 }, 7)).toBe(true);
   });
 
-  it('passes canonical, mapping, and Context identities to IPC', async () => {
+  it('passes canonical and Context identities to IPC', async () => {
     ipc.invoke.mockReset().mockResolvedValue(undefined);
     const entry = {
       id: 41,
@@ -129,28 +129,24 @@ describe('Context dictionary mutations', () => {
     };
 
     await editContextDictionaryEntry(entry, 7, 'Kubernetes', 'Koobernetes');
-    expect(ipc.invoke).toHaveBeenLastCalledWith('edit_dictionary_entry', expect.objectContaining({
+    expect(ipc.invoke).toHaveBeenLastCalledWith('edit_dictionary_entry', {
       id: 41,
-      dictionaryId: 41,
       contextId: 7,
-      correctionId: 902,
-      correctionIds: [902, 903],
-    }));
+      term: 'Kubernetes',
+      mistake: 'Koobernetes',
+    });
 
     await removeContextDictionaryEntry(entry, 7);
-    expect(ipc.invoke).toHaveBeenLastCalledWith('remove_dictionary_entry', expect.objectContaining({
+    expect(ipc.invoke).toHaveBeenLastCalledWith('remove_dictionary_entry', {
       id: 41,
       contextId: 7,
-      correctionIds: [902, 903],
-    }));
+    });
 
     await moveContextDictionaryEntry(entry, 7, 8);
     expect(ipc.invoke).toHaveBeenLastCalledWith('move_dictionary_entry_to_context', {
       dictionaryId: 41,
       sourceContextId: 7,
       targetContextId: 8,
-      correctionId: 902,
-      correctionIds: [902, 903],
     });
   });
 });

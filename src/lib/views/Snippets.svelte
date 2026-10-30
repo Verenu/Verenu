@@ -1,7 +1,7 @@
 <script lang="ts">
   import { formatIpcError } from '../errors';
   import { onMount, tick } from 'svelte';
-  import { emit, invoke } from '../tauri';
+  import { emit, invoke, listen } from '../tauri';
   import { fade } from 'svelte/transition';
   import { appStore, fetchSnippets, cancelSnippetsFetch, type Snippet } from '../stores';
   import { motionMs } from '../motion';
@@ -43,7 +43,16 @@
   });
   const visibleFiltered = $derived(filtered.filter((snippet) => !leavingIds.has(snippet.id)));
 
-  onMount(() => { fetchSnippets(); });
+  onMount(() => {
+    fetchSnippets();
+    let mounted = true;
+    let stop: (() => void) | undefined;
+    void listen('verenu:snippets-updated', () => { void fetchSnippets(); }).then((unlisten) => {
+      if (mounted) stop = unlisten;
+      else unlisten();
+    }).catch(() => {});
+    return () => { mounted = false; stop?.(); };
+  });
 
   function selectRow(s: Snippet) {
     if (selected?.id === s.id) {

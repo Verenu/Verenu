@@ -16,6 +16,7 @@ enum RejectionTarget {
     },
     CacheKey {
         key: String,
+        result_hash: String,
     },
 }
 
@@ -78,8 +79,8 @@ fn apply_rejection(target: &RejectionTarget, db: &DbHandle, app: &AppHandle, pre
                 .ok();
             }
         }
-        RejectionTarget::CacheKey { key } => {
-            if let Err(e) = db::cleanup_cache_delete_by_key(db, key) {
+        RejectionTarget::CacheKey { key, result_hash } => {
+            if let Err(e) = db::cleanup_cache_reject(db, key, result_hash) {
                 log::warn!("{prefix}: delete failed: {e}");
             } else {
                 app.emit("verenu:cleanup-cache-invalidated", ()).ok();
@@ -226,13 +227,14 @@ pub fn start_rejection_monitor(
 pub fn start_cache_rejection_monitor(
     injected_text: String,
     cache_key: String,
+    result_hash: String,
     target_hwnd: usize,
     db: DbHandle,
     app: AppHandle,
 ) {
     run_rejection_monitor(
         injected_text,
-        RejectionTarget::CacheKey { key: cache_key },
+        RejectionTarget::CacheKey { key: cache_key, result_hash },
         target_hwnd,
         db,
         app,

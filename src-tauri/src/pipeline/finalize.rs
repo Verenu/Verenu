@@ -17,6 +17,7 @@ pub(super) struct PipelineCompletionContext<'a> {
     pub(super) profile: &'a str,
     pub(super) process_name: String,
     pub(super) cleanup_cache_key: String,
+    pub(super) cleanup_cache_result_hash: String,
     pub(super) captured_at: std::time::Instant,
     pub(super) event_only: bool,
     pub(super) caps_lock_on: bool,
@@ -53,8 +54,8 @@ pub(super) async fn finalize_pipeline_completion(
     ctx: PipelineCompletionContext<'_>,
 ) -> anyhow::Result<db::RecentEntry> {
     let dict_stage = std::time::Instant::now();
-    let (mut final_text_substituted, mut applied_dict_ids, mut vocabulary_replacements) =
-        dictionary::apply_substitutions_counted(ctx.final_text_before_dict, ctx.dict_entries);
+    let (mut final_text_substituted, mut applied_dict_ids, mut applied_term_ids, mut vocabulary_replacements) =
+        dictionary::apply_substitutions_details(ctx.final_text_before_dict, ctx.dict_entries);
     let mut snippet_expansions = ctx.snippet_expansions;
     let mut dict_changed = !applied_dict_ids.is_empty();
     let apply_caps_lock_upper = ctx.cfg.caps_lock_uppercase_enabled && ctx.caps_lock_on;
@@ -80,9 +81,10 @@ pub(super) async fn finalize_pipeline_completion(
                 final_text_substituted
             } else {
                 log::warn!("pipeline: cleanup did not preserve clipboard marker");
-                let (mut fallback, fallback_dict_ids, fallback_replacements) =
-                    dictionary::apply_substitutions_counted(&plan.pre_cleanup, ctx.dict_entries);
+                let (mut fallback, fallback_dict_ids, fallback_term_ids, fallback_replacements) =
+                    dictionary::apply_substitutions_details(&plan.pre_cleanup, ctx.dict_entries);
                 applied_dict_ids = fallback_dict_ids;
+                applied_term_ids = fallback_term_ids;
                 vocabulary_replacements = fallback_replacements;
                 snippet_expansions = 0;
                 dict_changed = !applied_dict_ids.is_empty();
@@ -162,6 +164,9 @@ pub(super) async fn finalize_pipeline_completion(
                 db::increment_lifetime_dictionary_fixes(&db_for_insert, dictionary_fixes_applied)
             {
                 log::warn!("pipeline: failed to record dictionary fixes: {e}");
+            }
+            if db::record_dictionary_usage(&db_for_insert, &applied_term_ids).is_err() {
+                log::warn!("pipeline: failed to record library usage");
             }
         }
         Ok(entry)
@@ -367,10 +372,11 @@ pub(super) async fn finalize_pipeline_completion(
             "inject_failed" | "clipboard_fallback" | "android_accessibility_handoff"
         )
     {
-        if !ctx.cleanup_cache_key.is_empty() {
+        if !ctx.cleanup_cache_key.is_empty() && !ctx.cleanup_cache_result_hash.is_empty() {
             auto_learn::start_cache_rejection_monitor(
                 injected_text.clone(),
                 ctx.cleanup_cache_key,
+                ctx.cleanup_cache_result_hash,
                 ctx.target_hwnd,
                 db_handle.inner().clone(),
                 app.clone(),

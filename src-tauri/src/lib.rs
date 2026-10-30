@@ -336,6 +336,10 @@ pub fn run() {
             );
             let settings = crate::data::store::SettingsHandle::open(app.handle())
                 .map_err(std::io::Error::other)?;
+            let cache_enabled = settings.get(crate::data::store::CLEANUP_CACHE_ENABLED)
+                .and_then(|value| value.as_bool()).unwrap_or(true);
+            db::cleanup_cache_set_enabled(app.state::<DbHandle>().inner(), cache_enabled)
+                .map_err(std::io::Error::other)?;
             if !is_dev_session() {
                 crate::data::credentials::migrate_from_store(app.handle(), &settings);
             }
@@ -343,6 +347,9 @@ pub fn run() {
             if is_dev_session() {
                 app.manage(settings.clone());
                 dev_session::start(app.handle().clone())?;
+                if std::env::var("VERENU_AGENT_TEST_SYNTHETIC").as_deref() == Ok("1") {
+                    agent_api::start(app.handle().clone())?;
+                }
                 return Ok(());
             }
             if let Err(error) = crate::data::store::migrate_contextual_formatting(&settings) {
@@ -807,6 +814,7 @@ pub fn run() {
              commands::get_context_snippets,
              commands::set_dictionary_context_assignment,
              commands::set_snippet_context_assignment,
+             commands::move_snippet_context_assignment,
             commands::get_snippets,
             commands::create_snippet,
             commands::edit_snippet,
@@ -814,6 +822,7 @@ pub fn run() {
             commands::get_dictionary,
             commands::create_dictionary_entry,
             commands::edit_dictionary_entry,
+            commands::rename_dictionary_entry_global,
             commands::remove_dictionary_entry,
             commands::move_dictionary_entry_to_context,
             commands::duplicate_context,

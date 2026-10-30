@@ -203,6 +203,28 @@ fn spec_for(key: &str) -> Option<&'static SettingSpec> {
     SETTING_SPECS.iter().find(|spec| spec.key == key)
 }
 
+pub(crate) fn agent_setting_schema(key: &str) -> Option<serde_json::Value> {
+    use serde_json::json;
+    let spec = spec_for(key)?;
+    Some(match spec.kind {
+        SettingKind::Bool => json!({"type": "boolean"}),
+        SettingKind::StringOrNull => json!({"type": ["string", "null"]}),
+        SettingKind::MicGain => json!({"type": "number", "minimum": 1, "maximum": 8}),
+        SettingKind::SoundEffectsVolume => json!({"type": "number", "minimum": 0, "maximum": 100}),
+        SettingKind::HistoryRetention => json!({"type": "string", "enum": store::HISTORY_RETENTION_OPTIONS, "description": "Shortening retention immediately prunes older history."}),
+        SettingKind::TranscriptionLanguage => json!({"type": "string", "enum": store::TRANSCRIPTION_LANGUAGE_OPTIONS.iter().map(|(code, _)| *code).collect::<Vec<_>>() }),
+        SettingKind::CleanupPromptOverride => json!({"type": "string", "maxLength": CLEANUP_PROMPT_OVERRIDE_CHAR_LIMIT}),
+        SettingKind::Provider => json!({"type": "string", "description": "A built-in provider or custom:<canonical UUID>", "built_in_values": store::PROVIDERS}),
+        SettingKind::DuckTarget => json!({"type":"integer", "minimum":0, "maximum":100}),
+        SettingKind::DuckFadeMs => json!({"type":"integer", "minimum":0, "maximum":5000}),
+        SettingKind::DuckCurve => json!({"enum":["linear", "smooth"]}),
+        SettingKind::ModelSelectionMode => json!({"enum":["manual", "fastest", "balanced", "quality"]}),
+        SettingKind::StringArray => json!({"type":"array", "items":{"type":"string", "minLength":1}}),
+        SettingKind::ModelMap | SettingKind::StylePromptInstructions => json!({"type":"object", "description":"Validated by the native settings handler."}),
+        _ => json!({"description":"Validated by the native settings handler; inspect the current value before editing."}),
+    })
+}
+
 pub fn is_readable_setting_key(key: &str) -> bool {
     spec_for(key).is_some_and(|spec| spec.readable)
 }
@@ -1048,6 +1070,7 @@ async fn save_setting_inner(
         };
     }
     let disable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == false;
+    let enable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == true;
     if key == store::CUSTOM_PROVIDERS {
         let providers = crate::api::custom::normalize_list(&value)?;
         value = serde_json::to_value(&providers)
@@ -1069,6 +1092,11 @@ async fn save_setting_inner(
         None
     };
     let settings = store::settings_handle(&app)?;
+    let _cache_send_guard = if disable_cleanup_cache || enable_cleanup_cache {
+        Some(crate::sync::engine::cleanup_cache_send_gate().write().await)
+    } else {
+        None
+    };
     let credential_app = app.clone();
     let key_clone = key.clone();
     let save_result = run_blocking("save_setting", move || {
@@ -1151,10 +1179,10 @@ async fn save_setting_inner(
     })
     .await;
     save_result?;
-    if disable_cleanup_cache {
+    if disable_cleanup_cache || enable_cleanup_cache {
         let db = db_state(&app);
-        run_blocking("disable_cleanup_cache", move || {
-            db::cleanup_cache_clear_all(&db).map_err(|e| e.to_string())
+        run_blocking("set_cleanup_cache_enabled", move || {
+            db::cleanup_cache_set_enabled(&db, enable_cleanup_cache).map_err(|e| e.to_string())
         })
         .await?;
     }

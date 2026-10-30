@@ -811,8 +811,25 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       const rows = readDevContexts();
       const index = rows.findIndex((row) => row.id === id);
       if (index === -1) throw new Error(`Context ${id} was not found`);
+      const expected = args?.expected as Record<string, unknown> | null | undefined;
+      const actual = rows[index] as unknown as Record<string, unknown>;
+      if (expected && Object.keys(expected).some((key) => expected[key] !== actual[key])) {
+        throw new Error('Context changed since it was read; fetch it again before retrying');
+      }
+      if (args?.name !== undefined) {
+        if (!expected) throw new Error('Updating the name requires an expected Context');
+        const name = assertDevText(args.name, 'Context name').trim();
+        if (rows.some((row) => row.id !== id && row.name.toLowerCase() === name.toLowerCase())) {
+          throw new Error('UNIQUE constraint failed: contexts.name');
+        }
+        rows[index] = { ...rows[index], name };
+      }
+      const editorPatch = args?.editorPatch as { color?: string | null; t3_skill_mentions_disabled?: boolean } | undefined;
+      if (editorPatch && !expected) throw new Error('Updating editor settings requires an expected Context');
       rows[index] = {
         ...rows[index],
+        ...(editorPatch && 'color' in editorPatch ? { color: editorPatch.color ?? null } : {}),
+        ...(editorPatch && 't3_skill_mentions_disabled' in editorPatch ? { t3_skill_mentions_disabled: editorPatch.t3_skill_mentions_disabled } : {}),
         icon: (args?.icon as string | null | undefined) ?? null,
         tone: (args?.tone as string | null | undefined) ?? null,
         cleanup_intensity: (args?.cleanupIntensity ?? args?.cleanup_intensity) as string | null | undefined ?? null,
@@ -1017,6 +1034,28 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         setDevDictionaryCorrection(itemId, contextId, null);
       }
       writeDevContextAssignments(assignments);
+      return undefined as T;
+    }
+    case 'move_snippet_context_assignment': {
+      const sourceId = Number(args?.sourceId ?? args?.source_id);
+      const targetId = Number(args?.targetId ?? args?.target_id);
+      const snippetId = Number(args?.snippetId ?? args?.snippet_id);
+      const contexts = readDevContexts();
+      if (!contexts.some((context) => context.id === sourceId) || !contexts.some((context) => context.id === targetId)) throw new Error('Context was not found');
+      const assignments = readDevContextAssignments();
+      if (assignments.snippets[String(DEV_EVERYWHERE_CONTEXT_ID)] === undefined) {
+        assignments.snippets[String(DEV_EVERYWHERE_CONTEXT_ID)] = readDevList<DevSnippet>(DEV_SNIPPETS_KEY).map((row) => row.id);
+      }
+      const source = new Set(assignments.snippets[String(sourceId)] ?? []);
+      if (!source.has(snippetId)) throw new Error('Snippet is no longer assigned to the source context');
+      if (sourceId !== targetId) {
+        const target = new Set(assignments.snippets[String(targetId)] ?? []);
+        target.add(snippetId);
+        source.delete(snippetId);
+        assignments.snippets[String(sourceId)] = [...source];
+        assignments.snippets[String(targetId)] = [...target];
+        writeDevContextAssignments(assignments);
+      }
       return undefined as T;
     }
     case 'get_snippets':

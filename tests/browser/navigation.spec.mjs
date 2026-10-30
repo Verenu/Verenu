@@ -14,6 +14,14 @@ async function holdModule(page, filename) {
   return { started, release };
 }
 
+async function warmPages(page, targets) {
+  for (const target of [...targets, 'home']) {
+    await page.locator(`[data-debug-id="nav.${target}"]`).click();
+    await expect(page.locator(`.page-wrapper[data-page="${target}"]`)).toBeVisible();
+    await expect(page.locator('.page-wrapper')).toHaveCount(1);
+  }
+}
+
 test('slow page imports retain the visible page and cancel superseded navigation', async ({ page }) => {
   const home = page.locator('h1.page-h').filter({ hasText: 'Welcome back' });
   await expect(home).toBeVisible();
@@ -115,6 +123,7 @@ test('slow Context data fills the same tab panel without replaying its entrance'
 
 test('page swaps keep the screen covered and the leaving page in place', async ({ page }) => {
   await expect(page.locator('h1.page-h').filter({ hasText: 'Welcome back' })).toBeVisible();
+  await warmPages(page, ['insights']);
   for (const target of ['insights', 'home', 'insights']) {
     await page.evaluate(() => {
       const content = document.querySelector('.content');
@@ -154,6 +163,7 @@ test('page swaps keep the screen covered and the leaving page in place', async (
 test('returning to a page mid-swap clears the scroll hold on its wrapper', async ({ page }) => {
   const home = page.locator('h1.page-h').filter({ hasText: 'Welcome back' });
   await expect(home).toBeVisible();
+  await warmPages(page, ['insights']);
   await page.evaluate(() => {
     const content = document.querySelector('.content');
     const filler = document.createElement('div');
@@ -172,6 +182,7 @@ test('returning to a page mid-swap clears the scroll hold on its wrapper', async
 
 test('rapid navigation keeps leaving pages held and hidden from assistive tech', async ({ page }) => {
   await expect(page.locator('h1.page-h').filter({ hasText: 'Welcome back' })).toBeVisible();
+  await warmPages(page, ['insights', 'style']);
   await page.evaluate(() => {
     const content = document.querySelector('.content');
     const filler = document.createElement('div');
