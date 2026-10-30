@@ -16,6 +16,34 @@ fn handoff_settings_read_does_not_repair_or_replace_invalid_data() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn handoff_settings_reject_all_mutations_without_touching_disk() {
+    let path = unique_tmp_path();
+    let original = br#"{"owner":"test","value":1}"#;
+    std::fs::write(&path, original).unwrap();
+    let settings = SettingsHandle::open_for_handoff(path.clone()).unwrap();
+    assert_eq!(settings.get("value"), Some(json!(1)));
+    assert!(settings.set("value", json!(2)).is_err());
+    assert!(settings.delete("value").is_err());
+    assert!(settings.save().is_err());
+    assert!(settings.save_value("value", json!(1)).is_err());
+    assert!(settings
+        .save_value_if_owner_matches("owner", &json!("test"), "value", json!(2))
+        .is_err());
+    let called = std::cell::Cell::new(false);
+    assert!(settings
+        .save_values_with_commit([("value", json!(1))], |_| Ok(()), || {
+            called.set(true);
+            Ok(())
+        })
+        .is_err());
+    assert!(!called.get());
+    assert_eq!(settings.get("value"), Some(json!(1)));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn feature_breadth_counts_voice_commands_and_only_boolean_flags() {
     let commands =
@@ -112,6 +140,7 @@ fn github_cache_persists_and_a_disconnect_rejects_late_refreshes() {
     let handle = SettingsHandle {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(Map::new()))),
+        read_only: false,
     };
     handle
         .save_value(GITHUB_USERNAME, json!("octocat"))
@@ -235,6 +264,7 @@ fn failed_settings_save_does_not_publish_in_memory_values() {
     let handle = SettingsHandle {
         path: Arc::new(path),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
+        read_only: false,
     };
 
     assert!(handle
@@ -277,6 +307,7 @@ fn settings_snapshots_share_unchanged_maps_and_skip_noop_writes() {
     let handle = SettingsHandle {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
+        read_only: false,
     };
 
     let first = handle.snapshot().expect("first snapshot");
