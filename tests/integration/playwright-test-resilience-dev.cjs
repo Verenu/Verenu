@@ -23,7 +23,7 @@ const expected = 'Malformed persisted state and a rejected settings write do not
     await page.evaluate(() => {
       const original = window.__TAURI_INTERNALS__.invoke;
       window.__TAURI_INTERNALS__.invoke = (command, args) => {
-        if (command === 'save_setting' && args?.key === 'legacy_features_enabled') {
+        if (['save_setting', 'save_setting_if_unchanged'].includes(command) && args?.key === 'legacy_features_enabled') {
           return Promise.reject(new Error('simulated settings disk failure'));
         }
         return original(command, args);

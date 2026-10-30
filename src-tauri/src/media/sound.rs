@@ -804,7 +804,7 @@ mod tests {
                     let muted_before_open = wpctl_default_sink_muted();
                     let opening = std::time::Instant::now();
                     let session =
-                        crate::media::audio::RecordingSession::start(None, false, 1.0, None, None);
+                        crate::media::audio::RecordingSession::start(None, false, 1.0, None, None, false);
                     (muted_before_open, session, opening.elapsed())
                 },
             );

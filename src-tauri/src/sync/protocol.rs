@@ -32,6 +32,10 @@ pub struct Hello {
     pub device_name: String,
     pub protocol: u32,
     pub app_version: String,
+    #[serde(default)]
+    pub activity_receipts: bool,
+    #[serde(default)]
+    pub cleanup_cache: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

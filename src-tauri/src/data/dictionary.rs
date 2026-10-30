@@ -322,8 +322,19 @@ fn format_dictionary_entry(
     )
 }
 
+#[cfg(test)]
 pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> (String, Vec<i64>) {
-    let mut replaceable: Vec<(i64, &str, &str)> = entries
+    let (text, corrections, _, _) = apply_substitutions_details(text, entries);
+    (text, corrections)
+}
+
+pub fn apply_substitutions_counted(text: &str, entries: &[db::DictionaryEntry]) -> (String, Vec<i64>, i64) {
+    let (text, ids, _, count) = apply_substitutions_details(text, entries);
+    (text, ids, count)
+}
+
+pub fn apply_substitutions_details(text: &str, entries: &[db::DictionaryEntry]) -> (String, Vec<i64>, Vec<i64>, i64) {
+    let mut replaceable: Vec<(i64, i64, &str, &str)> = entries
         .iter()
         .flat_map(|entry| {
             effective_correction_variants(entry)
@@ -333,13 +344,13 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
                         || (has_distinctive_features(&entry.term)
                             && joined_spelling(correction.mistake) == joined_spelling(&entry.term))
                 })
-                .map(|correction| (correction.id, correction.mistake, entry.term.as_str()))
+                .map(|correction| (correction.id, entry.id, correction.mistake, entry.term.as_str()))
         })
         .collect();
-    replaceable.sort_by_key(|(_, mistake, _)| std::cmp::Reverse(mistake.len()));
+    replaceable.sort_by_key(|(_, _, mistake, _)| std::cmp::Reverse(mistake.len()));
 
     if replaceable.is_empty() {
-        return (text.to_string(), Vec::new());
+        return (text.to_string(), Vec::new(), Vec::new(), 0);
     }
 
     fn is_word_char(ch: char) -> bool {
@@ -360,7 +371,9 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
 
     let mut result = text.to_string();
     let mut applied_ids: Vec<i64> = Vec::new();
-    for (id, mistake, term) in &replaceable {
+    let mut applied_terms: Vec<i64> = Vec::new();
+    let mut replacements = 0;
+    for (id, term_id, mistake, term) in &replaceable {
         if mistake.is_empty() {
             continue;
         }
@@ -399,11 +412,15 @@ pub fn apply_substitutions_from(text: &str, entries: &[db::DictionaryEntry]) -> 
         if !applied_ids.contains(id) {
             applied_ids.push(*id);
         }
+        if !applied_terms.contains(term_id) {
+            applied_terms.push(*term_id);
+        }
+        replacements += positions.len() as i64;
         for pos in positions.into_iter().rev() {
             result.replace_range(pos..pos + mistake.len(), term);
         }
     }
-    (result, applied_ids)
+    (result, applied_ids, applied_terms, replacements)
 }
 
 fn joined_spelling(value: &str) -> String {
@@ -417,7 +434,7 @@ fn joined_spelling(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_substitutions_from, build_dictionary_prompt_limited,
+        apply_substitutions_counted, apply_substitutions_from, build_dictionary_prompt_limited,
         build_relevant_dictionary_prompt_from, build_relevant_dictionary_prompt_from_sources,
     };
     use crate::data::db::{DictionaryCorrection, DictionaryEntry};
@@ -529,6 +546,15 @@ mod tests {
         let (out, applied) = apply_substitutions_from("kubernetez Kubernetes", &entries);
         assert_eq!(out, "Kubernetes Kubernetes");
         assert_eq!(applied, vec![1]);
+    }
+
+    #[test]
+    fn counted_substitutions_include_repeated_matches() {
+        let entries = vec![entry(1, "Kubernetes", Some("kubernetez"))];
+        let (out, ids, count) = apply_substitutions_counted("kubernetez and kubernetez", &entries);
+        assert_eq!(out, "Kubernetes and Kubernetes");
+        assert_eq!(ids, vec![1]);
+        assert_eq!(count, 2);
     }
 
     #[test]
@@ -699,10 +725,12 @@ mod tests {
     #[test]
     fn applied_substitution_ids_are_context_correction_ids_not_canonical_ids() {
         let entry = context_entry(7, "Kubernetes", 11, 701, "kubernetez", true);
-        let (text, applied_ids) = apply_substitutions_from("open kubernetez", &[entry]);
+        let (text, applied_ids, terms, replacements) = super::apply_substitutions_details("open kubernetez twice kubernetez", &[entry]);
 
-        assert_eq!(text, "open Kubernetes");
+        assert_eq!(text, "open Kubernetes twice Kubernetes");
         assert_eq!(applied_ids, vec![701]);
+        assert_eq!(terms, vec![7]);
+        assert_eq!(replacements, 2);
     }
 
     #[test]

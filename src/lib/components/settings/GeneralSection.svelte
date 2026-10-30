@@ -10,7 +10,10 @@
   import { appStore } from '../../stores';
   import {
     loadSettingsSnapshot,
-    saveSetting,
+    saveSettingIfUnchanged,
+    type SettingsSnapshot,
+    type SettingsValueMap,
+    type WritableSettingKey,
     ANDROID_PILL_POSITION_OPTIONS,
     ANDROID_PILL_SCREEN_POSITION_OPTIONS,
     DEFAULT_ANDROID_PILL_POSITION,
@@ -39,6 +42,38 @@
   import { loadHotkey } from '../../hotkey.svelte';
 
   let selectedLanguage = $state<TranscriptionLanguageCode>('en');
+  let settingsBaseline: SettingsSnapshot | null = null;
+
+  async function saveGeneralSetting<K extends WritableSettingKey>(key: K, value: SettingsValueMap[K]) {
+    const baseline = settingsBaseline;
+    if (!baseline) throw new Error('Settings are still loading.');
+    const keys: WritableSettingKey[] = key === 'contextual_formatting_enabled'
+      ? ['contextual_formatting_enabled', 'contextual_caps_enabled', 'auto_spacing_enabled'] : [key];
+    const expected = Object.fromEntries(keys.map(name => [name, baseline[name as keyof SettingsSnapshot] ?? null]));
+    try {
+      await saveSettingIfUnchanged(key, value, expected);
+      for (const name of keys) Object.assign(baseline, { [name]: value });
+    } catch (error) {
+      if (String(error).includes('Settings changed while you were editing')) {
+        window.dispatchEvent(new CustomEvent('verenu:agent-settings-changed', { detail: keys }));
+      }
+      throw error;
+    }
+  }
+
+  async function saveGeneralNative(key: 'hotkey' | 'autostart_enabled', command: string, args: Record<string, unknown>, value: unknown) {
+    const baseline = settingsBaseline;
+    if (!baseline) throw new Error('Settings are still loading.');
+    try {
+      await invoke(command, { ...args, expected: baseline[key] ?? null });
+      Object.assign(baseline, { [key]: value });
+    } catch (error) {
+      if (String(error).includes('Settings changed while you were editing')) {
+        window.dispatchEvent(new CustomEvent('verenu:agent-settings-changed', { detail: [key] }));
+      }
+      throw error;
+    }
+  }
   let languageDropdownOpen = $state(false);
   let languageTouched = false;
   let initialLanguageLoaded = $state(false);
@@ -55,7 +90,7 @@
   async function handleHidePillOffline(value: boolean) {
     hidePillOffline = value;
     try {
-      await saveSetting('android_pill_hide_offline', value);
+      await saveGeneralSetting('android_pill_hide_offline', value);
     } catch (err) {
       hidePillOffline = !value;
       hidePillOfflineError = true;
@@ -66,7 +101,7 @@
   async function handleCoverKeyboardMic(value: boolean) {
     coverKeyboardMic = value;
     try {
-      await saveSetting('android_pill_cover_keyboard_mic', value);
+      await saveGeneralSetting('android_pill_cover_keyboard_mic', value);
     } catch (err) {
       coverKeyboardMic = !value;
       coverKeyboardMicError = true;
@@ -193,7 +228,10 @@
   }
 
   async function loadSettings() {
-    const snapshot = loadSettingsSnapshot();
+    const cleanupVersion = appStore.cleanupChangeVersion;
+    const appearanceVersion = appStore.appearanceChangeVersion;
+    const legacyVersion = appStore.legacyFeaturesChangeVersion;
+    const snapshot = loadSettingsSnapshot().then(settings => { settingsBaseline = settings; return settings; });
     const keys = [
       'autostart_enabled', 'hotkey', 'appearance_mode', 'transcription_language',
       'cleanup_enabled', 'contextual_formatting_enabled', 'caps_lock_uppercase_enabled',
@@ -209,7 +247,7 @@
       results[i].status === 'fulfilled' ? (results[i] as PromiseFulfilledResult<T>).value ?? fallback : fallback;
 
     autostart = val<boolean | null>(0, null) ?? false;
-    appStore.cleanupEnabled = val<boolean | null>(4, null) ?? true;
+    if (cleanupVersion === appStore.cleanupChangeVersion) appStore.cleanupEnabled = val<boolean | null>(4, null) ?? true;
     contextualFormatting = val<boolean | null>(5, null) ?? true;
     capsLockUppercase = val<boolean | null>(6, null) ?? false;
 
@@ -218,7 +256,7 @@
     controlKeys = { cancel: val(14, 'Escape'), handsfree: val(15, 'Space') };
 
     const appearance = val<AppearanceMode | null>(2, null);
-    if (!themeEditor.open && (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom')) {
+    if (appearanceVersion === appStore.appearanceChangeVersion && !themeEditor.open && (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom')) {
       appStore.appearanceMode = appearance;
     }
 
@@ -230,7 +268,7 @@
 
     microphones = val<string[]>(7, []);
     selectedMic = val<string | null>(8, null) ?? '';
-    appStore.legacyFeaturesEnabled = val<boolean | null>(9, null) ?? false;
+    if (legacyVersion === appStore.legacyFeaturesChangeVersion) appStore.legacyFeaturesEnabled = val<boolean | null>(9, null) ?? false;
     applyPillPlacement(val<AndroidPillPosition | null>(10, null), val<AndroidPillScreenPosition | null>(13, null));
 
     coverKeyboardMic = val<boolean | null>(11, null) ?? true;
@@ -254,7 +292,7 @@
     pillPosition = position;
     pillDropdownOpen = false;
     try {
-      await saveSetting('android_pill_position', position);
+      await saveGeneralSetting('android_pill_position', position);
     } catch (err) {
       console.error('savePillPosition failed:', err);
       void refreshPillPlacement();
@@ -265,7 +303,7 @@
     pillDockPosition = position;
     dockDropdownOpen = false;
     try {
-      await saveSetting('android_pill_dock_position', position);
+      await saveGeneralSetting('android_pill_dock_position', position);
     } catch (err) {
       console.error('savePillDockPosition failed:', err);
       void refreshPillPlacement();
@@ -276,7 +314,7 @@
     selectedMic = name;
     micDropdownOpen = false;
     try {
-      await saveSetting('microphone_device', name || null);
+      await saveGeneralSetting('microphone_device', name || null);
     } catch (err) {
       console.error('saveMic failed:', err);
     }
@@ -287,7 +325,7 @@
     selectedLanguage = code;
     languageDropdownOpen = false;
     try {
-      await saveSetting('transcription_language', code);
+      await saveGeneralSetting('transcription_language', code);
     } catch (err) {
       console.error('save transcription_language failed:', err);
     }
@@ -327,7 +365,7 @@
   async function handleAutostart(value: boolean) {
     autostart = value;
     try {
-      await invoke('set_autostart', { enabled: value });
+      await saveGeneralNative('autostart_enabled', 'set_autostart_if_unchanged', { enabled: value }, value);
     } catch (err) {
       autostart = !value;
       autostartError = true;
@@ -339,12 +377,16 @@
   let legacyFeaturesToggleError = $state(false);
 
   async function applyLegacyFeatures(value: boolean) {
+    const version = ++appStore.legacyFeaturesChangeVersion;
     legacyFeaturesError = '';
     appStore.legacyFeaturesEnabled = value;
     try {
-      await saveSetting('legacy_features_enabled', value);
+      await saveGeneralSetting('legacy_features_enabled', value);
+      const refreshVersion = ++appStore.legacyFeaturesChangeVersion;
+      const persisted = await invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' });
+      if (refreshVersion === appStore.legacyFeaturesChangeVersion) appStore.legacyFeaturesEnabled = persisted ?? false;
     } catch (err) {
-      appStore.legacyFeaturesEnabled = !value;
+      if (version === appStore.legacyFeaturesChangeVersion) appStore.legacyFeaturesEnabled = !value;
       legacyFeaturesError = 'Could not save Legacy pages. Your change was reverted.';
       legacyFeaturesToggleError = true;
       console.error('save legacy_features_enabled failed:', err);
@@ -389,7 +431,7 @@
     voiceCommandsSaving = true;
     voiceCommandsMessage = '';
     try {
-      await saveSetting('voice_commands_enabled', value);
+      await saveGeneralSetting('voice_commands_enabled', value);
       voiceCommands = value;
     } catch (err) {
       voiceCommandsError = true;
@@ -402,11 +444,16 @@
   let cleanupError = $state(false);
 
   async function applyCleanup(value: boolean) {
+    const version = ++appStore.cleanupChangeVersion;
+    const previous = appStore.cleanupEnabled;
     appStore.cleanupEnabled = value;
     try {
-      await saveSetting('cleanup_enabled', value);
+      await saveGeneralSetting('cleanup_enabled', value);
+      const refreshVersion = ++appStore.cleanupChangeVersion;
+      const persisted = await invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' });
+      if (refreshVersion === appStore.cleanupChangeVersion) appStore.cleanupEnabled = persisted ?? true;
     } catch (err) {
-      appStore.cleanupEnabled = !value;
+      if (version === appStore.cleanupChangeVersion) appStore.cleanupEnabled = previous;
       cleanupError = true;
       console.error('save cleanup_enabled failed:', err);
     }
@@ -437,7 +484,7 @@
   async function handleContextualFormatting(value: boolean) {
     contextualFormatting = value;
     try {
-      await saveSetting('contextual_formatting_enabled', value);
+      await saveGeneralSetting('contextual_formatting_enabled', value);
     } catch (err) {
       contextualFormatting = !value;
       contextualFormattingError = true;
@@ -450,7 +497,7 @@
   async function handleCapsLockUppercase(value: boolean) {
     capsLockUppercase = value;
     try {
-      await saveSetting('caps_lock_uppercase_enabled', value);
+      await saveGeneralSetting('caps_lock_uppercase_enabled', value);
     } catch (err) {
       capsLockUppercase = !value;
       capsLockUppercaseError = true;
@@ -540,29 +587,34 @@
     recordingHotkey = false;
     hotkeyState = 'saving';
     let outcome: 'success' | 'error' = 'success';
+    let captureRestored = false;
     try {
+      await invoke('set_hotkey_capture', { active: false });
+      captureRestored = true;
       if (captureTarget === 'dictation') {
         const available = await invoke<boolean>('check_hotkey', { keys });
         if (!available) throw new Error('That shortcut is already assigned. Choose another combination.');
-        await invoke('save_hotkey', { keys });
+        await saveGeneralNative('hotkey', 'save_hotkey_if_unchanged', { keys }, keys);
         hotkey = keys;
         await loadHotkey();
       } else {
         if (keys.length !== 1 || /^(Control|Alt|Shift|Meta)/.test(keys[0]) || keys[0] === 'Fn') {
           throw new Error('Choose a single key without modifiers.');
         }
-        await saveSetting(captureTarget === 'cancel' ? 'linux_cancel_key' : 'linux_handsfree_key', keys[0]);
+        await saveGeneralSetting(captureTarget === 'cancel' ? 'linux_cancel_key' : 'linux_handsfree_key', keys[0]);
         controlKeys[captureTarget] = keys[0];
       }
     } catch (error) {
       outcome = 'error';
       hotkeyError = formatIpcError(error, 'Could not save this shortcut');
     } finally {
-      try {
-        await invoke('set_hotkey_capture', { active: false });
-      } catch (error) {
-        outcome = 'error';
-        hotkeyError = formatIpcError(error, 'Could not restore shortcuts');
+      if (!captureRestored) {
+        try {
+          await invoke('set_hotkey_capture', { active: false });
+        } catch (error) {
+          outcome = 'error';
+          hotkeyError = formatIpcError(error, 'Could not restore shortcuts');
+        }
       }
       hotkeyState = outcome;
       feedbackTimer = setTimeout(() => { hotkeyState = 'idle'; }, outcome === 'success' ? HOTKEY_SUCCESS_MS : HOTKEY_ERROR_MS);
@@ -590,12 +642,13 @@
         .catch(() => {});
     }
     listenForSyncCompletion(() => {
+      const cleanupVersion = appStore.cleanupChangeVersion;
       void loadSettingsSnapshot().then(({ contextual_formatting_enabled: formatting,
         cleanup_enabled: cleanup, transcription_language: language,
         voice_commands_enabled: commands }) => {
         if (!active) return;
         contextualFormatting = formatting ?? true;
-        appStore.cleanupEnabled = cleanup ?? true;
+        if (cleanupVersion === appStore.cleanupChangeVersion) appStore.cleanupEnabled = cleanup ?? true;
         voiceCommands = commands ?? false;
         if (!languageDropdownOpen && language && transcriptionLanguages.some(option => option.code === language)) {
           selectedLanguage = language;
@@ -863,7 +916,7 @@
 {/if}
 <h3 class="settings-subhead">Text processing</h3>
 <div class="setting-row" data-setting-target="general-cleanup">
-  <div><div class="label">Cleanup</div><div class="desc">Cleans up dictation after transcription. Basic works on-device with English rules; other levels use an AI model for tone and formatting. Choose the level in Style.</div></div>
+  <div><div class="label">Cleanup</div><div class="desc">Cleans up dictation after transcription. Choose the level in Style and a cleanup model in Models.</div></div>
   <Toggle checked={appStore.cleanupEnabled} onchange={handleCleanup} label="Cleanup" bind:error={cleanupError} />
 </div>
 <div class="setting-row" data-setting-target="general-spacing">

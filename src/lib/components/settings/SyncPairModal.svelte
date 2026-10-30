@@ -103,13 +103,13 @@
         </svg>
       </div>
       <div>
-        <div class="pair-title">Pair this device?</div>
+        <div class="pair-title">Pair with {incoming.peer_name}?</div>
         <div class="pair-sub">
-          <strong>{incoming.peer_name}</strong> wants to sync with this device.
+          {incoming.peer_name} wants to sync with this device.
         </div>
       </div>
     </div>
-    <label class="pair-label" for="pair-code-input">Enter the code shown there</label>
+    <label class="pair-label" for="pair-code-input">Code shown on {incoming.peer_name}</label>
     <input
       id="pair-code-input"
       bind:this={codeInput}
@@ -169,16 +169,16 @@
     width: min(400px, calc(100vw - 48px));
     padding: 20px;
     display: grid;
-    gap: 12px;
+    gap: 14px;
   }
   .pair-head {
     display: flex;
     gap: 12px;
-    align-items: flex-start;
+    align-items: center;
   }
   .pair-icon {
-    width: 34px;
-    height: 34px;
+    width: 38px;
+    height: 38px;
     border-radius: var(--r-md, 10px);
     background: var(--accent-soft, rgba(125, 125, 125, 0.14));
     color: var(--accent);
@@ -193,6 +193,7 @@
   .pair-title {
     font-size: 14.5px;
     font-weight: 600;
+    color: var(--ink-strong);
   }
   .pair-sub {
     font-size: 12.5px;

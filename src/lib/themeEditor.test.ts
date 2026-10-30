@@ -32,7 +32,15 @@ beforeEach(() => {
   failKey = null;
   failOnce = null;
   ipc.emit.mockReset().mockResolvedValue(undefined);
-  ipc.invoke.mockReset().mockImplementation(async (_cmd: string, args: { key: string }) => {
+  ipc.invoke.mockReset().mockImplementation(async (cmd: string, args: { key: string; values?: Record<string, unknown> }) => {
+    if (cmd === 'get_setting') {
+      return ({ appearance_mode: appStore.appearanceMode, accent_color: appStore.accentColor,
+        custom_theme: appStore.customTheme, custom_themes: appStore.savedThemes } as Record<string, unknown>)[args.key];
+    }
+    if (cmd === 'save_model_settings_if_unchanged') {
+      if (failKey && args.values && failKey in args.values) throw new Error('disk full');
+      return;
+    }
     if (args.key === failKey) throw new Error('disk full');
     if (args.key === failOnce) {
       failOnce = null;
@@ -77,7 +85,7 @@ describe('theme editor', () => {
     expect(saves()).toEqual([]);
   });
 
-  it('asks before discarding a dirty draft and only runs the action on discard', () => {
+  it('asks before discarding a dirty draft and only runs the action on discard', async () => {
     openThemeEditor({ seed, name: 'Mine' });
     updateThemeDraft({ name: 'Renamed' });
     const action = vi.fn();
@@ -87,17 +95,77 @@ describe('theme editor', () => {
     keepEditingTheme();
     expect(themeEditor.open).toBe(true);
     guardThemeEditor(action);
-    confirmDiscardThemeEditor();
+    await confirmDiscardThemeEditor();
     expect(action).toHaveBeenCalledOnce();
     expect(themeEditor.open).toBe(false);
     expect(appStore.appearanceMode).toBe('light');
   });
 
-  it('closes a clean draft without asking', () => {
+  it('closes a clean draft without asking', async () => {
     openThemeEditor({ theme: saved });
-    requestCloseThemeEditor();
+    await requestCloseThemeEditor();
     expect(themeEditor.open).toBe(false);
     expect(themeEditor.pendingAction).toBeNull();
+  });
+
+  it('does not open another editor from a stale conflicted draft', async () => {
+    openThemeEditor({ seed, name: 'Mine' });
+    updateThemeDraft({ name: 'Renamed' });
+    const action = vi.fn();
+    guardThemeEditor(action);
+    themeEditor.externalChange = true;
+    await confirmDiscardThemeEditor();
+    expect(action).not.toHaveBeenCalled();
+    expect(themeEditor.open).toBe(false);
+  });
+
+  it('waits for the baseline before switching away from a stale editor', async () => {
+    let resolveMode: (value: string) => void = () => {};
+    const mode = new Promise<string>(resolve => { resolveMode = resolve; });
+    const invoke = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation((cmd, args) => cmd === 'get_setting' && args.key === 'appearance_mode' ? mode : invoke(cmd, args));
+    openThemeEditor({ seed, name: 'Mine' });
+    const action = vi.fn();
+    const transition = guardThemeEditor(action);
+    expect(action).not.toHaveBeenCalled();
+    resolveMode('dark');
+    await transition;
+    expect(action).not.toHaveBeenCalled();
+    expect(themeEditor.open).toBe(false);
+    expect(window.dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'verenu:refresh-agent-appearance' }));
+  });
+
+  it('does not discard an edit made while a transition waits for the baseline', async () => {
+    let resolveMode: (value: string) => void = () => {};
+    const mode = new Promise<string>(resolve => { resolveMode = resolve; });
+    const invoke = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation((cmd, args) => cmd === 'get_setting' && args.key === 'appearance_mode' ? mode : invoke(cmd, args));
+    openThemeEditor({ seed, name: 'Mine' });
+    const action = vi.fn();
+    const transition = guardThemeEditor(action);
+    updateThemeDraft({ name: 'New draft' });
+    resolveMode('light');
+    await transition;
+    expect(themeEditor.open).toBe(true);
+    expect(themeEditor.draft.name).toBe('New draft');
+    expect(action).not.toHaveBeenCalled();
+  });
+
+  it('honors keep editing while discard is waiting for the baseline', async () => {
+    let resolveMode: (value: string) => void = () => {};
+    const mode = new Promise<string>(resolve => { resolveMode = resolve; });
+    const invoke = ipc.invoke.getMockImplementation()!;
+    ipc.invoke.mockImplementation((cmd, args) => cmd === 'get_setting' && args.key === 'appearance_mode' ? mode : invoke(cmd, args));
+    openThemeEditor({ seed, name: 'Mine' });
+    updateThemeDraft({ name: 'New draft' });
+    const action = vi.fn();
+    await guardThemeEditor(action);
+    const transition = confirmDiscardThemeEditor();
+    keepEditingTheme();
+    resolveMode('light');
+    await transition;
+    expect(themeEditor.open).toBe(true);
+    expect(action).not.toHaveBeenCalled();
   });
 
   it('saves the library then applies the palette and accent', async () => {
@@ -105,9 +173,8 @@ describe('theme editor', () => {
     await saveThemeEditor();
     expect(themeEditor.open).toBe(false);
     expect(appStore.savedThemes).toHaveLength(1);
-    const keys = saves().map(([k]) => k);
-    expect(keys).toEqual(expect.arrayContaining(['custom_themes', 'custom_theme', 'appearance_mode', 'accent_color']));
-    expect(keys.indexOf('custom_themes')).toBeLessThan(keys.indexOf('custom_theme'));
+    const batch = ipc.invoke.mock.calls.find(([cmd]) => cmd === 'save_model_settings_if_unchanged');
+    expect(batch?.[1].values).toMatchObject({ appearance_mode: 'custom', accent_color: '#4F7FD8', custom_theme: seed });
     expect(appStore.appearanceMode).toBe('custom');
     expect(appStore.accentColor).toBe('#4F7FD8');
     expect(appStore.activeThemeId).toBe(appStore.savedThemes[0].id);
@@ -123,17 +190,15 @@ describe('theme editor', () => {
     expect(appStore.appearanceMode).toBe('custom');
   });
 
-  it('rolls back the library and keeps previewing when applying fails', async () => {
+  it('keeps the library unchanged and the draft when the atomic save fails', async () => {
     failKey = 'appearance_mode';
     openThemeEditor({ seed, name: 'Mine' });
     await saveThemeEditor();
     expect(themeEditor.open).toBe(true);
     expect(appStore.savedThemes).toEqual([]);
-    expect(themeEditor.error).toMatch(/nothing changed/i);
+    expect(themeEditor.error).toMatch(/save/i);
     expect(appStore.customTheme?.background).toBe('#FCFCFA'.toUpperCase());
-    const last = (key: string) => { const m = saves().filter(([k]) => k === key); return m[m.length - 1]?.[1]; };
-    expect(last('custom_themes')).toEqual([]);
-    expect(last('custom_theme')).toBeNull();
+    expect(saves()).toEqual([]);
   });
 
   it('rejects duplicate and empty names without saving', async () => {
@@ -168,7 +233,7 @@ describe('theme editor', () => {
   });
 });
 
-describe('applyPalette rollback', () => {
+describe('applyPalette atomic save', () => {
   const palette = { background: '#101010', foreground: '#EEEEEE', sidebar: null, surface: null };
 
   function persistedLook() {
@@ -179,40 +244,21 @@ describe('applyPalette rollback', () => {
     return { mode: 'light' as const, customTheme: null, accent: '#D2637A', themeId: 'prior' };
   }
 
-  async function failAt(key: string) {
+  it('does not issue rollback writes when a concurrent change rejects the batch', async () => {
     const from = persistedLook();
-    appStore.appearanceMode = 'custom';
-    appStore.customTheme = seed;
-    appStore.accentColor = '#4F7FD8';
-    failOnce = key;
+    failKey = 'custom_theme';
     const ok = await applyPalette(palette, { accent: '#8B6FD6', themeId: 'new', from });
     expect(ok).toBe(false);
-    expect(appStore.appearanceMode).toBe('light');
-    expect(appStore.customTheme).toBeNull();
-    expect(appStore.accentColor).toBe('#D2637A');
-    expect(appStore.activeThemeId).toBe('prior');
-    return (k: string) => {
-      const m = saves().filter(([name]) => name === k);
-      return m.length ? m[m.length - 1][1] : undefined;
-    };
-  }
-
-  it('restores everything to the persisted look when the palette save fails', async () => {
-    const last = await failAt('custom_theme');
-    expect(last('appearance_mode')).toBeUndefined();
-    expect(last('accent_color')).toBeUndefined();
+    expect(saves()).toEqual([]);
+    expect(window.dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'verenu:refresh-agent-appearance' }));
   });
 
-  it('restores disk and store when the mode save fails after the palette was written', async () => {
-    const last = await failAt('appearance_mode');
-    expect(last('custom_theme')).toBeNull();
-  });
-
-  it('restores disk and store when the accent save fails after palette and mode were written', async () => {
-    const last = await failAt('accent_color');
-    expect(last('custom_theme')).toBeNull();
-    expect(last('appearance_mode')).toBe('light');
-    expect(last('accent_color')).toBe('#D2637A');
+  it('commits the palette, mode and accent in one conditional batch', async () => {
+    const from = persistedLook();
+    expect(await applyPalette(palette, { accent: '#8B6FD6', themeId: 'new', from })).toBe(true);
+    const batch = ipc.invoke.mock.calls.find(([cmd]) => cmd === 'save_model_settings_if_unchanged');
+    expect(batch?.[1].values).toMatchObject({ appearance_mode: 'custom', custom_theme: palette, accent_color: '#8B6FD6' });
+    expect(appStore.activeThemeId).toBe('new');
   });
 
   it('ignores a second appearance save while one is running', async () => {

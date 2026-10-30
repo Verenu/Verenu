@@ -50,7 +50,7 @@ export function selectedContext(): Context | null {
 let inFlight: Promise<void> | null = null;
 
 export function loadContexts(force = false): Promise<void> {
-  if (inFlight) return inFlight;
+  if (inFlight) return force ? inFlight.then(() => loadContexts(true)) : inFlight;
   if (contextsStore.loaded && !force) return Promise.resolve();
   inFlight = (async () => {
     try {

@@ -486,6 +486,7 @@ fn loaded_to_capture(take: LoadedTake) -> CancelledCapture {
             .context_id
             .map(|id| ResolvedContextIdentity {
                 t3_skills: None,
+                website_domain: None,
                 id,
                 label: "Recovered context".to_string(),
             })
