@@ -84,6 +84,20 @@ pub(crate) async fn linux_activity(
     Some(std::sync::Arc::new(gate.inner().clone().enter().await))
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_try_activity(
+    app: &AppHandle,
+) -> Result<Option<std::sync::Arc<crate::linux_activity::Activity>>, String> {
+    let Some(gate) = app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>() else {
+        return Ok(None);
+    };
+    gate.inner()
+        .try_enter()
+        .map(std::sync::Arc::new)
+        .map(Some)
+        .ok_or_else(|| "Verenu is preparing to restart. Try again shortly.".into())
+}
+
 async fn run_db<T, F>(app: &AppHandle, label: &'static str, f: F) -> Result<T, String>
 where
     T: Send + 'static,
