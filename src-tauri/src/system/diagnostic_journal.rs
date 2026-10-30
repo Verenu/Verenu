@@ -9,16 +9,26 @@ use std::time::Duration;
 static SENDER: OnceLock<mpsc::SyncSender<(String, String)>> = OnceLock::new();
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 
-pub fn start(db: Db) {
+pub fn start(
+    db: Db,
+    #[cfg(target_os = "linux")] gate: std::sync::Arc<crate::linux_activity::ActivityGate>,
+) {
     let (tx, rx) = mpsc::sync_channel(512);
     if SENDER.set(tx).is_err() {
         return;
     }
     std::thread::spawn(move || {
-        let _ = db::diagnostic_retention(&db, None);
+        {
+            #[cfg(target_os = "linux")]
+            let _activity = gate.enter_blocking();
+            let _ = db::diagnostic_retention(&db, None);
+        }
         let mut maintenance = std::time::Instant::now();
         loop {
-            match rx.recv_timeout(Duration::from_secs(60)) {
+            let event = rx.recv_timeout(Duration::from_secs(60));
+            #[cfg(target_os = "linux")]
+            let _activity = gate.enter_blocking();
+            match event {
                 Ok((subsystem, fingerprint)) => {
                     if db::record_diagnostic_failure(&db, &subsystem, &fingerprint).is_err() {
                         DROPPED.fetch_add(1, Ordering::Relaxed);

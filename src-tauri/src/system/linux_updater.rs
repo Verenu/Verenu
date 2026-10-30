@@ -654,6 +654,7 @@ mod tests {
         let old = std::env::var_os("VERENU_UPDATE_TEST_APPIMAGE").expect("old AppImage fixture");
         let expected =
             std::env::var_os("VERENU_UPDATE_TEST_EXPECTED").expect("new AppImage fixture");
+        let url = std::env::var("VERENU_UPDATE_TEST_URL").expect("official beta asset URL");
         let dir = StagingDirectory::new(&std::env::temp_dir()).unwrap();
         let image = dir.0.join("Verenu.AppImage");
         std::fs::copy(old, &image).unwrap();
@@ -673,14 +674,36 @@ mod tests {
             .build(tauri::generate_context!())
             .unwrap();
         app.manage(db);
-        let url = "https://github.com/Verenu/Verenu/releases/download/v0.21.0/Verenu_0.21.0-beta.1_x86_64.AppImage";
-        let result = tauri::async_runtime::block_on(install(
-            app.handle(),
-            url,
-            crate::api::updater::UpdateChannel::Beta,
-        ));
+        let settings =
+            crate::data::store::SettingsHandle::empty_for_test(dir.0.join("settings.json"));
+        settings
+            .set(
+                crate::data::store::BETA_UPDATES_ENABLED,
+                serde_json::json!(true),
+            )
+            .unwrap();
+        app.manage(settings);
+        let result = tauri::async_runtime::block_on(async {
+            let blocked = crate::commands::install_update(
+                app.handle().clone(),
+                "https://example.com/not-an-official-release".into(),
+            )
+            .await;
+            assert!(blocked.unwrap_err().contains("blocked"));
+            let (first, second) = tokio::join!(
+                crate::commands::install_update(app.handle().clone(), url.clone()),
+                crate::commands::install_update(app.handle().clone(), url.clone()),
+            );
+            match (first, second) {
+                (Ok(outcome), Err(error)) | (Err(error), Ok(outcome)) => {
+                    assert!(error.contains("already in progress"), "{error}");
+                    outcome
+                }
+                pair => panic!("expected one installation and one rejected attempt: {pair:?}"),
+            }
+        });
         assert!(
-            matches!(result, Ok(crate::commands::InstallOutcome::Installed)),
+            matches!(result, crate::commands::InstallOutcome::Installed),
             "{result:?}"
         );
         let backup = rusqlite::Connection::open_with_flags(
