@@ -662,6 +662,49 @@ mod tests {
         std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o755)).unwrap();
         let old_hash = Sha256::digest(std::fs::read(&image).unwrap());
         let new_hash = Sha256::digest(std::fs::read(expected).unwrap());
+        struct MountedImage {
+            child: std::process::Child,
+            mount: PathBuf,
+            app_run: Vec<u8>,
+        }
+        impl Drop for MountedImage {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+        let mounted = if std::env::var_os("VERENU_UPDATE_TEST_MOUNT").is_some() {
+            use std::io::BufRead;
+            let mut child = std::process::Command::new(&image)
+                .arg("--appimage-mount")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let mut mounted = MountedImage {
+                child,
+                mount: PathBuf::new(),
+                app_run: Vec::new(),
+            };
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut line = String::new();
+                let result = std::io::BufReader::new(stdout)
+                    .read_line(&mut line)
+                    .map(|_| line);
+                let _ = sender.send(result);
+            });
+            let path = receiver
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .unwrap()
+                .unwrap();
+            mounted.mount = PathBuf::from(path.trim());
+            assert!(mounted.mount.is_absolute());
+            mounted.app_run = std::fs::read(mounted.mount.join("AppRun")).unwrap();
+            Some(mounted)
+        } else {
+            None
+        };
         std::env::set_var("APPIMAGE", &image);
         std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &dir.0);
         std::env::set_var("XDG_CACHE_HOME", dir.0.join("cache"));
@@ -707,15 +750,20 @@ mod tests {
                 crate::commands::install_update(handle, update_url).await
             });
             tokio::time::timeout(std::time::Duration::from_secs(10), wait_started)
-                .await.unwrap().unwrap();
+                .await
+                .unwrap()
+                .unwrap();
             caller.abort();
             let _ = caller.await;
             let error = crate::commands::install_update(app.handle().clone(), url.clone())
-                .await.unwrap_err();
+                .await
+                .unwrap_err();
             assert!(error.contains("already in progress"), "{error}");
             drop(db_guard);
             let _pause = tokio::time::timeout(std::time::Duration::from_secs(180), gate.pause())
-                .await.unwrap().unwrap();
+                .await
+                .unwrap()
+                .unwrap();
         });
         let backup = rusqlite::Connection::open_with_flags(
             dir.0.join("verenu.db.bak"),
@@ -731,6 +779,14 @@ mod tests {
             old_hash
         );
         assert_eq!(Sha256::digest(std::fs::read(&image).unwrap()), new_hash);
+        if let Some(mounted) = &mounted {
+            assert_eq!(
+                std::fs::read(mounted.mount.join("AppRun")).unwrap(),
+                mounted.app_run,
+                "The running AppImage mount changed during replacement"
+            );
+        }
+        drop(mounted);
         drop(app);
     }
 }
