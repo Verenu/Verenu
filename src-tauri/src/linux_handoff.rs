@@ -255,6 +255,28 @@ mod tests {
             let bus = zbus::fdo::DBusProxy::new(&connection).await.unwrap();
             let original_tray = tray_names(&bus).await;
             assert_eq!(original_tray.len(), 1);
+            crate::core::hotkey::test_set_gesture_active(true);
+            assert!(matches!(
+                prepare(app.handle()).await,
+                Err(error) if error.contains("shortcut gesture")
+            ));
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while gate.try_enter().is_none() || !crate::core::hotkey::test_shortcuts_active() {
+                assert!(tokio::time::Instant::now() < deadline, "services did not resume");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            crate::core::hotkey::test_set_gesture_active(false);
+            crate::core::hotkey::test_set_capture_active(true);
+            assert!(matches!(
+                prepare(app.handle()).await,
+                Err(error) if error.contains("changing your shortcut")
+            ));
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while gate.try_enter().is_none() || !crate::core::hotkey::test_shortcuts_active() {
+                assert!(tokio::time::Instant::now() < deadline, "services did not resume");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            crate::core::hotkey::test_set_capture_active(false);
             let active_agent = agent.clone().acquire_owned().await.unwrap();
             let preparation = prepare(app.handle());
             fn assert_send<T: Send>(_: &T) {}
