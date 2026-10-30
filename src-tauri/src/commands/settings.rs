@@ -651,13 +651,7 @@ pub async fn save_setting(
     mut value: serde_json::Value,
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
-    let activity = if let Some(gate) =
-        app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
-    {
-        Some(std::sync::Arc::new(gate.inner().clone().enter().await))
-    } else {
-        None
-    };
+    let activity = linux_activity(&app).await;
     validate_setting(&key, &value)?;
     let disable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == false;
     if key == store::CUSTOM_PROVIDERS {

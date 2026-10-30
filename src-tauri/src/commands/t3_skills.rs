@@ -101,6 +101,8 @@ pub async fn get_t3_skills(app: AppHandle) -> Result<Status, String> {
 
 #[tauri::command]
 pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, String> {
+    #[cfg(target_os = "linux")]
+    let activity = linux_activity(&app).await;
     if cfg!(target_os = "android") {
         return Err("T3 skill pairing requires desktop Verenu.".into());
     }
@@ -156,7 +158,11 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
     })
     .await?;
     let app_copy = app.clone();
+    #[cfg(target_os = "linux")]
+    let save_activity = activity.clone();
     run_blocking("save_t3_credential", move || {
+        #[cfg(target_os = "linux")]
+        let _activity = save_activity;
         crate::data::credentials::save(&app_copy, store::T3_INTEGRATION, &token)
     })
     .await?;
@@ -166,7 +172,11 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
     {
         settings.set(store::T3_CONNECTION, previous_value)?;
         let app_copy = app.clone();
+        #[cfg(target_os = "linux")]
+        let restore_activity = activity.clone();
         run_blocking("restore_t3_credential", move || {
+            #[cfg(target_os = "linux")]
+            let _activity = restore_activity;
             crate::data::credentials::save(&app_copy, store::T3_INTEGRATION, &previous_token)
         })
         .await?;
@@ -177,6 +187,8 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
 
 #[tauri::command]
 pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Status, String> {
+    #[cfg(target_os = "linux")]
+    let _activity = linux_activity(&app).await;
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let Some(mut current) = connection(&settings.snapshot()?) else {
@@ -247,6 +259,8 @@ fn apply_refresh_result(
 
 #[tauri::command]
 pub async fn select_t3_catalog(app: AppHandle, catalog_id: String) -> Result<Status, String> {
+    #[cfg(target_os = "linux")]
+    let _activity = linux_activity(&app).await;
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let mut current = connection(&settings.snapshot()?).ok_or("Connect T3 first.")?;
@@ -268,6 +282,8 @@ pub async fn select_t3_catalog(app: AppHandle, catalog_id: String) -> Result<Sta
 
 #[tauri::command]
 pub async fn disconnect_t3(app: AppHandle) -> Result<Status, String> {
+    #[cfg(target_os = "linux")]
+    let activity = linux_activity(&app).await;
     if cfg!(target_os = "android") {
         return Err("T3 skill pairing requires desktop Verenu.".into());
     }
@@ -277,7 +293,11 @@ pub async fn disconnect_t3(app: AppHandle) -> Result<Status, String> {
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let transaction_settings = settings.clone();
+    #[cfg(target_os = "linux")]
+    let delete_activity = activity.clone();
     run_blocking("delete_t3_credential", move || {
+        #[cfg(target_os = "linux")]
+        let _activity = delete_activity;
         commit_disconnect(&transaction_settings, || {
             crate::data::credentials::delete(store::T3_INTEGRATION)
         })

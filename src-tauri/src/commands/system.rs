@@ -562,13 +562,7 @@ pub async fn check_hotkey(app: AppHandle, keys: Vec<String>) -> Result<bool, Str
 #[tauri::command]
 pub async fn save_hotkey(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
     #[cfg(target_os = "linux")]
-    let activity = if let Some(gate) =
-        app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
-    {
-        Some(std::sync::Arc::new(gate.inner().clone().enter().await))
-    } else {
-        None
-    };
+    let activity = linux_activity(&app).await;
     let keys = crate::core::hotkey::normalize_codes(&keys)?;
     let ids = crate::core::hotkey::mapped_codes(&keys)?;
     if !check_hotkey(app.clone(), keys.clone()).await? {
