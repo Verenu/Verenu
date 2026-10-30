@@ -30,6 +30,18 @@ pub struct SettingsSnapshot {
 }
 
 impl SettingsSnapshot {
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    pub(crate) fn read_for_handoff(path: &Path) -> Result<Self, String> {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("Could not read settings for restart: {error}"))?;
+        let values: Map<String, Value> = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Could not parse settings for restart: {error}"))?;
+        Ok(Self {
+            values: Arc::new(values),
+        })
+    }
+
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.values.get(key)
     }
