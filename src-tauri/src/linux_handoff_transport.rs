@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::os::fd::FromRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -82,7 +82,11 @@ fn child_channel_from_environment(timeout: Duration) -> Result<Option<Channel>, 
             ) == 0
             && peer.uid == libc::geteuid()
     };
-    if !valid || !descends_from(unsafe { libc::getppid() }, peer.pid) {
+    if !valid {
+        return Err("Invalid restart connection".into());
+    }
+    let parent = ParentMonitor::open(peer.pid)?;
+    if !descends_from(unsafe { libc::getppid() }, peer.pid) {
         return Err("Invalid restart connection".into());
     }
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
@@ -91,7 +95,62 @@ fn child_channel_from_environment(timeout: Duration) -> Result<Option<Channel>, 
     }
     // The descriptor was explicitly passed to this process and validated above.
     let stream = unsafe { UnixStream::from_raw_fd(fd) };
-    Channel::new(stream, timeout).map(Some)
+    let mut channel = Channel::new(stream, timeout)?;
+    channel.parent = Some(parent);
+    Ok(Some(channel))
+}
+
+struct ParentMonitor(OwnedFd);
+
+impl ParentMonitor {
+    fn open(pid: libc::pid_t) -> Result<Self, String> {
+        if pid <= 0 {
+            return Err("Invalid restart parent".into());
+        }
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if fd < 0 {
+            return Err(format!(
+                "Could not monitor the restart parent: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // pidfd_open returns a new close-on-exec descriptor owned by this process.
+        Ok(Self(unsafe { OwnedFd::from_raw_fd(fd as i32) }))
+    }
+
+    fn wait(&self, timeout: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let millis = remaining
+                .as_millis()
+                .saturating_add(1)
+                .min(i32::MAX as u128) as i32;
+            let mut descriptor = libc::pollfd {
+                fd: self.0.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let result = unsafe { libc::poll(&mut descriptor, 1, millis) };
+            if result > 0 {
+                return if descriptor.revents & libc::POLLIN != 0 {
+                    Ok(())
+                } else {
+                    Err("Could not confirm the restart parent exited".into())
+                };
+            }
+            if result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(format!("Could not monitor the restart parent: {error}"));
+            }
+            if Instant::now() >= deadline {
+                return Err("The restart parent did not exit in time".into());
+            }
+        }
+    }
 }
 
 pub(crate) struct Child {
@@ -183,7 +242,7 @@ impl ChildServices {
     pub(crate) fn activated(mut self) -> Result<ChildCommit, String> {
         self.0.send(&Message::Activated)?;
         self.0.expect(Message::Commit)?;
-        Ok(ChildCommit)
+        Ok(ChildCommit(self.0))
     }
 
     pub(crate) fn fail(mut self, reason: String) -> Result<(), String> {
@@ -191,7 +250,21 @@ impl ChildServices {
     }
 }
 
-pub(crate) struct ChildCommit;
+#[must_use]
+pub(crate) struct ChildCommit(Channel);
+#[must_use]
+pub(crate) struct ParentExited(());
+
+impl ChildCommit {
+    pub(crate) fn wait_for_parent_exit(self, timeout: Duration) -> Result<ParentExited, String> {
+        self.0
+            .parent
+            .as_ref()
+            .ok_or("Restart parent was not authenticated")?
+            .wait(timeout)?;
+        Ok(ParentExited(()))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -220,6 +293,7 @@ enum Message {
 struct Channel {
     stream: UnixStream,
     timeout: Duration,
+    parent: Option<ParentMonitor>,
 }
 
 impl Channel {
@@ -230,7 +304,11 @@ impl Channel {
         stream
             .set_write_timeout(Some(timeout))
             .map_err(|error| error.to_string())?;
-        Ok(Self { stream, timeout })
+        Ok(Self {
+            stream,
+            timeout,
+            parent: None,
+        })
     }
 
     fn send(&mut self, message: &Message) -> Result<(), String> {
@@ -523,6 +601,29 @@ impl Activated {
 mod tests {
     use super::*;
 
+    #[test]
+    fn parent_monitor_waits_for_the_exact_process_to_exit() {
+        let mut process = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let monitor = ParentMonitor::open(process.id() as libc::pid_t).unwrap();
+        let flags = unsafe { libc::fcntl(monitor.0.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+        assert!(monitor.wait(Duration::from_millis(50)).is_err());
+        process.kill().unwrap();
+        process.wait().unwrap();
+        monitor.wait(Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn commit_without_an_authenticated_parent_cannot_authorize_startup() {
+        let (_parent, child) = pair();
+        assert!(ChildCommit(child)
+            .wait_for_parent_exit(Duration::from_millis(1))
+            .is_err());
+    }
+
     fn begin() -> Message {
         Message::Begin {
             key_availability: KeyAvailability::new(),
@@ -648,7 +749,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let startup = Child { channel: child }.begin(39).unwrap();
             assert_eq!(startup.key_availability().get("openai"), Some(&true));
-            startup
+            let _commit = startup
                 .backend_ready()
                 .unwrap()
                 .ready()
