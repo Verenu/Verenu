@@ -31,6 +31,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(8);
 pub(crate) const MAX_INCOMING_CONNECTIONS: usize = 8;
 pub(crate) const MAX_ACTIVE_MUTE_LEASES: usize = 64;
+pub(crate) fn pairing_busy(has_pending: bool, in_progress: &AtomicBool) -> bool {
+    has_pending || in_progress.load(Ordering::Acquire)
+}
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(180);
 const PAIRING_PROMPT_LIFETIME: Duration = Duration::from_secs(180);
 const MAX_BACKOFF: Duration = Duration::from_secs(600);
@@ -39,6 +42,7 @@ const IDLE_SYNC_INTERVAL: Duration = Duration::from_secs(30);
 const DISCOVERY_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const PRIVATE_PORT_START: u16 = 49_152;
 const PRIVATE_PORT_COUNT: u32 = 16_384;
+static ROUTES_LOCK: Mutex<()> = Mutex::new(());
 const VIRTUAL_INTERFACE_MARKERS: &[&str] = &[
     "tailscale",
     "wireguard",
@@ -276,7 +280,12 @@ fn connection_error(name: &str, address: SocketAddr, detail: &str) -> anyhow::Er
 }
 
 pub(crate) fn should_try_next_address(error: &anyhow::Error) -> bool {
-    error.is::<ConnectionFailure>()
+    error.is::<ConnectionFailure>() || error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|error| matches!(error.kind(),
+            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset |
+            std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::BrokenPipe |
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::NotConnected))
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -440,6 +449,7 @@ impl SyncManager {
                             }
                         };
                         let inner = accept_inner.clone();
+                        let generation = inner.pairing_generation.load(Ordering::Relaxed);
                         let cfg = server_cfg.clone();
                         tauri::async_runtime::spawn(async move {
                             let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
@@ -451,7 +461,7 @@ impl SyncManager {
                             .await
                             {
                                 Ok(tls) => {
-                                    handle_connection(inner, tls, permit).await;
+                                    handle_connection(inner, tls, permit, generation).await;
                                 }
                                 Err(err) => {
                                     log::debug!("sync: tls accept failed: {err}");
@@ -531,7 +541,7 @@ impl SyncManager {
         };
         let instance = format!("verenu-{uuid}");
         let host = format!("verenu-{uuid}.local.");
-        let props: HashMap<String, String> = [
+        let mut props: HashMap<String, String> = [
             ("uuid", uuid.clone()),
             ("name", name),
             ("ver", PROTOCOL_VERSION.to_string()),
@@ -539,6 +549,17 @@ impl SyncManager {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
+        if let Some(address) = if_addrs::get_if_addrs()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|interface| match interface.ip() {
+                IpAddr::V4(ip) if is_tailscale_address(ip) => Some(ip),
+                _ => None,
+            })
+            .min()
+        {
+            props.insert("tailscale".into(), address.to_string());
+        }
         // mdns-sd's automatic address selection can classify active macOS
         // interfaces as Unknown and publish only 127.0.0.1. Enumerate usable
         // IPv4 interfaces ourselves so peers receive a reachable LAN address.
@@ -711,6 +732,8 @@ impl SyncManager {
             device_uuid: identity.uuid.clone(),
             device_name: identity.name.clone(),
             cert_der: identity.cert_der().as_ref().to_vec(),
+            sync_port: Some(self.inner.listener_port.load(Ordering::Relaxed)),
+            pairing_id: Some(uuid::Uuid::new_v4().to_string()),
         })
     }
 
@@ -853,10 +876,12 @@ impl SyncManager {
         if paired {
             return Err(anyhow!("This device is already paired. Use its Connection button to update the address"));
         }
-        let target = DiscoveredDevice {
-            uuid, name: "Tailscale device".into(), addresses: vec![address.ip().to_string()],
-            port: address.port(), last_seen_ms: now_ms_u64(),
-        };
+        let target = self.inner.discovered.lock()
+            .map_err(|_| anyhow!("discovery lock poisoned"))?
+            .get(&uuid).cloned().unwrap_or_else(|| DiscoveredDevice {
+                uuid, name: "Tailscale device".into(), addresses: vec![address.ip().to_string()],
+                port: address.port(), last_seen_ms: now_ms_u64(),
+            });
         self.start_pairing_target(target, Some(address)).await
     }
 
@@ -865,7 +890,7 @@ impl SyncManager {
         let generation;
         {
             let mut pending = self.inner.pending.lock().await;
-            if pending.is_some() {
+            if pairing_busy(pending.is_some(), &self.inner.pairing_in_progress) {
                 return Err(anyhow!("a pairing is already in progress"));
             }
             generation = self
@@ -952,36 +977,35 @@ impl SyncManager {
             transport::client_config(identity.cert_der().clone(), identity.tls_key())?
         };
         let connector = transport::tls_connector(client_cfg);
-        let mut tcp = None;
+        let mut tls = None;
         let mut failures = Vec::new();
-        let candidates = route.map(|address| vec![address]).unwrap_or_else(||
-            connection_candidates(&target.addresses, target.port, &target.uuid));
-        for addr in candidates {
-            match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await
-            {
-                Ok(Ok(stream)) => {
-                    tcp = Some(stream);
-                    break;
-                }
-                Ok(Err(err)) => failures.push(connection_error(&target.name, addr, &err.to_string()).to_string()),
-                Err(_) => failures.push(connection_error(&target.name, addr, "timed out").to_string()),
+        let mut candidates = connection_candidates(&target.addresses, target.port, &target.uuid);
+        if let Some(address) = route {
+            candidates.retain(|candidate| *candidate != address);
+            candidates.insert(0, address);
+        }
+        for addr in candidates.iter().copied() {
+            let stream = match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
+                Ok(Ok(stream)) => stream,
+                Ok(Err(err)) => { failures.push(format!("{addr}: {err}")); continue; }
+                Err(_) => { failures.push(format!("{addr}: timed out")); continue; }
+            };
+            match tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                connector.connect(transport::server_name_for(&target.uuid), stream),
+            ).await {
+                Ok(Ok(stream)) => { tls = Some(stream); break; }
+                Ok(Err(err)) => failures.push(format!("{addr}: TLS handshake failed: {err}")),
+                Err(_) => failures.push(format!("{addr}: TLS handshake timed out")),
             }
         }
-        let tcp = tcp.ok_or_else(|| {
+        let mut tls = tls.ok_or_else(|| {
             anyhow!(
-                "could not reach {} on any discovered address: {}",
+                "could not reach {} on any available route ({}). Open Verenu on both devices and check the network, firewalls, and Tailscale access rules.",
                 target.name,
                 failures.join("; ")
             )
         })?;
-        let mut tls = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            connector.connect(transport::server_name_for(&target.uuid), tcp),
-        )
-        .await
-        .map_err(|_| anyhow!("timed out during TLS handshake"))?
-        .map_err(|e| anyhow!("TLS handshake with {} failed: {e}", target.name))?;
-
         let (spake_state, spake_msg) = pairing::initiator_start(code);
         send_message(
             &mut tls,
@@ -1020,7 +1044,9 @@ impl SyncManager {
         let outcome = tokio::time::timeout(PAIRING_TIMEOUT, exchange)
             .await
             .map_err(|_| anyhow!("{} didn't complete the pairing in time", target.name))??;
-        self.complete_pairing(outcome, generation).await
+        self.complete_pairing(outcome, generation).await?;
+        self.remember_routes(&target.uuid, &candidates);
+        Ok(())
     }
 
     pub async fn respond_to_pairing(&self, code: String, approve: bool) -> Result<()> {
@@ -1059,7 +1085,11 @@ impl SyncManager {
                         peer_uuid, peer_name, spake_msg, stream, created, generation, permit,
                     )
                 }
-                Some(PendingPairing::Outgoing { .. }) | None => {
+                Some(outgoing @ PendingPairing::Outgoing { .. }) => {
+                    *guard = Some(outgoing);
+                    return Err(anyhow!("no incoming pairing request to respond to"));
+                }
+                None => {
                     return Err(anyhow!("no incoming pairing request to respond to"));
                 }
             };
@@ -1114,6 +1144,9 @@ impl SyncManager {
         };
         match result {
             Ok(outcome) => {
+                let route = stream.get_ref().0.peer_addr().ok().and_then(|peer| {
+                    outcome.sync_port.filter(|port| *port != 0).map(|port| SocketAddr::new(peer.ip(), port))
+                });
                 if let Err(err) = self.complete_pairing(outcome, generation).await {
                     self.inner.fail_pairing(generation, format!("{err:#}"));
                     let _ = send_message(
@@ -1124,6 +1157,9 @@ impl SyncManager {
                     )
                     .await;
                     return Err(err);
+                }
+                if let Some(route) = route {
+                    self.remember_routes(&peer_uuid, &[route]);
                 }
                 send_message(&mut stream, &Message::PairComplete).await?;
                 self.inner
@@ -1200,6 +1236,7 @@ impl SyncManager {
             let conn = self.lock_db()?;
             let tx = conn.unchecked_transaction()?;
             sync_store::upsert_peer(&tx, &outcome.device_uuid, &outcome.device_name, &fp)?;
+            sync_store::set_pairing_id(&tx, &outcome.device_uuid, outcome.pairing_id.as_deref())?;
             let keys: Vec<String> = engine::SYNCABLE_SETTINGS
                 .iter()
                 .map(|s| s.to_string())
@@ -1208,6 +1245,9 @@ impl SyncManager {
             tx.commit()?;
         }
         drop(_pairing_generation_guard);
+        if let Ok(routes) = self.addr_candidates_for_peer(&outcome.device_uuid) {
+            self.remember_routes(&outcome.device_uuid, &routes);
+        }
         self.clear_pending_if_generation(generation).await;
         self.inner.clear_pairing_status(generation);
         self.inner
@@ -1264,15 +1304,33 @@ impl SyncManager {
     }
 
     pub async fn remove_device(&self, peer_uuid: String) -> Result<()> {
-        let existed = {
-            let conn = self.lock_db()?;
-            let existed = sync_store::remove_peer(&conn, &peer_uuid)?;
-            let _ = sync_store::remove_remote_stats(&conn, &peer_uuid);
-            existed
-        };
-        if !existed {
-            return Err(anyhow!("that device is not paired"));
+        let pending = self.inner.pending.lock().await;
+        if pairing_busy(pending.is_some(), &self.inner.pairing_in_progress) {
+            return Err(anyhow!("Wait for pairing to finish before removing a device"));
         }
+        let addresses = self.addr_candidates_for_peer(&peer_uuid)?;
+        let peer = {
+            let conn = self.lock_db()?;
+            sync_store::get_peer(&conn, &peer_uuid)?.ok_or_else(|| anyhow!("that device is not paired"))?
+        };
+        let pairing_id = {
+            let conn = self.lock_db()?;
+            sync_store::pairing_id(&conn, &peer_uuid)?.flatten()
+        };
+        if let Err(err) = self.send_unpair(&peer, &addresses, pairing_id).await {
+            log::info!("sync: unpair notification to {peer_uuid} failed (harmless): {err:#}");
+        }
+        {
+            let conn = self.lock_db()?;
+            let current = sync_store::get_peer(&conn, &peer_uuid)?;
+            if current.as_ref().is_none_or(|current| current.cert_fp != peer.cert_fp) {
+                return Err(anyhow!("Device pairing changed while removing it"));
+            }
+            sync_store::remove_peer(&conn, &peer_uuid)?;
+            let _ = sync_store::remove_remote_stats(&conn, &peer_uuid);
+            forget_routes(&self.inner.app, &peer_uuid);
+        }
+        drop(pending);
         {
             let mut status = self
                 .inner
@@ -1281,49 +1339,38 @@ impl SyncManager {
                 .map_err(|_| anyhow!("status lock poisoned"))?;
             status.remove(&peer_uuid);
         }
-        let manager = self.clone();
-        let uuid = peer_uuid.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(err) = manager.send_unpair(&uuid).await {
-                log::info!("sync: unpair notification to {uuid} failed (harmless): {err:#}");
-            }
-        });
         self.inner.emit_devices_changed();
         Ok(())
     }
 
-    async fn send_unpair(&self, peer_uuid: &str) -> Result<()> {
-        let addr = self
-            .addr_for_peer(peer_uuid)?
-            .ok_or_else(|| anyhow!("device not visible"))?;
+    async fn send_unpair(&self, peer: &SyncPeer, addresses: &[SocketAddr], pairing_id: Option<String>) -> Result<()> {
         let (cert, key) = {
             let guard = self.inner.identity.read().expect("identity lock");
             let identity = guard.as_ref().ok_or_else(|| anyhow!("sync unavailable"))?;
             (identity.cert_der().clone(), identity.tls_key())
         };
         let connector = transport::tls_connector(transport::client_config(cert, key)?);
-        let tcp = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
-            .await
-            .map_err(|_| anyhow!("timeout"))??;
-        let mut tls = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            connector.connect(transport::server_name_for(peer_uuid), tcp),
-        )
-        .await
-        .map_err(|_| anyhow!("tls timeout"))??;
-        let my_uuid = self.device_uuid();
-        send_message(
-            &mut tls,
-            &Message::Unpair {
-                device_uuid: my_uuid,
-            },
-        )
-        .await?;
-        Ok(())
-    }
-
-    fn addr_for_peer(&self, peer_uuid: &str) -> Result<Option<SocketAddr>> {
-        Ok(self.addr_candidates_for_peer(peer_uuid)?.into_iter().next())
+        for addr in addresses {
+            let tcp = match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
+                Ok(Ok(tcp)) => tcp,
+                _ => continue,
+            };
+            let mut tls = match tokio::time::timeout(CONNECT_TIMEOUT, connector.connect(transport::server_name_for(&peer.device_uuid), tcp)).await {
+                Ok(Ok(tls)) => tls,
+                _ => continue,
+            };
+            let certs = tls.get_ref().1.peer_certificates().ok_or_else(|| anyhow!("peer presented no certificate"))?;
+            if transport::peer_fingerprint(certs)? != peer.cert_fp {
+                return Err(anyhow!("peer identity changed since pairing"));
+            }
+            match tokio::time::timeout(CONNECT_TIMEOUT, send_message(&mut tls, &Message::Unpair { device_uuid: self.device_uuid(), pairing_id: pairing_id.clone() })).await {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(error)) if should_try_next_address(&error) => continue,
+                Ok(Err(error)) => return Err(error),
+                Err(_) => continue,
+            }
+        }
+        Err(anyhow!("device not reachable"))
     }
 
     fn addr_candidates_for_peer(&self, peer_uuid: &str) -> Result<Vec<SocketAddr>> {
@@ -1338,9 +1385,38 @@ impl SyncManager {
             .unwrap_or_default();
         if let Some(address) = self.saved_peer_address(peer_uuid) {
             addresses.insert(0, address);
-            addresses.dedup();
         }
-        Ok(addresses)
+        if let Ok(settings) = store::settings_handle(&self.inner.app) {
+            if let Some(saved) = settings.get(store::SYNC_DISCOVERED_ROUTES)
+                .and_then(|value| value.get(peer_uuid).and_then(|routes| routes.as_array()).cloned())
+            {
+                for address in saved.iter().filter_map(|value| value.as_str()?.parse::<SocketAddr>().ok()) {
+                    if !addresses.contains(&address) { addresses.push(address); }
+                }
+            }
+        }
+        Ok(unique_routes(addresses))
+    }
+
+    fn remember_routes(&self, peer_uuid: &str, addresses: &[SocketAddr]) {
+        let Ok(conn) = self.lock_db() else { return };
+        if !matches!(sync_store::get_peer(&conn, peer_uuid), Ok(Some(_))) { return; }
+        let Ok(_guard) = ROUTES_LOCK.lock() else { return };
+        let Ok(settings) = store::settings_handle(&self.inner.app) else { return };
+        let mut routes = settings.get(store::SYNC_DISCOVERED_ROUTES)
+            .and_then(|value| value.as_object().cloned()).unwrap_or_default();
+        let entry = routes.entry(peer_uuid.to_string()).or_insert_with(|| serde_json::json!([]));
+        let Some(saved) = entry.as_array_mut() else { return };
+        for address in addresses {
+            let ip = address.ip();
+            if address.port() == 0 || ip.is_loopback() || ip.is_unspecified() || is_link_local_address(ip) { continue; }
+            let value = serde_json::Value::String(address.to_string());
+            if !saved.contains(&value) { saved.push(value); }
+        }
+        if saved.len() > 16 { saved.drain(..saved.len() - 16); }
+        if let Err(error) = settings.save_value(store::SYNC_DISCOVERED_ROUTES, routes.into()) {
+            log::warn!("sync: could not save peer routes: {error}");
+        }
     }
 
     fn saved_peer_address(&self, peer_uuid: &str) -> Option<SocketAddr> {
@@ -1497,7 +1573,7 @@ impl SyncManager {
                 .into_iter()
                 .filter(|peer| {
                     discovered.contains(&peer.device_uuid)
-                        || self.saved_peer_address(&peer.device_uuid).is_some()
+                        || self.addr_candidates_for_peer(&peer.device_uuid).is_ok_and(|routes| !routes.is_empty())
                 })
                 .filter(|peer| {
                     automatic_session_due(
@@ -1563,7 +1639,7 @@ impl SyncManager {
 
         self.set_status(peer_uuid, PeerState::Connecting, None);
         let mut result = Err(anyhow!("no connection candidates"));
-        for addr in addrs {
+        for addr in addrs.iter().copied() {
             match self.run_client_session(&peer, addr).await {
                 Ok(summary) => {
                     result = Ok(summary);
@@ -1578,6 +1654,7 @@ impl SyncManager {
         }
         match result {
             Ok(summary) => {
+                self.remember_routes(peer_uuid, &addrs);
                 {
                     let conn = self.lock_db()?;
                     let _ = sync_store::mark_peer_synced(&conn, peer_uuid, 0);
@@ -1641,8 +1718,8 @@ impl SyncManager {
             connector.connect(transport::server_name_for(&peer.device_uuid), tcp),
         )
         .await
-        .map_err(|_| anyhow!("TLS handshake with {} timed out", peer.name))?
-        .map_err(|e| anyhow!("TLS handshake with {} failed: {e}", peer.name))?;
+        .map_err(|_| connection_error(&peer.name, addr, "TLS handshake timed out"))?
+        .map_err(|e| connection_error(&peer.name, addr, &format!("TLS handshake failed: {e}")))?;
 
         let presented = transport::peer_fingerprint(
             tls.get_ref()
@@ -1664,7 +1741,7 @@ impl SyncManager {
             engine::run_session(&self.inner.db, &host, &mut tls, true, peer),
         )
         .await
-        .map_err(|_| anyhow!("sync session with {} timed out", peer.name))??;
+        .map_err(|_| connection_error(&peer.name, addr, "sync session timed out"))??;
         Ok(summary)
     }
 
@@ -1822,6 +1899,57 @@ pub(crate) fn connection_candidates(
     candidates
 }
 
+pub(crate) fn unique_routes(addresses: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let mut unique = Vec::new();
+    for address in addresses {
+        if !unique.contains(&address) {
+            unique.push(address);
+        }
+    }
+    unique
+}
+
+fn forget_routes(app: &AppHandle, peer_uuid: &str) {
+    let Ok(_guard) = ROUTES_LOCK.lock() else { return };
+    let Ok(settings) = store::settings_handle(app) else { return };
+    let mut routes = settings.get(store::SYNC_DISCOVERED_ROUTES)
+        .and_then(|value| value.as_object().cloned()).unwrap_or_default();
+    if routes.remove(peer_uuid).is_some() {
+        if let Err(error) = settings.save_value(store::SYNC_DISCOVERED_ROUTES, routes.into()) {
+            log::warn!("sync: could not remove peer routes: {error}");
+        }
+    }
+}
+
+pub(crate) fn unpair_id_matches(saved: Option<Option<String>>, received: Option<&str>) -> bool {
+    match saved {
+        None => received.is_none(),
+        Some(Some(id)) => received == Some(id.as_str()),
+        Some(None) => false,
+    }
+}
+
+pub(crate) fn discovered_addresses(
+    addresses: impl Iterator<Item = IpAddr>,
+    tailscale: Option<&str>,
+    port: u16,
+) -> Vec<String> {
+    let mut result = Vec::new();
+    if let Some(ip) = tailscale
+        .and_then(|value| value.parse::<Ipv4Addr>().ok())
+        .filter(|ip| is_tailscale_address(*ip))
+    {
+        result.push(SocketAddr::new(IpAddr::V4(ip), port).to_string());
+    }
+    for ip in addresses {
+        let address = SocketAddr::new(ip, port).to_string();
+        if !result.contains(&address) {
+            result.push(address);
+        }
+    }
+    result
+}
+
 fn now_ms_u64() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1885,11 +2013,11 @@ fn handle_resolved(inner: &Arc<Inner>, info: mdns_sd::ResolvedService) {
         .unwrap_or("Verenu device")
         .to_string();
     let port = info.get_port();
-    let addresses: Vec<String> = info
-        .get_addresses()
-        .iter()
-        .map(|scoped| SocketAddr::new(scoped.to_ip_addr(), port).to_string())
-        .collect();
+    let addresses = discovered_addresses(
+        info.get_addresses().iter().map(|scoped| scoped.to_ip_addr()),
+        info.get_property_val_str("tailscale"),
+        port,
+    );
 
     let changed = {
         let mut map = match inner.discovered.lock() {
@@ -1953,6 +2081,7 @@ async fn handle_connection(
     inner: Arc<Inner>,
     mut tls: TlsStream<tokio::net::TcpStream>,
     permit: tokio::sync::OwnedSemaphorePermit,
+    generation: u64,
 ) {
     let peer_fp = match tls
         .get_ref()
@@ -1995,19 +2124,21 @@ async fn handle_connection(
         Message::Hello(hello) => {
             handle_sync_hello(inner, tls, hello, peer_fp).await;
         }
-        Message::Unpair { device_uuid } => {
-            let matches = (|| {
-                let conn = inner.db.lock().ok()?;
-                sync_store::get_peer(&conn, &device_uuid)
-                    .ok()
-                    .flatten()
-                    .map(|peer| peer.cert_fp == peer_fp)
-            })()
-            .unwrap_or(false);
-            if matches {
-                if let Ok(conn) = inner.db.lock() {
-                    let _ = sync_store::remove_peer(&conn, &device_uuid);
-                }
+        Message::Unpair { device_uuid, pairing_id } => {
+            let pending = inner.pending.lock().await;
+            if pairing_busy(pending.is_some(), &inner.pairing_in_progress) || inner.pairing_generation.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            let removed = if let Ok(conn) = inner.db.lock() {
+                if sync_store::get_peer(&conn, &device_uuid).ok().flatten().is_some_and(|peer| peer.cert_fp == peer_fp)
+                    && sync_store::pairing_id(&conn, &device_uuid).is_ok_and(|value| unpair_id_matches(value, pairing_id.as_deref())) {
+                    let removed = sync_store::remove_peer(&conn, &device_uuid).unwrap_or(false);
+                    if removed { forget_routes(&inner.app, &device_uuid); }
+                    removed
+                } else { false }
+            } else { false };
+            drop(pending);
+            if removed {
                 inner.emit_devices_changed();
                 log::info!("sync: removed by peer {device_uuid}");
             }
@@ -2046,7 +2177,7 @@ async fn handle_incoming_pairing(
     let generation;
     {
         let mut pending = inner.pending.lock().await;
-        if inner.pairing_in_progress.load(Ordering::Acquire) || pending.is_some() {
+        if pairing_busy(pending.is_some(), &inner.pairing_in_progress) {
             let _ = send_message(&mut tls, &Message::PairBusy).await;
             return;
         }

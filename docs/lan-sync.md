@@ -6,6 +6,16 @@ the certificate fingerprint recorded during the code-based SPAKE2 exchange.
 If discovery fails to start, saved connections continue to sync and Verenu
 retries discovery periodically. Nearby advertisements follow supported LAN
 interface addresses as they appear and disappear.
+LAN and Tailscale routes advertising the same device identity appear as one
+device. After pairing, Verenu remembers discovered routes locally and retries
+them when another route cannot connect, including when discovery is unavailable.
+Device names alone do not identify a device; separate identities with the same
+name remain separate.
+New pairings also bind remote removal to a fresh pairing identifier, so a
+delayed removal cannot delete a later pairing with the same certificate. When a
+new pairing includes an older version that does not support this identifier,
+remove the device on both sides. Existing legacy pairings retain their current
+remote-removal behavior until they are paired again.
 The approval wait uses the full three-minute pairing deadline. The responder
 only sends pairing confirmation after peer trust and initial settings stamps
 are committed together.
