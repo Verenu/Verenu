@@ -682,7 +682,12 @@ pub fn restart_app(handle: tauri::AppHandle) -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = handle;
+        Err("Quit and reopen Verenu to finish restarting safely.".into())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         handle.restart();
     }
@@ -826,6 +831,18 @@ pub async fn check_keychain_access(
 #[cfg(test)]
 mod tests {
     use super::core_permissions_granted;
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn restart_keeps_the_linux_app_alive_until_handoff_is_supported() {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        let result = super::restart_app(app.handle().clone());
+        assert!(result.unwrap_err().contains("Quit and reopen"));
+    }
 
     #[test]
     fn summary_requires_accessibility_and_microphone() {
