@@ -17,6 +17,7 @@ struct LinuxTray {
     icon: ksni::Icon,
     icon_revision: Arc<AtomicU64>,
     dispatch: Box<dyn Fn(Action) + Send + Sync>,
+    active: bool,
 }
 
 impl LinuxTray {
@@ -28,6 +29,13 @@ impl LinuxTray {
 }
 
 impl Tray for LinuxTray {
+    fn status(&self) -> ksni::Status {
+        if self.active {
+            ksni::Status::Active
+        } else {
+            ksni::Status::Passive
+        }
+    }
     fn id(&self) -> String {
         "Verenu".into()
     }
@@ -48,14 +56,20 @@ impl Tray for LinuxTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        (self.dispatch)(Action::Open);
+        if self.active {
+            (self.dispatch)(Action::Open);
+        }
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         let item = |label: &str, action| {
             StandardItem {
                 label: label.into(),
-                activate: Box::new(move |tray: &mut Self| (tray.dispatch)(action)),
+                activate: Box::new(move |tray: &mut Self| {
+                    if tray.active {
+                        (tray.dispatch)(action);
+                    }
+                }),
                 ..Default::default()
             }
             .into()
@@ -83,10 +97,15 @@ fn icon(mut rgba: Vec<u8>, size: u32) -> ksni::Icon {
 }
 
 pub(super) fn setup(app: &AppHandle) -> tauri::Result<()> {
+    setup_with_visibility(app, true)
+}
+
+pub(super) fn setup_with_visibility(app: &AppHandle, active: bool) -> tauri::Result<()> {
     app.manage(TrayRuntime {
         icon_revision: Arc::new(AtomicU64::new(0)),
         service: tokio::sync::Mutex::new(TrayService::Stopped),
         desired: AtomicBool::new(true),
+        active: AtomicBool::new(active),
     });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -101,6 +120,7 @@ struct TrayRuntime {
     icon_revision: Arc<AtomicU64>,
     service: tokio::sync::Mutex<TrayService>,
     desired: AtomicBool,
+    active: AtomicBool,
 }
 
 enum TrayService {
@@ -149,9 +169,10 @@ async fn reconcile(app: &AppHandle) -> Result<(), String> {
         }
         let tray = make_tray(app, runtime.icon_revision.clone());
         // Login startup can precede the shell's watcher; reconnect when it appears.
+        let require_watcher = !runtime.active.load(Ordering::SeqCst);
         let handle = tokio::time::timeout(
             TRAY_OPERATION_TIMEOUT,
-            tray.assume_sni_available(true).spawn(),
+            tray.assume_sni_available(!require_watcher).spawn(),
         )
         .await
         .map_err(|_| "Linux tray startup timed out".to_string())?
@@ -167,6 +188,7 @@ fn make_tray(app: &AppHandle, icon_revision: Arc<AtomicU64>) -> LinuxTray {
     LinuxTray {
         icon: icon(image.rgba().to_vec(), 32),
         icon_revision,
+        active: app.state::<TrayRuntime>().active.load(Ordering::SeqCst),
         dispatch: Box::new(move |action| {
             let app = owner.clone();
             if let Err(error) = owner.run_on_main_thread(move || match action {
@@ -182,6 +204,23 @@ fn make_tray(app: &AppHandle, icon_revision: Arc<AtomicU64>) -> LinuxTray {
             }
         }),
     }
+}
+
+#[allow(dead_code)]
+pub(super) async fn activate_after_handoff(app: &AppHandle) -> Result<(), String> {
+    let runtime = app
+        .try_state::<TrayRuntime>()
+        .ok_or("Linux tray is unavailable")?;
+    let service = runtime.service.lock().await;
+    let TrayService::Running(handle) = &*service else {
+        return Err("Linux tray is not running".into());
+    };
+    handle
+        .update(|tray| tray.active = true)
+        .await
+        .ok_or("Linux tray stopped during activation")?;
+    runtime.active.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -235,6 +274,11 @@ mod tests {
     #[cfg(feature = "native-testing")]
     #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
     impl TestWatcher {
+        #[zbus(property)]
+        fn is_status_notifier_host_registered(&self) -> bool {
+            true
+        }
+
         fn register_status_notifier_item(&self, service: &str) {
             self.registrations.lock().unwrap().push(service.to_owned());
             let (lock, condition) = &*self.blocked;
@@ -304,9 +348,31 @@ mod tests {
             )
             .unwrap();
         app.manage(settings);
-        super::setup(app.handle()).unwrap();
+        super::setup_with_visibility(app.handle(), false).unwrap();
         tauri::async_runtime::block_on(async {
             let deadline = std::time::Duration::from_secs(15);
+            tokio::time::timeout(deadline, super::start(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            let item = registrations.lock().unwrap().last().unwrap().clone();
+            let read_status = |name: String| {
+                let connection = watcher.clone();
+                tokio::task::spawn_blocking(move || {
+                    zbus::blocking::Proxy::new(
+                        &connection,
+                        name.as_str(),
+                        "/StatusNotifierItem",
+                        "org.kde.StatusNotifierItem",
+                    )
+                    .unwrap()
+                    .get_property::<String>("Status")
+                    .unwrap()
+                })
+            };
+            assert_eq!(read_status(item.clone()).await.unwrap(), "Passive");
+            super::activate_after_handoff(app.handle()).await.unwrap();
+            assert_eq!(read_status(item).await.unwrap(), "Active");
             tokio::time::timeout(deadline, super::stop(app.handle()))
                 .await
                 .unwrap()
@@ -468,6 +534,7 @@ mod tests {
         let mut tray = LinuxTray {
             icon: icon(vec![10, 20, 30, 40], 1),
             icon_revision: Arc::new(AtomicU64::new(0)),
+            active: true,
             dispatch: Box::new(move |action| recorded.lock().unwrap().push(action)),
         };
         assert_eq!(tray.id(), "Verenu");
@@ -503,6 +570,30 @@ mod tests {
     }
 
     #[test]
+    fn passive_tray_ignores_actions_until_activated() {
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let recorded = actions.clone();
+        let mut tray = LinuxTray {
+            icon: icon(vec![10, 20, 30, 40], 1),
+            icon_revision: Arc::new(AtomicU64::new(0)),
+            active: false,
+            dispatch: Box::new(move |action| recorded.lock().unwrap().push(action)),
+        };
+        assert!(matches!(tray.status(), ksni::Status::Passive));
+        tray.activate(0, 0);
+        for entry in tray.menu() {
+            if let ksni::MenuItem::Standard(item) = entry {
+                (item.activate)(&mut tray);
+            }
+        }
+        assert!(actions.lock().unwrap().is_empty());
+        tray.active = true;
+        assert!(matches!(tray.status(), ksni::Status::Active));
+        tray.activate(0, 0);
+        assert_eq!(*actions.lock().unwrap(), [Action::Open]);
+    }
+
+    #[test]
     fn pixmap_preserves_color_and_alpha_in_argb_order() {
         let image = icon(
             vec![
@@ -525,6 +616,7 @@ mod tests {
         let mut tray = LinuxTray {
             icon: icon(vec![10, 20, 30, 40], 1),
             icon_revision: revision,
+            active: true,
             dispatch: Box::new(|_| {}),
         };
 

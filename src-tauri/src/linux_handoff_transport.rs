@@ -862,12 +862,37 @@ mod tests {
     }
 
     #[cfg(feature = "native-testing")]
+    struct HandoffTrayWatcher(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[cfg(feature = "native-testing")]
+    #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+    impl HandoffTrayWatcher {
+        #[zbus(property)]
+        fn is_status_notifier_host_registered(&self) -> bool {
+            true
+        }
+
+        fn register_status_notifier_item(&self, service: &str) {
+            self.0.lock().unwrap().push(service.to_owned());
+        }
+    }
+
+    #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires a private Linux desktop and a custom-protocol app build"]
     fn real_replacement_opens_read_only_and_keeps_parent_alive() {
         use std::process::Command;
         use tauri::Manager;
 
+        let registrations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let watcher = zbus::blocking::connection::Builder::session()
+            .unwrap()
+            .name("org.kde.StatusNotifierWatcher")
+            .unwrap()
+            .serve_at("/StatusNotifierWatcher", HandoffTrayWatcher(registrations.clone()))
+            .unwrap()
+            .build()
+            .unwrap();
         let app = tauri::Builder::default()
             .any_thread()
             .plugin(crate::linux_single_instance::plugin())
@@ -935,6 +960,21 @@ mod tests {
         );
         let outcome = owned.activate();
         assert!(matches!(outcome, Err(reason) if reason.contains("services are not yet verified")));
+        let tray_names = registrations.lock().unwrap().clone();
+        assert_eq!(tray_names.len(), 1, "replacement tray did not register");
+        let tray_alive: bool = watcher
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "NameHasOwner",
+                &(tray_names[0].as_str(),),
+            )
+            .unwrap()
+            .body()
+            .deserialize()
+            .unwrap();
+        assert!(!tray_alive, "failed replacement left its tray running");
         assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, -1);
         assert!(!group_has_live_members(child_pid).unwrap());
         let deadline = Instant::now() + Duration::from_secs(5);

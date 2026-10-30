@@ -149,7 +149,24 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                     && readiness.main_and_home_ready();
                 if acquired && ready {
                     if let Ok(services) = activation.ownership_acquired() {
-                        let _ = services.fail("Replacement services are not yet verified".into());
+                        let (sent, received) = std::sync::mpsc::sync_channel(1);
+                        let owner = handle.clone();
+                        let scheduled = handle.run_on_main_thread(move || {
+                            let _ = sent.send(crate::app_tray::setup_probation_tray(&owner));
+                        });
+                        let tray_setup = scheduled.is_ok()
+                            && matches!(received.recv_timeout(Duration::from_secs(10)), Ok(Ok(())));
+                        let tray_started = tray_setup
+                            && tauri::async_runtime::block_on(
+                                crate::app_tray::resume_after_handoff(&handle),
+                            )
+                            .is_ok();
+                        let reason = if tray_started {
+                            "Replacement services are not yet verified"
+                        } else {
+                            "Replacement tray could not start"
+                        };
+                        let _ = services.fail(reason.into());
                     }
                 } else {
                     let reason = if acquired {

@@ -30,6 +30,17 @@ pub(crate) async fn resume_after_handoff(app: &AppHandle) -> Result<(), String> 
     linux::start(app).await
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn setup_probation_tray(app: &AppHandle) -> tauri::Result<()> {
+    linux::setup_with_visibility(app, false)
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) async fn activate_after_handoff(app: &AppHandle) -> Result<(), String> {
+    linux::activate_after_handoff(app).await
+}
+
 pub(crate) fn setting_updates_runtime_icons(key: &str) -> bool {
     key == crate::data::store::APPEARANCE_MODE || key == crate::data::store::CUSTOM_THEME
 }
