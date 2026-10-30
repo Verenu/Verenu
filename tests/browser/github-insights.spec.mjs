@@ -74,3 +74,51 @@ test('GitHub comparison is opt-in and invalid usernames never enable it', async 
   await expect(page.locator('.github-line')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+test('connected GitHub activity stays in the chart without a status row and retains warnings', async ({ page, session }) => {
+  const previousUsername = await session.invoke('get_setting', { key: 'github_username' });
+  let fixtureUsername = 'octocat';
+  const dayKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const snapshot = {
+    source: 'contributions',
+    username: fixtureUsername,
+    fetched_at: Math.floor(Date.now() / 1000),
+    start_day: dayKey(yesterday),
+    end_day: dayKey(today),
+    utc_offset: -today.getTimezoneOffset() * 60,
+    complete: true,
+    daily: [{ day: dayKey(yesterday), commits: 2 }, { day: dayKey(today), commits: 3 }],
+    warning: 'GitHub activity may be incomplete.',
+  };
+  await page.route('**/__verenu_dev/invoke', async (route) => {
+    if (route.request().postDataJSON()?.command === 'get_github_commits') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...snapshot, username: fixtureUsername }) });
+    } else {
+      await route.continue();
+    }
+  });
+  try {
+    await session.invoke('save_setting', { key: 'github_username', value: 'octocat' });
+    await page.reload();
+    await page.locator('[data-debug-id="nav.insights"]').click();
+
+    const chart = page.getByRole('heading', { name: 'Words per day', exact: true });
+    await expect(chart).toBeVisible();
+    await expect(page.locator('.chart-legend')).toContainText(/Contributions|Public commits/);
+    await expect(page.locator('.github-line')).toHaveCount(1);
+    await expect(page.locator('.github-warning')).toContainText('GitHub activity may be incomplete.');
+    await expect(page.locator('.github-status')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Manage in Settings', exact: true })).toHaveCount(0);
+
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.integrations"]').click();
+    await expect(page.getByText('@octocat', { exact: true })).toBeVisible();
+  } finally {
+    fixtureUsername = previousUsername ?? '';
+    await session.invoke('save_setting', { key: 'github_username', value: previousUsername ?? '' });
+    await page.reload();
+  }
+});
