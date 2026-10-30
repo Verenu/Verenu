@@ -32,6 +32,10 @@ pub(crate) struct AgentDrain(Arc<tokio::sync::Semaphore>);
 
 #[cfg(target_os = "linux")]
 impl AgentDrain {
+    #[cfg(test)]
+    pub(crate) fn for_test(gate: Arc<tokio::sync::Semaphore>) -> Self {
+        Self(gate)
+    }
     #[allow(dead_code)]
     pub(crate) async fn pause(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
         self.0
@@ -39,6 +43,19 @@ impl AgentDrain {
             .acquire_owned()
             .await
             .map_err(|_| "The agent service is unavailable.".to_owned())
+    }
+
+    pub(crate) fn check_pending_approval(app: &AppHandle) -> Result<(), String> {
+        let approvals = app
+            .try_state::<Arc<Mutex<Approvals>>>()
+            .ok_or("Agent access is unavailable.")?;
+        let approvals = approvals
+            .try_lock()
+            .map_err(|_| "Agent access is busy. Try restarting again shortly.")?;
+        if approvals.pending.as_ref().is_some_and(|pending| pending.expires > Instant::now()) {
+            return Err("Finish the pending agent approval before restarting.".into());
+        }
+        Ok(())
     }
 }
 
@@ -111,6 +128,20 @@ struct Approvals {
     legacy_token: Option<String>,
 }
 
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn manage_test_approvals(app: &AppHandle) {
+    app.manage(Arc::new(Mutex::new(Approvals::default())));
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn set_test_pending_approval(app: &AppHandle, pending: bool) {
+    app.state::<Arc<Mutex<Approvals>>>().lock().unwrap().pending = pending.then(|| Pending {
+        digest: [0; 32],
+        code: "TEST".into(),
+        expires: Instant::now() + Duration::from_secs(60),
+    });
+}
+
 struct Grant {
     expires: Instant,
     scopes: Vec<String>,
@@ -160,6 +191,9 @@ pub fn agent_pending_request(app: AppHandle) -> Option<ApprovalRequest> {
 
 #[tauri::command]
 pub fn agent_respond(app: AppHandle, id: String, approve: bool, scopes: Option<Vec<String>>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let _permit = app.try_state::<AgentDrain>().ok_or("Agent access unavailable")?.0.clone()
+        .try_acquire_owned().map_err(|_| "Agent access is busy. Try again.")?;
     let state = app
         .try_state::<Arc<Mutex<Approvals>>>()
         .ok_or("Agent access unavailable")?;
@@ -183,6 +217,9 @@ pub fn agent_respond(app: AppHandle, id: String, approve: bool, scopes: Option<V
 
 #[tauri::command]
 pub fn agent_revoke_all(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let _permit = app.try_state::<AgentDrain>().ok_or("Agent access unavailable")?.0.clone()
+        .try_acquire_owned().map_err(|_| "Agent access is busy. Try again.")?;
     let state = app
         .try_state::<Arc<Mutex<Approvals>>>()
         .ok_or("Agent access unavailable")?;
@@ -329,6 +366,11 @@ async fn authorize(
             Json(json!({"error":"Unauthorized"})),
         );
     }
+    #[cfg(target_os = "linux")]
+    let _permit = match agent.gate.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"Agent access is busy"}))),
+    };
     let hash = digest(&request.token);
     let code = hash[..6]
         .iter()
@@ -419,6 +461,11 @@ async fn revoke(
             Json(json!({"error":"Unauthorized"})),
         );
     }
+    #[cfg(target_os = "linux")]
+    let _permit = match agent.gate.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"Agent access is busy"}))),
+    };
     if let Ok(mut approvals) = agent.approvals.lock() {
         let hash = digest(&request.token);
         approvals.grants.remove(&hash);
@@ -1085,6 +1132,37 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn restart_drain_blocks_authorization_changes() {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let approvals = Arc::new(Mutex::new(Approvals::default()));
+        app.manage(approvals.clone());
+        app.manage(AgentDrain(gate.clone()));
+        let agent = Agent {
+            app: app.handle().clone(),
+            instance: "test".into(),
+            approvals,
+            gate: gate.clone(),
+        };
+        tauri::async_runtime::block_on(async {
+            let permit = gate.clone().acquire_owned().await.unwrap();
+            let request = || Json(Authorization { token: "a".repeat(64) });
+            assert_eq!(authorize(State(agent.clone()), HeaderMap::new(), request()).await.0, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(revoke(State(agent.clone()), HeaderMap::new(), request()).await.0, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(agent_revoke_all(app.handle().clone()).is_err());
+            drop(permit);
+            assert_eq!(authorize(State(agent.clone()), HeaderMap::new(), request()).await.0, StatusCode::OK);
+            assert!(AgentDrain::check_pending_approval(app.handle()).is_err());
+            assert_eq!(revoke(State(agent), HeaderMap::new(), request()).await.0, StatusCode::OK);
+            assert!(AgentDrain::check_pending_approval(app.handle()).is_ok());
+        });
+    }
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn restart_drain_waits_for_detached_agent_request_and_blocks_new_requests() {
