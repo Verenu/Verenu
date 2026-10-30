@@ -21,6 +21,37 @@ pub fn frontend_ready(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn frontend_settings_ready(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+    generation: u32,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Settings readiness is only accepted from the main window.".into());
+    }
+    readiness.mark_main_settings_ready(generation)
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn frontend_settings_generation(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+) -> Result<u32, String> {
+    if window.label() != "main" {
+        return Err("Settings readiness is only accepted from the main window.".into());
+    }
+    Ok(readiness.main_settings_generation())
+}
+
+#[cfg(all(target_os = "linux", feature = "native-testing", debug_assertions))]
+#[tauri::command]
+pub fn native_main_settings_ready(readiness: tauri::State<'_, crate::FrontendReadiness>) -> bool {
+    readiness.main_settings_ready()
+}
+
 #[tauri::command]
 pub async fn local_models_supported_on_this_platform() -> bool {
     if cfg!(target_os = "android") {

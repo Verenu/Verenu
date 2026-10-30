@@ -32,7 +32,7 @@ pub(crate) struct AgentDrain(Arc<tokio::sync::Semaphore>);
 
 #[cfg(target_os = "linux")]
 impl AgentDrain {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-testing"))]
     pub(crate) fn for_test(gate: Arc<tokio::sync::Semaphore>) -> Self {
         Self(gate)
     }
@@ -128,12 +128,12 @@ struct Approvals {
     legacy_token: Option<String>,
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, target_os = "linux", feature = "native-testing"))]
 pub(crate) fn manage_test_approvals(app: &AppHandle) {
     app.manage(Arc::new(Mutex::new(Approvals::default())));
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, target_os = "linux", feature = "native-testing"))]
 pub(crate) fn set_test_pending_approval(app: &AppHandle, pending: bool) {
     app.state::<Arc<Mutex<Approvals>>>().lock().unwrap().pending = pending.then(|| Pending {
         digest: [0; 32],

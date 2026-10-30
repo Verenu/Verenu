@@ -10,6 +10,95 @@ use std::time::Duration;
 pub(crate) struct FrontendReadiness {
     pub(crate) main: Arc<AtomicBool>,
     pub(crate) pill: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
+    pub(crate) main_navigation: Arc<std::sync::atomic::AtomicU32>,
+}
+
+#[cfg(target_os = "linux")]
+impl FrontendReadiness {
+    pub(crate) fn main_page_started(&self) {
+        use std::sync::atomic::Ordering;
+        let mut current = self.main_navigation.load(Ordering::SeqCst);
+        loop {
+            let next = ((current >> 1).wrapping_add(1) & 0x7fff_ffff) << 1;
+            match self.main_navigation.compare_exchange_weak(
+                current,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(state) => current = state,
+            }
+        }
+    }
+
+    pub(crate) fn main_settings_generation(&self) -> u32 {
+        self.main_navigation.load(std::sync::atomic::Ordering::SeqCst) >> 1
+    }
+
+    pub(crate) fn mark_main_settings_ready(&self, generation: u32) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        if generation > 0x7fff_ffff {
+            return Err("Settings readiness belongs to an earlier page.".into());
+        }
+        let expected = generation << 1;
+        match self.main_navigation.compare_exchange(
+            expected,
+            expected | 1,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => Ok(()),
+            Err(state) if state == (expected | 1) => Ok(()),
+            Err(_) => Err("Settings readiness belongs to an earlier page.".into()),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn main_settings_ready(&self) -> bool {
+        self.main_navigation.load(std::sync::atomic::Ordering::SeqCst) & 1 != 0
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn main_settings_readiness_rejects_an_earlier_page() {
+    let readiness = FrontendReadiness::default();
+    readiness.main_page_started();
+    let old = readiness.main_settings_generation();
+    assert!(!readiness.main_settings_ready());
+    readiness.mark_main_settings_ready(old).unwrap();
+    assert!(readiness.main_settings_ready());
+    readiness.main_page_started();
+    assert!(!readiness.main_settings_ready());
+    assert!(readiness.mark_main_settings_ready(old).is_err());
+    assert!(!readiness.main_settings_ready());
+    readiness
+        .mark_main_settings_ready(readiness.main_settings_generation())
+        .unwrap();
+    assert!(readiness.main_settings_ready());
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn navigation_cannot_inherit_a_racing_old_settings_acknowledgement() {
+    for _ in 0..500 {
+        let readiness = FrontendReadiness::default();
+        readiness.main_page_started();
+        let old = readiness.main_settings_generation();
+        let ack = readiness.clone();
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let other_start = start.clone();
+        let worker = std::thread::spawn(move || {
+            other_start.wait();
+            let _ = ack.mark_main_settings_ready(old);
+        });
+        start.wait();
+        readiness.main_page_started();
+        worker.join().unwrap();
+        assert!(!readiness.main_settings_ready());
+    }
 }
 
 #[cfg(target_os = "windows")]
