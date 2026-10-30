@@ -1,7 +1,7 @@
-use ksni::{Tray, TrayMethods, menu::StandardItem};
+use ksni::{menu::StandardItem, Tray, TrayMethods};
 use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
-    atomic::{AtomicU64, Ordering},
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -83,12 +83,88 @@ fn icon(mut rgba: Vec<u8>, size: u32) -> ksni::Icon {
 }
 
 pub(super) fn setup(app: &AppHandle) -> tauri::Result<()> {
+    app.manage(TrayRuntime {
+        icon_revision: Arc::new(AtomicU64::new(0)),
+        service: tokio::sync::Mutex::new(TrayService::Stopped),
+        desired: AtomicBool::new(true),
+    });
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = reconcile(&app).await {
+            log::warn!("Failed to register Linux tray: {error}");
+        }
+    });
+    Ok(())
+}
+
+struct TrayRuntime {
+    icon_revision: Arc<AtomicU64>,
+    service: tokio::sync::Mutex<TrayService>,
+    desired: AtomicBool,
+}
+
+enum TrayService {
+    Stopped,
+    Running(ksni::Handle<LinuxTray>),
+    Stopping(ksni::Handle<LinuxTray>),
+}
+
+const TRAY_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[allow(dead_code)]
+pub(super) async fn start(app: &AppHandle) -> Result<(), String> {
+    let runtime = app
+        .try_state::<TrayRuntime>()
+        .ok_or("Linux tray is unavailable")?;
+    runtime.desired.store(true, Ordering::SeqCst);
+    reconcile(app).await?;
+    if !runtime.desired.load(Ordering::SeqCst) {
+        return Err("Linux tray start was superseded".into());
+    }
+    Ok(())
+}
+
+async fn reconcile(app: &AppHandle) -> Result<(), String> {
+    let runtime = app
+        .try_state::<TrayRuntime>()
+        .ok_or("Linux tray is unavailable")?;
+    let mut service = runtime.service.lock().await;
+    loop {
+        let desired = runtime.desired.load(Ordering::SeqCst);
+        match &*service {
+            TrayService::Running(handle) if desired && !handle.is_closed() => return Ok(()),
+            TrayService::Running(handle) if !desired => {
+                *service = TrayService::Stopping(handle.clone());
+                continue;
+            }
+            TrayService::Stopping(handle) => {
+                tokio::time::timeout(TRAY_OPERATION_TIMEOUT, handle.shutdown())
+                    .await
+                    .map_err(|_| "Linux tray shutdown timed out".to_string())?;
+                *service = TrayService::Stopped;
+                continue;
+            }
+            TrayService::Stopped if !desired => return Ok(()),
+            _ => *service = TrayService::Stopped,
+        }
+        let tray = make_tray(app, runtime.icon_revision.clone());
+        // Login startup can precede the shell's watcher; reconnect when it appears.
+        let handle = tokio::time::timeout(
+            TRAY_OPERATION_TIMEOUT,
+            tray.assume_sni_available(true).spawn(),
+        )
+        .await
+        .map_err(|_| "Linux tray startup timed out".to_string())?
+        .map_err(|error| error.to_string())?;
+        *service = TrayService::Running(handle);
+    }
+}
+
+fn make_tray(app: &AppHandle, icon_revision: Arc<AtomicU64>) -> LinuxTray {
     let owner = app.clone();
     let theme = super::resolve_icon_theme(&owner, None);
     let image = super::runtime_tray_icon_image(theme, super::runtime_icon_foreground(theme), 32);
-    let icon_revision = Arc::new(AtomicU64::new(0));
-    app.manage(IconRevision(icon_revision.clone()));
-    let tray = LinuxTray {
+    LinuxTray {
         icon: icon(image.rgba().to_vec(), 32),
         icon_revision,
         dispatch: Box::new(move |action| {
@@ -105,34 +181,42 @@ pub(super) fn setup(app: &AppHandle) -> tauri::Result<()> {
                 log::warn!("Failed to schedule tray action: {error}");
             }
         }),
-    };
-    // Login startup can precede the shell's watcher; reconnect when it appears.
-    let tray_owner = app.clone();
-    tauri::async_runtime::spawn(async move {
-        match tray.assume_sni_available(true).spawn().await {
-            Ok(handle) => {
-                tray_owner.manage(handle);
-            }
-            Err(error) => log::warn!("Failed to register Linux tray: {error}"),
-        }
-    });
+    }
+}
+
+#[allow(dead_code)]
+pub(super) async fn stop(app: &AppHandle) -> Result<(), String> {
+    let runtime = app
+        .try_state::<TrayRuntime>()
+        .ok_or("Linux tray is unavailable")?;
+    runtime.desired.store(false, Ordering::SeqCst);
+    reconcile(app).await?;
+    if runtime.desired.load(Ordering::SeqCst) {
+        return Err("Linux tray stop was superseded".into());
+    }
     Ok(())
 }
 
-#[derive(Clone)]
-struct IconRevision(Arc<AtomicU64>);
-
 pub(super) fn update_icon(app: &AppHandle, rgba: Vec<u8>, size: u32) {
-    if let (Some(handle), Some(revision)) = (
-        app.try_state::<ksni::Handle<LinuxTray>>(),
-        app.try_state::<IconRevision>(),
-    ) {
-        let handle = handle.inner().clone();
-        let revision = revision.0.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    if let Some(runtime) = app.try_state::<TrayRuntime>() {
+        let revision = runtime
+            .icon_revision
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            handle
-                .update(move |tray| tray.apply_icon_update(revision, rgba, size))
-                .await;
+            let Some(runtime) = app.try_state::<TrayRuntime>() else {
+                return;
+            };
+            let handle = match &*runtime.service.lock().await {
+                TrayService::Running(handle) => Some(handle.clone()),
+                _ => None,
+            };
+            if let Some(handle) = handle {
+                handle
+                    .update(move |tray| tray.apply_icon_update(revision, rgba, size))
+                    .await;
+            }
         });
     }
 }
@@ -143,24 +227,237 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[cfg(feature = "native-testing")]
+    struct TestWatcher {
+        registrations: Arc<Mutex<Vec<String>>>,
+        blocked: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    #[cfg(feature = "native-testing")]
+    #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+    impl TestWatcher {
+        fn register_status_notifier_item(&self, service: &str) {
+            self.registrations.lock().unwrap().push(service.to_owned());
+            let (lock, condition) = &*self.blocked;
+            drop(
+                condition
+                    .wait_timeout_while(
+                        lock.lock().unwrap(),
+                        std::time::Duration::from_secs(30),
+                        |blocked| *blocked,
+                    )
+                    .unwrap(),
+            );
+        }
+    }
+
+    #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires an isolated graphical and D-Bus session"]
-    fn tray_can_start_and_stop_through_the_app_handle() {
+    fn tray_can_stop_and_resume_through_the_app_handle() {
+        let registrations = Arc::new(Mutex::new(Vec::<String>::new()));
+        let blocked = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let watcher = zbus::blocking::connection::Builder::session()
+            .unwrap()
+            .name("org.kde.StatusNotifierWatcher")
+            .unwrap()
+            .serve_at(
+                "/StatusNotifierWatcher",
+                TestWatcher {
+                    registrations: registrations.clone(),
+                    blocked: blocked.clone(),
+                },
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        async fn has_owner(watcher: &zbus::blocking::Connection, name: &str) -> bool {
+            let watcher = watcher.clone();
+            let name = name.to_owned();
+            tokio::task::spawn_blocking(move || {
+                watcher
+                    .call_method(
+                        Some("org.freedesktop.DBus"),
+                        "/org/freedesktop/DBus",
+                        Some("org.freedesktop.DBus"),
+                        "NameHasOwner",
+                        &(name,),
+                    )
+                    .unwrap()
+                    .body()
+                    .deserialize::<bool>()
+                    .unwrap()
+            })
+            .await
+            .unwrap()
+        }
         let app = tauri::Builder::default()
             .any_thread()
             .build(tauri::generate_context!())
             .unwrap();
+        let settings = crate::data::store::SettingsHandle::empty_for_test(
+            std::env::temp_dir().join(format!("verenu-tray-test-{}", uuid::Uuid::new_v4())),
+        );
+        settings
+            .set(
+                crate::data::store::APPEARANCE_MODE,
+                serde_json::json!("dark"),
+            )
+            .unwrap();
+        app.manage(settings);
         super::setup(app.handle()).unwrap();
         tauri::async_runtime::block_on(async {
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                if let Some(handle) = app.try_state::<ksni::Handle<LinuxTray>>() {
-                    handle.shutdown().await;
-                    break;
-                }
-                assert!(tokio::time::Instant::now() < deadline, "tray did not start");
+            let deadline = std::time::Duration::from_secs(15);
+            tokio::time::timeout(deadline, super::stop(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::timeout(deadline, super::reconcile(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            let runtime = app.state::<super::TrayRuntime>();
+            assert!(matches!(
+                &*runtime.service.lock().await,
+                super::TrayService::Stopped
+            ));
+            let stopped_names = registrations.lock().unwrap().clone();
+            for name in stopped_names {
+                assert!(
+                    !has_owner(&watcher, &name).await,
+                    "tray was recreated after stop"
+                );
+            }
+            let before = registrations.lock().unwrap().len();
+            *blocked.0.lock().unwrap() = true;
+            let start_app = app.handle().clone();
+            let starting = tokio::spawn(async move { super::start(&start_app).await });
+            let wait = tokio::time::Instant::now() + deadline;
+            while registrations.lock().unwrap().len() == before {
+                assert!(
+                    tokio::time::Instant::now() < wait,
+                    "tray registration did not begin"
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
+            let stop_app = app.handle().clone();
+            let stopping = tokio::spawn(async move { super::stop(&stop_app).await });
+            while runtime.desired.load(Ordering::SeqCst) {
+                assert!(
+                    tokio::time::Instant::now() < wait,
+                    "tray stop did not begin"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            *blocked.0.lock().unwrap() = false;
+            blocked.1.notify_all();
+            assert!(tokio::time::timeout(deadline, starting)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err());
+            tokio::time::timeout(deadline, stopping)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let delayed = registrations.lock().unwrap().last().unwrap().clone();
+            assert!(!has_owner(&watcher, &delayed).await);
+            tokio::time::timeout(deadline, super::start(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(&*runtime.service.lock().await, super::TrayService::Running(handle) if !handle.is_closed())
+            );
+            let first = registrations.lock().unwrap().last().unwrap().clone();
+            assert!(has_owner(&watcher, &first).await);
+            let previous = {
+                let mut service = runtime.service.lock().await;
+                let super::TrayService::Running(handle) = &*service else {
+                    panic!("tray did not start")
+                };
+                let handle = handle.clone();
+                *service = super::TrayService::Stopping(handle.clone());
+                handle
+            };
+            drop(previous.shutdown());
+            tokio::time::timeout(deadline, super::start(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(&*runtime.service.lock().await, super::TrayService::Running(handle) if !handle.is_closed())
+            );
+            assert!(!has_owner(&watcher, &first).await);
+            let second = registrations.lock().unwrap().last().unwrap().clone();
+            assert_ne!(first, second);
+            assert!(has_owner(&watcher, &second).await);
+            tokio::time::timeout(deadline, super::stop(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                &*runtime.service.lock().await,
+                super::TrayService::Stopped
+            ));
+            assert!(!has_owner(&watcher, &second).await);
+            tokio::time::timeout(deadline, super::start(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(&*runtime.service.lock().await, super::TrayService::Running(handle) if !handle.is_closed())
+            );
+            let third = registrations.lock().unwrap().last().unwrap().clone();
+            assert_ne!(second, third);
+            assert!(has_owner(&watcher, &third).await);
+            tokio::time::timeout(deadline, super::stop(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!has_owner(&watcher, &third).await);
+
+            let before = registrations.lock().unwrap().len();
+            *blocked.0.lock().unwrap() = true;
+            let start_app = app.handle().clone();
+            let starting = tokio::spawn(async move { super::start(&start_app).await });
+            let wait = tokio::time::Instant::now() + deadline;
+            while registrations.lock().unwrap().len() == before {
+                assert!(
+                    tokio::time::Instant::now() < wait,
+                    "tray registration did not begin"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let result = tokio::time::timeout(deadline, starting).await;
+            *blocked.0.lock().unwrap() = false;
+            blocked.1.notify_all();
+            assert!(result
+                .unwrap()
+                .unwrap()
+                .unwrap_err()
+                .contains("startup timed out"));
+            let timed_out = registrations.lock().unwrap().last().unwrap().clone();
+            let wait = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            while has_owner(&watcher, &timed_out).await {
+                assert!(
+                    tokio::time::Instant::now() < wait,
+                    "timed-out tray still owns its name"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            tokio::time::timeout(deadline, super::start(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            let recovered = registrations.lock().unwrap().last().unwrap().clone();
+            assert_ne!(timed_out, recovered);
+            assert!(has_owner(&watcher, &recovered).await);
+            tokio::time::timeout(deadline, super::stop(app.handle()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!has_owner(&watcher, &recovered).await);
         });
     }
 
