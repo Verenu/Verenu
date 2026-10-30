@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
@@ -14,6 +15,7 @@ use std::time::{Duration, Instant};
 const PROTOCOL: u32 = 1;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
+pub(crate) type KeyAvailability = BTreeMap<String, bool>;
 
 fn descends_from(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     for _ in 0..32 {
@@ -108,21 +110,33 @@ impl Child {
             pid: std::process::id(),
             schema,
         })?;
-        self.channel.expect(Message::Begin)?;
-        Ok(ChildStartup(self.channel))
+        match self.channel.receive()? {
+            Message::Begin { key_availability } => Ok(ChildStartup {
+                channel: self.channel,
+                key_availability,
+            }),
+            _ => Err("Replacement received an invalid startup request".into()),
+        }
     }
 }
 
-pub(crate) struct ChildStartup(Channel);
+pub(crate) struct ChildStartup {
+    channel: Channel,
+    key_availability: KeyAvailability,
+}
 
 impl ChildStartup {
     pub(crate) fn backend_ready(mut self) -> Result<ChildFrontends, String> {
-        self.0.send(&Message::BackendReady)?;
-        Ok(ChildFrontends(self.0))
+        self.channel.send(&Message::BackendReady)?;
+        Ok(ChildFrontends(self.channel))
     }
 
     pub(crate) fn fail(mut self, reason: String) -> Result<(), String> {
-        self.0.send(&Message::Failed { reason })
+        self.channel.send(&Message::Failed { reason })
+    }
+
+    pub(crate) fn key_availability(&self) -> &KeyAvailability {
+        &self.key_availability
     }
 }
 
@@ -164,7 +178,9 @@ enum Message {
         pid: u32,
         schema: i64,
     },
-    Begin,
+    Begin {
+        key_availability: KeyAvailability,
+    },
     BackendReady,
     FrontendsReady,
     Activate,
@@ -248,6 +264,158 @@ struct Parent {
     channel: Channel,
     child_pid: u32,
     schema: i64,
+    key_availability: KeyAvailability,
+}
+
+struct ProcessGuard(std::process::Child, UnixStream);
+
+fn group_has_live_members(group: u32) -> Result<bool, String> {
+    let entries = std::fs::read_dir("/proc").map_err(|error| error.to_string())?;
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+            .is_none()
+        {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some((_, fields)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        let mut fields = fields.split_whitespace();
+        let state = fields.next();
+        let _parent = fields.next();
+        let process_group = fields.next().and_then(|value| value.parse::<u32>().ok());
+        if process_group == Some(group) && !matches!(state, Some("Z" | "X")) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        // The child starts a new process group so an AppImage launcher and its
+        // application are both stopped before the parent resumes its services.
+        let group = self.0.id();
+        if group <= i32::MAX as u32 {
+            unsafe { libc::kill(-(group as i32), libc::SIGKILL) };
+        }
+        let _ = self.0.kill();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match group_has_live_members(group) {
+                Ok(false) => break,
+                Ok(true) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                result => {
+                    log::error!("Could not confirm replacement process group stopped: {result:?}");
+                    break;
+                }
+            }
+        }
+        let _ = self.0.wait();
+    }
+}
+
+struct Replacement {
+    process: ProcessGuard,
+    parent: Parent,
+}
+
+impl Replacement {
+    fn spawn(
+        mut command: std::process::Command,
+        schema: i64,
+        key_availability: KeyAvailability,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+
+        let (parent, child) = UnixStream::pair().map_err(|error| error.to_string())?;
+        let keepalive = parent.try_clone().map_err(|error| error.to_string())?;
+        for endpoint in [&parent, &keepalive] {
+            let flags = unsafe { libc::fcntl(endpoint.as_raw_fd(), libc::F_GETFD) };
+            if flags < 0
+                || unsafe {
+                    libc::fcntl(
+                        endpoint.as_raw_fd(),
+                        libc::F_SETFD,
+                        flags | libc::FD_CLOEXEC,
+                    )
+                } < 0
+            {
+                return Err("Could not secure the parent restart connection".into());
+            }
+        }
+        let fd = child.as_raw_fd();
+        command
+            .env(CHILD_FD_ENV, fd.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setpgid(0, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let process = ProcessGuard(
+            command
+                .spawn()
+                .map_err(|error| format!("Could not start replacement: {error}"))?,
+            keepalive,
+        );
+        drop(child);
+        let parent = Parent {
+            channel: Channel::new(parent, timeout)?,
+            child_pid: process.0.id(),
+            schema,
+            key_availability,
+        };
+        Ok(Self { process, parent })
+    }
+
+    fn prepare(self) -> Result<ReadyReplacement, String> {
+        let probation = self.parent.prepare()?;
+        Ok(ReadyReplacement {
+            process: self.process,
+            probation,
+        })
+    }
+}
+
+struct ReadyReplacement {
+    process: ProcessGuard,
+    probation: Probation,
+}
+
+impl ReadyReplacement {
+    fn activate(self) -> Result<ActivatedReplacement, String> {
+        let activated = self.probation.activate()?;
+        Ok(ActivatedReplacement {
+            process: self.process,
+            activated,
+        })
+    }
+}
+
+struct ActivatedReplacement {
+    process: ProcessGuard,
+    activated: Activated,
 }
 
 impl Parent {
@@ -265,7 +433,9 @@ impl Parent {
                         && descends_from(pid as i32, self.child_pid as i32))) => {}
             _ => return Err("Replacement identity or compatibility did not match".into()),
         }
-        self.channel.send(&Message::Begin)?;
+        self.channel.send(&Message::Begin {
+            key_availability: self.key_availability,
+        })?;
         self.channel.expect(Message::BackendReady)?;
         self.channel.expect(Message::FrontendsReady)?;
         Ok(Probation(self.channel))
@@ -294,6 +464,12 @@ impl Activated {
 mod tests {
     use super::*;
 
+    fn begin() -> Message {
+        Message::Begin {
+            key_availability: KeyAvailability::new(),
+        }
+    }
+
     fn pair() -> (Parent, Channel) {
         let (parent, child) = UnixStream::pair().unwrap();
         let timeout = Duration::from_secs(2);
@@ -302,6 +478,7 @@ mod tests {
                 channel: Channel::new(parent, timeout).unwrap(),
                 child_pid: 42,
                 schema: 39,
+                key_availability: KeyAvailability::new(),
             },
             Channel::new(child, timeout).unwrap(),
         )
@@ -318,7 +495,7 @@ mod tests {
                     schema: 39,
                 })
                 .unwrap();
-            child.expect(Message::Begin).unwrap();
+            child.expect(begin()).unwrap();
             child.send(&Message::BackendReady).unwrap();
             child
                 .send(&Message::Failed {
@@ -341,7 +518,7 @@ mod tests {
                     schema: 39,
                 })
                 .unwrap();
-            child.expect(Message::Begin).unwrap();
+            child.expect(begin()).unwrap();
             child.send(&Message::BackendReady).unwrap();
             child.send(&Message::FrontendsReady).unwrap();
         });
@@ -381,12 +558,38 @@ mod tests {
                     schema: 39,
                 })
                 .unwrap();
-            child.expect(Message::Begin).unwrap();
+            child.expect(begin()).unwrap();
             child.send(&Message::BackendReady).unwrap();
             child.send(&Message::FrontendsReady).unwrap();
             child.expect(Message::Activate).unwrap();
             child.send(&Message::Activated).unwrap();
             child.expect(Message::Commit).unwrap();
+        });
+        parent
+            .prepare()
+            .unwrap()
+            .activate()
+            .unwrap()
+            .commit()
+            .unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn child_receives_key_availability_without_credentials() {
+        let (mut parent, child) = pair();
+        parent.child_pid = std::process::id();
+        parent.key_availability.insert("openai".into(), true);
+        let worker = std::thread::spawn(move || {
+            let startup = Child { channel: child }.begin(39).unwrap();
+            assert_eq!(startup.key_availability().get("openai"), Some(&true));
+            startup
+                .backend_ready()
+                .unwrap()
+                .ready()
+                .unwrap()
+                .activated()
+                .unwrap();
         });
         parent
             .prepare()
@@ -419,7 +622,7 @@ mod tests {
                     schema: 39,
                 })
                 .unwrap();
-            child.expect(Message::Begin).unwrap();
+            child.expect(begin()).unwrap();
             child.send(&Message::FrontendsReady).unwrap();
         });
         assert!(matches!(parent.prepare(), Err(error) if error.contains("out of order")));
@@ -463,7 +666,12 @@ mod tests {
                 & libc::FD_CLOEXEC,
             0
         );
-        let _frontends = child.begin(39).unwrap().backend_ready().unwrap();
+        let frontends = child.begin(39).unwrap().backend_ready().unwrap();
+        if mode == "activate" {
+            let _ = frontends
+                .ready()
+                .and_then(|activation| activation.activated());
+        }
         // Exit before frontend readiness to model a failed replacement.
     }
 
@@ -519,6 +727,7 @@ mod tests {
             channel: Channel::new(parent, Duration::from_secs(5)).unwrap(),
             child_pid: process.id(),
             schema: 39,
+            key_availability: KeyAvailability::new(),
         };
         assert!(parent.prepare().is_err());
         assert!(process.wait().unwrap().success());
@@ -540,13 +749,46 @@ mod tests {
         assert!(status.success());
     }
 
+    #[test]
+    fn managed_replacement_is_reaped_after_failed_startup() {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "linux_handoff_transport::tests::replacement_process_fixture",
+            ])
+            .env("VERENU_HANDOFF_TEST_CHILD", "1");
+        let replacement =
+            Replacement::spawn(command, 39, KeyAvailability::new(), Duration::from_secs(5))
+                .unwrap();
+        let pid = replacement.process.0.id();
+        assert!(replacement.prepare().is_err());
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+    }
+
+    #[test]
+    fn abandoning_an_activated_replacement_kills_and_reaps_it() {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "linux_handoff_transport::tests::replacement_process_fixture",
+            ])
+            .env("VERENU_HANDOFF_TEST_CHILD", "activate");
+        let replacement =
+            Replacement::spawn(command, 39, KeyAvailability::new(), Duration::from_secs(5))
+                .unwrap();
+        let pid = replacement.process.0.id();
+        let activated = replacement.prepare().unwrap().activate().unwrap();
+        drop(activated);
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+    }
+
     #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires a private Linux desktop and a custom-protocol app build"]
     fn real_replacement_opens_read_only_and_keeps_parent_alive() {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::process::CommandExt;
-        use std::process::{Command, Stdio};
+        use std::process::Command;
 
         let binary = std::env::var_os("VERENU_HANDOFF_TEST_BINARY").expect("replacement binary");
         let root =
@@ -564,49 +806,25 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         original_files.sort();
-        let (parent, child) = UnixStream::pair().unwrap();
-        let fd = child.as_raw_fd();
         let mut command = Command::new(binary);
         command
-            .env(CHILD_FD_ENV, fd.to_string())
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        unsafe {
-            command.pre_exec(move || {
-                let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        struct Replacement(std::process::Child);
-        impl Drop for Replacement {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let mut replacement = Replacement(command.spawn().unwrap());
-        drop(child);
-        let mut parent = Channel::new(parent, Duration::from_secs(25)).unwrap();
-        assert_eq!(
-            parent.receive().unwrap(),
-            Message::Hello {
-                protocol: PROTOCOL,
-                pid: replacement.0.id(),
-                schema: crate::data::db::HANDOFF_SCHEMA_VERSION,
-            }
-        );
-        parent.send(&Message::Begin).unwrap();
-        parent.expect(Message::BackendReady).unwrap();
+            .env("XDG_STATE_HOME", &state);
+        let replacement = Replacement::spawn(
+            command,
+            crate::data::db::HANDOFF_SCHEMA_VERSION,
+            KeyAvailability::new(),
+            Duration::from_secs(25),
+        )
+        .unwrap();
+        let child_pid = replacement.process.0.id();
+        let outcome = replacement.prepare();
         assert!(
-            matches!(parent.receive(), Ok(Message::Failed { reason }) if reason.contains("not yet verified"))
+            matches!(&outcome, Err(reason) if reason.contains("not yet verified")),
+            "replacement did not report incomplete startup"
         );
-        replacement.0.wait().unwrap();
+        assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, -1);
+        assert!(!group_has_live_members(child_pid).unwrap());
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), original_db);
         assert_eq!(
             std::fs::read(data.join("verenu.db-wal")).unwrap(),
