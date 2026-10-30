@@ -18,6 +18,10 @@ pub struct IdentityExchange {
     pub device_uuid: String,
     pub device_name: String,
     pub cert_der: Vec<u8>,
+    #[serde(default)]
+    pub sync_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing_id: Option<String>,
 }
 
 pub fn generate_pairing_code() -> String {
@@ -125,6 +129,9 @@ where
     if outcome.device_uuid != expected_peer_uuid {
         return Err(anyhow!("pairing peer identity changed mid-handshake"));
     }
+    if outcome.pairing_id.is_some() && outcome.pairing_id != self_identity.pairing_id {
+        return Err(anyhow!("pairing identifier did not match"));
+    }
     match read_message(stream).await? {
         Message::PairComplete => {}
         Message::Error { message } => return Err(anyhow!("pairing failed: {message}")),
@@ -161,7 +168,12 @@ where
         return Err(anyhow!("pairing peer identity changed mid-handshake"));
     }
 
-    let (my_ciphertext, my_nonce) = encrypt_identity(cipher, self_identity)?;
+    if peer.pairing_id.as_deref().is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) {
+        return Err(anyhow!("invalid pairing identifier"));
+    }
+    let mut response_identity = self_identity.clone();
+    response_identity.pairing_id.clone_from(&peer.pairing_id);
+    let (my_ciphertext, my_nonce) = encrypt_identity(cipher, &response_identity)?;
     send_message(
         stream,
         &Message::PairVerify {
