@@ -329,8 +329,110 @@ pub struct SyncStatusSnapshot {
     pub peers: Vec<PeerDto>,
 }
 
+#[cfg(all(test, target_os = "linux", feature = "native-testing"))]
+mod handoff_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a private desktop"]
+    fn handoff_rejects_active_sync_state() {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        app.manage(gate.clone());
+        let db = crate::data::db::open(":memory:").unwrap();
+        let manager = SyncManager::new_unstarted(app.handle().clone(), db);
+        tauri::async_runtime::block_on(async {
+            let pause = gate.pause().await.unwrap();
+            assert!(manager.check_handoff_idle(&pause).is_ok());
+            manager
+                .inner
+                .pairing_in_progress
+                .store(true, Ordering::Release);
+            assert!(manager.check_handoff_idle(&pause).is_err());
+            manager
+                .inner
+                .pairing_in_progress
+                .store(false, Ordering::Release);
+            *manager.inner.pending.lock().await = Some(PendingPairing::Outgoing {
+                generation: 1,
+                abort: None,
+            });
+            assert!(manager.check_handoff_idle(&pause).is_err());
+            *manager.inner.pending.lock().await = None;
+            manager
+                .inner
+                .sessions
+                .lock()
+                .unwrap()
+                .insert("synthetic".into());
+            assert!(manager.check_handoff_idle(&pause).is_err());
+            manager.inner.sessions.lock().unwrap().clear();
+            manager
+                .inner
+                .mute_sessions
+                .lock()
+                .unwrap()
+                .insert("synthetic".into(), Arc::new(AtomicBool::new(true)));
+            assert!(manager.check_handoff_idle(&pause).is_err());
+            manager.inner.mute_sessions.lock().unwrap().clear();
+            let lease = manager.inner.mute_lease_slots.try_acquire().unwrap();
+            assert!(manager.check_handoff_idle(&pause).is_err());
+            drop(lease);
+            assert!(manager.check_handoff_idle(&pause).is_ok());
+            let other = Arc::new(crate::linux_activity::ActivityGate::default());
+            let wrong_pause = other.pause().await.unwrap();
+            assert!(manager.check_handoff_idle(&wrong_pause).is_err());
+        });
+    }
+}
+
 impl SyncManager {
-    pub fn start(app: AppHandle, db: DbHandle) -> SyncManager {
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    pub(crate) fn check_handoff_idle(&self, pause: &crate::linux_activity::Pause) -> Result<()> {
+        let gate = self
+            .inner
+            .app
+            .try_state::<Arc<crate::linux_activity::ActivityGate>>()
+            .ok_or_else(|| anyhow!("Restart preparation is unavailable."))?;
+        if !pause.belongs_to(gate.inner()) {
+            return Err(anyhow!("Restart preparation is unavailable."));
+        }
+        let pending = self
+            .inner
+            .pending
+            .try_lock()
+            .map_err(|_| anyhow!("Sync is busy. Try restarting again shortly."))?;
+        if pending.is_some() || self.inner.pairing_in_progress.load(Ordering::Acquire) {
+            return Err(anyhow!(
+                "Finish or cancel device pairing before restarting."
+            ));
+        }
+        let sessions = self
+            .inner
+            .sessions
+            .try_lock()
+            .map_err(|_| anyhow!("Sync is busy. Try restarting again shortly."))?;
+        let mutes = self
+            .inner
+            .mute_sessions
+            .try_lock()
+            .map_err(|_| anyhow!("Sync is busy. Try restarting again shortly."))?;
+        if !sessions.is_empty()
+            || !mutes.is_empty()
+            || self.inner.mute_lease_slots.available_permits() != MAX_ACTIVE_MUTE_LEASES
+        {
+            return Err(anyhow!(
+                "Wait for device sync and remote audio to finish before restarting."
+            ));
+        }
+        Ok(())
+    }
+
+    fn new_unstarted(app: AppHandle, db: DbHandle) -> SyncManager {
         let data_dir = crate::app_setup::app_data_dir();
         let inner = Arc::new(Inner {
             db,
@@ -356,8 +458,11 @@ impl SyncManager {
             incoming_slots: Arc::new(Semaphore::new(MAX_INCOMING_CONNECTIONS)),
             mute_lease_slots: Arc::new(Semaphore::new(MAX_ACTIVE_MUTE_LEASES)),
         });
-        let manager = SyncManager { inner };
+        SyncManager { inner }
+    }
 
+    pub fn start(app: AppHandle, db: DbHandle) -> SyncManager {
+        let manager = Self::new_unstarted(app, db);
         let init = manager.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(err) = init.initialize().await {
@@ -365,7 +470,6 @@ impl SyncManager {
                 log::error!("sync: disabled - {err:#}");
             }
         });
-        let _ = app;
         manager
     }
 
