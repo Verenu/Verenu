@@ -199,6 +199,8 @@ mod tests {
             .unwrap();
         let gate = Arc::new(crate::linux_activity::ActivityGate::default());
         app.manage(gate.clone());
+        app.manage(crate::local_stt::LocalTranscriptionManager::new());
+        app.manage(crate::local_llm::LocalLlmManager::new());
         let agent = Arc::new(tokio::sync::Semaphore::new(1));
         app.manage(crate::agent_api::AgentDrain::for_test(agent.clone()));
         crate::agent_api::manage_test_approvals(app.handle());
@@ -323,6 +325,24 @@ mod tests {
             .unwrap_err()
             .contains("preparing to restart"));
             assert!(recording.lock().unwrap().lifecycle.is_idle());
+            assert!(crate::commands::download_local_stt_model(
+                app.handle().clone(), app.state(), "invalid".into(),
+            ).await.unwrap_err().contains("preparing to restart"));
+            assert!(crate::commands::download_local_llm_model(
+                app.handle().clone(), app.state(), "invalid".into(),
+            ).await.unwrap_err().contains("preparing to restart"));
+            assert!(crate::commands::download_local_llm_runtime(
+                app.handle().clone(), app.state(),
+            ).await.unwrap_err().contains("preparing to restart"));
+            assert!(crate::commands::delete_local_stt_model(
+                app.handle().clone(), app.state(), "invalid".into(),
+            ).await.unwrap_err().contains("preparing to restart"));
+            assert!(crate::commands::delete_local_llm_model(
+                app.handle().clone(), app.state(), "invalid".into(),
+            ).await.unwrap_err().contains("preparing to restart"));
+            assert!(crate::commands::delete_local_llm_runtime(
+                app.handle().clone(), app.state(),
+            ).await.unwrap_err().contains("preparing to restart"));
             assert!(agent.clone().try_acquire_owned().is_err());
             assert!(tray_names(&bus).await.is_empty());
             entered.store(false, std::sync::atomic::Ordering::SeqCst);
