@@ -92,6 +92,70 @@ fn child_channel_from_environment(timeout: Duration) -> Result<Option<Channel>, 
     Channel::new(stream, timeout).map(Some)
 }
 
+pub(crate) struct Child {
+    channel: Channel,
+}
+
+impl Child {
+    pub(crate) fn from_environment(timeout: Duration) -> Result<Option<Self>, String> {
+        child_channel_from_environment(timeout)
+            .map(|channel| channel.map(|channel| Self { channel }))
+    }
+
+    pub(crate) fn begin(mut self, schema: i64) -> Result<ChildStartup, String> {
+        self.channel.send(&Message::Hello {
+            protocol: PROTOCOL,
+            pid: std::process::id(),
+            schema,
+        })?;
+        self.channel.expect(Message::Begin)?;
+        Ok(ChildStartup(self.channel))
+    }
+}
+
+pub(crate) struct ChildStartup(Channel);
+
+impl ChildStartup {
+    pub(crate) fn backend_ready(mut self) -> Result<ChildFrontends, String> {
+        self.0.send(&Message::BackendReady)?;
+        Ok(ChildFrontends(self.0))
+    }
+
+    pub(crate) fn fail(mut self, reason: String) -> Result<(), String> {
+        self.0.send(&Message::Failed { reason })
+    }
+}
+
+pub(crate) struct ChildFrontends(Channel);
+
+impl ChildFrontends {
+    pub(crate) fn ready(mut self) -> Result<ChildActivation, String> {
+        self.0.send(&Message::FrontendsReady)?;
+        self.0.expect(Message::Activate)?;
+        Ok(ChildActivation(self.0))
+    }
+
+    pub(crate) fn fail(mut self, reason: String) -> Result<(), String> {
+        self.0.send(&Message::Failed { reason })
+    }
+}
+
+pub(crate) struct ChildActivation(Channel);
+
+impl ChildActivation {
+    pub(crate) fn activated(mut self) -> Result<ChildCommit, String> {
+        self.0.send(&Message::Activated)?;
+        self.0.expect(Message::Commit)?;
+        Ok(ChildCommit)
+    }
+
+    pub(crate) fn fail(mut self, reason: String) -> Result<(), String> {
+        self.0.send(&Message::Failed { reason })
+    }
+}
+
+pub(crate) struct ChildCommit;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Message {
@@ -390,23 +454,16 @@ mod tests {
             assert!(std::env::var_os(CHILD_FD_ENV).is_none());
             return;
         }
-        let mut child = child_channel_from_environment(Duration::from_secs(5))
+        let child = Child::from_environment(Duration::from_secs(5))
             .unwrap()
             .unwrap();
         assert!(std::env::var_os(CHILD_FD_ENV).is_none());
         assert_ne!(
-            unsafe { libc::fcntl(child.stream.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            unsafe { libc::fcntl(child.channel.stream.as_raw_fd(), libc::F_GETFD) }
+                & libc::FD_CLOEXEC,
             0
         );
-        child
-            .send(&Message::Hello {
-                protocol: PROTOCOL,
-                pid: std::process::id(),
-                schema: 39,
-            })
-            .unwrap();
-        child.expect(Message::Begin).unwrap();
-        child.send(&Message::BackendReady).unwrap();
+        let _frontends = child.begin(39).unwrap().backend_ready().unwrap();
         // Exit before frontend readiness to model a failed replacement.
     }
 
@@ -481,5 +538,95 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+    }
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires a private Linux desktop and a custom-protocol app build"]
+    fn real_replacement_opens_read_only_and_keeps_parent_alive() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let binary = std::env::var_os("VERENU_HANDOFF_TEST_BINARY").expect("replacement binary");
+        let root =
+            std::env::temp_dir().join(format!("verenu-replacement-{}", uuid::Uuid::new_v4()));
+        let data = root.join("data");
+        let state = root.join("state");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true}").unwrap();
+        let parent_db = crate::data::db::open(data.join("verenu.db")).unwrap();
+        let original_db = std::fs::read(data.join("verenu.db")).unwrap();
+        let original_wal = std::fs::read(data.join("verenu.db-wal")).unwrap();
+        let original_settings = std::fs::read(data.join("settings.json")).unwrap();
+        let mut original_files: Vec<_> = std::fs::read_dir(&data)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        original_files.sort();
+        let (parent, child) = UnixStream::pair().unwrap();
+        let fd = child.as_raw_fd();
+        let mut command = Command::new(binary);
+        command
+            .env(CHILD_FD_ENV, fd.to_string())
+            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+            .env("XDG_STATE_HOME", &state)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(move || {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        struct Replacement(std::process::Child);
+        impl Drop for Replacement {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut replacement = Replacement(command.spawn().unwrap());
+        drop(child);
+        let mut parent = Channel::new(parent, Duration::from_secs(25)).unwrap();
+        assert_eq!(
+            parent.receive().unwrap(),
+            Message::Hello {
+                protocol: PROTOCOL,
+                pid: replacement.0.id(),
+                schema: crate::data::db::HANDOFF_SCHEMA_VERSION,
+            }
+        );
+        parent.send(&Message::Begin).unwrap();
+        parent.expect(Message::BackendReady).unwrap();
+        assert!(
+            matches!(parent.receive(), Ok(Message::Failed { reason }) if reason.contains("not yet verified"))
+        );
+        replacement.0.wait().unwrap();
+        assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), original_db);
+        assert_eq!(
+            std::fs::read(data.join("verenu.db-wal")).unwrap(),
+            original_wal
+        );
+        assert_eq!(
+            std::fs::read(data.join("settings.json")).unwrap(),
+            original_settings
+        );
+        let mut final_files: Vec<_> = std::fs::read_dir(&data)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        final_files.sort();
+        assert_eq!(final_files, original_files);
+        assert!(
+            !state.exists(),
+            "replacement started output-volume recovery"
+        );
+        drop(parent_db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
