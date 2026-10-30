@@ -5,6 +5,9 @@ use zbus::{blocking::Connection, interface};
 static TEST_CALLBACK_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(all(test, feature = "native-testing"))]
+static TEST_CALLBACK_STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(all(test, feature = "native-testing"))]
 pub(crate) fn test_callback_count() -> usize {
     TEST_CALLBACK_COUNT.load(std::sync::atomic::Ordering::SeqCst)
 }
@@ -34,6 +37,12 @@ impl SingleInstance {
                 .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
             return Ok(());
         }
+        // The hotkey callbacks change gesture state before dispatching work.
+        // Keep them out of a paused parent so a failed handoff can resume
+        // and handle the original event with its state intact.
+        #[cfg(all(test, feature = "native-testing"))]
+        TEST_CALLBACK_STARTED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _activity = crate::commands::linux_activity(&self.app).await;
         #[cfg(all(test, feature = "native-testing"))]
         {
             TEST_CALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -205,6 +214,49 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires an isolated graphical and D-Bus session"]
+    fn paused_instance_handles_forwarded_hotkey_after_resuming() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(gate.clone())
+            .plugin(super::plugin())
+            .build(tauri::generate_context!())
+            .unwrap();
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        let count = super::test_callback_count();
+        let started = super::TEST_CALLBACK_STARTED.load(std::sync::atomic::Ordering::SeqCst);
+        let (sent, received) = std::sync::mpsc::channel();
+        let sender = std::thread::spawn(move || {
+            let connection = zbus::blocking::Connection::session().unwrap();
+            let result = connection.call_method(
+                Some("com.verenu.app.SingleInstance"),
+                "/com/verenu/app/SingleInstance",
+                Some("org.SingleInstance.DBus"),
+                "ExecuteCallback",
+                &(vec!["--verenu-hotkey-release".to_string()], String::new()),
+            );
+            sent.send(result.is_ok()).unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while super::TEST_CALLBACK_STARTED.load(std::sync::atomic::Ordering::SeqCst) == started {
+            assert!(std::time::Instant::now() < deadline, "callback did not arrive");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(received.recv_timeout(Duration::from_millis(200)).is_err());
+        assert_eq!(super::test_callback_count(), count);
+        drop(pause);
+        assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
+        sender.join().unwrap();
+        assert_eq!(super::test_callback_count(), count + 1);
+        drop(app);
+    }
+
     #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires an isolated graphical and D-Bus session"]
