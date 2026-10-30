@@ -255,6 +255,19 @@ pub(crate) struct ChildCommit(Channel);
 #[must_use]
 pub(crate) struct ParentExited(());
 
+#[cfg(test)]
+pub(crate) fn parent_exited_for_test() -> ParentExited {
+    let mut process = std::process::Command::new("/bin/sleep")
+        .arg("5")
+        .spawn()
+        .unwrap();
+    let monitor = ParentMonitor::open(process.id() as libc::pid_t).unwrap();
+    process.kill().unwrap();
+    process.wait().unwrap();
+    monitor.wait(Duration::from_secs(5)).unwrap();
+    ParentExited(())
+}
+
 impl ChildCommit {
     pub(crate) fn wait_for_parent_exit(self, timeout: Duration) -> Result<ParentExited, String> {
         self.0
