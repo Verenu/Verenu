@@ -4,9 +4,7 @@ use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
-#[cfg(not(target_os = "linux"))]
-use tauri::Emitter;
-use tauri::{AppHandle, Manager, Theme};
+use tauri::{AppHandle, Emitter, Manager, Theme};
 
 #[cfg(not(target_os = "linux"))]
 const TRAY_ID: &str = "verenu-tray";
@@ -118,7 +116,13 @@ fn relaunch_app(app: &AppHandle) {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    if let Err(error) = crate::commands::restart_app(app.clone()) {
+        crate::show_main_window(app);
+        let _ = app.emit("verenu:error", error);
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     app.restart();
 }
 
@@ -1233,6 +1237,26 @@ fn is_inside_rounded_rect(
 #[cfg(test)]
 mod icon_theme_tests {
     use super::{cached_icon_art, runtime_icon_image, setting_updates_runtime_icons, IconTheme};
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn linux_tray_relaunch_keeps_the_running_app_and_reports_the_error() {
+        use tauri::Listener;
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        app.listen_any("verenu:error", move |event| {
+            let _ = sent.send(event.payload().to_owned());
+        });
+        super::relaunch_app(app.handle());
+        assert!(received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .contains("Quit and reopen"));
+    }
 
     fn pixel(image: &tauri::image::Image<'_>, size: u32, x: u32, y: u32) -> [u8; 4] {
         let offset = ((y * size + x) * 4) as usize;
