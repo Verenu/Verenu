@@ -1,5 +1,21 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn handoff_settings_read_does_not_repair_or_replace_invalid_data() {
+    let path = std::env::temp_dir().join(format!("verenu-handoff-{}.json", uuid::Uuid::new_v4()));
+    assert!(SettingsSnapshot::read_for_handoff(&path).is_err());
+    assert!(!path.exists());
+    std::fs::write(&path, b"{invalid synthetic json").unwrap();
+    assert!(SettingsSnapshot::read_for_handoff(&path).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"{invalid synthetic json");
+    assert!(!path.with_extension("json.bak").exists());
+    std::fs::write(&path, br#"{"setup_complete":true}"#).unwrap();
+    let snapshot = SettingsSnapshot::read_for_handoff(&path).unwrap();
+    assert_eq!(snapshot.get(SETUP_COMPLETE), Some(&Value::Bool(true)));
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn feature_breadth_counts_voice_commands_and_only_boolean_flags() {
     let commands =

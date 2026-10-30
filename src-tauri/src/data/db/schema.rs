@@ -306,6 +306,49 @@ pub fn open_with_recovery(path: impl AsRef<std::path::Path>) -> Result<Db> {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn open_for_handoff(path: impl AsRef<std::path::Path>) -> Result<Db> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA query_only = ON;")?;
+    Ok(Arc::new(Mutex::new(conn)))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn handoff_database_open_never_migrates_or_writes() {
+    let path = std::env::temp_dir().join(format!("verenu-handoff-{}.db", Uuid::new_v4()));
+    assert!(open_for_handoff(&path).is_err());
+    assert!(!path.exists());
+    let original = Connection::open(&path).unwrap();
+    original
+        .execute_batch("CREATE TABLE fixture (value TEXT); INSERT INTO fixture VALUES ('original'); PRAGMA user_version = 1;")
+        .unwrap();
+    drop(original);
+    let handoff = open_for_handoff(&path).unwrap();
+    let conn = handoff.lock().unwrap();
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    let value: String = conn
+        .query_row("SELECT value FROM fixture", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(value, "original");
+    assert!(conn
+        .execute("INSERT INTO fixture VALUES ('replacement')", [])
+        .is_err());
+    drop(conn);
+    drop(handoff);
+    let original = Connection::open(&path).unwrap();
+    let count: i64 = original
+        .query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+    drop(original);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// Whether a failed [`open`] is caused by an actually corrupt database rather
 /// than a transient or environmental error. `SQLITE_NOTADB` covers a main file
 /// that is not a SQLite database and a wedged WAL; `SQLITE_CORRUPT` covers a
