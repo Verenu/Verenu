@@ -6,6 +6,7 @@ pub(crate) struct PreparedHandoff {
     app: AppHandle,
     pause: Option<crate::linux_activity::Pause>,
     agent: Option<tokio::sync::OwnedSemaphorePermit>,
+    shortcuts: Option<crate::core::hotkey::ShortcutPause>,
 }
 
 impl Drop for PreparedHandoff {
@@ -14,7 +15,18 @@ impl Drop for PreparedHandoff {
             return;
         };
         let app = self.app.clone();
+        let shortcuts = self.shortcuts.take();
         tauri::async_runtime::spawn(async move {
+            if let Some(shortcuts) = shortcuts {
+                let restored =
+                    tokio::time::timeout(Duration::from_secs(35), shortcuts.resume()).await;
+                if !matches!(restored, Ok(Ok(()))) {
+                    log::error!("Could not restore global shortcuts after restart preparation: {restored:?}");
+                    let window_app = app.clone();
+                    let _ = app.run_on_main_thread(move || crate::show_main_window(&window_app));
+                    let _ = app.emit("verenu:error", "Verenu is still running, but global shortcuts could not be restored. Quit and reopen the app when convenient.");
+                }
+            }
             // A canceled shutdown and the new registration can each take ten seconds.
             let restored = tokio::time::timeout(
                 Duration::from_secs(22),
@@ -101,11 +113,19 @@ async fn prepare_inner(app: &AppHandle) -> Result<PreparedHandoff, String> {
     crate::data::store::SettingsSnapshot::read_for_handoff(
         &crate::app_data_dir().join("settings.json"),
     )?;
-    let prepared = PreparedHandoff {
+    let mut prepared = PreparedHandoff {
         app: app.clone(),
         pause: Some(pause),
         agent: Some(agent_permit),
+        shortcuts: None,
     };
+    prepared.shortcuts = Some(crate::core::hotkey::ShortcutPause::begin()?);
+    prepared
+        .shortcuts
+        .as_ref()
+        .expect("shortcut pause was just installed")
+        .wait()
+        .await?;
     crate::app_tray::suspend_for_handoff(app).await?;
     Ok(prepared)
 }
@@ -224,6 +244,7 @@ mod tests {
         });
 
         tauri::async_runtime::block_on(async {
+            let shortcut_driver = crate::core::hotkey::install_test_shortcut_control().await;
             crate::app_tray::resume_after_handoff(app.handle())
                 .await
                 .unwrap();
@@ -245,6 +266,7 @@ mod tests {
             drop(active_agent);
             let lease = preparation.await.unwrap();
             assert!(gate.try_enter().is_none());
+            assert!(!crate::core::hotkey::test_shortcuts_active());
             assert!(agent.clone().try_acquire_owned().is_err());
             assert!(tray_names(&bus).await.is_empty());
             entered.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -265,6 +287,7 @@ mod tests {
                 .await
                 .expect("restart cancellation did not resume application activity");
             drop(activity);
+            assert!(crate::core::hotkey::test_shortcuts_active());
             assert!(agent.clone().try_acquire_owned().is_ok());
             let restored_tray = tray_names(&bus).await;
             assert_eq!(restored_tray.len(), 1);
@@ -343,6 +366,7 @@ mod tests {
             crate::app_tray::suspend_for_handoff(app.handle())
                 .await
                 .unwrap();
+            shortcut_driver.abort();
         });
         match old_dir {
             Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
