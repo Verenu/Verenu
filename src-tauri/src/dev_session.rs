@@ -465,6 +465,7 @@ fn allowed(command: &str) -> bool {
             | "move_snippet_entry_to_context"
             | "set_dictionary_context_assignment"
             | "set_snippet_context_assignment"
+            | "move_snippet_context_assignment"
             | "get_auto_learn_status_summary"
             | "get_recent_auto_learn_activity"
             | "check_domain_exists"
