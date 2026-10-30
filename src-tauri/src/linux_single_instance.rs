@@ -111,6 +111,88 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires an isolated graphical and D-Bus session"]
+    fn tauri_instance_regains_ownership_after_replacement_dies() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        use tauri::Manager;
+
+        let app = tauri::Builder::default()
+            .any_thread()
+            .plugin(super::plugin())
+            .build(tauri::generate_context!())
+            .unwrap();
+        let owner = app.state::<super::InstanceOwner>();
+        owner
+            .set_ownership_mode(super::OwnershipMode::Transferable)
+            .unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "linux_single_instance::tests::bus_restores_owner_after_replacement_process_dies",
+                "--nocapture",
+            ])
+            .env("VERENU_TEST_TRANSFER_NAME", &owner.name)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if line == "replacement-acquired" {
+                    let _ = sender.send(());
+                    break;
+                }
+            }
+        });
+        let ready = receiver.recv_timeout(Duration::from_secs(10));
+        let _ = child.kill();
+        let _ = child.wait();
+        ready.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let current = owner
+                .connection
+                .call_method(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    Some("org.freedesktop.DBus"),
+                    "GetNameOwner",
+                    &(owner.name.as_str(),),
+                )
+                .and_then(|message| message.body().deserialize::<String>())
+                .unwrap();
+            if current == owner.connection.unique_name().unwrap().as_str() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Tauri instance did not regain ownership"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owner
+            .set_ownership_mode(super::OwnershipMode::Exclusive)
+            .unwrap();
+        let connection = zbus::blocking::Connection::session().unwrap();
+        let (_, path) = super::address(&app.config().identifier);
+        connection
+            .call_method(
+                Some(owner.name.as_str()),
+                path.as_str(),
+                Some("org.SingleInstance.DBus"),
+                "ExecuteCallback",
+                &(Vec::<String>::new(), String::new()),
+            )
+            .unwrap();
+    }
+
     #[test]
     fn address_matches_existing_single_instance_protocol() {
         assert_eq!(
