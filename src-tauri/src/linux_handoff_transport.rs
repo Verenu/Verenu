@@ -7,11 +7,90 @@
 
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 const PROTOCOL: u32 = 1;
 const MAX_MESSAGE: usize = 4096;
+const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
+
+fn descends_from(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
+    for _ in 0..32 {
+        if pid == ancestor {
+            return true;
+        }
+        if pid <= 1 {
+            return false;
+        }
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+            return false;
+        };
+        let Some(parent) = status.lines().find_map(|line| {
+            line.strip_prefix("PPid:")
+                .and_then(|value| value.trim().parse::<libc::pid_t>().ok())
+        }) else {
+            return false;
+        };
+        if parent == pid {
+            return false;
+        }
+        pid = parent;
+    }
+    false
+}
+
+fn child_channel_from_environment(timeout: Duration) -> Result<Option<Channel>, String> {
+    let Some(value) = std::env::var_os(CHILD_FD_ENV) else {
+        return Ok(None);
+    };
+    std::env::remove_var(CHILD_FD_ENV);
+    let fd: i32 = value
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .filter(|fd| *fd >= 3)
+        .ok_or("Invalid restart connection")?;
+    let mut socket_type = 0i32;
+    let mut socket_len = std::mem::size_of_val(&socket_type) as libc::socklen_t;
+    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut address_len = std::mem::size_of_val(&address) as libc::socklen_t;
+    let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut peer_len = std::mem::size_of_val(&peer) as libc::socklen_t;
+    let valid = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            (&mut socket_type as *mut i32).cast(),
+            &mut socket_len,
+        ) == 0
+            && socket_type == libc::SOCK_STREAM
+            && libc::getsockname(
+                fd,
+                (&mut address as *mut libc::sockaddr_storage).cast(),
+                &mut address_len,
+            ) == 0
+            && address.ss_family as i32 == libc::AF_UNIX
+            && libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut peer as *mut libc::ucred).cast(),
+                &mut peer_len,
+            ) == 0
+            && peer.uid == libc::geteuid()
+    };
+    if !valid || !descends_from(unsafe { libc::getppid() }, peer.pid) {
+        return Err("Invalid restart connection".into());
+    }
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err("Could not secure the restart connection".into());
+    }
+    // The descriptor was explicitly passed to this process and validated above.
+    let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    Channel::new(stream, timeout).map(Some)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -109,11 +188,19 @@ struct Parent {
 
 impl Parent {
     fn prepare(mut self) -> Result<Probation, String> {
-        self.channel.expect(Message::Hello {
-            protocol: PROTOCOL,
-            pid: self.child_pid,
-            schema: self.schema,
-        })?;
+        match self.channel.receive()? {
+            Message::Hello {
+                protocol,
+                pid,
+                schema,
+            } if protocol == PROTOCOL
+                && schema == self.schema
+                && (pid == self.child_pid
+                    || (pid <= i32::MAX as u32
+                        && self.child_pid <= i32::MAX as u32
+                        && descends_from(pid as i32, self.child_pid as i32))) => {}
+            _ => return Err("Replacement identity or compatibility did not match".into()),
+        }
         self.channel.send(&Message::Begin)?;
         self.channel.expect(Message::BackendReady)?;
         self.channel.expect(Message::FrontendsReady)?;
@@ -294,12 +381,23 @@ mod tests {
 
     #[test]
     fn replacement_process_fixture() {
-        use std::os::fd::FromRawFd;
-        let Ok(fd) = std::env::var("VERENU_HANDOFF_TEST_FD") else {
+        use std::os::fd::AsRawFd;
+        let Some(mode) = std::env::var_os("VERENU_HANDOFF_TEST_CHILD") else {
             return;
         };
-        let stream = unsafe { UnixStream::from_raw_fd(fd.parse().unwrap()) };
-        let mut child = Channel::new(stream, Duration::from_secs(5)).unwrap();
+        if mode == "invalid" {
+            assert!(child_channel_from_environment(Duration::from_secs(1)).is_err());
+            assert!(std::env::var_os(CHILD_FD_ENV).is_none());
+            return;
+        }
+        let mut child = child_channel_from_environment(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(std::env::var_os(CHILD_FD_ENV).is_none());
+        assert_ne!(
+            unsafe { libc::fcntl(child.stream.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
         child
             .send(&Message::Hello {
                 protocol: PROTOCOL,
@@ -314,20 +412,38 @@ mod tests {
 
     #[test]
     fn replacement_process_exit_after_backend_leaves_parent_alive() {
+        run_failed_replacement(false);
+    }
+
+    #[test]
+    fn launcher_descendant_can_complete_the_initial_handshake() {
+        run_failed_replacement(true);
+    }
+
+    fn run_failed_replacement(via_launcher: bool) {
         use std::os::fd::AsRawFd;
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
 
         let (parent, child) = UnixStream::pair().unwrap();
         let fd = child.as_raw_fd();
-        let mut command = Command::new(std::env::current_exe().unwrap());
+        let executable = std::env::current_exe().unwrap();
+        let mut command = if via_launcher {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "\"$@\" & wait $!", "verenu-test-launcher"]);
+            command.arg(executable);
+            command
+        } else {
+            Command::new(executable)
+        };
         command
             .args([
                 "--exact",
                 "linux_handoff_transport::tests::replacement_process_fixture",
                 "--nocapture",
             ])
-            .env("VERENU_HANDOFF_TEST_FD", fd.to_string())
+            .env("VERENU_HANDOFF_TEST_CHILD", "1")
+            .env(CHILD_FD_ENV, fd.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -349,5 +465,21 @@ mod tests {
         };
         assert!(parent.prepare().is_err());
         assert!(process.wait().unwrap().success());
+    }
+
+    #[test]
+    fn child_rejects_an_invalid_inherited_descriptor() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "linux_handoff_transport::tests::replacement_process_fixture",
+            ])
+            .env("VERENU_HANDOFF_TEST_CHILD", "invalid")
+            .env(CHILD_FD_ENV, "0")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 }
