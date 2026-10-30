@@ -158,4 +158,34 @@ mod tests {
             .unwrap()
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn cancelled_caller_still_drains_its_blocking_work() {
+        let gate = Arc::new(ActivityGate::default());
+        let work_gate = gate.clone();
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let (finish, finish_rx) = std::sync::mpsc::channel::<()>();
+        let caller = tokio::spawn(async move {
+            let activity = Arc::new(work_gate.enter().await);
+            let blocking_activity = activity.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let _activity = blocking_activity;
+                let _ = started.send(());
+                let _ = finish_rx.recv();
+            })
+            .await;
+        });
+        started_rx.await.unwrap();
+        caller.abort();
+        let _ = caller.await;
+        let pause_gate = gate.clone();
+        let pause = tokio::spawn(async move { pause_gate.pause().await.unwrap() });
+        tokio::task::yield_now().await;
+        assert!(!pause.is_finished());
+        finish.send(()).unwrap();
+        let _pause = tokio::time::timeout(std::time::Duration::from_secs(2), pause)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }

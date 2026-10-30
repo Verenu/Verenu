@@ -650,6 +650,14 @@ pub async fn save_setting(
     key: String,
     mut value: serde_json::Value,
 ) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let activity = if let Some(gate) =
+        app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
+    {
+        Some(std::sync::Arc::new(gate.inner().clone().enter().await))
+    } else {
+        None
+    };
     validate_setting(&key, &value)?;
     let disable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == false;
     if key == store::CUSTOM_PROVIDERS {
@@ -675,7 +683,11 @@ pub async fn save_setting(
     let settings = store::settings_handle(&app)?;
     let credential_app = app.clone();
     let key_clone = key.clone();
+    #[cfg(target_os = "linux")]
+    let save_activity = activity.clone();
     let save_result = run_blocking("save_setting", move || {
+        #[cfg(target_os = "linux")]
+        let _activity = save_activity;
         if store::storage_full_simulation_enabled() {
             return Err(format!(
                 "{}: simulated settings write failure",
@@ -709,7 +721,11 @@ pub async fn save_setting(
     save_result?;
     if disable_cleanup_cache {
         let db = db_state(&app);
+        #[cfg(target_os = "linux")]
+        let cleanup_activity = activity.clone();
         run_blocking("disable_cleanup_cache", move || {
+            #[cfg(target_os = "linux")]
+            let _activity = cleanup_activity;
             db::cleanup_cache_clear_all(&db).map_err(|e| e.to_string())
         })
         .await?;
@@ -718,7 +734,11 @@ pub async fn save_setting(
     if crate::sync::engine::SYNCABLE_SETTINGS.contains(&key.as_str()) {
         let db = app.state::<DbHandle>().inner().clone();
         let key_for_stamp = key.clone();
+        #[cfg(target_os = "linux")]
+        let stamp_activity = activity.clone();
         let stamped = run_blocking("save_setting_stamp", move || {
+            #[cfg(target_os = "linux")]
+            let _activity = stamp_activity;
             let conn = db
                 .lock()
                 .map_err(|_| "database lock poisoned".to_string())?;
@@ -772,7 +792,11 @@ pub async fn save_setting(
     if let Some(days) = history_prune_days {
         let db = app.state::<DbHandle>().inner().clone();
         let settings = store::settings_handle(&app)?;
+        #[cfg(target_os = "linux")]
+        let prune_activity = activity.clone();
         let deleted = tokio::task::spawn_blocking(move || {
+            #[cfg(target_os = "linux")]
+            let _activity = prune_activity;
             db::prune_transcriptions_for_retention(&db, &settings, days)
         })
         .await
