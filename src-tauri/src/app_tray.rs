@@ -19,6 +19,17 @@ pub(crate) fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) async fn suspend_for_handoff(app: &AppHandle) -> Result<(), String> {
+    linux::stop(app).await
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) async fn resume_after_handoff(app: &AppHandle) -> Result<(), String> {
+    linux::start(app).await
+}
+
 pub(crate) fn setting_updates_runtime_icons(key: &str) -> bool {
     key == crate::data::store::APPEARANCE_MODE || key == crate::data::store::CUSTOM_THEME
 }
