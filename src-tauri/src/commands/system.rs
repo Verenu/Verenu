@@ -521,11 +521,11 @@ fn human_diagnostics_bundle(snapshot: &crate::system::diagnostics::DiagnosticsSn
 }
 
 #[tauri::command]
-pub async fn set_hotkey_capture(active: bool) -> Result<(), String> {
+pub async fn set_hotkey_capture(app: AppHandle, active: bool) -> Result<(), String> {
     if crate::is_dev_session() {
         return Ok(());
     }
-    run_blocking("set_hotkey_capture", move || {
+    run_app_blocking(&app, "set_hotkey_capture", move || {
         crate::core::hotkey::set_capture_active(active)
     })
     .await
