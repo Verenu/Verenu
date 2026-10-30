@@ -44,6 +44,32 @@ fn handoff_settings_reject_all_mutations_without_touching_disk() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn handoff_settings_reload_before_all_clones_become_writable() {
+    let path = unique_tmp_path();
+    std::fs::write(&path, br#"{"value":1}"#).unwrap();
+    let settings = SettingsHandle::open_for_handoff(path.clone()).unwrap();
+    let clone = settings.clone();
+    let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+
+    std::fs::write(&path, b"invalid synthetic json").unwrap();
+    assert!(settings.activate_after_handoff(&parent_exited).is_err());
+    assert!(clone.save_value("value", json!(2)).is_err());
+    assert_eq!(settings.get("value"), Some(json!(1)));
+
+    std::fs::write(&path, br#"{"value":3,"other":true}"#).unwrap();
+    settings.activate_after_handoff(&parent_exited).unwrap();
+    assert_eq!(clone.get("value"), Some(json!(3)));
+    clone.save_value("value", json!(4)).unwrap();
+    assert_eq!(settings.get("value"), Some(json!(4)));
+    assert!(settings.activate_after_handoff(&parent_exited).is_ok());
+    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["value"], json!(4));
+    assert_eq!(saved["other"], json!(true));
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn feature_breadth_counts_voice_commands_and_only_boolean_flags() {
     let commands =
@@ -140,7 +166,7 @@ fn github_cache_persists_and_a_disconnect_rejects_late_refreshes() {
     let handle = SettingsHandle {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(Map::new()))),
-        read_only: false,
+        read_only: Arc::new(AtomicBool::new(false)),
     };
     handle
         .save_value(GITHUB_USERNAME, json!("octocat"))
@@ -264,7 +290,7 @@ fn failed_settings_save_does_not_publish_in_memory_values() {
     let handle = SettingsHandle {
         path: Arc::new(path),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
-        read_only: false,
+        read_only: Arc::new(AtomicBool::new(false)),
     };
 
     assert!(handle
@@ -307,7 +333,7 @@ fn settings_snapshots_share_unchanged_maps_and_skip_noop_writes() {
     let handle = SettingsHandle {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
-        read_only: false,
+        read_only: Arc::new(AtomicBool::new(false)),
     };
 
     let first = handle.snapshot().expect("first snapshot");
