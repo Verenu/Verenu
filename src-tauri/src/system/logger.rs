@@ -624,6 +624,7 @@ mod tests {
 
     #[test]
     fn recent_returns_tail_in_order() {
+        let _guard = LOGGER_TEST_LOCK.lock().expect("lock");
         let _ = LOG_BUFFER.set(Mutex::new(VecDeque::new()));
         let buf = LOG_BUFFER.get().expect("buffer");
         let mut guard = buf.lock().expect("lock");

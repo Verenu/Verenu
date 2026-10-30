@@ -6,7 +6,7 @@
   import { invoke, listen } from '../tauri';
   import { startPolling } from '../polling';
   import { listenForSyncCompletion } from '../syncStore.svelte';
-  import { appStore, formatIpcError } from '../stores';
+  import { formatIpcError } from '../stores';
   import { MOTION_MS, motionMs } from '../motion';
   import Dropdown from '../components/Dropdown.svelte';
   import HeroStats from './insights/HeroStats.svelte';
@@ -217,10 +217,6 @@
   </div>
 
   {#if githubState.username}
-    <div class="github-status">
-      <span>{githubState.loading ? 'Refreshing GitHub activity…' : github?.source === 'public_commits' ? 'Showing public commit search results' : github ? 'GitHub contributions update automatically' : 'GitHub activity unavailable'}</span>
-      <button class="btn-ghost btn-compact" onclick={() => { appStore.settingsSection = 'integrations'; appStore.settingsOpen = true; }}>Manage in Settings</button>
-    </div>
     {#if github?.warning || githubState.error}<p class="github-warning" role="status">{github?.warning || githubState.error}</p>{/if}
   {/if}
 
@@ -270,7 +266,6 @@
 </div>
 
 <style>
-  .github-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 16px; color: var(--ink-mute); font-size: 11.5px; }
   .github-warning { margin: -6px 0 20px; color: var(--ink-mute); font-size: 11.5px; line-height: 1.5; }
   .content-inner {
     width: min(100%, var(--page-max));
