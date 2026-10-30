@@ -370,6 +370,8 @@ impl SyncManager {
     }
 
     async fn initialize(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        let _activity = crate::commands::linux_activity(&self.inner.app).await;
         let known_uuid = {
             let conn = self.lock_db()?;
             sync_store::self_uuid(&conn)?
@@ -490,6 +492,8 @@ impl SyncManager {
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(DISCOVERY_RETRY_INTERVAL).await;
+                    #[cfg(target_os = "linux")]
+                    let _activity = crate::commands::linux_activity(&discovery.inner.app).await;
                     if discovery.inner.mdns.lock().await.is_some() {
                         break;
                     }
@@ -892,6 +896,8 @@ impl SyncManager {
         let manager = self.clone();
         let task_code = code.clone();
         let task = tokio::spawn(async move {
+            #[cfg(target_os = "linux")]
+            let _activity = crate::commands::linux_activity(&manager.inner.app).await;
             let result = manager
                 .run_outgoing_pairing(&target, &task_code, generation, route)
                 .await;
@@ -1293,6 +1299,8 @@ impl SyncManager {
     }
 
     async fn send_unpair(&self, peer_uuid: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        let _activity = crate::commands::linux_activity(&self.inner.app).await;
         let addr = self
             .addr_for_peer(peer_uuid)?
             .ok_or_else(|| anyhow!("device not visible"))?;
@@ -1444,6 +1452,8 @@ impl SyncManager {
         }
         let manager = self.clone();
         tauri::async_runtime::spawn(async move {
+            #[cfg(target_os = "linux")]
+            let _activity = crate::commands::linux_activity(&manager.inner.app).await;
             if let Err(err) = manager.start_discovery().await {
                 log::warn!("sync: re-advertise after rename failed: {err:#}");
             }
@@ -1457,6 +1467,8 @@ impl SyncManager {
     }
 
     async fn monitor_tick(&self) {
+        #[cfg(target_os = "linux")]
+        let _activity = crate::commands::linux_activity(&self.inner.app).await;
         self.monitor_muting();
         let paired = conn_peers(&self.inner.db);
         if paired.is_empty() {
@@ -1535,6 +1547,8 @@ impl SyncManager {
     }
 
     pub async fn sync_to_peer(&self, peer_uuid: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        let _activity = crate::commands::linux_activity(&self.inner.app).await;
         if peer_uuid == self.device_uuid() {
             return Err(anyhow!("Cannot sync this device with itself"));
         }
@@ -1954,6 +1968,8 @@ async fn handle_connection(
     mut tls: TlsStream<tokio::net::TcpStream>,
     permit: tokio::sync::OwnedSemaphorePermit,
 ) {
+    #[cfg(target_os = "linux")]
+    let _activity = crate::commands::linux_activity(&inner.app).await;
     let peer_fp = match tls
         .get_ref()
         .1
@@ -1973,6 +1989,9 @@ async fn handle_connection(
     };
     match first {
         Message::DictationMute { device_uuid } => {
+            #[cfg(target_os = "linux")]
+            muting::receive(inner, tls, device_uuid, peer_fp, permit, _activity.clone()).await;
+            #[cfg(not(target_os = "linux"))]
             muting::receive(inner, tls, device_uuid, peer_fp, permit).await;
         }
         Message::PairRequest {

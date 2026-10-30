@@ -77,7 +77,7 @@ fn db_state(app: &AppHandle) -> DbHandle {
 }
 
 #[cfg(target_os = "linux")]
-async fn linux_activity(
+pub(crate) async fn linux_activity(
     app: &AppHandle,
 ) -> Option<std::sync::Arc<crate::linux_activity::Activity>> {
     let gate = app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()?;
