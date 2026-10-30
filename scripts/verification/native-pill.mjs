@@ -7,6 +7,11 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
     await browser.command('POST', '/window', { handle: 'main' });
     await invoke('native_test_pill', { state, message, context });
     await browser.command('POST', '/window', { handle: 'pill' });
+    const deadline = Date.now() + 15_000;
+    while (!await browser.execute(`return document.readyState === 'complete' && !!document.querySelector('.pill');`)) {
+      assert.ok(Date.now() < deadline, 'Native pill document did not finish loading');
+      await pause(100);
+    }
     await pause(1000);
   };
   const layout = () => browser.execute(`
@@ -71,6 +76,16 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
     }
     await screenshot(`${directory}/pill-recording.png`);
     return ['pill-handsfree.png', 'pill-passive-loading.png', 'pill-error.png', 'pill-recording.png'].map(name => `${directory}/${name}`);
+  } catch (error) {
+    await screenshot(`${directory}/pill-failure.png`).catch(() => {});
+    const state = await browser.execute(`return {
+      readyState: document.readyState,
+      root: !!document.querySelector('#pill-root'),
+      pill: !!document.querySelector('.pill'),
+      bridge: !!window.__TAURI_INTERNALS__,
+    };`).catch(() => null);
+    if (state) error.message += `; pill document: ${JSON.stringify(state)}`;
+    throw error;
   } finally {
     await browser.command('POST', '/window', { handle: 'main' });
     await invoke('native_test_pill', { state: 'idle' });
