@@ -43,9 +43,10 @@ PowerShell examples are in the CLI's `--help`. The CLI or agent must inherit the
 same variables as the app when using that explicit grant;
 exporting them in a different terminal does not give an existing agent session
 access. Keep the variables in the invoking shell; do not print the
-token, put it in a command argument, or commit it. It grants broad settings and
-data writes, credential replacement/deletion, sync control and explicit transcript
-reads. Restarting without these variables revokes
+token, put it in a command argument, or commit it. The approval dialog selects
+permissions for each agent, including separate transcript, credential, and
+destructive permissions. Grants expire after one hour or when Verenu closes.
+The explicit environment grant has all permissions. Restarting without these variables revokes
 access. Invalid configuration or an occupied port fails startup; no port fallback
 or automatic credential discovery occurs for environment grants. Ordinary launches
 expose the approval, status, and revocation endpoints; data commands require an
@@ -98,6 +99,24 @@ Native command arguments use camelCase; dotted history operations use snake_case
 Unknown fields and unsupported commands fail. Dates are UTC `YYYY-MM-DD` with
 inclusive start and exclusive end.
 
+`library.usage` reports locally recorded mechanical vocabulary substitutions
+and snippet expansions, with a tracking start and last-match times. Tracking
+begins with the upgrade and older daily buckets are pruned with history
+retention. It does not capture use on other devices or influence on speech
+recognition or cleanup prompts. Recording is best effort; a missing match is
+not proof that an item is unused. Dictionary correction counts measure learning,
+not these matches. Snippet expansion counts include attempts that may not finish.
+
+`audit.page` lists recent agent write attempts, their operation, numeric target
+when available, and status. It stores no supplied text, values or tokens. It
+shows the last 30 days and removes older records on the next agent write.
+Each approval has an opaque identifier shared by its audit entries; callers
+using the same grant are indistinguishable, as are environment-grant callers.
+Audit writes and application changes
+are separate transactions: a pending entry or interrupted operation has an
+uncertain outcome, and even a failed operation can require a state read before
+retrying.
+
 ```bash
 npm run agent -- get_contexts
 npm run agent -- get_setting '{"key":"mute_audio"}'
@@ -141,6 +160,36 @@ mutation: cancellation does not guarantee a native operation was undone.
   `context.set_pinned`, passing the original Context as `expected`. Everywhere semantics
   remain owned by the existing native handlers. `create_context` and
   `context.patch_settings` accept the optional `pasteInChunks` preference.
+  The API also exposes the vocabulary and snippet inventories, their explicit
+  Context assignments, and the native assignment setters. Effective Context
+  inventories include inherited Everywhere items.
+  Agents can create, edit and remove vocabulary and snippets using the native
+  library commands. `remove_dictionary_entry` without `contextId` deletes the
+  term and its corrections globally; with `contextId` it removes that Context's
+  assignment and corrections. `edit_dictionary_entry` replaces the selected
+  Context's correction patterns and clears related auto-learn evidence; include
+  all patterns that should remain. A scoped edit cannot rename a term assigned
+  to another Context. `rename_dictionary_entry_global` requires `expectedTerm`
+  from the original entry and deliberately renames a
+  shared term in every Context without replacing its corrections; it clears
+  related learning evidence and requires destructive access. Editing or deleting a snippet affects every
+  Context that uses it. For `edit_snippet`, pass `expected` with the original
+  `trigger`, `expansion`, and `instructions` to reject a concurrent edit.
+  These direct operations have no built-in undo. Check the item
+  and its assignments before changing it. Correction counts are not usage
+  counts, and zero does not establish that an item is unused.
+- For bulk global deletes, `library.items` returns item UUIDs.
+  `library.preview_delete` accepts up to 100 `{kind, uuid}` items and returns
+  their corrections, local recorded matches, explicit Context assignments, inheritance effects and a
+  basis. `library.apply_delete` accepts the same items, the basis and a unique
+  UUID `request_id`; it rejects a changed preview and performs the deletion in
+  one transaction. Retrying the same request returns its receipt. Use
+  `library.undo_delete` with the request ID to restore the whole batch within
+  30 days. Restore fails atomically if an entry, correction or Context now
+  conflicts. It preserves sync UUIDs but does not restore purged learning
+  evidence. The local recovery record contains the deleted content; expired
+  records are removed on the next bulk deletion or app start. It is not synced
+  or included in backups. Counts are not proof that an entry is unused.
 - Read `diagnostics.snapshot`, lint current prompt templates using `prompts.lint`,
   or explicitly invoke `test_cleanup_prompt` with the existing saved provider
   credentials. That last command makes a live provider request and may cost

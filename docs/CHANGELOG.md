@@ -4,9 +4,11 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Paired devices can share cleanup cache results through sync, reducing repeated cleanup requests when the same configuration is used. The cache privacy setting remains local.
 - Fixed the Dictionary editor moving focus back to the term field while entering a common mistranscription.
 - Redesigned the Providers page. One list shows only the providers you have added, with icons for transcription and cleanup instead of descriptions. The plus button opens a single flyout that adds built-in, preset, local, or custom providers, and adding a built-in or preset provider now needs only an API key. Added missing logos for more presets and fixed the flyout's close button overlapping the window controls.
 - Redesigned the Sync page. Paired and nearby devices share one Devices list with icon actions, the Tailscale setup is two steps, synchronous muting no longer has its own heading, and the pairing and remove dialogs use shorter text.
+- Agents can manage vocabulary and snippets, preview and undo bulk deletions, and patch Context settings with a stale-read check. Agent access can be limited by capability, with a local change audit and local mechanical usage counts.
 - Insights now shows vocabulary replacements and snippet expansions for the selected date range and context. Detailed counts start with this update and are marked incomplete for older saved dictations.
 - Redesigned Settings > Integrations to match the rest of Settings: flat rows, a themed animated actions menu, and no About panels. In the shared T3 skills dialog, checkboxes replace the copy buttons so you can leave individual skills out of what is sent to cleanup. The dialog keeps a fixed size while you search and fades at the list edges.
 - Removed Basic from cleanup choices in Style, setup, and Contexts. Choose a cleanup level and model independently. Existing Basic settings continue to run locally until changed.

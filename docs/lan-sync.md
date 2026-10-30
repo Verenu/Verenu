@@ -17,6 +17,9 @@ are committed together.
 - Canonical vocabulary, Context-owned correction mappings, and snippets.
 - Sub-app rules and their Context assignments.
 - Dictation history and associated API usage records.
+- Cleanup cache results, when persistent cleanup caching is enabled on both
+  devices. Entries can travel through other paired devices that have caching
+  enabled. A rejected result is removed when the rejection reaches a peer.
 - Per-device lifetime word and correction counters, merged without counting
   imported dictations twice.
 - The settings listed in `SYNCABLE_SETTINGS` in

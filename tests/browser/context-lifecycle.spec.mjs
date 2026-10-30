@@ -80,6 +80,104 @@ test('an open editor cannot overwrite a concurrent Context update', async ({ pag
   }
 });
 
+test('refreshing Context items preserves an open item menu', async ({ page, session }) => {
+  const context = await session.invoke('create_context', { name: `Menu refresh ${Date.now()}` });
+  const word = await session.invoke('create_dictionary_entry', { term: 'MenuRefreshWord', contextId: context.id });
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  let received;
+  const requested = new Promise(resolve => { received = resolve; });
+  let releaseContexts;
+  try {
+    await page.reload();
+    await page.locator(`[data-debug-id="context.${context.id}"]`).click();
+    await page.locator('.item-row').filter({ hasText: 'MenuRefreshWord' }).click();
+    const edit = page.getByRole('menuitem', { name: 'Edit', exact: true });
+    await expect(edit).toBeVisible();
+    await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: 'Confirm delete', exact: true })).toBeVisible();
+    await page.route('**/__verenu_dev/invoke', async route => {
+      if (route.request().postDataJSON()?.command !== 'get_context_dictionary') return route.continue();
+      const response = await route.fetch();
+      received();
+      await held;
+      await route.fulfill({ response });
+    });
+    await page.evaluate(async () => { const api = await import('/src/lib/tauri.ts'); await api.emit('verenu:agent-contexts-changed'); });
+    await requested;
+    await expect(page.locator('.tab-panel.is-refreshing')).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: 'Delete', exact: true })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: 'Delete', exact: true })).toBeDisabled();
+    release();
+    await expect(page.locator('.is-refreshing')).toHaveCount(0);
+    await page.evaluate(async () => { await Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {}))); });
+    await expect(edit).toBeVisible();
+    await page.unrouteAll({ behavior: 'wait' });
+    const heldContexts = new Promise(resolve => { releaseContexts = resolve; });
+    let receivedContexts;
+    const requestedContexts = new Promise(resolve => { receivedContexts = resolve; });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      if (route.request().postDataJSON()?.command !== 'get_contexts') return route.continue();
+      const response = await route.fetch();
+      receivedContexts();
+      await heldContexts;
+      await route.fulfill({ response });
+    });
+    await page.evaluate(async () => { const api = await import('/src/lib/tauri.ts'); await api.emit('verenu:context-updated'); });
+    await requestedContexts;
+    await expect(edit).not.toBeVisible();
+    await page.locator('.item-row').filter({ hasText: 'MenuRefreshWord' }).click();
+    await expect(edit).toBeVisible();
+    releaseContexts();
+    await expect(edit).not.toBeVisible();
+    await page.unrouteAll({ behavior: 'wait' });
+    await page.locator('.item-row').filter({ hasText: 'MenuRefreshWord' }).click();
+    await expect(edit).toBeVisible();
+    await expect.poll(() => page.evaluate(async () => (await import('/src/lib/diagnostics.ts')).frontendIpcActivity.snapshot().find(metric => metric.command === 'get_context_stats')?.currently_running ?? 0)).toBe(0);
+    await page.unrouteAll({ behavior: 'wait' });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      if (route.request().postDataJSON()?.command !== 'get_context_stats') return route.continue();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ dictations: 1, words: 2, last_used_at: null }) });
+    });
+    await page.evaluate(async () => { const api = await import('/src/lib/tauri.ts'); await api.emit('verenu:agent-contexts-changed'); });
+    await expect(page.locator('.context-stats')).toBeVisible();
+    await expect(edit).not.toBeVisible();
+  } finally {
+    release();
+    releaseContexts?.();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('remove_dictionary_entry', { id: word.id });
+    await session.invoke('delete_context', { contextId: context.id });
+  }
+});
+
+test('refreshing a changed search result closes its item menu', async ({ page, session }) => {
+  const context = await session.invoke('create_context', { name: `Menu search ${Date.now()}` });
+  const word = await session.invoke('create_dictionary_entry', { term: 'SearchMenuWord', contextId: context.id });
+  try {
+    await page.reload();
+    await page.locator(`[data-debug-id="context.${context.id}"]`).click();
+    await page.getByRole('textbox', { name: 'Search this context group' }).fill('SearchMenuWord');
+    await page.locator('.item-row').filter({ hasText: 'SearchMenuWord' }).click();
+    await expect(page.getByRole('menuitem', { name: 'Edit', exact: true })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Search this context group' }).focus();
+    await page.keyboard.type('x');
+    await expect(page.getByRole('menuitem', { name: 'Edit', exact: true })).not.toBeVisible();
+    await page.getByRole('textbox', { name: 'Search this context group' }).fill('SearchMenuWord');
+    await page.locator('.item-row').filter({ hasText: 'SearchMenuWord' }).click();
+    await expect(page.getByRole('menuitem', { name: 'Edit', exact: true })).toBeVisible();
+    await session.invoke('edit_dictionary_entry', { id: word.id, term: 'RenamedMenuWord', contextId: context.id });
+    const refresh = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_context_dictionary');
+    await page.evaluate(async () => { const api = await import('/src/lib/tauri.ts'); await api.emit('verenu:agent-contexts-changed'); });
+    await refresh;
+    await expect(page.locator('.item-row').filter({ hasText: 'SearchMenuWord' })).toHaveCount(0);
+    await expect(page.getByRole('menuitem', { name: 'Edit', exact: true })).not.toBeVisible();
+  } finally {
+    await session.invoke('remove_dictionary_entry', { id: word.id });
+    await session.invoke('delete_context', { contextId: context.id });
+  }
+});
+
 test('refreshing Context items preserves an open vocabulary editor', async ({ page, session }) => {
   const context = await session.invoke('create_context', { name: `Editor refresh ${Date.now()}` });
   const word = await session.invoke('create_dictionary_entry', { term: 'SyntheticTerm', mistake: 'old spelling', contextId: context.id });
