@@ -74,7 +74,20 @@ where
     F: FnOnce(&DbHandle) -> anyhow::Result<T> + Send + 'static,
 {
     let db = db_state(app);
-    run_blocking(label, move || f(&db).map_err(|error| error.to_string())).await
+    #[cfg(target_os = "linux")]
+    let activity = if let Some(gate) =
+        app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
+    {
+        Some(gate.inner().clone().enter().await)
+    } else {
+        None
+    };
+    run_blocking(label, move || {
+        #[cfg(target_os = "linux")]
+        let _activity = activity;
+        f(&db).map_err(|error| error.to_string())
+    })
+    .await
 }
 
 pub use analytics::*;

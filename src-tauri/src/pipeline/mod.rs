@@ -410,6 +410,13 @@ async fn run_pipeline_with_delivery(
     event_only: bool,
     provided: Option<ProvidedCapture>,
 ) {
+    #[cfg(target_os = "linux")]
+    let _activity = if let Some(gate) = app.try_state::<Arc<crate::linux_activity::ActivityGate>>() {
+        let gate = gate.inner().clone();
+        Some(gate.enter().await)
+    } else {
+        None
+    };
     let started_at = std::time::Instant::now();
     let handoff = if let Some(input) = &provided {
         Some((
