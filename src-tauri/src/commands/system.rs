@@ -36,6 +36,40 @@ pub fn frontend_settings_ready(
 
 #[cfg(target_os = "linux")]
 #[tauri::command]
+pub fn frontend_home_ready(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+    generation: u32,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Home readiness is only accepted from the main window.".into());
+    }
+    readiness.mark_home_ready(generation)
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn frontend_pill_generation(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+) -> Result<u32, String> {
+    if window.label() != "pill" { return Err("Pill readiness is only accepted from the pill window.".into()); }
+    Ok(readiness.pill_generation())
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn frontend_pill_ready(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+    generation: u32,
+) -> Result<(), String> {
+    if window.label() != "pill" { return Err("Pill readiness is only accepted from the pill window.".into()); }
+    readiness.mark_pill_ready(generation)
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
 pub fn frontend_settings_generation(
     window: tauri::WebviewWindow,
     readiness: tauri::State<'_, crate::FrontendReadiness>,

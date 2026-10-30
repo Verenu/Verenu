@@ -280,11 +280,13 @@ pub fn run() {
         builder = builder
             .manage(Arc::new(linux_activity::ActivityGate::default()))
             .on_page_load(|webview, payload| {
-                if webview.label() == "main"
-                    && payload.event() == tauri::webview::PageLoadEvent::Started
-                {
+                if payload.event() == tauri::webview::PageLoadEvent::Started {
                     if let Some(readiness) = webview.app_handle().try_state::<FrontendReadiness>() {
-                        readiness.main_page_started();
+                        match webview.label() {
+                            "main" => readiness.main_page_started(),
+                            "pill" => readiness.pill_page_started(),
+                            _ => {}
+                        }
                     }
                 }
             });
@@ -790,6 +792,7 @@ pub fn run() {
             commands::restart_app,
             commands::frontend_ready,
             #[cfg(target_os = "linux")] commands::frontend_settings_ready,
+            #[cfg(target_os = "linux")] commands::frontend_home_ready,
             #[cfg(target_os = "linux")] commands::frontend_settings_generation,
             #[cfg(all(target_os = "linux", feature = "native-testing", debug_assertions))] commands::native_main_settings_ready,
             commands::reset_macos_core_permissions,

@@ -12,6 +12,8 @@ pub(crate) struct FrontendReadiness {
     pub(crate) pill: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
     pub(crate) main_navigation: Arc<std::sync::atomic::AtomicU32>,
+    #[cfg(target_os = "linux")]
+    pub(crate) pill_navigation: Arc<std::sync::atomic::AtomicU32>,
 }
 
 #[cfg(target_os = "linux")]
@@ -20,7 +22,7 @@ impl FrontendReadiness {
         use std::sync::atomic::Ordering;
         let mut current = self.main_navigation.load(Ordering::SeqCst);
         loop {
-            let next = ((current >> 1).wrapping_add(1) & 0x7fff_ffff) << 1;
+            let next = ((current >> 2).wrapping_add(1) & 0x3fff_ffff) << 2;
             match self.main_navigation.compare_exchange_weak(
                 current,
                 next,
@@ -34,30 +36,74 @@ impl FrontendReadiness {
     }
 
     pub(crate) fn main_settings_generation(&self) -> u32 {
-        self.main_navigation.load(std::sync::atomic::Ordering::SeqCst) >> 1
+        self.main_navigation.load(std::sync::atomic::Ordering::SeqCst) >> 2
     }
 
     pub(crate) fn mark_main_settings_ready(&self, generation: u32) -> Result<(), String> {
+        self.mark_main_ready(generation, 1)
+    }
+
+    pub(crate) fn mark_home_ready(&self, generation: u32) -> Result<(), String> {
+        self.mark_main_ready(generation, 2)
+    }
+
+    fn mark_main_ready(&self, generation: u32, flag: u32) -> Result<(), String> {
         use std::sync::atomic::Ordering;
-        if generation > 0x7fff_ffff {
+        if generation > 0x3fff_ffff {
             return Err("Settings readiness belongs to an earlier page.".into());
         }
-        let expected = generation << 1;
-        match self.main_navigation.compare_exchange(
-            expected,
-            expected | 1,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
-            Ok(_) => Ok(()),
-            Err(state) if state == (expected | 1) => Ok(()),
-            Err(_) => Err("Settings readiness belongs to an earlier page.".into()),
+        let mut state = self.main_navigation.load(Ordering::SeqCst);
+        loop {
+            if state >> 2 != generation {
+                return Err("Settings readiness belongs to an earlier page.".into());
+            }
+            match self.main_navigation.compare_exchange_weak(
+                state, state | flag, Ordering::SeqCst, Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(actual) => state = actual,
+            }
         }
     }
 
     #[allow(dead_code)]
     pub(crate) fn main_settings_ready(&self) -> bool {
         self.main_navigation.load(std::sync::atomic::Ordering::SeqCst) & 1 != 0
+    }
+
+    pub(crate) fn main_and_home_ready(&self) -> bool {
+        self.main_navigation.load(std::sync::atomic::Ordering::SeqCst) & 3 == 3
+    }
+
+    pub(crate) fn pill_page_started(&self) {
+        use std::sync::atomic::Ordering;
+        let mut current = self.pill_navigation.load(Ordering::SeqCst);
+        loop {
+            let next = ((current >> 1).wrapping_add(1) & 0x7fff_ffff) << 1;
+            match self.pill_navigation.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(state) => current = state,
+            }
+        }
+    }
+
+    pub(crate) fn pill_generation(&self) -> u32 {
+        self.pill_navigation.load(std::sync::atomic::Ordering::SeqCst) >> 1
+    }
+
+    pub(crate) fn mark_pill_ready(&self, generation: u32) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        if generation > 0x7fff_ffff { return Err("Pill readiness belongs to an earlier page.".into()); }
+        let expected = generation << 1;
+        match self.pill_navigation.compare_exchange(expected, expected | 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => Ok(()),
+            Err(state) if state == (expected | 1) => Ok(()),
+            Err(_) => Err("Pill readiness belongs to an earlier page.".into()),
+        }
+    }
+
+    pub(crate) fn current_pill_ready(&self) -> bool {
+        self.pill_navigation.load(std::sync::atomic::Ordering::SeqCst) & 1 != 0
     }
 }
 
@@ -70,9 +116,14 @@ fn main_settings_readiness_rejects_an_earlier_page() {
     assert!(!readiness.main_settings_ready());
     readiness.mark_main_settings_ready(old).unwrap();
     assert!(readiness.main_settings_ready());
+    assert!(!readiness.main_and_home_ready());
+    readiness.mark_home_ready(old).unwrap();
+    assert!(readiness.main_and_home_ready());
     readiness.main_page_started();
     assert!(!readiness.main_settings_ready());
     assert!(readiness.mark_main_settings_ready(old).is_err());
+    assert!(readiness.mark_home_ready(old).is_err());
+    assert!(!readiness.main_and_home_ready());
     assert!(!readiness.main_settings_ready());
     readiness
         .mark_main_settings_ready(readiness.main_settings_generation())
@@ -98,6 +149,44 @@ fn navigation_cannot_inherit_a_racing_old_settings_acknowledgement() {
         readiness.main_page_started();
         worker.join().unwrap();
         assert!(!readiness.main_settings_ready());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn pill_readiness_rejects_an_earlier_page() {
+    let readiness = FrontendReadiness::default();
+    readiness.pill_page_started();
+    let old = readiness.pill_generation();
+    readiness.mark_pill_ready(old).unwrap();
+    assert!(readiness.current_pill_ready());
+    readiness.pill_page_started();
+    assert!(!readiness.current_pill_ready());
+    assert!(readiness.mark_pill_ready(old).is_err());
+    assert!(!readiness.current_pill_ready());
+    readiness.mark_pill_ready(readiness.pill_generation()).unwrap();
+    assert!(readiness.current_pill_ready());
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn navigation_cannot_inherit_a_racing_old_home_acknowledgement() {
+    for _ in 0..500 {
+        let readiness = FrontendReadiness::default();
+        readiness.main_page_started();
+        let old = readiness.main_settings_generation();
+        let ack = readiness.clone();
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let other_start = start.clone();
+        let worker = std::thread::spawn(move || {
+            other_start.wait();
+            let _ = ack.mark_home_ready(old);
+        });
+        start.wait();
+        readiness.main_page_started();
+        worker.join().unwrap();
+        readiness.mark_main_settings_ready(readiness.main_settings_generation()).unwrap();
+        assert!(!readiness.main_and_home_ready());
     }
 }
 
