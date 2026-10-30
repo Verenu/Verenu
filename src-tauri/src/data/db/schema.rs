@@ -8,6 +8,9 @@ use uuid::Uuid;
 
 use super::*;
 
+#[cfg(target_os = "linux")]
+pub(crate) const HANDOFF_SCHEMA_VERSION: i64 = 33;
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS diagnostic_policy (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -316,6 +319,15 @@ pub(crate) fn open_for_handoff(path: impl AsRef<std::path::Path>) -> Result<Db> 
 #[cfg(all(test, target_os = "linux"))]
 #[test]
 fn handoff_database_open_never_migrates_or_writes() {
+    let current = open(":memory:").unwrap();
+    assert_eq!(
+        current
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        HANDOFF_SCHEMA_VERSION
+    );
     let path = std::env::temp_dir().join(format!("verenu-handoff-{}.db", Uuid::new_v4()));
     assert!(open_for_handoff(&path).is_err());
     assert!(!path.exists());
