@@ -3,7 +3,7 @@
   "productName": "Verenu",
   "mainBinaryName": "Verenu",
   "identifier": "com.verenu.app",
-  "version": "0.21.0-beta.1",
+  "version": "0.21.0-nightly.20261030",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:1420",
@@ -17,10 +17,10 @@
         "label": "main",
         "title": "Verenu",
         "url": "/",
-    "width": 1320,
-    "height": 860,
-    "minWidth": 1100,
-    "minHeight": 700,
+        "width": 1320,
+        "height": 860,
+        "minWidth": 1100,
+        "minHeight": 700,
         "resizable": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
@@ -54,7 +54,10 @@
     }
   },
   "bundle": {
-    "resources": { "../Agent-Skills/verenu-control/": "agent-skill/", "../Agent-Skills/verenu-install/": "agent-install-skill/" },
+    "resources": {
+      "../Agent-Skills/verenu-control/": "agent-skill/",
+      "../Agent-Skills/verenu-install/": "agent-install-skill/"
+    },
     "active": true,
     "targets": "all",
     "category": "Productivity",
@@ -79,7 +82,9 @@
     "macOS": {
       "bundleName": "Verenu",
       "minimumSystemVersion": "11.0",
-      "frameworks": ["native/macos/swift-runtime/libswift_Concurrency.dylib"],
+      "frameworks": [
+        "native/macos/swift-runtime/libswift_Concurrency.dylib"
+      ],
       "entitlements": "Entitlements.plist"
     },
     "android": {
