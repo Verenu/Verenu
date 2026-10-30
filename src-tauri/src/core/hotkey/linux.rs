@@ -96,6 +96,7 @@ type PortalSession = ashpd::desktop::Session<ashpd::desktop::global_shortcuts::G
 struct PortalSessionLifecycle {
     session: Mutex<Option<std::sync::Arc<PortalSession>>>,
     creating: AtomicBool,
+    ready: AtomicBool,
 }
 
 #[allow(dead_code)]
@@ -124,6 +125,10 @@ static TEST_SHORTCUT_RESUME_ENTERED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(all(test, feature = "native-testing"))]
 pub(crate) async fn install_test_shortcut_control() -> tauri::async_runtime::JoinHandle<()> {
+    let gesture = GESTURE.get_or_init(|| Mutex::new(PortalGesture::default()));
+    *gesture.lock().unwrap() = PortalGesture::default();
+    CHORD_ACTIVE.store(false, Ordering::SeqCst);
+    HANDLESS.store(false, Ordering::SeqCst);
     let (control, mut driver) = portal_control::Control::new();
     assert!(PORTAL_CONTROL.set(control.clone()).is_ok());
     let task = tauri::async_runtime::spawn(async move {
@@ -133,6 +138,13 @@ pub(crate) async fn install_test_shortcut_control() -> tauri::async_runtime::Joi
                 TEST_SHORTCUT_RESUME_ENTERED.store(true, Ordering::SeqCst);
                 while TEST_SHORTCUT_RESUME_BLOCKED.load(Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+            if !request.active {
+                if let Err(error) = ensure_gesture_idle() {
+                    driver.acknowledge(request, portal_control::State::Unavailable(error));
+                    if driver.requests.changed().await.is_err() { break; }
+                    continue;
                 }
             }
             driver.acknowledge(request, if request.active {
@@ -164,8 +176,25 @@ pub(crate) fn test_shortcut_resume_entered() -> bool {
 }
 
 #[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_set_gesture_active(active: bool) {
+    let gesture = GESTURE.get().unwrap();
+    let mut gesture = gesture.lock().unwrap();
+    *gesture = PortalGesture::default();
+    if active {
+        let _ = gesture.activated(Instant::now());
+    }
+}
+
+#[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_set_capture_active(active: bool) {
+    super::CAPTURE_ACTIVE.store(active, Ordering::SeqCst);
+}
+
+#[cfg(all(test, feature = "native-testing"))]
 mod portal_lifecycle_tests {
     use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
     use tokio::sync::{oneshot, Notify};
 
     struct Registry {
@@ -211,6 +240,75 @@ mod portal_lifecycle_tests {
             }
             std::future::pending().await
         }
+    }
+
+    #[tokio::test]
+    async fn refused_pause_keeps_the_existing_session_alive() {
+        struct DropSignal(Arc<AtomicBool>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let (control, mut driver) = super::portal_control::Control::new();
+        let _ = driver.requests.borrow_and_update();
+        driver.acknowledge(driver.current(), super::portal_control::State::Active);
+        let mut requests = driver.requests.clone();
+        let ready = Arc::new(AtomicBool::new(true));
+        let idle = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let (entered, started) = oneshot::channel();
+        let task_ready = ready.clone();
+        let task_idle = idle.clone();
+        let task_dropped = dropped.clone();
+        let task = tokio::spawn(async move {
+            let session = async move {
+                let _guard = DropSignal(task_dropped);
+                let _ = entered.send(());
+                std::future::pending::<bool>().await
+            };
+            super::run_until_pause(session, &mut requests, &driver, &task_ready, || {
+                if task_idle.load(Ordering::SeqCst) {
+                    Ok(())
+                } else {
+                    Err("gesture is active".into())
+                }
+            }).await
+        });
+        tokio::time::timeout(Duration::from_secs(5), started).await.unwrap().unwrap();
+        let pause = control.request(false).unwrap();
+        let paused = tokio::time::timeout(Duration::from_secs(5), control.wait_for(pause))
+            .await.unwrap().unwrap();
+        assert!(matches!(paused, super::portal_control::State::Unavailable(_)));
+        assert!(!dropped.load(Ordering::SeqCst));
+        let resume = control.request(true).unwrap();
+        let resumed = tokio::time::timeout(Duration::from_secs(5), control.wait_for(resume))
+            .await.unwrap().unwrap();
+        assert_eq!(resumed, super::portal_control::State::Active);
+        idle.store(true, Ordering::SeqCst);
+        control.request(false).unwrap();
+        assert!(!tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap());
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn resuming_a_starting_session_restarts_it_for_the_new_generation() {
+        let (control, mut driver) = super::portal_control::Control::new();
+        let _ = driver.requests.borrow_and_update();
+        let mut requests = driver.requests.clone();
+        let ready = Arc::new(AtomicBool::new(false));
+        let task = tokio::spawn(async move {
+            super::run_until_pause(
+                std::future::pending::<bool>(),
+                &mut requests,
+                &driver,
+                &ready,
+                || Ok(()),
+            ).await
+        });
+        control.request(true).unwrap();
+        assert!(!tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap());
     }
 
     #[tokio::test]
@@ -314,6 +412,14 @@ struct PortalGesture {
 }
 
 impl PortalGesture {
+    fn is_idle(&self) -> bool {
+        !self.chord_active
+            && self.pressed_at.is_none()
+            && self.pending_tap_at.is_none()
+            && !self.consume_deactivation
+            && self.pending_release.is_none()
+    }
+
     fn activated(&mut self, now: Instant) -> Option<PortalGestureAction> {
         if self.chord_active
             && self
@@ -387,6 +493,21 @@ impl PortalGesture {
         self.pending_tap_at = None;
         Some(action)
     }
+}
+
+fn ensure_gesture_idle() -> Result<(), String> {
+    if super::capture_active() {
+        return Err("Finish changing your shortcut before restarting.".into());
+    }
+    let gesture = GESTURE.get().ok_or("Global shortcuts are not ready for restart")?;
+    let gesture = gesture.lock().map_err(|_| "Global shortcut state is unavailable")?;
+    if !gesture.is_idle()
+        || CHORD_ACTIVE.load(Ordering::SeqCst)
+        || HANDLESS.load(Ordering::SeqCst)
+    {
+        return Err("Finish the current shortcut gesture before restarting.".into());
+    }
+    Ok(())
 }
 
 const REGULAR_KEYS: &[(&str, &str, u32)] = &[
@@ -1199,11 +1320,22 @@ async fn run_portal_session(
     };
     let lifecycle = PortalSessionLifecycle::default();
     let starting_request = *requests.borrow();
-    let result = tokio::select! {
-        biased;
-        _ = requests.changed() => false,
-        result = run_connected_portal_session(&portal, preferred_trigger, bindings, generation, driver, starting_request, &lifecycle) => result,
-    };
+    let result = run_until_pause(
+        run_connected_portal_session(
+            &portal,
+            preferred_trigger,
+            bindings,
+            generation,
+            driver,
+            starting_request,
+            &lifecycle,
+        ),
+        &mut requests,
+        driver,
+        &lifecycle.ready,
+        ensure_gesture_idle,
+    )
+    .await;
     let unique_name = connection.unique_name().cloned();
     let observer = tokio::time::timeout(Duration::from_secs(5), zbus::Connection::session())
         .await.ok().and_then(Result::ok);
@@ -1241,6 +1373,49 @@ async fn run_portal_session(
         closed &= session_closed;
     }
     (result, Some(closed))
+}
+
+async fn run_until_pause(
+    session: impl std::future::Future<Output = bool>,
+    requests: &mut tokio::sync::watch::Receiver<portal_control::Request>,
+    driver: &portal_control::Driver,
+    ready: &AtomicBool,
+    check_idle: impl Fn() -> Result<(), String>,
+) -> bool {
+    tokio::pin!(session);
+    loop {
+        let changed = if ready.load(Ordering::SeqCst) {
+            tokio::select! {
+                biased;
+                result = &mut session => return result,
+                changed = requests.changed() => changed,
+            }
+        } else {
+            tokio::select! {
+                biased;
+                changed = requests.changed() => changed,
+                result = &mut session => return result,
+            }
+        };
+        if changed.is_err() {
+            return false;
+        }
+        let request = *requests.borrow_and_update();
+        if request.active {
+            if ready.load(Ordering::SeqCst) {
+                driver.acknowledge(request, portal_control::State::Active);
+                continue;
+            }
+            return false;
+        }
+        if ready.load(Ordering::SeqCst) {
+            if let Err(error) = check_idle() {
+                driver.acknowledge(request, portal_control::State::Unavailable(error));
+                continue;
+            }
+        }
+        return false;
+    }
 }
 
 async fn run_connected_portal_session(
@@ -1461,13 +1636,14 @@ async fn run_connected_portal_session(
     }
     register_temporary_controls();
     refresh_escape_listening();
-    let request = driver.current();
-    if request.active && request == starting_request {
-        driver.acknowledge(request, portal_control::State::Active);
-    }
     let gesture = GESTURE.get_or_init(|| Mutex::new(PortalGesture::default()));
     if let Ok(mut state) = gesture.lock() {
         *state = PortalGesture::default();
+    }
+    lifecycle.ready.store(true, Ordering::SeqCst);
+    let request = driver.current();
+    if request.active && request == starting_request {
+        driver.acknowledge(request, portal_control::State::Active);
     }
     let mut configuration_poll = tokio::time::interval(Duration::from_millis(100));
     let mut desktop_check = Instant::now();
@@ -1865,6 +2041,26 @@ mod tests {
         PORTAL_CANCEL_DESCRIPTION, PORTAL_SHORTCUT_DESCRIPTION,
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn restart_waits_for_hold_and_double_tap_gestures_to_finish() {
+        let start = Instant::now();
+        let mut gesture = PortalGesture::default();
+        assert!(gesture.is_idle());
+        let _ = gesture.activated(start);
+        assert!(!gesture.is_idle());
+        let _ = gesture.deactivated(start + Duration::from_millis(50));
+        assert!(!gesture.is_idle());
+        let _ = gesture.activated(start + Duration::from_millis(100));
+        assert!(!gesture.is_idle());
+        let _ = gesture.deactivated(start + Duration::from_millis(150));
+        assert!(gesture.is_idle());
+        let _ = gesture.activated(start + Duration::from_millis(200));
+        let _ = gesture.deactivated(start + Duration::from_millis(250));
+        assert!(!gesture.is_idle());
+        let _ = gesture.take_pending_release(start + Duration::from_secs(1));
+        assert!(gesture.is_idle());
+    }
 
     #[test]
     fn hold_starts_on_press_and_processes_on_release() {
