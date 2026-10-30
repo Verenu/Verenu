@@ -267,11 +267,78 @@ mod tests {
             let lease = preparation.await.unwrap();
             assert!(gate.try_enter().is_none());
             assert!(!crate::core::hotkey::test_shortcuts_active());
+            assert!(
+                crate::commands::start_input_recording(app.handle().clone(), app.state())
+                    .await
+                    .unwrap_err()
+                    .contains("preparing to restart")
+            );
+            assert!(
+                crate::commands::start_setup_try_recording(app.handle().clone(), app.state())
+                    .await
+                    .unwrap_err()
+                    .contains("preparing to restart")
+            );
+            assert!(
+                crate::commands::resume_cancelled_capture(app.handle().clone(), app.state())
+                    .await
+                    .unwrap_err()
+                    .contains("preparing to restart")
+            );
+            assert!(
+                crate::commands::stop_recording(app.handle().clone(), app.state())
+                    .await
+                    .unwrap_err()
+                    .contains("preparing to restart")
+            );
+            assert!(
+                crate::commands::stop_setup_try_recording(app.handle().clone(), app.state())
+                    .await
+                    .unwrap_err()
+                    .contains("preparing to restart")
+            );
+            assert!(
+                crate::commands::stop_and_transcribe_input(app.handle().clone(), app.state())
+                    .await
+                    .unwrap_err()
+                    .contains("preparing to restart")
+            );
+            assert!(
+                crate::commands::stop_handless_mode(app.handle().clone(), app.state())
+                    .await
+                    .unwrap_err()
+                    .contains("preparing to restart")
+            );
+            assert!(
+                crate::commands::dismiss_cancelled_capture(app.handle().clone(), app.state())
+                    .await
+                    .unwrap_err()
+                    .contains("preparing to restart")
+            );
+            assert!(crate::commands::copy_paste_failure_to_clipboard(
+                app.handle().clone(),
+                app.state()
+            )
+            .await
+            .unwrap_err()
+            .contains("preparing to restart"));
+            assert!(recording.lock().unwrap().lifecycle.is_idle());
             assert!(agent.clone().try_acquire_owned().is_err());
             assert!(tray_names(&bus).await.is_empty());
             entered.store(false, std::sync::atomic::Ordering::SeqCst);
             *blocked.0.lock().unwrap() = true;
+            crate::core::hotkey::test_block_shortcut_resume(true);
             drop(lease);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !crate::core::hotkey::test_shortcut_resume_entered() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("shortcut restoration did not begin");
+            assert!(gate.try_enter().is_none());
+            assert!(agent.clone().try_acquire_owned().is_err());
+            crate::core::hotkey::test_block_shortcut_resume(false);
             tokio::time::timeout(Duration::from_secs(10), async {
                 while !entered.load(std::sync::atomic::Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_millis(20)).await;

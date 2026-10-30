@@ -172,6 +172,8 @@ pub(crate) fn setup_hotkey(app: &tauri::AppHandle, shared: SharedState) {
         let mut handsfree_stop_guard = HandsfreeStopGuard::default();
         let mut handsfree_conversion_guard = HandsfreeConversionGuard::default();
         while let Some(event) = hotkey_rx.recv().await {
+            #[cfg(target_os = "linux")]
+            let activity = crate::commands::linux_activity(&app_hk).await;
             let now = Instant::now();
             if handsfree_conversion_guard.expired(now) {
                 pipeline::clear_handless_hold_marker(&state_hk);
@@ -367,7 +369,11 @@ pub(crate) fn setup_hotkey(app: &tauri::AppHandle, shared: SharedState) {
                         {
                             let app_for_cancel = app_hk.clone();
                             let state_for_cancel = state_hk.clone();
+                            #[cfg(target_os = "linux")]
+                            let worker_activity = activity.clone();
                             tauri::async_runtime::spawn(async move {
+                                #[cfg(target_os = "linux")]
+                                let _activity = worker_activity;
                                 pipeline::cancel_recording_with_resume(
                                     &app_for_cancel,
                                     &state_for_cancel,
@@ -410,7 +416,11 @@ pub(crate) fn setup_hotkey(app: &tauri::AppHandle, shared: SharedState) {
                     {
                         let app_for_cancel = app_hk.clone();
                         let state_for_cancel = state_hk.clone();
+                        #[cfg(target_os = "linux")]
+                        let worker_activity = activity.clone();
                         tauri::async_runtime::spawn(async move {
+                            #[cfg(target_os = "linux")]
+                            let _activity = worker_activity;
                             pipeline::cancel_recording_with_resume(
                                 &app_for_cancel,
                                 &state_for_cancel,
@@ -437,8 +447,16 @@ pub(crate) fn setup_hotkey(app: &tauri::AppHandle, shared: SharedState) {
                     };
                     let db_handle = db_handle.inner().clone();
                     let app_for_copy = app_hk.clone();
+                    #[cfg(target_os = "linux")]
+                    let worker_activity = activity.clone();
                     tauri::async_runtime::spawn(async move {
+                        #[cfg(target_os = "linux")]
+                        let db_activity = worker_activity.clone();
+                        #[cfg(target_os = "linux")]
+                        let _activity = worker_activity;
                         let recent = tokio::task::spawn_blocking(move || {
+                            #[cfg(target_os = "linux")]
+                            let _activity = db_activity;
                             crate::data::db::query_recent_page(&db_handle, 1, 0, None, None)
                         })
                         .await
@@ -474,7 +492,11 @@ pub(crate) fn setup_hotkey(app: &tauri::AppHandle, shared: SharedState) {
 
                 HotkeyEvent::CaptureSubApp => {
                     let app = app_hk.clone();
+                    #[cfg(target_os = "linux")]
+                    let worker_activity = activity.clone();
                     tauri::async_runtime::spawn_blocking(move || {
+                        #[cfg(target_os = "linux")]
+                        let _activity = worker_activity;
                         crate::commands::handle_capture_hotkey(&app);
                     });
                 }

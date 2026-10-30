@@ -118,12 +118,23 @@ impl ShortcutPause {
 }
 
 #[cfg(all(test, feature = "native-testing"))]
+static TEST_SHORTCUT_RESUME_BLOCKED: AtomicBool = AtomicBool::new(false);
+#[cfg(all(test, feature = "native-testing"))]
+static TEST_SHORTCUT_RESUME_ENTERED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(test, feature = "native-testing"))]
 pub(crate) async fn install_test_shortcut_control() -> tauri::async_runtime::JoinHandle<()> {
     let (control, mut driver) = portal_control::Control::new();
     assert!(PORTAL_CONTROL.set(control.clone()).is_ok());
     let task = tauri::async_runtime::spawn(async move {
         loop {
             let request = *driver.requests.borrow_and_update();
+            if request.active && request.generation > 0 {
+                TEST_SHORTCUT_RESUME_ENTERED.store(true, Ordering::SeqCst);
+                while TEST_SHORTCUT_RESUME_BLOCKED.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
             driver.acknowledge(request, if request.active {
                 portal_control::State::Active
             } else {
@@ -139,6 +150,17 @@ pub(crate) async fn install_test_shortcut_control() -> tauri::async_runtime::Joi
 #[cfg(all(test, feature = "native-testing"))]
 pub(crate) fn test_shortcuts_active() -> bool {
     PORTAL_CONTROL.get().is_some_and(|control| control.current().state == portal_control::State::Active)
+}
+
+#[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_block_shortcut_resume(blocked: bool) {
+    if blocked { TEST_SHORTCUT_RESUME_ENTERED.store(false, Ordering::SeqCst); }
+    TEST_SHORTCUT_RESUME_BLOCKED.store(blocked, Ordering::SeqCst);
+}
+
+#[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_shortcut_resume_entered() -> bool {
+    TEST_SHORTCUT_RESUME_ENTERED.load(Ordering::SeqCst)
 }
 
 #[cfg(all(test, feature = "native-testing"))]
