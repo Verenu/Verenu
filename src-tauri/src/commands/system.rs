@@ -561,6 +561,14 @@ pub async fn check_hotkey(app: AppHandle, keys: Vec<String>) -> Result<bool, Str
 
 #[tauri::command]
 pub async fn save_hotkey(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let activity = if let Some(gate) =
+        app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
+    {
+        Some(std::sync::Arc::new(gate.inner().clone().enter().await))
+    } else {
+        None
+    };
     let keys = crate::core::hotkey::normalize_codes(&keys)?;
     let ids = crate::core::hotkey::mapped_codes(&keys)?;
     if !check_hotkey(app.clone(), keys.clone()).await? {
@@ -581,7 +589,11 @@ pub async fn save_hotkey(app: AppHandle, keys: Vec<String>) -> Result<(), String
         crate::core::hotkey::update_keys(&ids)?;
     }
     let stored_keys = keys.clone();
+    #[cfg(target_os = "linux")]
+    let save_activity = activity.clone();
     run_blocking("save_hotkey", move || {
+        #[cfg(target_os = "linux")]
+        let _activity = save_activity;
         if let Err(error) = settings.save_value(store::HOTKEY, serde_json::json!(stored_keys)) {
             if !crate::is_dev_session() {
                 if let Ok(ids) = crate::core::hotkey::mapped_codes(&previous) {
@@ -738,7 +750,7 @@ pub async fn set_autostart(_app: AppHandle, enabled: bool) -> Result<(), String>
     }
 
     let settings = store::settings_handle(&_app)?;
-    run_blocking("set_autostart", move || {
+    run_app_blocking(&_app, "set_autostart", move || {
         settings.save_value(store::AUTOSTART_ENABLED, serde_json::json!(enabled))
     })
     .await
