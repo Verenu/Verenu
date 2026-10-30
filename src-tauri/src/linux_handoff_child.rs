@@ -30,6 +30,13 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
             return;
         }
     };
+    let db_version = match crate::data::db::handoff_data_version(&db) {
+        Ok(version) => version,
+        Err(error) => {
+            let _ = startup.fail(format!("Could not check the database for restart: {error}"));
+            return;
+        }
+    };
     let settings = match crate::data::store::SettingsHandle::open_for_handoff(
         crate::app_data_dir().join("settings.json"),
     ) {
@@ -149,6 +156,31 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                     && readiness.main_and_home_ready();
                 if acquired && ready {
                     if let Ok(services) = activation.ownership_acquired() {
+                        let current_version = crate::data::db::handoff_data_version(
+                            handle.state::<crate::DbHandle>().inner(),
+                        );
+                        let database_error = match current_version {
+                            Ok(version) if version == db_version => None,
+                            Ok(_) => Some(
+                                "Database changed while preparing the update. Try again.".into(),
+                            ),
+                            Err(error) => {
+                                Some(format!("Could not check the database for restart: {error}"))
+                            }
+                        };
+                        if let Some(error) = database_error {
+                            let _ = services.fail(error);
+                            handle.exit(1);
+                            return;
+                        }
+                        if let Err(error) = handle
+                            .state::<crate::data::store::SettingsHandle>()
+                            .validate_handoff_snapshot()
+                        {
+                            let _ = services.fail(error);
+                            handle.exit(1);
+                            return;
+                        }
                         if let Err(error) =
                             crate::data::db::probe_writable_for_handoff(crate::app_db_path())
                         {

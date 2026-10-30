@@ -118,6 +118,19 @@ impl SettingsHandle {
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) fn validate_handoff_snapshot(&self) -> Result<(), String> {
+        let on_disk = SettingsSnapshot::read_for_handoff(&self.path)?;
+        let values = self
+            .values
+            .read()
+            .map_err(|_| "Settings lock was poisoned".to_string())?;
+        if *values != on_disk.values {
+            return Err("Settings changed while preparing the update. Try again.".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
     #[allow(dead_code)]
     pub(crate) fn activate_after_handoff(
         &self,

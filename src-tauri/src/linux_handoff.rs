@@ -110,9 +110,9 @@ async fn prepare_inner(app: &AppHandle) -> Result<PreparedHandoff, String> {
             return Err("This update needs a manual restart to migrate its database.".into());
         }
     }
-    crate::data::store::SettingsSnapshot::read_for_handoff(
-        &crate::app_data_dir().join("settings.json"),
-    )?;
+    app.try_state::<crate::data::store::SettingsHandle>()
+        .ok_or("Settings are unavailable; quit and reopen Verenu to finish updating.")?
+        .validate_handoff_snapshot()?;
     let mut prepared = PreparedHandoff {
         app: app.clone(),
         pause: Some(pause),
@@ -212,6 +212,7 @@ mod tests {
                 serde_json::json!("dark"),
             )
             .unwrap();
+        settings.save().unwrap();
         app.manage(settings);
         crate::app_tray::setup_tray(app.handle()).unwrap();
         let db = crate::data::db::open(":memory:").unwrap();

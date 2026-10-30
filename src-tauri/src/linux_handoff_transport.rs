@@ -1196,6 +1196,93 @@ mod tests {
             std::fs::read(data.join("settings.json")).unwrap(),
             original_settings
         );
+
+        let mut command = Command::new(&binary);
+        command
+            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+            .env("XDG_STATE_HOME", &state);
+        let replacement = Replacement::spawn(
+            command,
+            crate::data::db::HANDOFF_SCHEMA_VERSION,
+            KeyAvailability::new(),
+            Duration::from_secs(25),
+        )
+        .unwrap()
+        .with_parent_unique_name(owner.unique_name().unwrap());
+        let ready = replacement.prepare().unwrap();
+        let updated_settings = b"{\"setup_complete\":true,\"test_changed\":true}";
+        std::fs::write(data.join("settings.json"), updated_settings).unwrap();
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        owner
+            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
+            .unwrap();
+        let outcome = ready.acquire_ownership().unwrap().activate();
+        assert!(matches!(outcome, Err(reason) if reason.contains("Settings changed")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !owner.owns_name().unwrap_or(false) {
+            assert!(
+                Instant::now() < deadline,
+                "parent did not regain ownership after settings changed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owner
+            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
+            .unwrap();
+        drop(pause);
+        assert_eq!(
+            std::fs::read(data.join("settings.json")).unwrap(),
+            updated_settings
+        );
+        assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), original_db);
+        assert_eq!(
+            std::fs::read(data.join("verenu.db-wal")).unwrap(),
+            original_wal
+        );
+        assert_eq!(registrations.lock().unwrap().len(), 1);
+
+        std::fs::write(data.join("settings.json"), &original_settings).unwrap();
+        let mut command = Command::new(&binary);
+        command
+            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+            .env("XDG_STATE_HOME", &state);
+        let replacement = Replacement::spawn(
+            command,
+            crate::data::db::HANDOFF_SCHEMA_VERSION,
+            KeyAvailability::new(),
+            Duration::from_secs(25),
+        )
+        .unwrap()
+        .with_parent_unique_name(owner.unique_name().unwrap());
+        let ready = replacement.prepare().unwrap();
+        parent_db
+            .lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE handoff_fixture (value INTEGER); INSERT INTO handoff_fixture VALUES (1);")
+            .unwrap();
+        let updated_db = std::fs::read(data.join("verenu.db")).unwrap();
+        let updated_wal = std::fs::read(data.join("verenu.db-wal")).unwrap();
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        owner
+            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
+            .unwrap();
+        let outcome = ready.acquire_ownership().unwrap().activate();
+        assert!(matches!(outcome, Err(reason) if reason.contains("Database changed")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !owner.owns_name().unwrap_or(false) {
+            assert!(
+                Instant::now() < deadline,
+                "parent did not regain ownership after database changed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owner
+            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
+            .unwrap();
+        drop(pause);
+        assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
+        assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
+        assert_eq!(registrations.lock().unwrap().len(), 1);
         drop(parent_db);
         std::fs::remove_dir_all(root).unwrap();
     }

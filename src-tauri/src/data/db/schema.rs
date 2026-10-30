@@ -333,6 +333,12 @@ pub(crate) fn open_for_handoff(path: impl AsRef<std::path::Path>) -> Result<Db> 
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn handoff_data_version(db: &Db) -> Result<i64> {
+    let conn = lock_conn(db)?;
+    Ok(conn.query_row("PRAGMA data_version", [], |row| row.get(0))?)
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn probe_writable_for_handoff(path: impl AsRef<std::path::Path>) -> Result<()> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     anyhow::ensure!(
@@ -433,6 +439,26 @@ fn handoff_write_probe_leaves_data_untouched_and_rejects_a_busy_database() {
     assert_eq!(value, "original");
     original.pragma_update(None, "user_version", 1).unwrap();
     assert!(probe_writable_for_handoff(&path).is_err());
+    drop(original);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn handoff_data_version_detects_another_connections_commit() {
+    let path = std::env::temp_dir().join(format!("verenu-handoff-version-{}.db", Uuid::new_v4()));
+    let original = Connection::open(&path).unwrap();
+    original
+        .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE fixture (value INTEGER);")
+        .unwrap();
+    original
+        .pragma_update(None, "user_version", HANDOFF_SCHEMA_VERSION)
+        .unwrap();
+    let handoff = open_for_handoff(&path).unwrap();
+    let version = handoff_data_version(&handoff).unwrap();
+    original.execute("INSERT INTO fixture VALUES (1)", []).unwrap();
+    assert_ne!(handoff_data_version(&handoff).unwrap(), version);
+    drop(handoff);
     drop(original);
     std::fs::remove_file(path).unwrap();
 }
