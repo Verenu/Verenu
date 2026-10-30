@@ -12,7 +12,7 @@ use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 2;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
@@ -166,6 +166,20 @@ impl ChildFrontends {
 pub(crate) struct ChildActivation(Channel);
 
 impl ChildActivation {
+    pub(crate) fn ownership_acquired(mut self) -> Result<ChildServices, String> {
+        self.0.send(&Message::OwnershipAcquired)?;
+        self.0.expect(Message::ContinueActivation)?;
+        Ok(ChildServices(self.0))
+    }
+
+    pub(crate) fn fail(mut self, reason: String) -> Result<(), String> {
+        self.0.send(&Message::Failed { reason })
+    }
+}
+
+pub(crate) struct ChildServices(Channel);
+
+impl ChildServices {
     pub(crate) fn activated(mut self) -> Result<ChildCommit, String> {
         self.0.send(&Message::Activated)?;
         self.0.expect(Message::Commit)?;
@@ -194,6 +208,8 @@ enum Message {
     BackendReady,
     FrontendsReady,
     Activate,
+    OwnershipAcquired,
+    ContinueActivation,
     Activated,
     Commit,
     Failed {
@@ -421,8 +437,23 @@ struct ReadyReplacement {
 }
 
 impl ReadyReplacement {
+    fn acquire_ownership(self) -> Result<OwnedReplacement, String> {
+        let ownership = self.probation.acquire_ownership()?;
+        Ok(OwnedReplacement {
+            process: self.process,
+            ownership,
+        })
+    }
+}
+
+struct OwnedReplacement {
+    process: ProcessGuard,
+    ownership: Ownership,
+}
+
+impl OwnedReplacement {
     fn activate(self) -> Result<ActivatedReplacement, String> {
-        let activated = self.probation.activate()?;
+        let activated = self.ownership.activate()?;
         Ok(ActivatedReplacement {
             process: self.process,
             activated,
@@ -463,8 +494,18 @@ impl Parent {
 struct Probation(Channel);
 
 impl Probation {
-    fn activate(mut self) -> Result<Activated, String> {
+    fn acquire_ownership(mut self) -> Result<Ownership, String> {
         self.0.send(&Message::Activate)?;
+        self.0.expect(Message::OwnershipAcquired)?;
+        Ok(Ownership(self.0))
+    }
+}
+
+struct Ownership(Channel);
+
+impl Ownership {
+    fn activate(mut self) -> Result<Activated, String> {
+        self.0.send(&Message::ContinueActivation)?;
         self.0.expect(Message::Activated)?;
         Ok(Activated(self.0))
     }
@@ -544,7 +585,7 @@ mod tests {
         });
         let probation = parent.prepare().unwrap();
         worker.join().unwrap();
-        assert!(probation.activate().is_err());
+        assert!(probation.acquire_ownership().is_err());
     }
 
     #[test]
@@ -582,11 +623,15 @@ mod tests {
             child.send(&Message::BackendReady).unwrap();
             child.send(&Message::FrontendsReady).unwrap();
             child.expect(Message::Activate).unwrap();
+            child.send(&Message::OwnershipAcquired).unwrap();
+            child.expect(Message::ContinueActivation).unwrap();
             child.send(&Message::Activated).unwrap();
             child.expect(Message::Commit).unwrap();
         });
         parent
             .prepare()
+            .unwrap()
+            .acquire_ownership()
             .unwrap()
             .activate()
             .unwrap()
@@ -608,11 +653,15 @@ mod tests {
                 .unwrap()
                 .ready()
                 .unwrap()
+                .ownership_acquired()
+                .unwrap()
                 .activated()
                 .unwrap();
         });
         parent
             .prepare()
+            .unwrap()
+            .acquire_ownership()
             .unwrap()
             .activate()
             .unwrap()
@@ -690,7 +739,8 @@ mod tests {
         if mode == "activate" {
             let _ = frontends
                 .ready()
-                .and_then(|activation| activation.activated());
+                .and_then(|activation| activation.ownership_acquired())
+                .and_then(|services| services.activated());
         }
         // Exit before frontend readiness to model a failed replacement.
     }
@@ -800,7 +850,13 @@ mod tests {
             Replacement::spawn(command, 39, KeyAvailability::new(), Duration::from_secs(5))
                 .unwrap();
         let pid = replacement.process.0.id();
-        let activated = replacement.prepare().unwrap().activate().unwrap();
+        let activated = replacement
+            .prepare()
+            .unwrap()
+            .acquire_ownership()
+            .unwrap()
+            .activate()
+            .unwrap();
         drop(activated);
         assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
     }
@@ -856,8 +912,8 @@ mod tests {
         owner
             .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
             .unwrap();
-        let activated = ready
-            .activate()
+        let owned = ready
+            .acquire_ownership()
             .expect("replacement did not acquire ownership");
         assert!(!owner.owns_name().unwrap());
         let connection = zbus::blocking::Connection::session().unwrap();
@@ -877,7 +933,8 @@ mod tests {
             crate::linux_single_instance::test_callback_count(),
             callbacks_before + 1
         );
-        drop(activated);
+        let outcome = owned.activate();
+        assert!(matches!(outcome, Err(reason) if reason.contains("services are not yet verified")));
         assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, -1);
         assert!(!group_has_live_members(child_pid).unwrap());
         let deadline = Instant::now() + Duration::from_secs(5);

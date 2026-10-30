@@ -1,5 +1,8 @@
 //! Restricted startup for a replacement process. The old app remains alive.
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
@@ -42,24 +45,25 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
     let normal_commands = Arc::new(AtomicBool::new(false));
     let command_mode = normal_commands.clone();
     let normal_handler = crate::app_invoke_handler();
-    let probation_handler: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> = Box::new(tauri::generate_handler![
-        crate::commands::frontend_ready,
-        crate::commands::frontend_settings_generation,
-        crate::commands::frontend_settings_ready,
-        crate::commands::frontend_home_ready,
-        crate::commands::frontend_pill_generation,
-        crate::commands::frontend_pill_ready,
-        crate::commands::get_setting,
-        get_api_key_status,
-        crate::api::apple_intelligence::get_apple_intelligence_availability,
-        crate::commands::get_contexts,
-        crate::commands::get_context_targets,
-        crate::commands::get_context_websites,
-        crate::commands::get_sub_apps,
-        crate::commands::list_local_stt_models,
-        crate::commands::list_local_llm_models,
-        crate::commands::get_local_llm_runtime_info,
-    ]);
+    let probation_handler: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
+        Box::new(tauri::generate_handler![
+            crate::commands::frontend_ready,
+            crate::commands::frontend_settings_generation,
+            crate::commands::frontend_settings_ready,
+            crate::commands::frontend_home_ready,
+            crate::commands::frontend_pill_generation,
+            crate::commands::frontend_pill_ready,
+            crate::commands::get_setting,
+            get_api_key_status,
+            crate::api::apple_intelligence::get_apple_intelligence_availability,
+            crate::commands::get_contexts,
+            crate::commands::get_context_targets,
+            crate::commands::get_context_websites,
+            crate::commands::get_sub_apps,
+            crate::commands::list_local_stt_models,
+            crate::commands::list_local_llm_models,
+            crate::commands::get_local_llm_runtime_info,
+        ]);
     let app = tauri::Builder::default()
         .append_invoke_initialization_script(
             "Object.defineProperty(window, '__VERENU_RESTART_PROBE__', { value: true });",
@@ -86,8 +90,11 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
             }
         })
         .invoke_handler(move |invoke| {
-            if command_mode.load(Ordering::Acquire) { normal_handler(invoke) }
-            else { probation_handler(invoke) }
+            if command_mode.load(Ordering::Acquire) {
+                normal_handler(invoke)
+            } else {
+                probation_handler(invoke)
+            }
         })
         .setup(move |app| {
             crate::pipeline::initialize_pill(app.handle());
@@ -137,11 +144,20 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                 });
                 let acquired = scheduled.is_ok()
                     && matches!(received.recv_timeout(Duration::from_secs(10)), Ok(Ok(())));
-                if acquired {
-                    let _ = activation.activated();
+                let ready = readiness.main.load(Ordering::Acquire)
+                    && readiness.current_pill_ready()
+                    && readiness.main_and_home_ready();
+                if acquired && ready {
+                    if let Ok(services) = activation.ownership_acquired() {
+                        let _ = services.fail("Replacement services are not yet verified".into());
+                    }
                 } else {
-                    let _ = activation
-                        .fail("Replacement could not acquire single-instance ownership".into());
+                    let reason = if acquired {
+                        "Replacement frontend became unavailable during activation"
+                    } else {
+                        "Replacement could not acquire single-instance ownership"
+                    };
+                    let _ = activation.fail(reason.into());
                 }
                 handle.exit(1);
             });
