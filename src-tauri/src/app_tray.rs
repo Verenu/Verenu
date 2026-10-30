@@ -13,9 +13,9 @@ const TRAY_ID: &str = "verenu-tray";
 mod linux;
 
 #[cfg(target_os = "linux")]
-pub(crate) fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+pub(crate) fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     linux::setup(app)?;
-    apply_runtime_icons(app.handle(), None);
+    apply_runtime_icons(app, None);
     Ok(())
 }
 

@@ -528,7 +528,9 @@ pub fn run() {
                 settings.clone(),
             );
 
-            #[cfg(desktop)]
+            #[cfg(all(desktop, target_os = "linux"))]
+            app_tray::setup_tray(app.handle())?;
+            #[cfg(all(desktop, not(target_os = "linux")))]
             app_tray::setup_tray(app)?;
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
@@ -548,7 +550,7 @@ pub fn run() {
                     })?;
                 app_tray::apply_runtime_icons(app.handle(), theme);
             }
-            app_hotkey::setup_hotkey(app, shared.clone());
+            app_hotkey::setup_hotkey(app.handle(), shared.clone());
             media::mic_mute_trigger::setup(app, shared.clone());
             #[cfg(target_os = "macos")]
             {
