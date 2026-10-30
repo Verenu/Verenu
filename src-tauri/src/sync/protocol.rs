@@ -156,6 +156,8 @@ pub enum Message {
     SyncDone,
     Unpair {
         device_uuid: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pairing_id: Option<String>,
     },
     Error {
         message: String,
@@ -202,7 +204,7 @@ pub async fn read_message_with_timeout<R: AsyncRead + Unpin>(
 ) -> Result<Message> {
     timeout(deadline, read_message_inner(reader))
         .await
-        .map_err(|_| anyhow!("timed out while reading sync message"))?
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out while reading sync message"))?
 }
 
 async fn read_message_inner<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Message> {
