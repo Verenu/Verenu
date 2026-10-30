@@ -651,6 +651,7 @@ mod tests {
     #[test]
     #[ignore = "requires a private desktop, network and verified release fixtures"]
     fn real_appimage_update_with_backup() {
+        use tauri::Listener;
         let old = std::env::var_os("VERENU_UPDATE_TEST_APPIMAGE").expect("old AppImage fixture");
         let expected =
             std::env::var_os("VERENU_UPDATE_TEST_EXPECTED").expect("new AppImage fixture");
@@ -673,7 +674,9 @@ mod tests {
             .any_thread()
             .build(tauri::generate_context!())
             .unwrap();
-        app.manage(db);
+        app.manage(db.clone());
+        let gate = std::sync::Arc::new(crate::linux_activity::ActivityGate::default());
+        app.manage(gate.clone());
         let settings =
             crate::data::store::SettingsHandle::empty_for_test(dir.0.join("settings.json"));
         settings
@@ -683,29 +686,37 @@ mod tests {
             )
             .unwrap();
         app.manage(settings);
-        let result = tauri::async_runtime::block_on(async {
+        tauri::async_runtime::block_on(async {
             let blocked = crate::commands::install_update(
                 app.handle().clone(),
                 "https://example.com/not-an-official-release".into(),
             )
             .await;
             assert!(blocked.unwrap_err().contains("blocked"));
-            let (first, second) = tokio::join!(
-                crate::commands::install_update(app.handle().clone(), url.clone()),
-                crate::commands::install_update(app.handle().clone(), url.clone()),
-            );
-            match (first, second) {
-                (Ok(outcome), Err(error)) | (Err(error), Ok(outcome)) => {
-                    assert!(error.contains("already in progress"), "{error}");
-                    outcome
+            let db_guard = db.lock().unwrap();
+            let (started, wait_started) = tokio::sync::oneshot::channel();
+            let started = std::sync::Mutex::new(Some(started));
+            app.listen_any("verenu:update-progress", move |_| {
+                if let Some(started) = started.lock().unwrap().take() {
+                    let _ = started.send(());
                 }
-                pair => panic!("expected one installation and one rejected attempt: {pair:?}"),
-            }
+            });
+            let handle = app.handle().clone();
+            let update_url = url.clone();
+            let caller = tokio::spawn(async move {
+                crate::commands::install_update(handle, update_url).await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(10), wait_started)
+                .await.unwrap().unwrap();
+            caller.abort();
+            let _ = caller.await;
+            let error = crate::commands::install_update(app.handle().clone(), url.clone())
+                .await.unwrap_err();
+            assert!(error.contains("already in progress"), "{error}");
+            drop(db_guard);
+            let _pause = tokio::time::timeout(std::time::Duration::from_secs(180), gate.pause())
+                .await.unwrap().unwrap();
         });
-        assert!(
-            matches!(result, crate::commands::InstallOutcome::Installed),
-            "{result:?}"
-        );
         let backup = rusqlite::Connection::open_with_flags(
             dir.0.join("verenu.db.bak"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
