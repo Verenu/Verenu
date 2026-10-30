@@ -111,9 +111,13 @@ impl Child {
             schema,
         })?;
         match self.channel.receive()? {
-            Message::Begin { key_availability } => Ok(ChildStartup {
+            Message::Begin {
+                key_availability,
+                parent_unique_name,
+            } => Ok(ChildStartup {
                 channel: self.channel,
                 key_availability,
+                parent_unique_name,
             }),
             _ => Err("Replacement received an invalid startup request".into()),
         }
@@ -123,6 +127,7 @@ impl Child {
 pub(crate) struct ChildStartup {
     channel: Channel,
     key_availability: KeyAvailability,
+    parent_unique_name: Option<String>,
 }
 
 impl ChildStartup {
@@ -137,6 +142,10 @@ impl ChildStartup {
 
     pub(crate) fn key_availability(&self) -> &KeyAvailability {
         &self.key_availability
+    }
+
+    pub(crate) fn parent_unique_name(&self) -> Option<&str> {
+        self.parent_unique_name.as_deref()
     }
 }
 
@@ -180,6 +189,7 @@ enum Message {
     },
     Begin {
         key_availability: KeyAvailability,
+        parent_unique_name: Option<String>,
     },
     BackendReady,
     FrontendsReady,
@@ -265,6 +275,7 @@ struct Parent {
     child_pid: u32,
     schema: i64,
     key_availability: KeyAvailability,
+    parent_unique_name: Option<String>,
 }
 
 struct ProcessGuard(std::process::Child, UnixStream);
@@ -385,6 +396,7 @@ impl Replacement {
             child_pid: process.0.id(),
             schema,
             key_availability,
+            parent_unique_name: None,
         };
         Ok(Self { process, parent })
     }
@@ -395,6 +407,11 @@ impl Replacement {
             process: self.process,
             probation,
         })
+    }
+
+    fn with_parent_unique_name(mut self, name: String) -> Self {
+        self.parent.parent_unique_name = Some(name);
+        self
     }
 }
 
@@ -435,6 +452,7 @@ impl Parent {
         }
         self.channel.send(&Message::Begin {
             key_availability: self.key_availability,
+            parent_unique_name: self.parent_unique_name,
         })?;
         self.channel.expect(Message::BackendReady)?;
         self.channel.expect(Message::FrontendsReady)?;
@@ -467,6 +485,7 @@ mod tests {
     fn begin() -> Message {
         Message::Begin {
             key_availability: KeyAvailability::new(),
+            parent_unique_name: None,
         }
     }
 
@@ -479,6 +498,7 @@ mod tests {
                 child_pid: 42,
                 schema: 39,
                 key_availability: KeyAvailability::new(),
+                parent_unique_name: None,
             },
             Channel::new(child, timeout).unwrap(),
         )
@@ -728,6 +748,7 @@ mod tests {
             child_pid: process.id(),
             schema: 39,
             key_availability: KeyAvailability::new(),
+            parent_unique_name: None,
         };
         assert!(parent.prepare().is_err());
         assert!(process.wait().unwrap().success());
@@ -789,6 +810,16 @@ mod tests {
     #[ignore = "requires a private Linux desktop and a custom-protocol app build"]
     fn real_replacement_opens_read_only_and_keeps_parent_alive() {
         use std::process::Command;
+        use tauri::Manager;
+
+        let app = tauri::Builder::default()
+            .any_thread()
+            .plugin(crate::linux_single_instance::plugin())
+            .build(tauri::generate_context!())
+            .unwrap();
+        let owner = app.state::<crate::linux_single_instance::InstanceOwner>();
+        assert!(owner.owns_name().unwrap());
+        let callbacks_before = crate::linux_single_instance::test_callback_count();
 
         let binary = std::env::var_os("VERENU_HANDOFF_TEST_BINARY").expect("replacement binary");
         let root =
@@ -816,15 +847,59 @@ mod tests {
             KeyAvailability::new(),
             Duration::from_secs(25),
         )
-        .unwrap();
+        .unwrap()
+        .with_parent_unique_name(owner.unique_name().unwrap());
         let child_pid = replacement.process.0.id();
-        let outcome = replacement.prepare();
-        assert!(
-            matches!(&outcome, Err(reason) if reason.contains("not yet verified")),
-            "replacement did not report incomplete startup"
+        let ready = replacement
+            .prepare()
+            .expect("replacement did not complete frontend readiness");
+        owner
+            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
+            .unwrap();
+        let activated = ready
+            .activate()
+            .expect("replacement did not acquire ownership");
+        assert!(!owner.owns_name().unwrap());
+        let connection = zbus::blocking::Connection::session().unwrap();
+        let forwarded = connection.call_method(
+            Some("com.verenu.app.SingleInstance"),
+            "/com/verenu/app/SingleInstance",
+            Some("org.SingleInstance.DBus"),
+            "ExecuteCallback",
+            &(vec!["--verenu-hotkey-release".to_string()], String::new()),
         );
+        assert!(
+            forwarded.is_ok(),
+            "callback failed: {forwarded:?}; parent callback count: {}",
+            crate::linux_single_instance::test_callback_count()
+        );
+        assert_eq!(
+            crate::linux_single_instance::test_callback_count(),
+            callbacks_before + 1
+        );
+        drop(activated);
         assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, -1);
         assert!(!group_has_live_members(child_pid).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !owner.owns_name().unwrap_or(false) {
+            assert!(
+                Instant::now() < deadline,
+                "parent did not regain single-instance ownership"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owner
+            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
+            .unwrap();
+        connection
+            .call_method(
+                Some("com.verenu.app.SingleInstance"),
+                "/com/verenu/app/SingleInstance",
+                Some("org.SingleInstance.DBus"),
+                "ExecuteCallback",
+                &(vec!["--verenu-hotkey-release".to_string()], String::new()),
+            )
+            .unwrap();
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), original_db);
         assert_eq!(
             std::fs::read(data.join("verenu.db-wal")).unwrap(),

@@ -19,6 +19,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         }
     };
     let key_availability = startup.key_availability().clone();
+    let parent_unique_name = startup.parent_unique_name().map(str::to_owned);
     let db = match crate::data::db::open_for_handoff(crate::app_db_path()) {
         Ok(db) => db,
         Err(error) => {
@@ -102,14 +103,38 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
-                // Settings and mount acknowledgements alone do not establish
-                // that the home view and activation are ready for handoff.
-                let reason = if basics_ready {
-                    "Full replacement startup is not yet verified"
-                } else {
-                    "Replacement frontend did not initialize"
+                if !basics_ready {
+                    let _ = frontends.fail("Replacement frontend did not initialize".into());
+                    handle.exit(1);
+                    return;
+                }
+                let activation = match frontends.ready() {
+                    Ok(activation) => activation,
+                    Err(_) => {
+                        handle.exit(1);
+                        return;
+                    }
                 };
-                let _ = frontends.fail(reason.into());
+                let Some(parent_unique_name) = parent_unique_name else {
+                    let _ = activation.fail("Parent single-instance identity is missing".into());
+                    handle.exit(1);
+                    return;
+                };
+                let (sent, received) = std::sync::mpsc::sync_channel(1);
+                let owner = handle.clone();
+                let scheduled = handle.run_on_main_thread(move || {
+                    let _ = sent.send(owner.plugin(
+                        crate::linux_single_instance::replacement_plugin(parent_unique_name),
+                    ));
+                });
+                let acquired = scheduled.is_ok()
+                    && matches!(received.recv_timeout(Duration::from_secs(10)), Ok(Ok(())));
+                if acquired {
+                    let _ = activation.activated();
+                } else {
+                    let _ = activation
+                        .fail("Replacement could not acquire single-instance ownership".into());
+                }
                 handle.exit(1);
             });
             Ok(())

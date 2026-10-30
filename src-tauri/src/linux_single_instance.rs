@@ -1,13 +1,43 @@
 use tauri::{AppHandle, Manager};
 use zbus::{blocking::Connection, interface};
 
+#[cfg(all(test, feature = "native-testing"))]
+static TEST_CALLBACK_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_callback_count() -> usize {
+    TEST_CALLBACK_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 struct SingleInstance {
     app: AppHandle,
+    forward_to: Option<String>,
 }
 
 #[interface(name = "org.SingleInstance.DBus")]
 impl SingleInstance {
-    fn execute_callback(&self, argv: Vec<String>, _cwd: String) {
+    async fn execute_callback(&self, argv: Vec<String>, cwd: String) -> zbus::fdo::Result<()> {
+        if let Some(parent) = &self.forward_to {
+            let connection = zbus::Connection::session()
+                .await
+                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+            let (_, path) = address(&self.app.config().identifier);
+            connection
+                .call_method(
+                    Some(parent.as_str()),
+                    path.as_str(),
+                    Some("org.SingleInstance.DBus"),
+                    "ExecuteCallback",
+                    &(argv, cwd),
+                )
+                .await
+                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+            return Ok(());
+        }
+        #[cfg(all(test, feature = "native-testing"))]
+        {
+            TEST_CALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         if argv.iter().any(|arg| arg == "--verenu-hotkey-release") {
             crate::core::hotkey::notify_release();
         } else if argv.iter().any(|arg| arg == "--verenu-hotkey-handsfree") {
@@ -17,6 +47,7 @@ impl SingleInstance {
         } else {
             crate::show_main_window(&self.app);
         }
+        Ok(())
     }
 }
 
@@ -25,15 +56,41 @@ pub(crate) struct InstanceOwner {
     name: String,
 }
 
-#[cfg(test)]
-enum OwnershipMode {
+#[allow(dead_code)]
+pub(crate) enum OwnershipMode {
     Transferable,
     Exclusive,
 }
 
-#[cfg(test)]
 impl InstanceOwner {
-    fn set_ownership_mode(&self, mode: OwnershipMode) -> Result<(), String> {
+    #[allow(dead_code)]
+    pub(crate) fn unique_name(&self) -> Result<String, String> {
+        self.connection
+            .unique_name()
+            .map(ToString::to_string)
+            .ok_or_else(|| "Single-instance connection has no unique name".into())
+    }
+    #[allow(dead_code)]
+    pub(crate) fn owns_name(&self) -> Result<bool, String> {
+        let current: String = self
+            .connection
+            .call_method(
+                Some("org.freedesktop.DBus"),
+                "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"),
+                "GetNameOwner",
+                &(self.name.as_str(),),
+            )
+            .and_then(|message| message.body().deserialize())
+            .map_err(|error| format!("Could not inspect instance ownership: {error}"))?;
+        Ok(self
+            .connection
+            .unique_name()
+            .is_some_and(|name| name.as_str() == current))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_ownership_mode(&self, mode: OwnershipMode) -> Result<(), String> {
         let flags = match mode {
             OwnershipMode::Transferable => zbus::fdo::RequestNameFlags::AllowReplacement as u32,
             OwnershipMode::Exclusive => zbus::fdo::RequestNameFlags::DoNotQueue as u32,
@@ -56,6 +113,37 @@ impl InstanceOwner {
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn replacement_plugin(parent: String) -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri::plugin::Builder::new("single-instance-replacement")
+        .setup(move |app, _api| {
+            zbus::names::UniqueName::try_from(parent.as_str())?;
+            let (name, path) = address(&app.config().identifier);
+            let connection = zbus::blocking::connection::Builder::session()?
+                .name(name.as_str())?
+                .replace_existing_names(true)
+                .allow_name_replacements(false)
+                .serve_at(
+                    path.as_str(),
+                    SingleInstance {
+                        app: app.clone(),
+                        forward_to: Some(parent.clone()),
+                    },
+                )?
+                .build()?;
+            app.manage(InstanceOwner { connection, name });
+            Ok(())
+        })
+        .on_event(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(owner) = app.try_state::<InstanceOwner>() {
+                    let _ = owner.connection.release_name(owner.name.as_str());
+                }
+            }
+        })
+        .build()
+}
+
 fn address(identifier: &str) -> (String, String) {
     let name = format!("{identifier}.SingleInstance");
     let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
@@ -70,7 +158,13 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                 .name(name.as_str())?
                 .replace_existing_names(false)
                 .allow_name_replacements(false)
-                .serve_at(path.as_str(), SingleInstance { app: app.clone() })?
+                .serve_at(
+                    path.as_str(),
+                    SingleInstance {
+                        app: app.clone(),
+                        forward_to: None,
+                    },
+                )?
                 .build();
             match result {
                 Ok(connection) => {
