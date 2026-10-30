@@ -22,6 +22,7 @@ pub(crate) fn storage_full_simulation_enabled() -> bool {
 pub struct SettingsHandle {
     path: Arc<PathBuf>,
     values: Arc<RwLock<Arc<Map<String, Value>>>>,
+    read_only: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -88,6 +89,7 @@ impl SettingsHandle {
         Self {
             path: Arc::new(path),
             values: Arc::new(RwLock::new(Arc::new(Map::new()))),
+            read_only: false,
         }
     }
 
@@ -100,7 +102,27 @@ impl SettingsHandle {
         Ok(Self {
             path: Arc::new(path),
             values: Arc::new(RwLock::new(Arc::new(values))),
+            read_only: false,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    pub(crate) fn open_for_handoff(path: PathBuf) -> Result<Self, String> {
+        let snapshot = SettingsSnapshot::read_for_handoff(&path)?;
+        Ok(Self {
+            path: Arc::new(path),
+            values: Arc::new(RwLock::new(snapshot.values)),
+            read_only: true,
+        })
+    }
+
+    fn ensure_writable(&self) -> Result<(), String> {
+        if self.read_only {
+            Err("Settings are read-only while the update is starting.".into())
+        } else {
+            Ok(())
+        }
     }
 
     pub fn snapshot(&self) -> Result<SettingsSnapshot, String> {
@@ -138,6 +160,7 @@ impl SettingsHandle {
     }
 
     pub fn set(&self, key: impl Into<String>, value: Value) -> Result<(), String> {
+        self.ensure_writable()?;
         let mut settings = self
             .values
             .write()
@@ -147,6 +170,7 @@ impl SettingsHandle {
     }
 
     pub fn delete(&self, key: &str) -> Result<Option<Value>, String> {
+        self.ensure_writable()?;
         let mut settings = self
             .values
             .write()
@@ -155,6 +179,7 @@ impl SettingsHandle {
     }
 
     pub fn save(&self) -> Result<(), String> {
+        self.ensure_writable()?;
         let values = self
             .values
             .read()
@@ -179,6 +204,7 @@ impl SettingsHandle {
         I: IntoIterator<Item = (K, Value)>,
         K: Into<String>,
     {
+        self.ensure_writable()?;
         let pending: Vec<(String, Value)> = values
             .into_iter()
             .map(|(key, value)| (key.into(), value))
@@ -213,6 +239,7 @@ impl SettingsHandle {
         I: IntoIterator<Item = (K, Value)>,
         K: Into<String>,
     {
+        self.ensure_writable()?;
         let pending: Vec<(String, Value)> = values
             .into_iter()
             .map(|(key, value)| (key.into(), value))
@@ -281,6 +308,7 @@ impl SettingsHandle {
     where
         F: FnOnce() -> bool,
     {
+        self.ensure_writable()?;
         let mut settings = self
             .values
             .write()
