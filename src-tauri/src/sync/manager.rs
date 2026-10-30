@@ -432,7 +432,7 @@ impl SyncManager {
         Ok(())
     }
 
-    fn new_unstarted(app: AppHandle, db: DbHandle) -> SyncManager {
+    pub(crate) fn new_unstarted(app: AppHandle, db: DbHandle) -> SyncManager {
         let data_dir = crate::app_setup::app_data_dir();
         let inner = Arc::new(Inner {
             db,

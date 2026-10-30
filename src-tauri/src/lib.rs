@@ -40,6 +40,8 @@ mod local_stt;
 #[cfg(target_os = "linux")]
 mod linux_activity;
 #[cfg(target_os = "linux")]
+mod linux_handoff;
+#[cfg(target_os = "linux")]
 mod linux_single_instance;
 mod media;
 mod model_performance;
