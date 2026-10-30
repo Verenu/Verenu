@@ -87,7 +87,7 @@ pub async fn save_app_mappings(app: AppHandle, mappings: Vec<AppMapping>) -> Res
     let value = serde_json::to_value(mappings).map_err(|e| e.to_string())?;
     super::validate_setting(store::APP_MAPPINGS, &value)?;
     let settings = store::settings_handle(&app)?;
-    run_blocking("save_app_mappings", move || {
+    run_app_blocking(&app, "save_app_mappings", move || {
         settings.save_value(store::APP_MAPPINGS, value)
     })
     .await
