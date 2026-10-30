@@ -29,7 +29,10 @@
   } = $props();
 
   let draftTerm = $state(untrack(() => entry?.term ?? ''));
-  let draftMistake = $state(untrack(() => entry?.mistake ?? ''));
+  const originalMistake = untrack(() => entry?.inherited_from_everywhere && contextId != null
+    ? (entry.context_corrections ?? []).map((correction) => correction.mistake).join(', ') || null
+    : entry?.mistake ?? null);
+  let draftMistake = $state(originalMistake ?? '');
   let saving = $state(false);
   let saveError = $state('');
   let conflictContexts = $state<ContextAssignment[]>([]);
@@ -100,9 +103,9 @@
         });
       } else if (mode === 'edit' && entry) {
         if (contextId != null) {
-          await editContextDictionaryEntry(entry, contextId, term, mistake);
+          await editContextDictionaryEntry(entry, contextId, term, mistake, { term: entry.term, mistake: originalMistake });
         } else {
-          await invoke('edit_dictionary_entry', { id: dictionaryEntryId(entry), term, mistake });
+          await invoke('edit_dictionary_entry', { id: dictionaryEntryId(entry), term, mistake, expected: { term: entry.term, mistake: entry.mistake } });
         }
         onSaved({
           ...entry,
@@ -156,9 +159,6 @@
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveModal();
   }
 
-  $effect(() => {
-    if (termInput) setTimeout(() => termInput?.focus(), 50);
-  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />

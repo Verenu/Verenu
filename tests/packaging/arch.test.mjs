@@ -19,7 +19,7 @@ test('Arch packaging normalizes nightly versions and makes extracted runtime rea
     await fs.writeFile(path.join(app, 'Verenu.desktop'), '[Desktop Entry]\nExec=private-build-path\nIcon=private-build-icon\n', { mode: 0o600 });
     await fs.writeFile(path.join(app, 'Verenu.png'), 'Synthetic public icon fixture', { mode: 0o600 });
     const result = spawnSync('bash', ['-euo', 'pipefail', '-c', 'source "$VERENU_PKGBUILD"; test "$pkgver" = 0.20.0_nightly.20261005; test "${source[0]}" = Verenu_0.20.0-nightly.20261005_x86_64.AppImage; package'], {
-      env: { ...process.env, VERENU_PKGBUILD: path.resolve('packaging/arch/PKGBUILD'), VERENU_PKGVER: '0.20.0-nightly.20261005', srcdir, pkgdir }, encoding: 'utf8',
+      env: { ...process.env, CARCH: 'x86_64', VERENU_PKGBUILD: path.resolve('packaging/arch/PKGBUILD'), VERENU_PKGVER: '0.20.0-nightly.20261005', srcdir, pkgdir }, encoding: 'utf8',
     });
     assert.equal(result.status, 0, result.stderr);
     for (const name of ['opt/verenu', 'opt/verenu/usr', 'opt/verenu/usr/bin']) {

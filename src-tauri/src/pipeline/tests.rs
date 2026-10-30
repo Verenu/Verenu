@@ -1,4 +1,14 @@
-use super::cache::{cleanup_cache_plan, cleanup_context_fingerprint};
+use super::cache::{cleanup_cache_plan, cleanup_cache_plan_for_context, cleanup_context_fingerprint};
+
+#[test]
+fn cleanup_cache_key_uses_shared_context_identity() {
+    let key = |context| cleanup_cache_plan_for_context(
+        "Synthetic input", "casual", "medium", "", None, None, Some(context),
+    ).key;
+    assert_eq!(key("shared-context"), key("shared-context"));
+    assert_ne!(key("shared-context"), key("another-context"));
+    assert_ne!(key("everywhere"), key("shared-context"));
+}
 #[path = "apple_cleanup_tests.rs"]
 mod apple_cleanup_tests;
 use super::gates::strip_provider_artifacts;
@@ -320,8 +330,8 @@ fn cleanup_cache_keys_preserve_exact_input_and_field_boundaries() {
     }
     assert_ne!(key("hello", "first\nsecond"), key("hello", "firstsecond"));
     let opaque = key("private synthetic phrase", "");
-    assert!(opaque.starts_with("cleanup-v2:"));
-    assert_eq!(opaque.len(), "cleanup-v2:".len() + 64);
+    assert!(opaque.starts_with("cleanup-v3:"));
+    assert_eq!(opaque.len(), "cleanup-v3:".len() + 64);
     assert!(!opaque.contains("private"));
 }
 
@@ -755,6 +765,27 @@ async fn pipeline_basic_language_off_and_payload_contracts() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pipeline_records_each_vocabulary_and_snippet_match() {
+    let _guard = harness_test_lock().lock().expect("harness lock");
+    reset();
+    set_enabled(true);
+    let mut config = base_config();
+    config.cleanup_intensity = "rules".into();
+    fixture("transcription", "groq", "whisper-large-v3-turbo", Some("kubernetez and kubernetez greeting greeting"), None, None);
+    let db = db::open(":memory:").unwrap();
+    let mut request = base_request(config);
+    request.db = Some(db.clone());
+    request.dictionary.push(PipelineTestDictionaryEntry { term: "Kubernetes".into(), mistake: Some("kubernetez".into()) });
+    request.snippets.push(PipelineTestSnippet { trigger: "greeting".into(), expansion: "hello".into(), instructions: String::new() });
+    let result = run_pipeline_fixture(request).await.unwrap();
+    assert!(result.injected_text.contains("Kubernetes and Kubernetes"));
+    let cleanup = db::query_insights(&db, 7, None).unwrap().cleanup;
+    assert_eq!((cleanup.vocabulary_replacements, cleanup.snippet_expansions), (2, 2));
+    assert!(!cleanup.activity_incomplete);
+    reset();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_basic_preserves_vocabulary_before_dictionary_canonicalization() {
     let _guard = harness_test_lock().lock().expect("harness lock");
     reset();
@@ -823,13 +854,16 @@ async fn pipeline_basic_exact_snippet_ignores_saved_instructions() {
             config.cleanup_intensity = "rules".into();
             config.voice_commands_enabled = commands;
             fixture("transcription", "groq", "whisper-large-v3-turbo", Some("signoff."), None, None);
+            let db = db::open(":memory:").unwrap();
             let mut request = base_request(config);
+            request.db = Some(db.clone());
             request.snippets.push(PipelineTestSnippet {
                 trigger: "signoff".into(), expansion: "Thanks!".into(), instructions: instructions.into(),
             });
             let result = run_pipeline_fixture(request).await.unwrap();
             assert_eq!(result.injected_text, "Thanks!");
             assert_eq!(result.history_entry.clean_text, "Thanks!");
+            assert_eq!(db::query_insights(&db, 7, None).unwrap().cleanup.snippet_expansions, 1);
             assert!(result.cleanup_cache_key.is_empty());
             assert_eq!(fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"), 0);
         }
@@ -2226,7 +2260,7 @@ fn cleanup_cache_rejects_fabrication_and_preserves_cached_style() {
     crate::data::db::cleanup_cache_insert_new(&db, "key", raw, "2999-01-01 00:00:00", false)
         .unwrap();
     assert_eq!(
-        super::cache::cleanup_cache_hit_text(&db, "key", "light", "", raw, None).as_deref(),
+        super::cache::cleanup_cache_hit_text(&db, "key", "light", "", raw, None).as_ref().map(|(text, _)| text.as_str()),
         Some(raw)
     );
     assert!(super::cache::cleanup_cache_hit_text(

@@ -53,6 +53,7 @@ pub(crate) struct LogicalMonitor {
     pub work_y: f64,
     pub work_width: f64,
     pub work_height: f64,
+    pub scale: f64,
 }
 
 #[cfg(target_os = "linux")]
@@ -81,6 +82,7 @@ impl HyprMonitor {
             work_y: f64::from(self.y + top),
             work_width: (logical_width - f64::from(left + right)).max(1.0),
             work_height: (logical_height - f64::from(top + bottom)).max(1.0),
+            scale,
         }
     }
 
@@ -105,6 +107,45 @@ fn hyprctl_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
         .ok()?;
     output.status.success().then_some(())?;
     serde_json::from_slice(&output.stdout).ok()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn caps_lock_is_on() -> Option<bool> {
+    let devices: serde_json::Value = hyprctl_json(&["-j", "devices"])?;
+    active_keyboard_caps_lock(&devices)
+}
+
+#[cfg(target_os = "linux")]
+fn active_keyboard_caps_lock(devices: &serde_json::Value) -> Option<bool> {
+    devices.get("keyboards")?.as_array()?.iter()
+        .find(|keyboard| keyboard.get("main").and_then(|value| value.as_bool()) == Some(true))?
+        .get("capsLock")?.as_bool()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod caps_lock_tests {
+    use super::active_keyboard_caps_lock;
+    use serde_json::json;
+
+    #[test]
+    fn reads_caps_lock_from_the_active_keyboard() {
+        for state in [true, false] {
+            let devices = json!({"keyboards": [
+                {"main": false, "capsLock": !state},
+                {"main": true, "capsLock": state}
+            ]});
+            assert_eq!(active_keyboard_caps_lock(&devices), Some(state));
+        }
+    }
+
+    #[test]
+    fn missing_or_unsupported_keyboard_state_is_unknown() {
+        for devices in [json!({}), json!({"keyboards": []}),
+            json!({"keyboards": [{"main": true}]}),
+            json!({"keyboards": [{"main": false, "capsLock": true}]})] {
+            assert_eq!(active_keyboard_caps_lock(&devices), None);
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -856,6 +897,7 @@ mod tests {
                 work_y: 1106.0,
                 work_width: 2048.0,
                 work_height: 1126.0,
+                scale: 1.25,
             }
         );
         assert!(monitor.contains(1024.0, 2000.0));

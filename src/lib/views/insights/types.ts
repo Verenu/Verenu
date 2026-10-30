@@ -43,6 +43,10 @@ export interface InsightsCleanup {
   edits_applied: number;
   dictionary_fixes: number;
   auto_learned_terms: number;
+  vocabulary_replacements: number;
+  snippet_expansions: number;
+  activity_incomplete: boolean;
+  activity_tracked_dictations: number;
 }
 
 export interface InsightsWords {
@@ -100,6 +104,10 @@ export const EMPTY_INSIGHTS: InsightsPayload = {
     edits_applied: 0,
     dictionary_fixes: 0,
     auto_learned_terms: 0,
+    vocabulary_replacements: 0,
+    snippet_expansions: 0,
+    activity_incomplete: false,
+    activity_tracked_dictations: 0,
   },
   words: { top: [], unique_words: 0, longest_word: null, avg_word_length: 0 },
 };

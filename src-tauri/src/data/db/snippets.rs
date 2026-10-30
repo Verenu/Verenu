@@ -138,6 +138,7 @@ pub fn insert_snippet_returning_conn(
     Ok(CreatedRecordMeta { id, created_at })
 }
 
+#[cfg(test)]
 pub fn update_snippet(
     db: &Db,
     id: i64,
@@ -145,10 +146,47 @@ pub fn update_snippet(
     expansion: &str,
     instructions: &str,
 ) -> Result<()> {
-    let (normalized_trigger, normalized_expansion, normalized_instructions) =
-        normalize_snippet(trigger, expansion, instructions)?;
+    update_snippet_if_unchanged(db, id, trigger, expansion, instructions, None)
+}
 
-    let conn = lock_conn(db)?;
+#[derive(serde::Deserialize)]
+pub struct ExpectedSnippet {
+    pub trigger: String,
+    pub expansion: String,
+    pub instructions: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct SnippetMoveEdit {
+    pub id: i64,
+    pub expected: ExpectedSnippet,
+    pub expansion: String,
+    pub instructions: String,
+}
+
+pub fn update_snippet_if_unchanged(
+    db: &Db, id: i64, trigger: &str, expansion: &str, instructions: &str,
+    expected: Option<&ExpectedSnippet>,
+) -> Result<()> {
+    let mut conn = lock_conn(db)?;
+    let conn = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if let Some(expected) = expected {
+        let current: Option<(String, String, String)> = conn.query_row(
+            "SELECT trigger, expansion, instructions FROM snippets WHERE id=?1", params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional()?;
+        if current != Some((expected.trigger.clone(), expected.expansion.clone(), expected.instructions.clone())) {
+            anyhow::bail!("This snippet changed while you were editing. Close and reopen it before saving.");
+        }
+    }
+    update_snippet_conn(&conn, id, trigger, expansion, instructions)?;
+    conn.commit()?;
+    invalidate_snippet_cache();
+    Ok(())
+}
+
+pub(crate) fn update_snippet_conn(conn: &rusqlite::Connection, id: i64, trigger: &str, expansion: &str, instructions: &str) -> Result<()> {
+    let (normalized_trigger, normalized_expansion, normalized_instructions) = normalize_snippet(trigger, expansion, instructions)?;
     let changed = conn.execute(
         "UPDATE snippets SET trigger=?2, expansion=?3, instructions=?4 WHERE id=?1",
         params![
@@ -159,21 +197,25 @@ pub fn update_snippet(
         ],
     )?;
     require_row_changed(changed, "Snippet", id)?;
-    invalidate_snippet_cache();
     Ok(())
 }
 
 pub fn delete_snippet(db: &Db, id: i64) -> Result<()> {
     let mut conn = lock_conn(db)?;
     let tx = conn.transaction()?;
+    delete_snippet_conn(&tx, id)?;
+    tx.commit()?;
+    invalidate_snippet_cache();
+    Ok(())
+}
+
+pub(crate) fn delete_snippet_conn(tx: &rusqlite::Connection, id: i64) -> Result<()> {
     let changed = tx.execute("DELETE FROM snippets WHERE id=?1", params![id])?;
     require_row_changed(changed, "Snippet", id)?;
     tx.execute(
         "DELETE FROM snippet_contexts WHERE snippet_id = ?1",
         params![id],
     )?;
-    tx.commit()?;
-    invalidate_snippet_cache();
     Ok(())
 }
 
@@ -263,12 +305,13 @@ pub fn move_snippet_entry_to_context(
     db: &Db,
     trigger: &str,
     target_context_id: i64,
+    edit: Option<&SnippetMoveEdit>,
 ) -> Result<Snippet> {
     let normalized_trigger = require_nonempty_trimmed("Trigger", trigger)?;
     validate_char_limit("Trigger", &normalized_trigger, SNIPPET_TRIGGER_CHAR_LIMIT)?;
 
     let mut conn = lock_conn(db)?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let everywhere_id = ensure_everywhere_context_conn(&tx)?;
     if target_context_id == everywhere_id {
         anyhow::bail!("The Everywhere context cannot be the move destination");
@@ -294,6 +337,17 @@ pub fn move_snippet_entry_to_context(
         )
         .optional()?
         .ok_or_else(|| anyhow::anyhow!("\"{normalized_trigger}\" was not found"))?;
+    if let Some(edit) = edit {
+        let current: (String, String, String) = tx.query_row(
+            "SELECT trigger, expansion, instructions FROM snippets WHERE id=?1", params![snippet_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        if snippet_id != edit.id || current != (edit.expected.trigger.clone(), edit.expected.expansion.clone(), edit.expected.instructions.clone()) {
+            anyhow::bail!("This snippet changed while you were editing. Close and reopen it before saving.");
+        }
+        let (_, expansion, instructions) = normalize_snippet(&normalized_trigger, &edit.expansion, &edit.instructions)?;
+        tx.execute("UPDATE snippets SET expansion=?2, instructions=?3 WHERE id=?1", params![snippet_id, expansion, instructions])?;
+    }
     let removed = tx.execute(
         "DELETE FROM snippet_contexts WHERE context_id = ?1 AND snippet_id = ?2",
         params![everywhere_id, snippet_id],
@@ -318,12 +372,7 @@ pub fn move_snippet_entry_to_context(
 }
 
 pub fn increment_snippet_use(db: &Db, id: i64) -> Result<()> {
-    let conn = lock_conn(db)?;
-    conn.execute(
-        "UPDATE snippets SET use_count = use_count + 1 WHERE id=?1",
-        params![id],
-    )?;
-    Ok(())
+    increment_snippet_use_counts(db, &[(id, 1)])
 }
 
 pub fn increment_snippet_use_counts(db: &Db, counts: &[(i64, i64)]) -> Result<()> {
@@ -339,6 +388,7 @@ pub fn increment_snippet_use_counts(db: &Db, counts: &[(i64, i64)]) -> Result<()
                 continue;
             }
             stmt.execute(params![id, count])?;
+            super::library_usage::record_library_usage_conn(&tx, "snippet", id, count)?;
         }
     }
     tx.commit()?;

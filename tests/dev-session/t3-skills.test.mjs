@@ -119,9 +119,14 @@ test('provided audio captures shared T3 skills without workspace selection only 
         await search.fill('');
         assert.equal((await tokens()).length, 3);
 
-        await dialog.getByRole('button', { name: 'Copy $skill-designer', exact: true }).click();
-        await dialog.getByRole('status').filter({ hasText: 'Copied $skill-designer.' }).waitFor();
-        await page.waitForFunction(async () => (await navigator.clipboard.readText()) === '$skill-designer', null, { timeout: 5000 });
+        const designer = dialog.getByRole('checkbox', { name: '$skill-designer', exact: true });
+        assert.equal(await designer.isChecked(), true);
+        await designer.uncheck();
+        await dialog.getByText('2 of 3 skills sent to cleanup', { exact: true }).waitFor();
+        for (let attempt = 0; attempt < 25 && !(await invoke('get_t3_skills')).connection.excludedSkills?.length; attempt++) await new Promise(resolve => setTimeout(resolve, 200));
+        assert.deepEqual((await invoke('get_t3_skills')).connection.excludedSkills, ['skill-designer']);
+        await designer.check();
+        await dialog.getByText('3 of 3 skills sent to cleanup', { exact: true }).waitFor();
 
         await page.keyboard.press('Escape');
         await dialog.waitFor({ state: 'detached' });

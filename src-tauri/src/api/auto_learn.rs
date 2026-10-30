@@ -141,6 +141,7 @@ mod tests {
     fn test_context(id: i64) -> ResolvedContextIdentity {
         ResolvedContextIdentity {
             t3_skills: None,
+            website_domain: None,
             id,
             label: format!("Context {id}"),
         }

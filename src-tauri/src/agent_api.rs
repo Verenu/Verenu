@@ -6,19 +6,176 @@ use crate::{
 use axum::{
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{sync::Arc, time::Duration};
-use tauri::{AppHandle, Manager};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone)]
-struct Agent {
+pub(crate) struct Agent {
     app: AppHandle,
-    token: Arc<String>,
+    instance: String,
+    approvals: Arc<Mutex<Approvals>>,
     gate: Arc<tokio::sync::Semaphore>,
+}
+
+fn publish_discovery(port: u16, instance: &str) -> anyhow::Result<()> {
+    let path = crate::app_data_dir().join("agent-session.json");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let directory = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Missing agent directory"))?;
+        let metadata = std::fs::symlink_metadata(directory)?;
+        anyhow::ensure!(
+            metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o022 == 0,
+            "Agent profile directory is not private to this user"
+        );
+        let resolved = std::fs::canonicalize(directory)?;
+        for ancestor in directory.ancestors().chain(resolved.ancestors()) {
+            let entry = std::fs::symlink_metadata(ancestor)?;
+            let uid = entry.uid();
+            anyhow::ensure!(
+                (uid == 0 || uid == unsafe { libc::geteuid() })
+                    && (!entry.is_dir()
+                        || entry.mode() & 0o022 == 0
+                        || (uid == 0 && entry.mode() & 0o1000 != 0)),
+                "Agent profile has an untrusted ancestor"
+            );
+        }
+        anyhow::ensure!(
+            !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()),
+            "Agent descriptor cannot be a symbolic link"
+        );
+        let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        let result = (|| -> anyhow::Result<()> {
+            file.write_all(&serde_json::to_vec(
+                &json!({"version": 1, "port": port, "instance": instance}),
+            )?)?;
+            file.sync_all()?;
+            std::fs::rename(&temp, &path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(temp);
+        }
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(
+            path,
+            serde_json::to_vec(&json!({"version": 1, "port": port, "instance": instance}))?,
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct Approvals {
+    pending: Option<Pending>,
+    grants: HashMap<[u8; 32], Grant>,
+    legacy_token: Option<String>,
+}
+
+struct Grant {
+    expires: Instant,
+    scopes: Vec<String>,
+    actor_id: String,
+}
+
+struct Pending {
+    digest: [u8; 32],
+    code: String,
+    expires: Instant,
+}
+
+#[derive(Serialize)]
+pub struct ApprovalRequest {
+    code: String,
+    id: String,
+}
+
+fn request_id(hash: &[u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn digest(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+fn valid_token(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+#[tauri::command]
+pub fn agent_pending_request(app: AppHandle) -> Option<ApprovalRequest> {
+    let state = app.try_state::<Arc<Mutex<Approvals>>>()?;
+    let mut approvals = state.lock().ok()?;
+    if approvals
+        .pending
+        .as_ref()
+        .is_some_and(|p| p.expires <= Instant::now())
+    {
+        approvals.pending = None;
+    }
+    approvals.pending.as_ref().map(|p| ApprovalRequest {
+        code: p.code.clone(),
+        id: request_id(&p.digest),
+    })
+}
+
+#[tauri::command]
+pub fn agent_respond(app: AppHandle, id: String, approve: bool, scopes: Option<Vec<String>>) -> Result<(), String> {
+    let state = app
+        .try_state::<Arc<Mutex<Approvals>>>()
+        .ok_or("Agent access unavailable")?;
+    let mut approvals = state.lock().map_err(|_| "Agent access unavailable")?;
+    let pending = approvals.pending.as_ref().ok_or("Request expired")?;
+    if pending.expires <= Instant::now() || request_id(&pending.digest) != id {
+        return Err("Request expired or changed".into());
+    }
+    let scopes = scopes.unwrap_or_default();
+    if scopes.iter().any(|scope| !AGENT_SCOPES.contains(&scope.as_str())) {
+        return Err("Unknown agent permission".into());
+    }
+    let pending = approvals.pending.take().ok_or("Request expired")?;
+    if approve {
+        approvals
+            .grants
+            .insert(pending.digest, Grant { expires: Instant::now() + Duration::from_secs(3600), scopes, actor_id: uuid::Uuid::new_v4().to_string() });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn agent_revoke_all(app: AppHandle) -> Result<(), String> {
+    let state = app
+        .try_state::<Arc<Mutex<Approvals>>>()
+        .ok_or("Agent access unavailable")?;
+    let mut approvals = state.lock().map_err(|_| "Agent access unavailable")?;
+    approvals.pending = None;
+    approvals.grants.clear();
+    approvals.legacy_token = None;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -32,21 +189,78 @@ fn empty_args() -> Value {
     json!({})
 }
 
+const AGENT_SCOPES: &[&str] = &[
+    "metadata", "history_text", "settings_write", "context_write", "library_write", "destructive", "diagnostics", "provider_calls", "credentials", "integrations",
+];
+
+fn required_scopes(request: &Request) -> Vec<&'static str> {
+    let mut scopes = Vec::new();
+    match request.command.as_str() {
+        "history.page" if request.args.get("include_text") == Some(&Value::Bool(true)) => scopes.extend(["metadata", "history_text"]),
+        "save_setting" | "save_hotkey" | "set_autostart" | "delete_custom_provider" => scopes.push("settings_write"),
+        "credentials.save" | "credentials.delete" => scopes.push("credentials"),
+        "t3.connect" | "sync_set_device_name" | "sync_set_peer_address" | "sync_pair_connection" | "sync_start_pairing" | "sync_respond_to_pairing" | "sync_cancel_pairing" | "sync_remove_device" | "sync_now" | "pull_t3_skills" | "select_t3_catalog" | "disconnect_t3" => scopes.push("integrations"),
+        "create_context" | "duplicate_context" | "update_context" | "update_context_settings"
+        | "context.patch_settings" | "context.set_pinned" | "save_context_if_unchanged" | "create_sub_app" | "assign_sub_app" | "delete_sub_app" | "update_context_color" | "set_context_pinned"
+        | "delete_context" | "assign_context_target" | "remove_context_target"
+        | "assign_context_website" | "remove_context_website" => scopes.push("context_write"),
+        "create_dictionary_entry" | "edit_dictionary_entry" | "rename_dictionary_entry_global" | "remove_dictionary_entry"
+        | "create_snippet" | "edit_snippet" | "remove_snippet"
+        | "set_dictionary_context_assignment" | "set_snippet_context_assignment" | "move_dictionary_entry_to_context" | "move_dictionary_entry_by_term_to_context" | "move_snippet_entry_to_context" | "move_snippet_context_assignment" | "library.apply_delete" | "library.undo_delete" => scopes.push("library_write"),
+        "diagnostics.snapshot" | "diagnostics.logs" | "diagnostics.top" | "diagnostics.retention" => scopes.push("diagnostics"),
+        "test_cleanup_prompt" => scopes.push("provider_calls"),
+        "describe" => {},
+        "get_all_settings" | "get_setting" | "get_microphones" | "get_contexts"
+        | "get_context_stats" | "get_context_targets" | "get_context_websites" | "get_sub_apps"
+        | "get_dictionary" | "get_snippets" | "get_context_dictionary" | "get_context_snippets"
+        | "get_dictionary_entry_contexts" | "get_snippet_entry_contexts" | "prompts.lint"
+        | "history.page" | "history.report" | "history.usage" | "get_api_key_status" | "sync_get_status" | "get_t3_skills" | "library.usage" | "library.items" | "library.preview_delete" | "audit.page" => scopes.push("metadata"),
+        _ => scopes.push("unsupported"),
+    }
+    if matches!(request.command.as_str(), "delete_context" | "remove_dictionary_entry" | "remove_snippet" | "edit_dictionary_entry" | "rename_dictionary_entry_global" | "edit_snippet" | "library.apply_delete" | "library.undo_delete" | "update_context_settings" | "save_context_if_unchanged" | "move_dictionary_entry_to_context" | "move_dictionary_entry_by_term_to_context" | "move_snippet_entry_to_context" | "move_snippet_context_assignment" | "credentials.save" | "assign_context_target" | "remove_context_target" | "assign_context_website" | "remove_context_website")
+        || (request.command == "save_setting" && request.args.get("key").and_then(Value::as_str) == Some(store::HISTORY_RETENTION))
+        || (request.command == "context.patch_settings" && request.args.get("settings").and_then(Value::as_object).is_some_and(|patch| patch.values().any(|value| value.is_null() || value.as_str().is_some_and(|s| s.trim().is_empty()))))
+        || matches!(request.command.as_str(), "credentials.delete" | "delete_custom_provider" | "assign_sub_app" | "delete_sub_app" | "sync_remove_device" | "disconnect_t3")
+        || (request.command == "update_context_color" && request.args.get("color").is_none_or(|value| value.is_null() || value.as_str().is_some_and(|s| s.trim().is_empty())))
+        || (matches!(request.command.as_str(), "set_dictionary_context_assignment" | "set_snippet_context_assignment")
+            && request.args.get("assigned") == Some(&Value::Bool(false)))
+        || (request.command == "diagnostics.retention" && request.args.get("days") == Some(&json!(0)))
+    {
+        scopes.push("destructive");
+    }
+    if request.command == "diagnostics.retention" && request.args.get("days").is_some() {
+        scopes.push("settings_write");
+    }
+    scopes
+}
+
 pub fn start(app: AppHandle) -> anyhow::Result<()> {
-    let Ok(token) = std::env::var("VERENU_AGENT_TOKEN") else {
-        return Ok(());
+    let token = std::env::var("VERENU_AGENT_TOKEN").ok();
+    let port: u16 = if let Some(ref token) = token {
+        anyhow::ensure!(
+            valid_token(token),
+            "VERENU_AGENT_TOKEN must be 32 random bytes encoded as 64 hex characters"
+        );
+        let port = std::env::var("VERENU_AGENT_PORT")?.parse()?;
+        anyhow::ensure!(port > 0, "VERENU_AGENT_PORT must be 1..65535");
+        port
+    } else {
+        0
     };
-    anyhow::ensure!(
-        token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()),
-        "VERENU_AGENT_TOKEN must be 32 random bytes encoded as 64 hex characters"
-    );
-    let port: u16 = std::env::var("VERENU_AGENT_PORT")?.parse()?;
-    anyhow::ensure!(port > 0, "VERENU_AGENT_PORT must be 1..65535");
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))?;
     listener.set_nonblocking(true)?;
+    let actual_port = listener.local_addr()?.port();
+    let instance = uuid::Uuid::new_v4().to_string();
+    publish_discovery(actual_port, &instance)?;
+    let approvals = Arc::new(Mutex::new(Approvals {
+        legacy_token: token,
+        ..Approvals::default()
+    }));
+    app.manage(approvals.clone());
     let state = Agent {
         app,
-        token: Arc::new(token),
+        instance,
+        approvals,
         gate: Arc::new(tokio::sync::Semaphore::new(1)),
     };
     tauri::async_runtime::spawn(async move {
@@ -56,6 +270,10 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
         };
         let routes = Router::new()
             .route("/v1/invoke", post(invoke))
+            .route("/v1/status", get(status))
+            .route("/v1/authorize", post(authorize))
+            .route("/v1/authorization-status", post(authorization_status))
+            .route("/v1/revoke", post(revoke))
             .layer(DefaultBodyLimit::max(64 * 1024))
             .with_state(state);
         if axum::serve(listener, routes).await.is_err() {
@@ -65,8 +283,140 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn status(State(agent): State<Agent>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
+    if is_browser(&headers) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"Forbidden"})));
+    }
+    (StatusCode::OK, Json(json!({"version":1, "instance":agent.instance})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Authorization {
+    token: String,
+}
+
+fn is_browser(headers: &HeaderMap) -> bool {
+    headers.contains_key("origin") || headers.contains_key("sec-fetch-site")
+}
+
+async fn authorize(
+    State(agent): State<Agent>,
+    headers: HeaderMap,
+    Json(request): Json<Authorization>,
+) -> (StatusCode, Json<Value>) {
+    if is_browser(&headers) || !valid_token(&request.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"Unauthorized"})),
+        );
+    }
+    let hash = digest(&request.token);
+    let code = hash[..6]
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<String>();
+    {
+        let Ok(mut approvals) = agent.approvals.lock() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":"Unavailable"})),
+            );
+        };
+        approvals
+            .grants
+            .retain(|_, grant| grant.expires > Instant::now());
+        if approvals.grants.len() >= 128 {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({"error":"Too many active agents"})),
+            );
+        }
+        if approvals
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.expires > Instant::now())
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error":"Another approval is pending"})),
+            );
+        }
+        approvals.pending = Some(Pending {
+            digest: hash,
+            code: code.clone(),
+            expires: Instant::now() + Duration::from_secs(120),
+        });
+    }
+    crate::app_setup::show_main_window(&agent.app);
+    (
+        StatusCode::OK,
+        Json(json!({"code":code, "expires_in_seconds":120})),
+    )
+}
+
+async fn authorization_status(
+    State(agent): State<Agent>,
+    headers: HeaderMap,
+    Json(request): Json<Authorization>,
+) -> (StatusCode, Json<Value>) {
+    if is_browser(&headers) || !valid_token(&request.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"Unauthorized"})),
+        );
+    }
+    let hash = digest(&request.token);
+    let Ok(mut approvals) = agent.approvals.lock() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"Unavailable"})),
+        );
+    };
+    approvals
+        .grants
+        .retain(|_, grant| grant.expires > Instant::now());
+    let status = if approvals.grants.contains_key(&hash) {
+        "approved"
+    } else if approvals
+        .pending
+        .as_ref()
+        .is_some_and(|p| p.digest == hash && p.expires > Instant::now())
+    {
+        "pending"
+    } else {
+        "denied_or_expired"
+    };
+    (StatusCode::OK, Json(json!({"status":status})))
+}
+
+async fn revoke(
+    State(agent): State<Agent>,
+    headers: HeaderMap,
+    Json(request): Json<Authorization>,
+) -> (StatusCode, Json<Value>) {
+    if is_browser(&headers) || !valid_token(&request.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error":"Unauthorized"})),
+        );
+    }
+    if let Ok(mut approvals) = agent.approvals.lock() {
+        let hash = digest(&request.token);
+        approvals.grants.remove(&hash);
+        if approvals
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.digest == hash)
+        {
+            approvals.pending = None;
+        }
+    }
+    (StatusCode::OK, Json(json!({"revoked":true})))
+}
+
 fn authenticated(headers: &HeaderMap, token: &str) -> bool {
-    if headers.contains_key("origin") || headers.contains_key("sec-fetch-site") {
+    if is_browser(headers) {
         return false;
     }
     let Some(value) = headers
@@ -85,17 +435,46 @@ fn authenticated(headers: &HeaderMap, token: &str) -> bool {
             == 0
 }
 
+fn spawn_with_permit<F, T>(
+    permit: tokio::sync::OwnedSemaphorePermit,
+    future: F,
+) -> tokio::task::JoinHandle<T>
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::spawn(async move {
+        let _permit = permit;
+        future.await
+    })
+}
+
 async fn invoke(
     State(agent): State<Agent>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<Value>) {
-    if !authenticated(&headers, &agent.token) {
+    let grant = (!is_browser(&headers)).then(|| agent.approvals.lock().ok()).flatten().and_then(|mut approvals| {
+            approvals
+                .grants
+                .retain(|_, grant| grant.expires > Instant::now());
+            if approvals.legacy_token.as_ref().is_some_and(|token| authenticated(&headers, token)) {
+                Some((AGENT_SCOPES.iter().map(|scope| (*scope).to_string()).collect::<Vec<_>>(), "environment-grant".to_string()))
+            } else {
+                headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("Bearer "))
+                    .filter(|v| valid_token(v))
+                    .and_then(|token| approvals.grants.get(&digest(token)).map(|grant| (grant.scopes.clone(), grant.actor_id.clone())))
+            }
+        });
+    let Some((scopes, actor_id)) = grant else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Unauthorized"})),
         );
-    }
+    };
     let request: Request = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(_) => {
@@ -105,17 +484,49 @@ async fn invoke(
             )
         }
     };
-    let Ok(_permit) = agent.gate.try_acquire() else {
+    let required = required_scopes(&request);
+    if required.iter().any(|scope| !scopes.iter().any(|granted| granted == scope)) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "Agent access does not include the permission required for this operation"})));
+    }
+    let Ok(permit) = agent.gate.clone().try_acquire_owned() else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(json!({"error": "Agent API busy; retry after the current request"})),
         );
     };
-    match tokio::time::timeout(Duration::from_secs(60), dispatch(&agent.app, request)).await {
-        Ok(Ok(value)) => (StatusCode::OK, Json(json!({"version": 1, "result": value}))),
+    // Keep the permit inside the spawned task: timeout or client disconnect must
+    // not allow another request to overlap a still-running blocking mutation.
+    let app = agent.app.clone();
+    let is_write = required.iter().any(|scope| matches!(*scope, "settings_write" | "context_write" | "library_write" | "credentials" | "integrations"));
+    let changes_contexts = required.contains(&"context_write");
+    let task = spawn_with_permit(permit, async move {
+        if !is_write {
+            return dispatch(&app, request).await;
+        }
+        let target = ["id", "contextId", "context_id", "dictionaryId", "snippetId"]
+            .iter().find_map(|key| request.args.get(*key).and_then(Value::as_i64));
+        let db = app.state::<crate::DbHandle>().inner().clone();
+        let db_for_start = db.clone();
+        let command = request.command.clone();
+        let audit_id = tokio::task::spawn_blocking(move || db::begin_agent_change(&db_for_start, &command, target, &actor_id))
+            .await.map_err(|_| "Audit worker unavailable".to_string())?
+            .map_err(|_| "Could not start the agent change audit".to_string())?;
+        let result = dispatch(&app, request).await;
+        if result.is_ok() && changes_contexts {
+            let _ = app.emit("verenu:context-updated", ());
+        }
+        let succeeded = result.is_ok();
+        tokio::task::spawn_blocking(move || db::finish_agent_change(&db, audit_id, succeeded))
+            .await.map_err(|_| "Audit outcome unavailable; read state before retrying".to_string())?
+            .map_err(|_| "Audit outcome unavailable; read state before retrying".to_string())?;
+        result
+    });
+    match tokio::time::timeout(Duration::from_secs(60), task).await {
+        Ok(Ok(Ok(value))) => (StatusCode::OK, Json(json!({"version": 1, "result": value}))),
         // Native errors can contain user input. Returned only to the explicitly
         // authorized local caller, never written to ordinary transport logs.
-        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({"error": error}))),
+        Ok(Ok(Err(error))) => (StatusCode::BAD_REQUEST, Json(json!({"error": error}))),
+        Ok(Err(_)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Agent request failed"}))),
         Err(_) => (
             StatusCode::GATEWAY_TIMEOUT,
             Json(
@@ -129,6 +540,13 @@ const WRITABLE_SETTINGS: &[&str] = &[
     store::MUTE_AUDIO,
     store::MICROPHONE_DEVICE,
     store::NOISE_REDUCTION,
+    store::ECHO_CANCELLATION,
+    store::DUCK_AUDIO,
+    store::DUCK_TARGET,
+    store::DUCK_FADE_DOWN_MS,
+    store::DUCK_FADE_UP_MS,
+    store::DUCK_FADE_DOWN_CURVE,
+    store::DUCK_FADE_UP_CURVE,
     store::CLEANUP_ENABLED,
     store::CONTEXTUAL_CAPS,
     store::AUTO_SPACING,
@@ -146,6 +564,45 @@ const WRITABLE_SETTINGS: &[&str] = &[
     store::CLEANUP_MODEL,
     store::CLEANUP_PROMPT_OVERRIDE,
     store::HISTORY_RETENTION,
+    store::VOICE_COMMANDS_ENABLED,
+    store::CUSTOM_PROVIDERS,
+    store::MODEL_SELECTION_MODE,
+    store::TRANSCRIPTION_MODELS_BY_PROVIDER,
+    store::CLEANUP_MODELS_BY_PROVIDER,
+    store::TRANSCRIPTION_DEFAULT_MODEL,
+    store::CLEANUP_DEFAULT_MODEL,
+    store::TRANSCRIPTION_FALLBACK_MODELS,
+    store::CLEANUP_FALLBACK_MODELS,
+    store::DUAL_TRANSCRIPTION_ENABLED,
+    store::CLEANUP_CACHE_ENABLED,
+    store::SUB_APP_CAPTURE_HOTKEY,
+    store::LINUX_CANCEL_KEY,
+    store::LINUX_HANDSFREE_KEY,
+    store::DEFAULT_TONE,
+    store::CLEANUP_INTENSITY,
+    store::MIC_MUTE_BUTTON_DICTATION,
+    store::EXCLUSIVE_MIC,
+    store::AUTO_LEARN_EVENT_MODE,
+    store::APPEARANCE_MODE,
+    store::ACCENT_COLOR,
+    store::CUSTOM_THEME,
+    store::CUSTOM_THEMES,
+    store::ANDROID_PILL_POSITION,
+    store::ANDROID_PILL_DOCK_POSITION,
+    store::ANDROID_PILL_COVER_KEYBOARD_MIC,
+    store::ANDROID_PILL_HIDE_OFFLINE,
+    store::ADVANCED_MODEL_UI,
+    store::STYLE_PROMPT_INSTRUCTIONS,
+    store::BETA_UPDATES_ENABLED,
+    store::ANALYTICS_ENABLED,
+    store::VERENU_SERVICE_CHECKS_ENABLED,
+    store::GITHUB_USERNAME,
+    store::LOCAL_MODEL_MEMORY_POLICY,
+    store::CLIPBOARD_PHRASE_ENABLED,
+    store::CLIPBOARD_PHRASE,
+    store::LEGACY_FEATURES_ENABLED,
+    store::SYNC_ENABLED,
+    store::SYNC_MUTING_ENABLED,
 ];
 
 // One registry generates argument discovery and dispatch. Calling the existing
@@ -154,9 +611,13 @@ macro_rules! native_commands {
     ($mode:ident, $app:ident, $request:ident, $( $name:ident { $( $field:ident : $ty:ty ),* $(,)? } ),* $(,)?) => {
         native_commands!(@$mode, $app, $request, $( $name { $( $field : $ty ),* } ),*)
     };
-    (@describe, $app:ident, $request:ident, $( $name:ident { $( $field:ident : $ty:ty ),* } ),*) => {
-        json!([$( {"command": stringify!($name), "arguments": { $( camel_case(stringify!($field)): stringify!($ty) ),* } } ),*])
-    };
+    (@describe, $app:ident, $request:ident, $( $name:ident { $( $field:ident : $ty:ty ),* } ),*) => {{
+        let entries = vec![$(json!({"command": stringify!($name), "arguments": { $( camel_case(stringify!($field)): stringify!($ty) ),* },
+            "argument_schema": { "type": "object", "properties": { $( camel_case(stringify!($field)): argument_schema(stringify!($ty)) ),* },
+                "required": Vec::<(String, &str)>::from([$( (camel_case(stringify!($field)), stringify!($ty)) ),*]).into_iter().filter_map(|(field, ty)| (!ty.replace(' ', "").starts_with("Option<")).then_some(field)).collect::<Vec<_>>(),
+                "additionalProperties": false } })),*];
+        entries
+    }};
     (@dispatch, $app:ident, $request:ident, $( $name:ident { $( $field:ident : $ty:ty ),* } ),*) => {
         match $request.command.as_str() {
             $(stringify!($name) => {
@@ -172,6 +633,27 @@ macro_rules! native_commands {
     };
 }
 
+fn argument_schema(ty: &str) -> Value {
+    let compact = ty.replace(' ', "");
+    let (inner, optional) = compact.strip_prefix("Option<").and_then(|s| s.strip_suffix('>'))
+        .map_or((compact.as_str(), false), |s| (s, true));
+    if inner == "db::ExpectedSnippet" {
+        let schema = json!({"type":"object", "properties": {"trigger":{"type":"string"}, "expansion":{"type":"string"}, "instructions":{"type":"string"}}, "required":["trigger","expansion","instructions"], "additionalProperties":false});
+        return if optional { json!({"anyOf":[schema,{"type":"null"}]}) } else { schema };
+    }
+    if inner == "db::ExpectedDictionaryEntry" {
+        let schema = json!({"type":"object", "properties":{"term":{"type":"string"},"mistake":{"type":["string","null"]}},"required":["term"],"additionalProperties":false});
+        return if optional { json!({"anyOf":[schema,{"type":"null"}]}) } else { schema };
+    }
+    let kind = match inner {
+        "String" => "string",
+        "bool" => "boolean",
+        "i64" => "integer",
+        _ => return json!({}),
+    };
+    if optional { json!({"type": [kind, "null"]}) } else { json!({"type": kind}) }
+}
+
 fn camel_case(field: &str) -> String {
     let mut parts = field.split('_');
     let mut result = parts.next().unwrap_or_default().to_string();
@@ -185,6 +667,29 @@ fn camel_case(field: &str) -> String {
     result
 }
 
+fn additional_command_schemas() -> Value {
+    let object = |properties: Value, required: Vec<&str>| json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
+    let empty = object(json!({}), vec![]);
+    let date = json!({"type":"string","format":"date","description":"UTC date in YYYY-MM-DD form"});
+    let range = object(json!({"start":date,"end":date}), vec!["start","end"]);
+    let item = json!({"type":"object","properties":{"kind":{"enum":["dictionary","snippet"]},"uuid":{"type":"string","format":"uuid"}},"required":["kind","uuid"],"additionalProperties":false});
+    let items = json!({"type":"array","minItems":1,"maxItems":100,"uniqueItems":true,"items":item});
+    json!({
+        "get_microphones":empty, "diagnostics.snapshot":empty, "library.usage":empty, "library.items":empty,
+        "history.report":range, "history.usage":range, "diagnostics.top":range,
+        "history.page":object(json!({"start":date,"end":date,"after_id":{"type":"integer","default":0},"limit":{"type":"integer","minimum":1,"maximum":500,"default":100},"include_text":{"type":"boolean","default":false}}),vec!["start","end"]),
+        "audit.page":object(json!({"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"default":100}}),vec![]),
+        "diagnostics.retention":object(json!({"days":{"type":["integer","null"],"minimum":0,"maximum":365}}),vec![]),
+        "diagnostics.logs":object(json!({"since_ms":{"type":["integer","null"],"minimum":0},"until_ms":{"type":["integer","null"],"minimum":0},"subsystem":{"type":["string","null"]},"level":{"enum":["error","warn","info","debug","trace",null]},"limit":{"type":["integer","null"],"minimum":1,"maximum":1000}}),vec![]),
+        "prompts.lint":object(json!({"template":{"type":"string"},"intensity":{"type":["string","null"]},"tone":{"type":["string","null"]}}),vec!["template"]),
+        "save_setting":object(json!({"key":{"type":"string","enum":WRITABLE_SETTINGS},"value":{"description":"See writable_setting_schemas for the selected key"},"expected":{"type":"object"}}),vec!["key","value","expected"]),
+        "context.patch_settings":object(json!({"contextId":{"type":"integer"},"expected":{"type":"object","description":"Complete object returned by get_contexts"},"settings":{"type":"object","properties":{"icon":{"type":["string","null"]},"tone":{"type":["string","null"]},"cleanupIntensity":{"type":["string","null"]},"customInstructions":{"type":["string","null"]},"contextualFormattingOverride":{"type":["boolean","null"]},"pasteInChunks":{"type":"boolean"}},"additionalProperties":false}}),vec!["contextId","expected","settings"]),
+        "library.preview_delete":object(json!({"items":items}),vec!["items"]),
+        "library.apply_delete":object(json!({"items":items,"basis":{"type":"string"},"request_id":{"type":"string","format":"uuid"}}),vec!["items","basis","request_id"]),
+        "library.undo_delete":object(json!({"request_id":{"type":"string","format":"uuid"}}),vec!["request_id"])
+    })
+}
+
 macro_rules! registry {
     ($mode:ident, $app:ident, $request:ident) => {
         native_commands!($mode, $app, $request,
@@ -192,16 +697,43 @@ macro_rules! registry {
             test_cleanup_prompt { provider: String, model: String, template: String, intensity: Option<String>, tone: Option<String> },
             get_contexts {},
             create_context { name: String, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: Option<bool>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool> },
-            duplicate_context { context_id: i64 }, update_context { context_id: i64, name: String },
-            update_context_settings { context_id: i64, icon: Option<String>, tone: Option<String>, cleanup_intensity: Option<String>, custom_instructions: Option<String>, contextual_formatting_disabled: Option<bool>, contextual_formatting_override: Option<bool>, paste_in_chunks: Option<bool> },
-            update_context_color { context_id: i64, color: Option<String> },
-            set_context_pinned { context_id: i64, pinned: bool }, delete_context { context_id: i64 },
+            duplicate_context { context_id: i64 },
+            save_context_if_unchanged { original: db::Context, updated: db::Context },
+            delete_context { context_id: i64 },
             get_context_stats { context_id: i64 }, get_context_targets { context_id: Option<i64> },
             assign_context_target { context_id: i64, executable: String, app_name: Option<String>, developer: Option<String> },
             remove_context_target { context_id: i64, executable: String },
             get_context_websites { context_id: Option<i64> },
             assign_context_website { context_id: i64, domain: String }, remove_context_website { context_id: i64, domain: String },
-            get_context_dictionary { context_id: i64 }, get_context_snippets { context_id: i64 }
+            rename_dictionary_entry_global { id: i64, term: String, expected_term: String },
+            get_context_dictionary { context_id: i64 }, get_context_snippets { context_id: i64 },
+            get_dictionary {},
+            create_dictionary_entry { term: String, mistake: Option<String>, context_id: Option<i64> },
+            edit_dictionary_entry { id: i64, term: String, mistake: Option<String>, context_id: Option<i64>, expected: Option<db::ExpectedDictionaryEntry> },
+            remove_dictionary_entry { id: i64, context_id: Option<i64> },
+            move_dictionary_entry_to_context { dictionary_id: i64, source_context_id: i64, target_context_id: i64 },
+            get_dictionary_entry_contexts { term: String },
+            move_dictionary_entry_by_term_to_context { term: String, context_id: i64 },
+            set_dictionary_context_assignment { context_id: i64, dictionary_id: i64, assigned: bool },
+            get_snippets {},
+            create_snippet { trigger: String, expansion: String, instructions: String, context_id: Option<i64> },
+            edit_snippet { id: i64, trigger: String, expansion: String, instructions: String, expected: Option<db::ExpectedSnippet> },
+            remove_snippet { id: i64 },
+            get_snippet_entry_contexts { trigger: String },
+            move_snippet_entry_to_context { trigger: String, context_id: i64, edit: Option<db::SnippetMoveEdit> },
+            set_snippet_context_assignment { context_id: i64, snippet_id: i64, assigned: bool },
+            move_snippet_context_assignment { source_id: i64, target_id: i64, snippet_id: i64 },
+            get_sub_apps {},
+            create_sub_app { executable: String, app_name: Option<String>, label: String, icon: Option<String>, title_pattern: String, match_mode: String },
+            assign_sub_app { id: i64, context_id: Option<i64> }, delete_sub_app { id: i64 },
+            get_api_key_status {}, delete_custom_provider { provider: String },
+            sync_get_status {}, sync_set_device_name { name: String },
+            sync_set_peer_address { device_uuid: String, address: String },
+            sync_pair_connection { details: String }, sync_start_pairing { device_uuid: String },
+            sync_respond_to_pairing { code: String, approve: bool }, sync_cancel_pairing {},
+            sync_remove_device { device_uuid: String }, sync_now { device_uuid: Option<String> },
+            get_t3_skills {}, pull_t3_skills { force: Option<bool> },
+            select_t3_catalog { catalog_id: String }, disconnect_t3 {}
         )
     };
 }
@@ -210,37 +742,234 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
     if !request.args.is_object() {
         return Err("args must be an object".into());
     }
+    if matches!(
+        request.command.as_str(),
+        "describe" | "get_microphones" | "diagnostics.snapshot"
+    ) && request
+        .args
+        .as_object()
+        .is_some_and(|args| !args.is_empty())
+    {
+        return Err("This command does not accept arguments".into());
+    }
     if request.command == "describe" {
+        let mut native = registry!(describe, app, request);
+        native.push(json!({"command": "save_hotkey", "arguments": {"keys": "Vec<String>", "expected": "raw hotkey value from get_setting"}}));
+        native.push(json!({"command": "set_autostart", "arguments": {"enabled": "bool", "expected": "raw autostart_enabled value from get_setting"}}));
+        for entry in &mut native {
+            if matches!(entry["command"].as_str(), Some("edit_dictionary_entry" | "edit_snippet")) {
+                entry["arguments"]["expected"] = json!("required original editable fields");
+                let schema = &mut entry["argument_schema"];
+                schema["required"].as_array_mut().unwrap().push(json!("expected"));
+                let expected = &mut schema["properties"]["expected"];
+                *expected = expected["anyOf"][0].clone();
+            }
+        }
         return Ok(
-            json!({"version": 1, "native_commands": registry!(describe, app, request),
-            "argument_naming": "Native command fields use camelCase; optional fields may be omitted. update_context_settings replaces all fields; read then modify.",
+            json!({"version": 1, "native_commands": native,
+            "argument_naming": "Native command fields use camelCase; optional fields may be omitted. edit_dictionary_entry and edit_snippet require expected snapshots. Use context.patch_settings for partial edits or save_context_if_unchanged for replacements.",
             "writable_settings": WRITABLE_SETTINGS,
+            "writable_setting_schemas": WRITABLE_SETTINGS.iter().filter_map(|key| commands::settings::agent_setting_schema(key).map(|schema| ((*key).to_string(), schema))).collect::<serde_json::Map<String, Value>>(),
+            "additional_command_schemas": additional_command_schemas(),
+            "permissions": {
+                "available": AGENT_SCOPES,
+                "description": "Metadata reads, history text, settings writes, Context writes, library writes, destructive changes, diagnostics and provider calls are separately granted. Some operations require more than one permission.",
+                "additional_destructive_permission": "Deletes, library edits, Context settings replacement or clearing, application and website assignment changes, history retention changes, and clearing diagnostics require destructive access in addition to the relevant write permission."
+            },
             "additional_commands": {
-                "save_setting": {"key": "writable setting", "value": "native validated JSON"},
+                "save_setting": {"key": "writable setting", "value": "native validated JSON", "expected": "object mapping affected keys to values read with get_setting; contextual_formatting_enabled also requires contextual_caps_enabled and auto_spacing_enabled; on Linux duck_target requires duck_audio and mute_audio, and duck_audio requires mute_audio"},
+                "credentials.save": {"provider": "string", "key": "secret; supply through private stdin"},
+                "credentials.delete": {"provider": "string"},
+                "t3.connect": {"pairingLink": "private pairing link; supply through stdin"},
+                "context.patch_settings": {"contextId": "integer", "expected": "original Context returned by get_contexts", "settings": "object: icon, tone, cleanupIntensity, customInstructions, contextualFormattingOverride, pasteInChunks; omitted fields are preserved, null clears nullable fields"},
+                "context.set_pinned": {"contextId": "integer", "pinned": "boolean", "expected": "original Context returned by get_contexts"},
                 "get_microphones": {}, "diagnostics.snapshot": {},
                 "diagnostics.logs": {"since_ms": "optional inclusive UTC milliseconds", "until_ms": "optional exclusive UTC milliseconds", "subsystem": "optional substring", "level": "optional exact level: error, warn, info, debug, trace", "limit": "1..1000 (default 200); newest matches"},
                 "prompts.lint": {"template": "string", "intensity": "optional string", "tone": "optional string"},
                 "history.report": {"start": "YYYY-MM-DD UTC inclusive", "end": "YYYY-MM-DD UTC exclusive"},
+                "history.usage": {"start": "YYYY-MM-DD UTC inclusive", "end": "YYYY-MM-DD UTC exclusive"},
+                "library.usage": {"coverage": "Local mechanical matches only; zero does not prove non-use"},
+                "library.items": {"description": "List UUIDs for library preview"},
+                "library.preview_delete": {"items": "1..100 objects with kind dictionary or snippet and UUID"},
+                "library.apply_delete": {"items": "same objects as preview", "basis": "preview basis", "request_id": "unique UUID"},
+                "library.undo_delete": {"request_id": "original request UUID, recoverable for 30 days"},
+                "audit.page": {"limit": "1..500 (default 100); newest first"},
                 "history.page": {"start": "date", "end": "date", "after_id": "optional integer", "limit": "1..500 (default 100)", "include_text": "boolean, default false"},
                 "diagnostics.top": {"start": "date", "end": "date"},
                 "diagnostics.retention": {"days": "optional 0..365; 0 disables and clears"}
             },
-            "security": "Token grants settings/context writes and explicit history text access. Loopback only; no credential, SQL, shell, audio capture, or injection operations."}),
+            "security": "Each approved agent has selected scopes and a private token that expires after one hour or when Verenu quits. Loopback only; no credential reads, SQL, shell, audio capture, or injection operations."}),
         );
     }
     match request.command.as_str() {
+        "save_hotkey" | "set_autostart" => {
+            if !request.args.as_object().is_some_and(|args| args.contains_key("expected")) {
+                return Err("Expected current setting is required; read it before editing".into());
+            }
+            if request.command == "save_hotkey" {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args { keys: Vec<String>, expected: Value }
+                let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+                commands::save_hotkey_for_agent(app.clone(), args.keys, args.expected).await?;
+            } else {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Args { enabled: bool, expected: Value }
+                let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+                commands::set_autostart_for_agent(app.clone(), args.enabled, args.expected).await?;
+            }
+            Ok(Value::Null)
+        }
+        "t3.connect" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                pairing_link: String,
+            }
+            let args: Args = serde_json::from_value(request.args)
+                .map_err(|_| "Expected pairingLink string".to_string())?;
+            let result = commands::connect_t3(app.clone(), args.pairing_link)
+                .await
+                .map_err(|_| "Could not connect T3".to_string())?;
+            serde_json::to_value(result).map_err(|_| "Could not encode T3 status".to_string())
+        }
+        "credentials.save" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {
+                provider: String,
+                key: String,
+            }
+            let args: Args = serde_json::from_value(request.args)
+                .map_err(|_| "Expected provider and key strings".to_string())?;
+            commands::save_api_key(app.clone(), args.provider, args.key)
+                .await
+                .map_err(|_| "Could not save credential".to_string())?;
+            let _ = app.emit("verenu:agent-settings-changed", ());
+            Ok(Value::Null)
+        }
+        "credentials.delete" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {
+                provider: String,
+            }
+            let args: Args = serde_json::from_value(request.args)
+                .map_err(|_| "Expected provider string".to_string())?;
+            commands::delete_api_key(app.clone(), args.provider)
+                .await
+                .map_err(|_| "Could not delete credential".to_string())?;
+            let _ = app.emit("verenu:agent-settings-changed", ());
+            Ok(Value::Null)
+        }
+        "context.set_pinned" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args { context_id: i64, pinned: bool, expected: db::Context }
+            let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            if args.expected.id != args.context_id { return Err("Expected Context does not match contextId".to_string()); }
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            tokio::task::spawn_blocking(move || db::set_context_pinned_if_unchanged(&db, args.context_id, args.pinned, args.expected.pinned_at))
+                .await.map_err(|_| "Context worker unavailable".to_string())?.map_err(|e| e.to_string())?;
+            let _ = app.emit("verenu:agent-contexts-changed", ());
+            Ok(Value::Null)
+        }
+        "context.patch_settings" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Args {
+                context_id: i64,
+                settings: db::ContextSettingsPatch,
+                expected: db::Context,
+            }
+            let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            let context = tokio::task::spawn_blocking(move || {
+                db::patch_context_settings_if_unchanged(&db, args.context_id, args.settings, args.expected)
+            })
+            .await
+            .map_err(|_| "Context worker unavailable".to_string())?
+            .map_err(|e| e.to_string())?;
+            let _ = app.emit("verenu:agent-contexts-changed", ());
+            serde_json::to_value(context).map_err(|e| e.to_string())
+        }
+        "library.items" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {}
+            let _: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            tokio::task::spawn_blocking(move || db::list_library_items(&db)).await.map_err(|_| "Library worker unavailable".to_string())?.map_err(|e| e.to_string())
+        }
+        "library.preview_delete" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args { items: Vec<db::LibraryItem> }
+            let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            tokio::task::spawn_blocking(move || db::preview_library_delete(&db, args.items)).await.map_err(|_| "Library worker unavailable".to_string())?.map_err(|e| e.to_string())
+        }
+        "library.apply_delete" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args { items: Vec<db::LibraryItem>, basis: String, request_id: String }
+            let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            let result = tokio::task::spawn_blocking(move || db::apply_library_delete(&db, args.items, &args.basis, &args.request_id)).await.map_err(|_| "Library worker unavailable".to_string())?.map_err(|e| e.to_string())?;
+            let _ = app.emit("verenu:dictionary-updated", json!({"context_id":null,"dictionary_id":null}));
+            let _ = app.emit("verenu:snippets-updated", ());
+            Ok(result)
+        }
+        "library.undo_delete" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args { request_id: String }
+            let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            let result = tokio::task::spawn_blocking(move || db::undo_library_delete(&db, &args.request_id)).await.map_err(|_| "Library worker unavailable".to_string())?.map_err(|e| e.to_string())?;
+            let _ = app.emit("verenu:dictionary-updated", json!({"context_id":null,"dictionary_id":null}));
+            let _ = app.emit("verenu:snippets-updated", ());
+            Ok(result)
+        }
+        "audit.page" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args { limit: Option<usize> }
+            let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            tokio::task::spawn_blocking(move || db::query_agent_changes(&db, args.limit.unwrap_or(100)))
+                .await.map_err(|_| "Audit worker unavailable".to_string())?
+                .map_err(|e| e.to_string())
+        }
+        "library.usage" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {}
+            let _: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
+            let db = app.state::<crate::DbHandle>().inner().clone();
+            tokio::task::spawn_blocking(move || db::query_library_usage(&db))
+                .await.map_err(|_| "Library usage worker unavailable".to_string())?
+                .map_err(|e| e.to_string())
+        }
         "save_setting" => {
             #[derive(Deserialize)]
             #[serde(deny_unknown_fields)]
             struct Args {
                 key: String,
                 value: Value,
+                expected: serde_json::Map<String, Value>,
             }
             let args: Args = serde_json::from_value(request.args).map_err(|e| e.to_string())?;
             if !WRITABLE_SETTINGS.contains(&args.key.as_str()) {
                 return Err("Setting is not agent-writable; use describe".into());
             }
-            commands::save_setting(app.clone(), args.key, args.value).await?;
+            if args.key == store::SUB_APP_CAPTURE_HOTKEY {
+                commands::save_sub_app_shortcut_for_agent(app.clone(), args.value, args.expected).await?;
+            } else {
+                commands::save_setting_if_unchanged(app.clone(), args.key.clone(), args.value, args.expected).await?;
+                let _ = app.emit("verenu:agent-settings-changed", vec![args.key]);
+            }
             Ok(Value::Null)
         }
         "get_microphones" => {
@@ -269,12 +998,19 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
         "diagnostics.logs" => crate::system::diagnostics::query_logs(
             serde_json::from_value(request.args).map_err(|e| e.to_string())?,
         ),
-        "history.report" | "history.page" | "diagnostics.top" | "diagnostics.retention" => {
+        "history.report"
+        | "history.usage"
+        | "history.page"
+        | "diagnostics.top"
+        | "diagnostics.retention" => {
             let db = app.state::<crate::DbHandle>().inner().clone();
             tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
                 match request.command.as_str() {
                     "history.report" => {
                         db::agent_history_report(&db, serde_json::from_value(request.args)?)
+                    }
+                    "history.usage" => {
+                        db::agent_history_usage(&db, serde_json::from_value(request.args)?)
                     }
                     "history.page" => {
                         db::agent_history_page(&db, serde_json::from_value(request.args)?)
@@ -301,20 +1037,102 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             .map_err(|_| "History worker unavailable".to_string())?
             .map_err(|e| e.to_string())
         }
-        _ => registry!(dispatch, app, request),
+        _ => {
+            if matches!(request.command.as_str(), "edit_dictionary_entry" | "edit_snippet")
+                && request.args.get("expected").is_none_or(Value::is_null) {
+                return Err("Expected original entry is required; read the entry before editing".into());
+            }
+            let refresh_settings = matches!(request.command.as_str(),
+                "delete_custom_provider" | "save_hotkey" | "set_autostart");
+            let refresh_contexts = matches!(request.command.as_str(),
+                "create_context" | "duplicate_context" | "update_context" | "save_context_if_unchanged"
+                | "update_context_color" | "set_context_t3_skill_mentions" | "set_context_pinned" | "delete_context"
+                | "assign_context_target" | "remove_context_target" | "assign_context_website" | "remove_context_website"
+                | "create_dictionary_entry" | "edit_dictionary_entry" | "remove_dictionary_entry" | "move_dictionary_entry_to_context"
+                | "move_dictionary_entry_by_term_to_context" | "set_dictionary_context_assignment"
+                | "create_snippet" | "edit_snippet" | "remove_snippet" | "move_snippet_entry_to_context" | "set_snippet_context_assignment" | "move_snippet_context_assignment"
+                | "create_sub_app" | "assign_sub_app" | "delete_sub_app");
+            let result = registry!(dispatch, app, request);
+            if refresh_contexts && result.is_ok() {
+                let _ = app.emit("verenu:agent-contexts-changed", ());
+            }
+            if refresh_settings && result.is_ok() {
+                let _ = app.emit("verenu:agent-settings-changed", ());
+            }
+            result
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn timed_out_request_keeps_the_gate_until_work_finishes() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = gate.clone().try_acquire_owned().unwrap();
+        let (finish, waiting) = tokio::sync::oneshot::channel::<()>();
+        let task = spawn_with_permit(permit, async move { waiting.await.unwrap() });
+        assert!(tokio::time::timeout(Duration::from_millis(10), task).await.is_err());
+        assert!(gate.clone().try_acquire_owned().is_err());
+        finish.send(()).unwrap();
+        let permit = tokio::time::timeout(Duration::from_secs(1), gate.clone().acquire_owned())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(permit);
+    }
+    #[test]
+    fn commands_have_explicit_permission_classification() {
+        let commands = registry!(describe, unused_app, unused_request);
+        for entry in &commands {
+            let name = entry["command"].as_str().unwrap();
+            let request = Request { command: name.into(), args: json!({}) };
+            assert!(!required_scopes(&request).contains(&"unsupported"), "missing permission classification for {name}");
+        }
+        let request = Request { command: "history.page".into(), args: json!({"include_text": true}) };
+        assert_eq!(required_scopes(&request), vec!["metadata", "history_text"]);
+        let request = Request { command: "remove_dictionary_entry".into(), args: json!({"id": 1}) };
+        assert_eq!(required_scopes(&request), vec!["library_write", "destructive"]);
+        let request = Request { command: "move_snippet_context_assignment".into(), args: json!({}) };
+        assert_eq!(required_scopes(&request), vec!["library_write", "destructive"]);
+        for context_id in [json!(null), json!(42)] {
+            let request = Request { command: "assign_sub_app".into(), args: json!({"id": 1, "contextId": context_id}) };
+            assert_eq!(required_scopes(&request), vec!["context_write", "destructive"]);
+        }
+        for value in [json!(null), json!(""), json!("  ")] {
+            let request = Request { command: "context.patch_settings".into(), args: json!({"settings": {"customInstructions": value}}) };
+            assert_eq!(required_scopes(&request), vec!["context_write", "destructive"]);
+            let request = Request { command: "update_context_color".into(), args: json!({"color": value}) };
+            assert_eq!(required_scopes(&request), vec!["context_write", "destructive"]);
+        }
+        let request = Request { command: "update_context_color".into(), args: json!({}) };
+        assert_eq!(required_scopes(&request), vec!["context_write", "destructive"]);
+        let request = Request { command: "update_context_color".into(), args: json!({"color": "blue"}) };
+        assert_eq!(required_scopes(&request), vec!["context_write"]);
+        let request = Request { command: "future_command".into(), args: json!({}) };
+        assert_eq!(required_scopes(&request), vec!["unsupported"]);
+    }
+
+    #[test]
+    fn every_writable_setting_has_a_schema() {
+        for key in WRITABLE_SETTINGS {
+            assert!(commands::settings::agent_setting_schema(key).is_some(), "missing setting schema for {key}");
+        }
+    }
+
     #[test]
     fn agent_context_commands_advertise_nullable_formatting_overrides() {
         let described = registry!(describe, app, request);
-        for command in ["create_context", "update_context_settings"] {
-            let entry = described.as_array().unwrap().iter()
-                .find(|entry| entry["command"] == command).unwrap();
-            for field in ["contextualFormattingDisabled", "contextualFormattingOverride"] {
+        for command in ["create_context"] {
+            let entry = described
+                .iter()
+                .find(|entry| entry["command"] == command)
+                .unwrap();
+            for field in [
+                "contextualFormattingDisabled",
+                "contextualFormattingOverride",
+            ] {
                 let argument_type = entry["arguments"][field].as_str().unwrap();
                 assert_eq!(argument_type.replace(' ', ""), "Option<bool>");
             }
@@ -336,5 +1154,37 @@ mod tests {
             format!("Bearer {}", "b".repeat(64)).parse().unwrap(),
         );
         assert!(!authenticated(&headers, &token));
+    }
+
+    #[test]
+    fn agent_context_library_operations_are_discoverable() {
+        let described = registry!(describe, unused_app, unused_request);
+        let commands = &described;
+        for command in [
+            "get_dictionary",
+            "get_snippets",
+            "create_dictionary_entry",
+            "edit_dictionary_entry",
+            "remove_dictionary_entry",
+            "create_snippet",
+            "edit_snippet",
+            "remove_snippet",
+            "get_dictionary_entry_contexts",
+            "get_snippet_entry_contexts",
+            "set_dictionary_context_assignment",
+            "set_snippet_context_assignment",
+        ] {
+            assert!(
+                commands.iter().any(|entry| entry["command"] == command),
+                "missing {command}"
+            );
+        }
+        let remove = commands.iter().find(|entry| entry["command"] == "remove_dictionary_entry").unwrap();
+        let schema = &remove["argument_schema"];
+        assert_eq!(schema["properties"]["id"]["type"], "integer");
+        assert_eq!(schema["properties"]["contextId"]["type"], json!(["integer", "null"]));
+        assert_eq!(schema["required"], json!(["id"]));
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema["properties"].get("correctionId").is_none());
     }
 }

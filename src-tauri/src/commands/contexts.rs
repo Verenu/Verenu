@@ -58,6 +58,11 @@ pub async fn update_context(app: AppHandle, context_id: i64, name: String) -> Re
 }
 
 #[tauri::command]
+pub async fn save_context_if_unchanged(app: AppHandle, original: db::Context, updated: db::Context) -> Result<db::Context, String> {
+    run_db(&app, "save_context_if_unchanged", move |db| db::save_context_if_unchanged(db, original, updated)).await
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_context_settings(
     app: AppHandle,
@@ -69,8 +74,38 @@ pub async fn update_context_settings(
     contextual_formatting_disabled: Option<bool>,
     contextual_formatting_override: Option<bool>,
     paste_in_chunks: Option<bool>,
+    expected: Option<serde_json::Value>,
+    name: Option<String>,
+    editor_patch: Option<serde_json::Value>,
 ) -> Result<(), String> {
     run_db(&app, "update_context_settings", move |db| {
+        if let Some(expected) = expected {
+            let mut patch = serde_json::json!({
+                "icon": icon, "tone": tone, "cleanup_intensity": cleanup_intensity,
+                "custom_instructions": custom_instructions,
+                "contextual_formatting_override": contextual_formatting_override.or_else(|| contextual_formatting_disabled.filter(|disabled| *disabled)),
+            });
+            if let Some(paste) = paste_in_chunks {
+                patch["paste_in_chunks"] = serde_json::json!(paste);
+            }
+            if let Some(name) = name {
+                patch["name"] = serde_json::json!(name);
+            }
+            if let Some(editor_patch) = editor_patch {
+                let fields = editor_patch.as_object().ok_or_else(|| anyhow::anyhow!("editorPatch must be an object"))?;
+                for (key, value) in fields {
+                    if !["color", "t3_skill_mentions_disabled"].contains(&key.as_str()) {
+                        return Err(anyhow::anyhow!("Unknown editorPatch field"));
+                    }
+                    patch[key] = value.clone();
+                }
+            }
+            db::patch_context_settings_extended(db, context_id, expected, patch)?;
+            return Ok(());
+        }
+        if name.is_some() || editor_patch.is_some() {
+            return Err(anyhow::anyhow!("Updating the name requires an expected Context"));
+        }
         db::update_context_settings_with_override_and_delivery(
             db,
             context_id,
@@ -265,8 +300,9 @@ pub async fn move_snippet_entry_to_context(
     app: AppHandle,
     trigger: String,
     context_id: i64,
+    edit: Option<db::SnippetMoveEdit>,
 ) -> Result<db::Snippet, String> {
-    run_db(&app, "move_snippet_entry_to_context", move |db| db::move_snippet_entry_to_context(db, &trigger, context_id))
+    run_db(&app, "move_snippet_entry_to_context", move |db| db::move_snippet_entry_to_context(db, &trigger, context_id, edit.as_ref()))
         .await
 }
 
@@ -277,8 +313,9 @@ pub async fn set_dictionary_context_assignment(
     dictionary_id: i64,
     assigned: bool,
 ) -> Result<(), String> {
-    run_db(&app, "set_dictionary_context_assignment", move |db| db::set_dictionary_context_assignment(db, context_id, dictionary_id, assigned))
-        .await
+    let result = run_db(&app, "set_dictionary_context_assignment", move |db| db::set_dictionary_context_assignment(db, context_id, dictionary_id, assigned)).await;
+    if result.is_ok() { let _ = app.emit("verenu:dictionary-updated", serde_json::json!({"context_id": context_id, "dictionary_id": dictionary_id})); }
+    result
 }
 
 #[tauri::command]
@@ -288,6 +325,21 @@ pub async fn set_snippet_context_assignment(
     snippet_id: i64,
     assigned: bool,
 ) -> Result<(), String> {
-    run_db(&app, "set_snippet_context_assignment", move |db| db::set_snippet_context_assignment(db, context_id, snippet_id, assigned))
-        .await
+    let result = run_db(&app, "set_snippet_context_assignment", move |db| db::set_snippet_context_assignment(db, context_id, snippet_id, assigned)).await;
+    if result.is_ok() { let _ = app.emit("verenu:snippets-updated", ()); }
+    result
+}
+
+#[tauri::command]
+pub async fn move_snippet_context_assignment(
+    app: AppHandle,
+    source_id: i64,
+    target_id: i64,
+    snippet_id: i64,
+) -> Result<(), String> {
+    let result = run_db(&app, "move_snippet_context_assignment", move |db| {
+        db::move_snippet_context_assignment(db, source_id, target_id, snippet_id)
+    }).await;
+    if result.is_ok() { let _ = app.emit("verenu:snippets-updated", ()); }
+    result
 }

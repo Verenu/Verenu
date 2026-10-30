@@ -209,16 +209,15 @@ export async function editContextDictionaryEntry(
   contextId: number,
   term: string,
   mistake: string | null,
+  expected?: Pick<DictionaryEntry, 'term' | 'mistake'>,
 ): Promise<void> {
   const dictionaryId = dictionaryEntryId(entry);
   await invoke('edit_dictionary_entry', {
     id: dictionaryId,
-    dictionaryId,
     contextId,
-    correctionId: dictionaryEntryCorrectionId(entry),
-    correctionIds: dictionaryEntryCorrectionIds(entry),
     term,
     mistake,
+    expected,
   });
 }
 
@@ -226,10 +225,7 @@ export async function removeContextDictionaryEntry(entry: ContextDictionaryIdent
   const dictionaryId = dictionaryEntryId(entry);
   await invoke('remove_dictionary_entry', {
     id: dictionaryId,
-    dictionaryId,
     contextId,
-    correctionId: dictionaryEntryCorrectionId(entry),
-    correctionIds: dictionaryEntryCorrectionIds(entry),
   });
 }
 
@@ -243,7 +239,5 @@ export async function moveContextDictionaryEntry(
     dictionaryId,
     sourceContextId,
     targetContextId,
-    correctionId: dictionaryEntryCorrectionId(entry),
-    correctionIds: dictionaryEntryCorrectionIds(entry),
   });
 }

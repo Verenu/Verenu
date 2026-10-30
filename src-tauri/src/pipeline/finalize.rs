@@ -8,6 +8,7 @@ pub(super) struct PipelineCompletionContext<'a> {
     pub(super) clipboard_plan: Option<&'a super::clipboard_phrase::ClipboardPhrasePlan>,
     pub(super) clipboard_warning: Option<&'static str>,
     pub(super) dict_entries: &'a [db::DictionaryEntry],
+    pub(super) snippet_expansions: i64,
     pub(super) duration_ms: u64,
     pub(super) api_used: &'a str,
     pub(super) target_hwnd: usize,
@@ -16,6 +17,7 @@ pub(super) struct PipelineCompletionContext<'a> {
     pub(super) profile: &'a str,
     pub(super) process_name: String,
     pub(super) cleanup_cache_key: String,
+    pub(super) cleanup_cache_result_hash: String,
     pub(super) captured_at: std::time::Instant,
     pub(super) event_only: bool,
     pub(super) caps_lock_on: bool,
@@ -52,8 +54,9 @@ pub(super) async fn finalize_pipeline_completion(
     ctx: PipelineCompletionContext<'_>,
 ) -> anyhow::Result<db::RecentEntry> {
     let dict_stage = std::time::Instant::now();
-    let (mut final_text_substituted, mut applied_dict_ids) =
-        dictionary::apply_substitutions_from(ctx.final_text_before_dict, ctx.dict_entries);
+    let (mut final_text_substituted, mut applied_dict_ids, mut applied_term_ids, mut vocabulary_replacements) =
+        dictionary::apply_substitutions_details(ctx.final_text_before_dict, ctx.dict_entries);
+    let mut snippet_expansions = ctx.snippet_expansions;
     let mut dict_changed = !applied_dict_ids.is_empty();
     let apply_caps_lock_upper = ctx.cfg.caps_lock_uppercase_enabled && ctx.caps_lock_on;
     log::debug!(
@@ -78,9 +81,12 @@ pub(super) async fn finalize_pipeline_completion(
                 final_text_substituted
             } else {
                 log::warn!("pipeline: cleanup did not preserve clipboard marker");
-                let (mut fallback, fallback_dict_ids) =
-                    dictionary::apply_substitutions_from(&plan.pre_cleanup, ctx.dict_entries);
+                let (mut fallback, fallback_dict_ids, fallback_term_ids, fallback_replacements) =
+                    dictionary::apply_substitutions_details(&plan.pre_cleanup, ctx.dict_entries);
                 applied_dict_ids = fallback_dict_ids;
+                applied_term_ids = fallback_term_ids;
+                vocabulary_replacements = fallback_replacements;
+                snippet_expansions = 0;
                 dict_changed = !applied_dict_ids.is_empty();
                 if apply_caps_lock_upper {
                     fallback = fallback.to_uppercase();
@@ -139,8 +145,9 @@ pub(super) async fn finalize_pipeline_completion(
     let duration_for_insert = ctx.duration_ms as i64;
     let dictionary_fixes_applied = applied_dict_ids.len() as i64;
     let context_for_insert = Some(ctx.context.id);
+    let website_for_insert = ctx.context.website_domain.clone();
     let entry = match tokio::task::spawn_blocking(move || -> anyhow::Result<db::RecentEntry> {
-        let entry = db::insert_transcription_returning(
+        let entry = db::insert_transcription_with_metrics(
             &db_for_insert,
             &raw_for_insert,
             &clean_for_insert,
@@ -149,12 +156,17 @@ pub(super) async fn finalize_pipeline_completion(
             &api_used_for_insert,
             app_name_for_insert.as_deref(),
             context_for_insert,
+            website_for_insert.as_deref(),
+            Some((vocabulary_replacements, snippet_expansions)),
         )?;
         if dictionary_fixes_applied > 0 {
             if let Err(e) =
                 db::increment_lifetime_dictionary_fixes(&db_for_insert, dictionary_fixes_applied)
             {
                 log::warn!("pipeline: failed to record dictionary fixes: {e}");
+            }
+            if db::record_dictionary_usage(&db_for_insert, &applied_term_ids).is_err() {
+                log::warn!("pipeline: failed to record library usage");
             }
         }
         Ok(entry)
@@ -360,10 +372,11 @@ pub(super) async fn finalize_pipeline_completion(
             "inject_failed" | "clipboard_fallback" | "android_accessibility_handoff"
         )
     {
-        if !ctx.cleanup_cache_key.is_empty() {
+        if !ctx.cleanup_cache_key.is_empty() && !ctx.cleanup_cache_result_hash.is_empty() {
             auto_learn::start_cache_rejection_monitor(
                 injected_text.clone(),
                 ctx.cleanup_cache_key,
+                ctx.cleanup_cache_result_hash,
                 ctx.target_hwnd,
                 db_handle.inner().clone(),
                 app.clone(),

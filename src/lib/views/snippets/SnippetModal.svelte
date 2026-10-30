@@ -27,6 +27,7 @@
   let saving = $state(false);
   let saveError = $state('');
   let conflictContexts = $state<ContextAssignment[]>([]);
+  let conflictSnippet = $state<Snippet | null>(null);
   let movingExisting = $state(false);
   let triggerInput = $state<HTMLInputElement | null>(null);
   let expansionEl = $state<HTMLTextAreaElement | null>(null);
@@ -42,6 +43,7 @@
     mode === 'add'
       && contextId != null
       && contextId !== EVERYWHERE_ID
+      && conflictSnippet != null
       && conflictContexts.some((context) => context.is_everywhere),
   );
 
@@ -75,6 +77,7 @@
     saving = true;
     saveError = '';
     conflictContexts = [];
+    conflictSnippet = null;
     try {
       if (mode === 'add') {
         const created = requireCreatedRecordMeta(await invoke<unknown>('create_snippet', {
@@ -92,7 +95,8 @@
           created_at: created.created_at,
         });
       } else if (mode === 'edit' && snippet) {
-        await invoke('edit_snippet', { id: snippet.id, trigger: t, expansion: e, instructions: i });
+        await invoke('edit_snippet', { id: snippet.id, trigger: t, expansion: e, instructions: i,
+          expected: { trigger: snippet.trigger, expansion: snippet.expansion, instructions: snippet.instructions } });
         onSaved({
           ...snippet,
           trigger: t,
@@ -106,7 +110,11 @@
       const isDuplicate = msg.includes('UNIQUE') || msg.toLowerCase().includes('already exists');
       if (mode === 'add' && contextId != null && contextId !== EVERYWHERE_ID && isDuplicate) {
         try {
-          conflictContexts = await findConflictContexts(t);
+          const [contexts, snippets] = await Promise.all([
+            findConflictContexts(t), invoke<Snippet[]>('get_snippets'),
+          ]);
+          conflictSnippet = snippets.find((entry) => entry.trigger === t) ?? null;
+          conflictContexts = contexts;
         } catch {
           conflictContexts = [];
         }
@@ -130,21 +138,12 @@
     movingExisting = true;
     saveError = '';
     try {
-      const existing = (await invoke<Snippet[]>('get_snippets')).find((snippet) => snippet.trigger === trigger);
-      if (!existing) throw new Error(`"${trigger}" was not found`);
-      const updated = { ...existing, trigger, expansion, instructions };
-      if (existing.trigger !== trigger || existing.expansion !== expansion || existing.instructions !== instructions) {
-        await invoke('edit_snippet', { id: existing.id, trigger, expansion, instructions });
-      }
-      await invoke('set_snippet_context_assignment', {
-        contextId,
-        snippetId: existing.id,
-        assigned: true,
-      });
-      await invoke('set_snippet_context_assignment', {
-        contextId: EVERYWHERE_ID,
-        snippetId: existing.id,
-        assigned: false,
+      const existing = conflictSnippet;
+      if (!existing || existing.trigger !== trigger) throw new Error('The trigger changed. Save again to check for conflicts.');
+      const updated = await invoke<Snippet>('move_snippet_entry_to_context', {
+        trigger, contextId,
+        edit: { id: existing.id, expansion, instructions,
+          expected: { trigger: existing.trigger, expansion: existing.expansion, instructions: existing.instructions } },
       });
       onSaved(updated);
       onClose();
