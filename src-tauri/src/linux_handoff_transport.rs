@@ -893,8 +893,10 @@ mod tests {
             .unwrap()
             .build()
             .unwrap();
+        let gate = std::sync::Arc::new(crate::linux_activity::ActivityGate::default());
         let app = tauri::Builder::default()
             .any_thread()
+            .manage(gate.clone())
             .plugin(crate::linux_single_instance::plugin())
             .build(tauri::generate_context!())
             .unwrap();
@@ -934,6 +936,7 @@ mod tests {
         let ready = replacement
             .prepare()
             .expect("replacement did not complete frontend readiness");
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner
             .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
             .unwrap();
@@ -942,21 +945,27 @@ mod tests {
             .expect("replacement did not acquire ownership");
         assert!(!owner.owns_name().unwrap());
         let connection = zbus::blocking::Connection::session().unwrap();
-        let forwarded = connection.call_method(
-            Some("com.verenu.app.SingleInstance"),
-            "/com/verenu/app/SingleInstance",
-            Some("org.SingleInstance.DBus"),
-            "ExecuteCallback",
-            &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-        );
-        assert!(
-            forwarded.is_ok(),
-            "callback failed: {forwarded:?}; parent callback count: {}",
-            crate::linux_single_instance::test_callback_count()
-        );
+        let started = crate::linux_single_instance::test_callback_started();
+        let (sent, received) = std::sync::mpsc::channel();
+        let callback_connection = connection.clone();
+        let callback = std::thread::spawn(move || {
+            let result = callback_connection.call_method(
+                Some("com.verenu.app.SingleInstance"),
+                "/com/verenu/app/SingleInstance",
+                Some("org.SingleInstance.DBus"),
+                "ExecuteCallback",
+                &(vec!["--verenu-hotkey-release".to_string()], String::new()),
+            );
+            let _ = sent.send(result.is_ok());
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while crate::linux_single_instance::test_callback_started() == started {
+            assert!(Instant::now() < deadline, "forwarded callback did not reach parent");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert_eq!(
             crate::linux_single_instance::test_callback_count(),
-            callbacks_before + 1
+            callbacks_before
         );
         let outcome = owned.activate();
         assert!(matches!(outcome, Err(reason) if reason.contains("services are not yet verified")));
@@ -988,6 +997,15 @@ mod tests {
         owner
             .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
             .unwrap();
+        drop(pause);
+        let _ = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        callback.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while crate::linux_single_instance::test_callback_count() == callbacks_before {
+            assert!(Instant::now() < deadline, "parent did not handle the deferred callback");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks_before + 1);
         connection
             .call_method(
                 Some("com.verenu.app.SingleInstance"),

@@ -12,6 +12,11 @@ pub(crate) fn test_callback_count() -> usize {
     TEST_CALLBACK_COUNT.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+#[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_callback_started() -> usize {
+    TEST_CALLBACK_STARTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 struct SingleInstance {
     app: AppHandle,
     forward_to: Option<String>,
