@@ -979,13 +979,29 @@ async fn run_portal_session(
     bindings: &[String],
     generation: u64,
 ) -> bool {
-    let portal = match portal::connect().await {
+    let (portal, connection) = match portal::connect().await {
         Ok(v) => v,
         Err(e) => {
             registration_failure(e);
             return true;
         }
     };
+    let result =
+        run_connected_portal_session(&portal, preferred_trigger, bindings, generation).await;
+    match tokio::time::timeout(Duration::from_secs(5), connection.close()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => log::warn!("linux hotkey: closing portal connection failed: {error}"),
+        Err(_) => log::warn!("linux hotkey: portal connection did not close within five seconds"),
+    }
+    result
+}
+
+async fn run_connected_portal_session(
+    portal: &ashpd::desktop::global_shortcuts::GlobalShortcuts,
+    preferred_trigger: Option<&str>,
+    bindings: &[String],
+    generation: u64,
+) -> bool {
     let mut owner_changes = match portal::request(
         "Watching the desktop portal",
         portal.receive_owner_changed(),
