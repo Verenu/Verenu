@@ -97,6 +97,91 @@ fn authenticated_peer_errors_do_not_fall_back_to_other_addresses() {
 }
 
 #[test]
+fn interrupted_transport_retries_but_protocol_errors_do_not() {
+    use super::manager::should_try_next_address;
+    for kind in [std::io::ErrorKind::UnexpectedEof, std::io::ErrorKind::ConnectionReset, std::io::ErrorKind::TimedOut] {
+        let error = anyhow::Error::new(std::io::Error::new(kind, "connection interrupted")).context("sync failed");
+        assert!(should_try_next_address(&error));
+    }
+    assert!(!should_try_next_address(&anyhow::anyhow!("peer sent oversized message")));
+}
+
+#[tokio::test]
+async fn interrupted_sync_frame_is_a_retryable_transport_failure() {
+    use tokio::io::AsyncWriteExt;
+    let (mut reader, mut writer) = tokio::io::duplex(64);
+    writer.write_all(&8_u32.to_be_bytes()).await.unwrap();
+    writer.write_all(b"partial").await.unwrap();
+    drop(writer);
+    let error = super::protocol::read_message(&mut reader).await.unwrap_err();
+    assert!(super::manager::should_try_next_address(&error));
+}
+
+#[test]
+fn legacy_pairing_identity_does_not_require_a_listener_port() {
+    let identity: super::pairing::IdentityExchange = serde_json::from_value(json!({
+        "device_uuid": "peer", "device_name": "Device", "cert_der": [1, 2, 3]
+    })).unwrap();
+    assert_eq!(identity.sync_port, None);
+    assert_eq!(identity.pairing_id, None);
+}
+
+#[test]
+fn unpair_requires_the_current_pairing_identifier() {
+    use super::manager::unpair_id_matches;
+    let current = Some(Some("new-pairing".to_string()));
+    assert!(unpair_id_matches(current.clone(), Some("new-pairing")));
+    assert!(!unpair_id_matches(current.clone(), Some("old-pairing")));
+    assert!(!unpair_id_matches(current, None));
+    assert!(!unpair_id_matches(Some(None), None));
+    assert!(unpair_id_matches(None, None));
+}
+
+#[test]
+fn pairing_identifier_commits_and_rolls_back_with_peer_trust() {
+    let db = test_db(&uuid("pairing-transaction"));
+    let conn = db.lock().unwrap();
+    sync_store::upsert_peer(&conn, "peer", "Original", "old-cert").unwrap();
+    assert_eq!(sync_store::pairing_id(&conn, "peer").unwrap(), None);
+    sync_store::set_pairing_id(&conn, "peer", Some("old-id")).unwrap();
+    {
+        let tx = conn.unchecked_transaction().unwrap();
+        sync_store::upsert_peer(&tx, "peer", "Replacement", "new-cert").unwrap();
+        sync_store::set_pairing_id(&tx, "peer", Some("new-id")).unwrap();
+        tx.rollback().unwrap();
+    }
+    assert_eq!(sync_store::get_peer(&conn, "peer").unwrap().unwrap().cert_fp, "old-cert");
+    assert_eq!(sync_store::pairing_id(&conn, "peer").unwrap(), Some(Some("old-id".into())));
+    sync_store::remove_peer(&conn, "peer").unwrap();
+    assert_eq!(sync_store::pairing_id(&conn, "peer").unwrap(), None);
+}
+
+#[tokio::test]
+async fn approved_incoming_pairing_blocks_removal_and_another_pairing() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    let pending = Arc::new(tokio::sync::Mutex::new(Some(())));
+    let active = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = pending.lock().await;
+        assert!(guard.take().is_some());
+        active.store(true, Ordering::Release);
+    }
+    let mut attempts = Vec::new();
+    for _ in 0..2 {
+        let pending = pending.clone();
+        let active = active.clone();
+        attempts.push(tokio::spawn(async move {
+            let guard = pending.lock().await;
+            super::manager::pairing_busy(guard.is_some(), &active)
+        }));
+    }
+    for attempt in attempts { assert!(attempt.await.unwrap()); }
+    active.store(false, Ordering::Release);
+    let guard = pending.lock().await;
+    assert!(!super::manager::pairing_busy(guard.is_some(), &active));
+}
+
+#[test]
 fn connection_details_validate_device_identity_and_tailscale_route() {
     use super::manager::parse_connection_details;
     let uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -122,6 +207,30 @@ fn listener_port_is_stable_and_device_specific() {
     assert_ne!(first, second);
     assert!((49_152..=u16::MAX).contains(&first));
     assert!((49_152..=u16::MAX).contains(&second));
+}
+
+#[test]
+fn discovery_uses_advertised_tailscale_route_and_rejects_invalid_routes() {
+    use super::manager::discovered_addresses;
+    let lan: IpAddr = "192.0.2.10".parse().unwrap();
+    let addresses = discovered_addresses([lan].into_iter(), Some("100.64.0.1"), 50000);
+    assert_eq!(addresses, ["100.64.0.1:50000", "192.0.2.10:50000"]);
+    for invalid in ["127.0.0.1", "192.0.2.1", "100.64.0.1:50000", "invalid"] {
+        assert_eq!(
+            discovered_addresses([lan].into_iter(), Some(invalid), 50000),
+            ["192.0.2.10:50000"]
+        );
+    }
+}
+
+#[test]
+fn routes_keep_fallbacks_in_order_without_duplicates() {
+    let tailscale = "100.64.0.1:50000".parse().unwrap();
+    let lan = "192.0.2.10:50000".parse().unwrap();
+    assert_eq!(
+        super::manager::unique_routes(vec![tailscale, lan, tailscale]),
+        vec![tailscale, lan]
+    );
 }
 
 #[test]
@@ -2277,11 +2386,15 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
         device_uuid: uuid("aaaa"),
         device_name: "A".to_string(),
         cert_der: vec![1, 2, 3],
+        sync_port: Some(50001),
+        pairing_id: Some(uuid::Uuid::new_v4().to_string()),
     };
     let identity_b = IdentityExchange {
         device_uuid: uuid("bbbb"),
         device_name: "B".to_string(),
         cert_der: vec![4, 5, 6],
+        sync_port: Some(50002),
+        pairing_id: None,
     };
     let identity_b_for_second = identity_b.clone();
     let code = pairing::generate_pairing_code();
@@ -2332,9 +2445,12 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
         },
     );
     let peer_from_a = initiator.expect("initiator outcome");
-    responder.expect("responder outcome");
+    let peer_from_b = responder.expect("responder outcome");
     assert_eq!(peer_from_a.device_uuid, expected_uuid);
     assert_eq!(peer_from_a.cert_der, vec![4, 5, 6]);
+    assert_eq!(peer_from_a.sync_port, Some(50002));
+    assert_eq!(peer_from_a.pairing_id, identity_a.pairing_id);
+    assert_eq!(peer_from_b.pairing_id, identity_a.pairing_id);
 
     let identity_a2 = IdentityExchange {
         cert_der: vec![7],

@@ -1102,6 +1102,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     )?;
     ensure_dictionary_correction_membership_trigger(&conn)?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS backup_held_calls (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS backup_held_hourly_receipts (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS sync_rejected_history (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS sync_everywhere_aliases (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS backup_context_aliases (source_uuid TEXT NOT NULL PRIMARY KEY, local_uuid TEXT NOT NULL); CREATE TABLE IF NOT EXISTS backup_context_event_sources (transcription_uuid TEXT NOT NULL, source_uuid TEXT NOT NULL, PRIMARY KEY(transcription_uuid,source_uuid));")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS sync_pairing_ids (device_uuid TEXT PRIMARY KEY, pairing_id TEXT); CREATE TRIGGER IF NOT EXISTS sync_pairing_id_remove AFTER DELETE ON sync_peers BEGIN DELETE FROM sync_pairing_ids WHERE device_uuid = OLD.device_uuid; END;")?;
     ensure_table_column(&conn, "backup_context_aliases", "source_name", "ALTER TABLE backup_context_aliases ADD COLUMN source_name TEXT;")?;
     ensure_table_column(&conn, "backup_context_event_sources", "local_uuid", "ALTER TABLE backup_context_event_sources ADD COLUMN local_uuid TEXT;")?;
     ensure_table_column(&conn, "backup_context_event_sources", "source_name", "ALTER TABLE backup_context_event_sources ADD COLUMN source_name TEXT;")?;
