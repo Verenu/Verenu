@@ -36,6 +36,8 @@ mod dev_session;
 mod local_llm;
 mod local_stt;
 #[cfg(target_os = "linux")]
+mod linux_activity;
+#[cfg(target_os = "linux")]
 mod linux_single_instance;
 mod media;
 mod model_performance;
@@ -78,9 +80,15 @@ fn start_storage_maintenance(
     db: DbHandle,
     settings: crate::data::store::SettingsHandle,
 ) {
+    #[cfg(target_os = "linux")]
+    let gate = app.state::<Arc<linux_activity::ActivityGate>>().inner().clone();
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+            #[cfg(target_os = "linux")]
+            let Some(activity) = gate.try_enter() else {
+                continue;
+            };
             let retention_days = settings
                 .get(crate::data::store::HISTORY_RETENTION)
                 .and_then(|value| {
@@ -92,6 +100,8 @@ fn start_storage_maintenance(
             let settings_for_work = settings.clone();
             let app_for_work = app.clone();
             let _ = tauri::async_runtime::spawn_blocking(move || {
+                #[cfg(target_os = "linux")]
+                let _activity = activity;
                 if let Err(err) = db::cleanup_cache_prune_expired(&db_for_work) {
                     log::warn!("maintenance: cleanup cache prune failed: {err}");
                 }
@@ -233,6 +243,10 @@ pub fn run() {
     if !is_dev_session() {
         builder = builder.plugin(crate::linux_single_instance::plugin());
     }
+    #[cfg(target_os = "linux")]
+    {
+        builder = builder.manage(Arc::new(linux_activity::ActivityGate::default()));
+    }
     #[cfg(all(desktop, not(target_os = "linux")))]
     if !is_dev_session() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -289,6 +303,12 @@ pub fn run() {
             if let Err(e) = db::seed_default_dictionary_entries(&db_handle) {
                 log::warn!("failed to seed default dictionary entries: {e}");
             }
+            #[cfg(target_os = "linux")]
+            crate::system::diagnostic_journal::start(
+                db_handle.clone(),
+                app.state::<Arc<linux_activity::ActivityGate>>().inner().clone(),
+            );
+            #[cfg(not(target_os = "linux"))]
             crate::system::diagnostic_journal::start(db_handle.clone());
             app.manage(db_handle);
             crate::system::logger::attach_app(app.handle());
@@ -375,7 +395,13 @@ pub fn run() {
                     let db = app.state::<DbHandle>().inner().clone();
                     let app_handle = app.handle().clone();
                     let settings = settings.clone();
+                    #[cfg(target_os = "linux")]
+                    let gate = app.state::<Arc<linux_activity::ActivityGate>>().inner().clone();
                     tauri::async_runtime::spawn_blocking(move || {
+                        #[cfg(target_os = "linux")]
+                        let Some(_activity) = gate.try_enter() else {
+                            return;
+                        };
                         match db::prune_transcriptions_for_retention(&db, &settings, days) {
                             Ok(deleted) if deleted > 0 => {
                                 let _ = app_handle.emit("verenu:history-pruned", ());
