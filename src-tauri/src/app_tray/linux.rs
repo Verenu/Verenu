@@ -297,6 +297,30 @@ mod tests {
     #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires an isolated graphical and D-Bus session"]
+    fn probation_tray_requires_a_desktop_watcher() {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        app.manage(crate::data::store::SettingsHandle::empty_for_test(
+            std::env::temp_dir().join(format!("verenu-tray-test-{}", uuid::Uuid::new_v4())),
+        ));
+        super::setup_with_visibility(app.handle(), false).unwrap();
+        tauri::async_runtime::block_on(async {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                super::start(app.handle()),
+            )
+            .await
+            .expect("tray start timed out");
+            assert!(result.is_err(), "probation succeeded without a watcher");
+            super::stop(app.handle()).await.unwrap();
+        });
+    }
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires an isolated graphical and D-Bus session"]
     fn tray_can_stop_and_resume_through_the_app_handle() {
         let registrations = Arc::new(Mutex::new(Vec::<String>::new()));
         let blocked = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
