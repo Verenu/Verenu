@@ -1,5 +1,5 @@
 //! Restricted startup for a replacement process. The old app remains alive.
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
@@ -39,6 +39,27 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
     crate::core::hyprland::initialize_app_identity();
     crate::configure_hyprland_webkit_renderer();
     let readiness = crate::FrontendReadiness::default();
+    let normal_commands = Arc::new(AtomicBool::new(false));
+    let command_mode = normal_commands.clone();
+    let normal_handler = crate::app_invoke_handler();
+    let probation_handler: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> = Box::new(tauri::generate_handler![
+        crate::commands::frontend_ready,
+        crate::commands::frontend_settings_generation,
+        crate::commands::frontend_settings_ready,
+        crate::commands::frontend_home_ready,
+        crate::commands::frontend_pill_generation,
+        crate::commands::frontend_pill_ready,
+        crate::commands::get_setting,
+        get_api_key_status,
+        crate::api::apple_intelligence::get_apple_intelligence_availability,
+        crate::commands::get_contexts,
+        crate::commands::get_context_targets,
+        crate::commands::get_context_websites,
+        crate::commands::get_sub_apps,
+        crate::commands::list_local_stt_models,
+        crate::commands::list_local_llm_models,
+        crate::commands::get_local_llm_runtime_info,
+    ]);
     let app = tauri::Builder::default()
         .append_invoke_initialization_script(
             "Object.defineProperty(window, '__VERENU_RESTART_PROBE__', { value: true });",
@@ -50,6 +71,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         .manage(crate::local_stt::LocalTranscriptionManager::new())
         .manage(crate::local_llm::LocalLlmManager::new())
         .manage(readiness.clone())
+        .manage(normal_commands)
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 if let Some(readiness) =
@@ -63,24 +85,10 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            crate::commands::frontend_ready,
-            crate::commands::frontend_settings_generation,
-            crate::commands::frontend_settings_ready,
-            crate::commands::frontend_home_ready,
-            crate::commands::frontend_pill_generation,
-            crate::commands::frontend_pill_ready,
-            crate::commands::get_setting,
-            get_api_key_status,
-            crate::api::apple_intelligence::get_apple_intelligence_availability,
-            crate::commands::get_contexts,
-            crate::commands::get_context_targets,
-            crate::commands::get_context_websites,
-            crate::commands::get_sub_apps,
-            crate::commands::list_local_stt_models,
-            crate::commands::list_local_llm_models,
-            crate::commands::get_local_llm_runtime_info,
-        ])
+        .invoke_handler(move |invoke| {
+            if command_mode.load(Ordering::Acquire) { normal_handler(invoke) }
+            else { probation_handler(invoke) }
+        })
         .setup(move |app| {
             crate::pipeline::initialize_pill(app.handle());
             if app.get_webview_window("main").is_none() || app.get_webview_window("pill").is_none()
