@@ -1,10 +1,41 @@
 use std::{sync::Arc, time::Duration};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[allow(dead_code)]
 pub(crate) struct PreparedHandoff {
-    _pause: crate::linux_activity::Pause,
-    _agent: tokio::sync::OwnedSemaphorePermit,
+    app: AppHandle,
+    pause: Option<crate::linux_activity::Pause>,
+    agent: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl Drop for PreparedHandoff {
+    fn drop(&mut self) {
+        let (Some(pause), Some(agent)) = (self.pause.take(), self.agent.take()) else {
+            return;
+        };
+        let app = self.app.clone();
+        tauri::async_runtime::spawn(async move {
+            // A canceled shutdown and the new registration can each take ten seconds.
+            let restored = tokio::time::timeout(
+                Duration::from_secs(22),
+                crate::app_tray::resume_after_handoff(&app),
+            )
+            .await;
+            if !matches!(restored, Ok(Ok(()))) {
+                log::error!(
+                    "Could not restore the Linux tray after restart preparation: {restored:?}"
+                );
+                let window_app = app.clone();
+                let _ = app.run_on_main_thread(move || crate::show_main_window(&window_app));
+                let _ = app.emit(
+                    "verenu:error",
+                    "Verenu is still running, but its tray could not be restored. Quit and reopen the app when convenient.",
+                );
+            }
+            drop(agent);
+            drop(pause);
+        });
+    }
 }
 
 #[allow(dead_code)]
@@ -32,58 +63,111 @@ async fn prepare_inner(app: &AppHandle) -> Result<PreparedHandoff, String> {
         .clone();
     let pause = gate.pause().await.map_err(str::to_owned)?;
 
-    let recording = app
-        .try_state::<crate::pipeline::SharedState>()
-        .ok_or("Recording state is unavailable.")?;
-    let recording = recording
-        .try_lock()
-        .map_err(|_| "Recording is busy. Try restarting again shortly.")?;
-    if !recording.lifecycle.is_idle()
-        || recording.retry_capture.is_some()
-        || recording.cancelled_capture.is_some()
-        || recording.paste_failure.is_some()
     {
-        return Err("Finish the current dictation or recovery before restarting.".into());
+        let recording = app
+            .try_state::<crate::pipeline::SharedState>()
+            .ok_or("Recording state is unavailable.")?;
+        let recording = recording
+            .try_lock()
+            .map_err(|_| "Recording is busy. Try restarting again shortly.")?;
+        if !recording.lifecycle.is_idle()
+            || recording.retry_capture.is_some()
+            || recording.cancelled_capture.is_some()
+            || recording.paste_failure.is_some()
+        {
+            return Err("Finish the current dictation or recovery before restarting.".into());
+        }
     }
-    drop(recording);
 
     let sync = app
         .try_state::<crate::sync::SyncManager>()
         .ok_or("Sync state is unavailable; quit and reopen Verenu to finish updating.")?;
     sync.check_handoff_idle(&pause)
         .map_err(|error| error.to_string())?;
-    let db = app
-        .try_state::<crate::DbHandle>()
-        .ok_or("Database is unavailable.")?;
-    let conn = db
-        .try_lock()
-        .map_err(|_| "Database is busy. Try restarting again shortly.")?;
-    let version: i64 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|error| format!("Could not check the database for restart: {error}"))?;
-    if version != crate::data::db::HANDOFF_SCHEMA_VERSION {
-        return Err("This update needs a manual restart to migrate its database.".into());
+    {
+        let db = app
+            .try_state::<crate::DbHandle>()
+            .ok_or("Database is unavailable.")?;
+        let conn = db
+            .try_lock()
+            .map_err(|_| "Database is busy. Try restarting again shortly.")?;
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|error| format!("Could not check the database for restart: {error}"))?;
+        if version != crate::data::db::HANDOFF_SCHEMA_VERSION {
+            return Err("This update needs a manual restart to migrate its database.".into());
+        }
     }
-    drop(conn);
     crate::data::store::SettingsSnapshot::read_for_handoff(
         &crate::app_data_dir().join("settings.json"),
     )?;
-    Ok(PreparedHandoff {
-        _pause: pause,
-        _agent: agent_permit,
-    })
+    let prepared = PreparedHandoff {
+        app: app.clone(),
+        pause: Some(pause),
+        agent: Some(agent_permit),
+    };
+    crate::app_tray::suspend_for_handoff(app).await?;
+    Ok(prepared)
 }
 
 #[cfg(all(test, feature = "native-testing"))]
 mod tests {
     use super::*;
-    use tauri::Manager;
+    use tauri::{Listener, Manager};
+
+    struct TestWatcher {
+        blocked: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        entered: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+    impl TestWatcher {
+        fn register_status_notifier_item(&self, _service: &str) {
+            self.entered
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let (lock, condition) = &*self.blocked;
+            drop(
+                condition
+                    .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(15), |blocked| {
+                        *blocked
+                    })
+                    .unwrap(),
+            );
+        }
+    }
+
+    async fn tray_names(bus: &zbus::fdo::DBusProxy<'_>) -> Vec<String> {
+        let prefix = format!("org.kde.StatusNotifierItem-{}-", std::process::id());
+        bus.list_names()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|name| name.as_str().starts_with(&prefix))
+            .map(|name| name.to_string())
+            .collect()
+    }
 
     #[test]
     #[ignore = "requires an isolated graphical session"]
     fn preparation_drains_and_restores_services_on_failure() {
         use crate::pipeline::{AppState, DictationLifecycle, SharedState};
         use std::sync::Mutex;
+        let blocked = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _watcher = zbus::blocking::connection::Builder::session()
+            .unwrap()
+            .name("org.kde.StatusNotifierWatcher")
+            .unwrap()
+            .serve_at(
+                "/StatusNotifierWatcher",
+                TestWatcher {
+                    blocked: blocked.clone(),
+                    entered: entered.clone(),
+                },
+            )
+            .unwrap()
+            .build()
+            .unwrap();
         let dir = std::env::temp_dir().join(format!("verenu-handoff-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let old_dir = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
@@ -98,6 +182,16 @@ mod tests {
         let agent = Arc::new(tokio::sync::Semaphore::new(1));
         app.manage(crate::agent_api::AgentDrain::for_test(agent.clone()));
         crate::agent_api::manage_test_approvals(app.handle());
+        let settings =
+            crate::data::store::SettingsHandle::empty_for_test(dir.join("settings.json"));
+        settings
+            .set(
+                crate::data::store::APPEARANCE_MODE,
+                serde_json::json!("dark"),
+            )
+            .unwrap();
+        app.manage(settings);
+        crate::app_tray::setup_tray(app.handle()).unwrap();
         let db = crate::data::db::open(":memory:").unwrap();
         app.manage(crate::sync::SyncManager::new_unstarted(
             app.handle().clone(),
@@ -124,10 +218,23 @@ mod tests {
             failover_started_at_unix: 0,
         }));
         app.manage(recording.clone());
+        let (error_sent, errors) = std::sync::mpsc::channel();
+        app.listen_any("verenu:error", move |event| {
+            let _ = error_sent.send(event.payload().to_owned());
+        });
 
         tauri::async_runtime::block_on(async {
+            crate::app_tray::resume_after_handoff(app.handle())
+                .await
+                .unwrap();
+            let connection = zbus::Connection::session().await.unwrap();
+            let bus = zbus::fdo::DBusProxy::new(&connection).await.unwrap();
+            let original_tray = tray_names(&bus).await;
+            assert_eq!(original_tray.len(), 1);
             let active_agent = agent.clone().acquire_owned().await.unwrap();
             let preparation = prepare(app.handle());
+            fn assert_send<T: Send>(_: &T) {}
+            assert_send(&preparation);
             tokio::pin!(preparation);
             assert!(
                 tokio::time::timeout(Duration::from_millis(50), &mut preparation)
@@ -139,9 +246,56 @@ mod tests {
             let lease = preparation.await.unwrap();
             assert!(gate.try_enter().is_none());
             assert!(agent.clone().try_acquire_owned().is_err());
+            assert!(tray_names(&bus).await.is_empty());
+            entered.store(false, std::sync::atomic::Ordering::SeqCst);
+            *blocked.0.lock().unwrap() = true;
             drop(lease);
-            assert!(gate.try_enter().is_some());
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !entered.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("tray restoration did not begin");
+            assert!(gate.try_enter().is_none());
+            assert!(agent.clone().try_acquire_owned().is_err());
+            *blocked.0.lock().unwrap() = false;
+            blocked.1.notify_all();
+            let activity = tokio::time::timeout(Duration::from_secs(15), gate.enter())
+                .await
+                .expect("restart cancellation did not resume application activity");
+            drop(activity);
             assert!(agent.clone().try_acquire_owned().is_ok());
+            let restored_tray = tray_names(&bus).await;
+            assert_eq!(restored_tray.len(), 1);
+            assert_ne!(original_tray, restored_tray);
+
+            let lease = prepare(app.handle()).await.unwrap();
+            entered.store(false, std::sync::atomic::Ordering::SeqCst);
+            *blocked.0.lock().unwrap() = true;
+            drop(lease);
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !entered.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("tray restoration did not begin");
+            let resumed = tokio::time::timeout(Duration::from_secs(15), gate.enter())
+                .await
+                .expect("failed tray restoration left application activity paused");
+            drop(resumed);
+            assert!(agent.clone().try_acquire_owned().is_ok());
+            assert!(errors
+                .try_recv()
+                .unwrap()
+                .contains("tray could not be restored"));
+            *blocked.0.lock().unwrap() = false;
+            blocked.1.notify_all();
+            crate::app_tray::resume_after_handoff(app.handle())
+                .await
+                .unwrap();
+            assert_eq!(tray_names(&bus).await.len(), 1);
 
             let activity = gate.try_enter().unwrap();
             assert!(
@@ -186,6 +340,9 @@ mod tests {
             assert!(gate.try_enter().is_some());
             assert!(agent.clone().try_acquire_owned().is_ok());
             assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), b"{");
+            crate::app_tray::suspend_for_handoff(app.handle())
+                .await
+                .unwrap();
         });
         match old_dir {
             Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
