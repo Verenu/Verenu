@@ -11,6 +11,7 @@ This is the source of truth for shared frontend controls. Use it before adding o
 | [`src/lib/motion.ts`](src/lib/motion.ts) | Svelte transition timing, distance, reduced-motion behavior, and reusable transition helpers. |
 | [`src/lib/components/Dropdown.svelte`](src/lib/components/Dropdown.svelte) | Headless outside-click and Escape handling for composed dropdowns. |
 | [`src/lib/components/Toggle.svelte`](src/lib/components/Toggle.svelte) | The shared accessible switch control. The `toggle` class is a smoke-test contract. |
+| [`src/lib/components/Callout.svelte`](src/lib/components/Callout.svelte) | The shared warning surface for provider, key, quota, outage, and model-readiness messages. |
 | [`docs/colors.md`](docs/colors.md) | Palette and typography reference. |
 
 Do not define `.btn-primary`, `.btn-ghost`, `.btn-danger`, `.ui-dropdown-*`, or their basic interactive states inside a Svelte component. Add a semantic modifier only for layout or content that the primitive cannot know, such as a menu width or text truncation.
@@ -94,6 +95,30 @@ When a dropdown needs more than a label per option (icons, search, descriptions)
 | `ui-dropdown-menu--padded` | Use for compact choice lists that need separated rounded options rather than row dividers. |
 
 `Dropdown.svelte` closes on outside click and Escape. Keep feature-local keyboard logic only when it has a real job, such as arrow-key listbox navigation or restoring focus to a particular trigger.
+
+### Callouts
+
+Every warning, error, or notice about a provider, API key, quota, outage, or model must use `Callout.svelte`. Do not hand-roll a tinted box with a `<p>` and a button.
+
+```svelte
+<Callout
+  severity="warning"
+  title="No API key set"
+  action={{ label: 'Add API key', onclick: () => openSetupSettings('keys') }}
+>Add one before cloud dictation.</Callout>
+```
+
+| Prop | Use |
+| --- | --- |
+| `severity` | `error` for a failure the user must fix (rejected key, failed save). `warning` for something that will block or degrade dictation but is fixable or transient (missing key, quota, outage, model not downloaded). `info` for neutral state (cleanup turned off, refreshing). |
+| `title` | Optional short label. Keep the body to one or two sentences that say what happened and what the user can do. |
+| `action` / `secondaryAction` | The fix, as a `btn-ghost btn-compact` button. Label it with the verb and object (`Add API key`, `Download model`), never `Fix` or `OK`. Always offer one when the app has somewhere to send the user. |
+| `onDismiss` | Adds a dismiss button, for transient notices and toasts. |
+| `compact` | Dense surfaces such as a model tile, picker, or form field. |
+| `iconHtml` | Trusted inline SVG, such as a provider logo, that replaces the severity icon. |
+| `class` | Hook for tests and layout. Spacing between callouts belongs to the parent. |
+
+`error` renders with `role="alert"`; other severities use `role="status"`. Pass `role` to override it. For classified IPC errors, use `severityForKind` and `fixLabelForKind` from `src/lib/errors.ts` so the toast and inline copy stay consistent.
 
 ## Interaction and motion
 

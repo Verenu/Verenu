@@ -336,3 +336,40 @@ export function settingsSectionForKind(kind: ErrorKind): SettingsSectionId | nul
       return null;
   }
 }
+
+const WARNING_KINDS: ReadonlySet<ErrorKind> = new Set([
+  'quota',
+  'timeout',
+  'network',
+  'provider-unavailable',
+  'provider-response',
+  'missing-key',
+  'no-backend',
+  'local-model-missing',
+  'local-runtime',
+  'model-download',
+  'model-unavailable',
+]);
+
+/** Transient or fixable-in-settings problems read as warnings; everything else is an error. */
+export function severityForKind(kind: ErrorKind): 'warning' | 'error' {
+  return WARNING_KINDS.has(kind) ? 'warning' : 'error';
+}
+
+const FIX_LABELS: Partial<Record<ErrorKind, string>> = {
+  'missing-key': 'Add API key',
+  'auth-401': 'Replace API key',
+  quota: 'Review providers',
+  'local-model-missing': 'Download model',
+  'local-runtime': 'Open model settings',
+  'model-download': 'Retry download',
+  'no-backend': 'Choose a model',
+  'model-unavailable': 'Choose a model',
+  'provider-response': 'Choose a model',
+};
+
+/** Label for the button that opens the settings section that fixes this kind of error. */
+export function fixLabelForKind(kind: ErrorKind): string | null {
+  if (!settingsSectionForKind(kind)) return null;
+  return FIX_LABELS[kind] ?? 'Fix in Settings';
+}
