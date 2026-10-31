@@ -20,6 +20,7 @@
     type PickerContext,
   } from './modelStates';
   import ModelPickerModal from './ModelPickerModal.svelte';
+  import Callout from '../Callout.svelte';
 
   let {
     type,
@@ -72,12 +73,10 @@
       .filter((provider) => !apiKeyStatus[provider] && customProvider(provider)?.requires_key !== false),
   );
 
-  const warnings = $derived([
-    ...(missingKeys.length
-      ? [`Missing API keys for: ${missingKeys.map(providerDisplayLabel).join(', ')}`]
-      : []),
-    ...unavailableMessages(type, defaultModel, fallbackModels, context),
-  ]);
+  const missingKeysMessage = $derived(
+    missingKeys.length ? `Missing API keys for: ${missingKeys.map(providerDisplayLabel).join(', ')}` : '',
+  );
+  const unavailable = $derived(unavailableMessages(type, defaultModel, fallbackModels, context));
 
   const promptCustomized = $derived(!!cleanupPromptStore.override.trim());
 
@@ -146,9 +145,16 @@
     {/if}
   </div>
 
-  {#each warnings as warning (warning)}
-    <p class="warn-banner">{warning}</p>
-  {/each}
+  {#if missingKeysMessage || unavailable.length}
+    <div class="tile-warnings">
+      {#if missingKeysMessage}
+        <Callout class="warn-banner" severity="warning" compact action={{ label: 'Add API key', onclick: onOpenApiKeys }}>{missingKeysMessage}</Callout>
+      {/if}
+      {#each unavailable as message (message)}
+        <Callout class="warn-banner" severity="warning" compact action={{ label: 'Choose a model', onclick: (event) => openPicker('select', event) }}>{message}</Callout>
+      {/each}
+    </div>
+  {/if}
 
   <div class="fallback-block">
     <p class="fallback-label">
@@ -387,16 +393,7 @@
     font-size: 10.5px;
   }
 
-  .warn-banner {
-    margin: 10px 0 0;
-    font-size: 12px;
-    line-height: 1.45;
-    color: var(--danger);
-    background: var(--danger-bg);
-    border: 1px solid var(--danger-line);
-    border-radius: 8px;
-    padding: 8px 10px;
-  }
+  .tile-warnings { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 
   .fallback-block {
     margin-top: 12px;

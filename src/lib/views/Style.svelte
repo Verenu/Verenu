@@ -9,6 +9,7 @@
   import { openCleanupPromptEditor } from '../stores.svelte';
   import { splitModelId } from '../components/settings/models';
   import { formatIpcError } from '../errors';
+  import Callout from '../components/Callout.svelte';
   import { MOTION_MS, MOTION_PX, STYLE_TAB_ORDER, directionFromOrder, motionMs, motionPx, pageSwap } from '../motion';
 
   const [send, receive] = crossfade({
@@ -125,14 +126,11 @@
 
   {#if !appStore.cleanupEnabled}
     <div class="cleanup-off-banner">
-      <p>
-        <strong>Cleanup is turned off</strong>, so nothing on this page has any effect right now —
-        tone, intensity, and app-specific overrides only apply during the cleanup step. Your
-        choices below are kept, just not used.
-      </p>
-      <button type="button" class="cleanup-off-link ui-focus-ring" onclick={() => emit('open-flow:open-settings-section', 'general')}>
-        Turn Cleanup back on in Settings → General
-      </button>
+      <Callout
+        severity="info"
+        title="Cleanup is turned off"
+        action={{ label: 'Turn cleanup on', onclick: () => emit('open-flow:open-settings-section', 'general') }}
+      >Nothing on this page has any effect right now. Tone, intensity, and app-specific overrides only apply during the cleanup step. Your choices below are kept, just not used.</Callout>
     </div>
   {/if}
 
@@ -317,37 +315,7 @@
   }
 
   .cleanup-off-banner {
-    padding: 12px 14px;
-    border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: color-mix(in srgb, var(--paper) 55%, var(--bg-elev));
     margin-bottom: 20px;
-  }
-
-  .cleanup-off-banner p {
-    margin: 0 0 8px;
-    font-size: 12.5px;
-    line-height: 1.5;
-    color: var(--ink-mute);
-  }
-
-  .cleanup-off-banner strong {
-    color: var(--ink-soft);
-  }
-
-  .cleanup-off-link {
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--accent-ink);
-    background: transparent;
-    border: 0;
-    padding: 0;
-    cursor: pointer;
-    text-decoration: underline;
-  }
-
-  .cleanup-off-link:hover {
-    opacity: 0.8;
   }
 
   .tab-wrapper {

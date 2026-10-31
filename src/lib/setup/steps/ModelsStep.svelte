@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Callout from '../../components/Callout.svelte';
   import { onMount } from 'svelte';
   import { invoke } from '../../tauri';
   import type { ProviderId } from '../../settings';
@@ -178,18 +179,25 @@
   {#if provider === 'local' && (platformLocalSupport === 'checking' || (platformLocalSupport === 'unsupported' && !speechListSettled))}
     <p class="models-note" role="status">Checking whether on-device models are available…</p>
   {:else if provider === 'local' && platformLocalSupport === 'unsupported' && !systemSpeechOnly}
-    <div class="local-support-recovery" data-support="unsupported" role="note">
-      <p>On-device models are not available on Intel Macs yet. They have not been tested on Intel hardware. Choose a cloud provider to continue.</p>
-      <button class="btn-primary" type="button" onclick={() => onChooseCloudProvider('unsupported')}>Choose a cloud provider</button>
-    </div>
+    <Callout
+      class="local-support-recovery"
+      data-support="unsupported"
+      severity="warning"
+      title="On-device models are not available"
+      role="note"
+      action={{ label: 'Choose a cloud provider', onclick: () => onChooseCloudProvider('unsupported') }}
+    >Intel Macs are not supported yet, and on-device models have not been tested on Intel hardware. Choose a cloud provider to continue.</Callout>
   {:else if provider === 'local' && platformLocalSupport === 'unknown'}
-    <div class="local-support-recovery" data-support="unknown" role="group" aria-label="On-device model availability">
-      <p role="alert">Could not confirm whether on-device models are available. Retry the check or choose a cloud provider.</p>
-      <div class="local-support-actions">
-        <button class="btn-ghost btn-compact" type="button" onclick={checkPlatformLocalSupport}>Retry check</button>
-        <button class="btn-primary" type="button" onclick={() => onChooseCloudProvider('unknown')}>Choose a cloud provider</button>
-      </div>
-    </div>
+    <Callout
+      class="local-support-recovery"
+      data-support="unknown"
+      severity="warning"
+      title="Could not check on-device models"
+      role="group"
+      aria-label="On-device model availability"
+      action={{ label: 'Choose a cloud provider', onclick: () => onChooseCloudProvider('unknown') }}
+      secondaryAction={{ label: 'Check again', onclick: checkPlatformLocalSupport }}
+    >Could not confirm that this device supports them. Check again or choose a cloud provider.</Callout>
   {:else}
     <div class="models-picker">
       <ModelPresetPicker
@@ -210,28 +218,22 @@
     </div>
 
     {#if applePanel === 'recovery'}
-      <div class="apple-cleanup apple-recovery" role="group" aria-labelledby="apple-recovery-title" data-apple-panel="recovery">
-        <div class="apple-info">
-          <span class="apple-title" id="apple-recovery-title">Apple Intelligence cleanup is selected</span>
-          <p class="apple-desc apple-warn" role="alert">
-            {#if cleanupRequested}
-              This Mac cannot confirm Apple Intelligence right now. Setup cannot finish until you turn the selected cleanup off.
-            {:else if basicCleanup}
-              Basic cleanup runs on this device, so Apple Intelligence is not used. Turn the selected cleanup off to clear it.
-            {:else}
-              Cleanup is off, so Apple Intelligence is not used. Turn the selected cleanup off to clear it.
-            {/if}
-          </p>
-          <div class="apple-actions">
-            {#if cleanupRequested}
-              <button class="btn-ghost btn-compact" type="button" onclick={recheckApple} disabled={appleRefreshing}>
-                {appleRefreshing ? 'Checking…' : 'Check again'}
-              </button>
-            {/if}
-            <button class="btn-ghost btn-compact" type="button" onclick={() => { appleCleanup = false; onSelect?.(); }}>Turn off selected cleanup</button>
-          </div>
-        </div>
-      </div>
+      <Callout
+        severity="warning"
+        title="Apple Intelligence cleanup is selected"
+        role="alert"
+        data-apple-panel="recovery"
+        action={{ label: 'Turn off selected cleanup', onclick: () => { appleCleanup = false; onSelect?.(); } }}
+        secondaryAction={cleanupRequested ? { label: appleRefreshing ? 'Checking…' : 'Check again', onclick: recheckApple, disabled: appleRefreshing } : undefined}
+      >
+        {#if cleanupRequested}
+          This Mac cannot confirm Apple Intelligence right now. Setup cannot finish until you turn the selected cleanup off.
+        {:else if basicCleanup}
+          Basic cleanup runs on this device, so Apple Intelligence is not used. Turn the selected cleanup off to clear it.
+        {:else}
+          Cleanup is off, so Apple Intelligence is not used. Turn the selected cleanup off to clear it.
+        {/if}
+      </Callout>
     {:else if applePanel === 'offer'}
       <div class="apple-cleanup" class:on={appleActive} role="group" aria-labelledby="apple-cleanup-title">
         <div class="apple-icon">{@html getProviderLogo('apple-intelligence')}</div>
@@ -248,9 +250,6 @@
               {appleOffer.reason || 'Apple Intelligence is not ready on this Mac yet.'}
             {/if}
           </p>
-          {#if appleActive && !appleOffer.selectable}
-            <p class="apple-desc apple-warn" role="alert">Selected, but not ready. Setup cannot finish until it is ready or turned off.</p>
-          {/if}
           {#if !appleOffer.selectable && cleanupRequested}
             <button class="btn-ghost btn-compact apple-recheck" type="button" onclick={recheckApple} disabled={appleRefreshing}>
               {appleRefreshing ? 'Checking…' : 'Check again'}
@@ -264,6 +263,9 @@
           onchange={(value) => { appleCleanup = value; onSelect?.(); }}
         />
       </div>
+      {#if appleActive && !appleOffer.selectable}
+        <Callout severity="warning" compact role="alert">Selected, but not ready. Setup cannot finish until it is ready or turned off.</Callout>
+      {/if}
     {/if}
 
     <p class="models-note">
@@ -279,9 +281,6 @@
 <style>
   .models-step { gap: 12px; }
 
-  .local-support-recovery { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
-  .local-support-recovery p { margin: 0; font-size: 13px; color: var(--ink-mute); line-height: 1.5; }
-  .local-support-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
   .models-picker {
     container-type: inline-size;
@@ -321,9 +320,7 @@
   .apple-info { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
   .apple-title { font-size: 14px; font-weight: 500; color: var(--ink-strong); }
   .apple-desc { margin: 0; font-size: 12px; color: var(--ink-mute); line-height: 1.45; }
-  .apple-warn { color: var(--danger); }
   .apple-recheck { margin-top: 4px; }
-  .apple-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 
   .models-note {
     margin: 0;
