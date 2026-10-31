@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Callout from '../Callout.svelte';
   import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount, untrack } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
@@ -151,12 +152,12 @@
     ]);
   }
   const catalogNote = $derived(refreshing
-    ? 'Refreshing model lists… You can still choose a model.'
+    ? { severity: 'info' as const, text: 'Refreshing model lists… You can still choose a model.' }
     : refreshProviders.some((provider) => context.cache[provider]?.lastError)
-      ? 'Refresh unavailable. Keeping cached models.'
+      ? { severity: 'warning' as const, text: 'Refresh unavailable. Keeping cached models.' }
       : refreshProviders.some((provider) => context.cache[provider]?.warning)
-        ? 'Some capability metadata is unavailable. Keeping known models.'
-        : '');
+        ? { severity: 'warning' as const, text: 'Some capability metadata is unavailable. Keeping known models.' }
+        : null);
 
   const needle = $derived(query.trim().toLowerCase());
   function matches(row: ModelRow): boolean {
@@ -444,7 +445,9 @@
       </button>
     </div>
 
-    <p class="catalog-note" role="status">{catalogNote}</p>
+    {#if catalogNote}
+      <div class="catalog-note"><Callout severity={catalogNote.severity} compact>{catalogNote.text}</Callout></div>
+    {/if}
 
     <div class="picker-list scroll-styled scroll-thumb-elev">
       {#key filter}
@@ -860,14 +863,9 @@
 
   .catalog-note {
     flex-shrink: 0;
-    margin: 0;
-    padding: 6px 22px;
+    padding: 8px 22px;
     border-bottom: 1px solid var(--line);
-    font-size: 12px;
-    color: var(--ink-mute);
   }
-
-  .catalog-note:empty { height: 0; padding: 0; border: 0; overflow: hidden; }
 
   .picker-foot {
     flex-shrink: 0;

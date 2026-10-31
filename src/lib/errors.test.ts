@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyIpcError, formatIpcError, formatSyncError, settingsSectionForKind, type ErrorKind } from './errors';
+import { classifyIpcError, fixLabelForKind, formatIpcError, formatSyncError, settingsSectionForKind, severityForKind, type ErrorKind } from './errors';
 
 describe('storage-full errors', () => {
   it('recognizes the backend marker', () => {
@@ -113,5 +113,31 @@ describe('actionable errors', () => {
     expect(settingsSectionForKind('mic-unavailable')).toBe('general');
     expect(settingsSectionForKind('too-quiet')).toBe('advanced');
     expect(settingsSectionForKind('missing-key')).toBe('keys');
+  });
+});
+
+describe('callout presentation for classified errors', () => {
+  it('treats quota, outages, and missing setup as warnings and rejected credentials as errors', () => {
+    expect(severityForKind('quota')).toBe('warning');
+    expect(severityForKind('provider-unavailable')).toBe('warning');
+    expect(severityForKind('missing-key')).toBe('warning');
+    expect(severityForKind('local-model-missing')).toBe('warning');
+    expect(severityForKind('auth-401')).toBe('error');
+    expect(severityForKind('database')).toBe('error');
+  });
+
+  it('names the fix for every kind that has a settings section', () => {
+    expect(fixLabelForKind('missing-key')).toBe('Add API key');
+    expect(fixLabelForKind('auth-401')).toBe('Replace API key');
+    expect(fixLabelForKind('local-model-missing')).toBe('Download model');
+    expect(fixLabelForKind('hotkey')).toBe('Fix in Settings');
+    expect(fixLabelForKind('provider-unavailable')).toBeNull();
+    expect(fixLabelForKind('unknown')).toBeNull();
+  });
+
+  it('gives a fix label exactly when a settings section exists', () => {
+    for (const kind of ['quota', 'network', 'no-backend', 'mic-busy', 'sync-connection', 'timeout'] as ErrorKind[]) {
+      expect(fixLabelForKind(kind) !== null).toBe(settingsSectionForKind(kind) !== null);
+    }
   });
 });

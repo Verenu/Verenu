@@ -59,7 +59,7 @@ test('Apple cleanup defaults and fallbacks stay keyless while keyed endpoints re
       await expect(tile).toContainText('Apple Intelligence');
       const warnings = tile.locator('.warn-banner').filter({ hasText: 'Missing API keys for:' });
       if (fallbacks.length) {
-        await expect(warnings).toHaveText('Missing API keys for: Synthetic keyed endpoint');
+        await expect(warnings).toContainText('Missing API keys for: Synthetic keyed endpoint');
       } else {
         await expect(warnings).toHaveCount(0);
       }

@@ -5,6 +5,7 @@
   import { appStore } from '../../stores';
   import { dictationReadiness, hasCleanupIntensityOverride, hasCloudSpeechCandidate, hasReachableOffCleanupOverride, hasReadyOfflineSpeech, readinessModel, type ReadinessCustomProvider, type ReadinessIssue, type ReadinessInput } from '../../dictationReadiness';
   import { openSetupSettings } from '../../settingsNavigation';
+  import Callout from '../../components/Callout.svelte';
   import type { AppMapping } from '../../appMappings';
   import type { Context, ContextTarget, ContextWebsiteTarget, ContextSubApp } from '../../stores';
   import { listenForHomeReadinessSyncChanges } from './readinessSync';
@@ -139,33 +140,31 @@
 </script>
 
 {#if checking || failed || issues.length || connectionWarning}
-  <div class="readiness-notice" role="status" aria-live="polite">
+  <div class="readiness-notice">
     {#if checking}
-      <p>Checking dictation setup...</p>
+      <Callout severity="info" compact>Checking dictation setup...</Callout>
     {:else if failed}
-      <p>Could not check dictation setup on this device.</p>
-      <button class="btn-ghost btn-compact" onclick={() => refresh()}>Check setup again</button>
-      <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('models')}>Open model settings</button>
+      <Callout
+        severity="warning"
+        title="Could not check dictation setup"
+        action={{ label: 'Open model settings', onclick: () => openSetupSettings('models') }}
+        secondaryAction={{ label: 'Check setup again', onclick: () => refresh() }}
+      >Verenu could not read this device's providers and models.</Callout>
     {:else}
       {#each issues as issue}
-        <div class="readiness-row">
-          <p>{issue.message}</p>
-          <button class="btn-ghost btn-compact" onclick={() => openSetupSettings(issue.section)}>{issue.action}</button>
-        </div>
+        <Callout severity="warning" action={{ label: issue.action, onclick: () => openSetupSettings(issue.section) }}>{issue.message}</Callout>
       {/each}
       {#if connectionWarning}
-        <div class="readiness-row">
-          <p>Cloud speech recognition needs a connection. Reconnect or choose installed local speech or a ready custom endpoint.</p>
-          <button class="btn-ghost btn-compact" onclick={() => openSetupSettings('models')}>Open model settings</button>
-        </div>
+        <Callout
+          severity="warning"
+          title="You are offline"
+          action={{ label: 'Open model settings', onclick: () => openSetupSettings('models') }}
+        >Cloud speech recognition needs a connection. Reconnect or choose installed local speech or a ready custom endpoint.</Callout>
       {/if}
     {/if}
   </div>
 {/if}
 
 <style>
-  .readiness-notice { padding: 12px 16px; margin-bottom: 16px; border: 1px solid var(--warning-line); border-radius: var(--r-md); background: var(--warning-bg); }
-  .readiness-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
-  .readiness-row + .readiness-row { margin-top: 8px; }
-  p { margin: 0; flex: 1 1 240px; font-size: 12.5px; line-height: 1.5; color: var(--ink-soft); }
+  .readiness-notice { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
 </style>
