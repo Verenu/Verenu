@@ -197,7 +197,7 @@
       aria-label="On-device model availability"
       action={{ label: 'Choose a cloud provider', onclick: () => onChooseCloudProvider('unknown') }}
       secondaryAction={{ label: 'Check again', onclick: checkPlatformLocalSupport }}
-    >Verenu could not confirm that this device supports them. Check again or choose a cloud provider.</Callout>
+    >Could not confirm that this device supports them. Check again or choose a cloud provider.</Callout>
   {:else}
     <div class="models-picker">
       <ModelPresetPicker
