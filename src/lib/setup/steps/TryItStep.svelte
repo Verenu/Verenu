@@ -4,7 +4,9 @@
   import { motionMs } from '../../motion';
   import { invoke, listen } from '../../tauri';
   import { isAndroid, isMac } from '../../platform';
-  import { classifyIpcError, formatIpcError, type ErrorKind } from '../../errors';
+  import { classifyIpcError, fixLabelForKind, formatIpcError, settingsSectionForKind, severityForKind, type ErrorKind } from '../../errors';
+  import { openSetupSettings } from '../../settingsNavigation';
+  import Callout from '../../components/Callout.svelte';
   import { hotkeyCodes, hotkeyLabels, hotkeyWatchCodes, matchesHotkey } from '../../hotkey.svelte';
   import ShortcutRecovery from '../../components/ShortcutRecovery.svelte';
   import { desktopShortcut } from '../../shortcutStatus.svelte';
@@ -29,6 +31,8 @@
       : errorKind === 'too-quiet' ? 'The microphone was too quiet' : 'That recording did not go through',
   );
   const errorDetail = $derived(errorMessage);
+  const fixSection = $derived(settingsSectionForKind(errorKind));
+  const fixLabel = $derived(fixLabelForKind(errorKind));
 
   function showRecordingError(err: unknown) {
     errorKind = classifyIpcError(err).kind;
@@ -185,15 +189,14 @@
   ></textarea>
 
   {#if errorMessage}
-    <div class="tryit-feedback tryit-error" role="alert" in:slide={feedbackIn()} out:fade={feedbackOut()}>
-      <span class="feedback-icon" aria-hidden="true">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><path d="M12 17h.01"/></svg>
-      </span>
-      <span class="feedback-copy">
-        <strong>{errorTitle}</strong>
-        <span>{errorDetail}</span>
-      </span>
-      <button class="btn-ghost btn-compact tryit-reset" onclick={reset}>Try again</button>
+    <div class="tryit-error" in:slide={feedbackIn()} out:fade={feedbackOut()}>
+      <Callout
+        severity={severityForKind(errorKind)}
+        role="alert"
+        title={errorTitle}
+        action={{ label: 'Try again', onclick: reset }}
+        secondaryAction={fixSection && fixLabel ? { label: fixLabel, onclick: () => openSetupSettings(fixSection) } : undefined}
+      >{errorDetail}</Callout>
     </div>
   {:else if status === 'success'}
     <div class="tryit-feedback tryit-success" role="status" in:slide={feedbackIn()} out:fade={feedbackOut()}>
@@ -295,14 +298,8 @@
     background: var(--success-bg);
   }
 
-  .tryit-error {
-    border: 1px solid var(--danger-line);
-    background: var(--danger-bg);
-  }
-
   .feedback-icon { display: flex; flex-shrink: 0; }
   .tryit-success .feedback-icon { color: var(--success); }
-  .tryit-error .feedback-icon { color: var(--danger); }
 
   .feedback-copy {
     display: flex;

@@ -377,7 +377,7 @@ if (screenshotDir) fs.mkdirSync(screenshotDir, { recursive: true });
       const settings = JSON.parse(localStorage.getItem('verenu:dev-settings') || '{}');
       localStorage.setItem('verenu:dev-settings', JSON.stringify({ ...settings, __local_models_supported: true }));
     });
-    await unknownRecovery.getByRole('button', { name: 'Retry check' }).click();
+    await unknownRecovery.getByRole('button', { name: 'Check again' }).click();
     await expect(unknownLocalResume.locator('.models-picker .preset-row').filter({ hasText: 'Transcription only' })).toBeVisible();
     await assertSafe(unknownLocalResume);
     await unknownLocalResume.close();

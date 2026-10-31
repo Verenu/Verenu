@@ -151,7 +151,7 @@
         <Callout class="warn-banner" severity="warning" compact action={{ label: 'Add API key', onclick: onOpenApiKeys }}>{missingKeysMessage}</Callout>
       {/if}
       {#each unavailable as message (message)}
-        <Callout class="warn-banner" severity="warning" compact action={{ label: 'Choose model', onclick: (event) => openPicker('select', event) }}>{message}</Callout>
+        <Callout class="warn-banner" severity="warning" compact action={{ label: 'Choose a model', onclick: (event) => openPicker('select', event) }}>{message}</Callout>
       {/each}
     </div>
   {/if}
