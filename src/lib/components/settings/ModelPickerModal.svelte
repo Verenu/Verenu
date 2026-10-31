@@ -453,15 +453,13 @@
       {#key filter}
       <div in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
       {#if filter === 'local' && local.runtime?.info && runtimePending}
-        <p class="list-note runtime-note">
+        <div class="runtime-note">
           {#if local.runtime.info.is_downloading}
-            Fetching the on-device runtime…
-            <button class="row-tool" type="button" onclick={() => local.runtime?.onCancel()}>Cancel</button>
+            <Callout severity="info" compact action={{ label: 'Cancel', onclick: () => local.runtime?.onCancel() }}>Fetching the on-device runtime…</Callout>
           {:else}
-            On-device models need a one-time runtime (~{local.runtime.info.approx_download_mb} MB).
-            <button class="row-tool row-tool-strong" type="button" onclick={() => local.runtime?.onDownload()}>Install engine</button>
+            <Callout severity="warning" compact action={{ label: 'Install engine', onclick: () => local.runtime?.onDownload() }}>On-device models need a one-time runtime (~{local.runtime.info.approx_download_mb} MB).</Callout>
           {/if}
-        </p>
+        </div>
       {/if}
 
       {#each pinnedRows as row (row.key)}
@@ -899,6 +897,7 @@
     color: var(--ink-mute);
   }
 
+  .runtime-note { padding: 8px 12px; }
   .list-note { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
   .list-empty { padding-top: 56px; text-align: center; font-size: 13px; }
   .list-error { color: var(--danger); }

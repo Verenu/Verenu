@@ -142,13 +142,13 @@
 {#if checking || failed || issues.length || connectionWarning}
   <div class="readiness-notice">
     {#if checking}
-      <Callout severity="info" compact>Checking dictation setup...</Callout>
+      <Callout severity="info">Checking dictation setup…</Callout>
     {:else if failed}
       <Callout
         severity="warning"
         title="Could not check dictation setup"
         action={{ label: 'Open model settings', onclick: () => openSetupSettings('models') }}
-        secondaryAction={{ label: 'Check setup again', onclick: () => refresh() }}
+        secondaryAction={{ label: 'Check again', onclick: () => refresh() }}
       >Verenu could not read this device's providers and models.</Callout>
     {:else}
       {#each issues as issue}

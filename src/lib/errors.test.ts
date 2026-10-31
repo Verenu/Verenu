@@ -122,6 +122,8 @@ describe('callout presentation for classified errors', () => {
     expect(severityForKind('provider-unavailable')).toBe('warning');
     expect(severityForKind('missing-key')).toBe('warning');
     expect(severityForKind('local-model-missing')).toBe('warning');
+    expect(severityForKind('no-speech')).toBe('warning');
+    expect(severityForKind('too-quiet')).toBe('warning');
     expect(severityForKind('auth-401')).toBe('error');
     expect(severityForKind('database')).toBe('error');
   });

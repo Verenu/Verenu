@@ -129,7 +129,7 @@
       <Callout
         severity="info"
         title="Cleanup is turned off"
-        action={{ label: 'Turn Cleanup on', onclick: () => emit('open-flow:open-settings-section', 'general') }}
+        action={{ label: 'Turn cleanup on', onclick: () => emit('open-flow:open-settings-section', 'general') }}
       >Nothing on this page has any effect right now. Tone, intensity, and app-specific overrides only apply during the cleanup step. Your choices below are kept, just not used.</Callout>
     </div>
   {/if}
