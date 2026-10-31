@@ -22,6 +22,7 @@
     performance = [],
     detailsOpen = false,
     busy = false,
+    recommended = false,
     onToggleDetails,
   }: {
     preset: Preset;
@@ -40,6 +41,7 @@
     performance?: ModelPerformance[];
     detailsOpen?: boolean;
     busy?: boolean;
+    recommended?: boolean;
     onToggleDetails?: () => void;
   } = $props();
 
@@ -86,7 +88,7 @@
   <div class="preset-row preset-info">
     <div class="preset-main">
       <span class="preset-name">{preset.name}</span>
-      <span class="preset-tagline">{preset.tagline}</span>
+      <span class="preset-tagline" title={preset.tagline}>{preset.tagline}</span>
     </div>
     <button class="btn-ghost btn-compact" type="button" onclick={() => onAddKey?.()}>Open API keys</button>
   </div>
@@ -106,8 +108,11 @@
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>
       </span>
       <div class="preset-main">
-        <span class="preset-name">{preset.name}</span>
-        <span class="preset-tagline">{preset.tagline}</span>
+        <span class="preset-name">
+          {preset.name}
+          {#if recommended}<span class="preset-badge">Recommended</span>{/if}
+        </span>
+        <span class="preset-tagline" title={preset.tagline}>{preset.tagline}</span>
       </div>
       <div class="preset-trail">
         {#if actionLabel}
@@ -214,10 +219,11 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 11px 14px;
+    min-height: 56px;
+    padding: 8px 8px 8px 14px;
     pointer-events: none;
   }
-  .preset-info { justify-content: space-between; pointer-events: auto; }
+  .preset-info { justify-content: space-between; pointer-events: auto; padding-right: 14px; }
 
   .preset-radio {
     flex: none;
@@ -235,15 +241,52 @@
   .preset-main {
     flex: 1;
     min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: var(--preset-name-col, 164px) minmax(0, 1fr);
+    align-items: center;
+    column-gap: 12px;
   }
-  .preset-name { font-family: var(--sans); font-size: 13.5px; font-weight: 600; color: var(--ink); }
-  .preset-tagline { font-family: var(--sans); font-size: 12px; color: var(--ink-mute); line-height: 1.4; }
+  .preset-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    font-family: var(--sans);
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .preset-badge {
+    flex: none;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-size: 10.5px;
+    font-weight: 500;
+    line-height: 1.5;
+  }
+  .preset-tagline {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--ink-mute);
+    line-height: 1.4;
+  }
 
-  .preset-trail { display: flex; align-items: center; gap: 4px; flex: none; }
+  .preset-trail {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    flex: none;
+    width: var(--preset-trail-col, 164px);
+  }
   .preset-speed { font-family: var(--sans); font-size: 11.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; padding-right: 2px; }
 
   .preset-action, .preset-more { pointer-events: auto; position: relative; z-index: 2; }
@@ -265,9 +308,9 @@
   .preset-more {
     display: grid;
     place-items: center;
-    width: 44px;
-    height: 40px;
-    margin: -8px -8px -8px 0;
+    flex: none;
+    width: 36px;
+    height: 36px;
     border: 0;
     border-radius: 6px;
     background: transparent;
@@ -287,7 +330,7 @@
     line-height: 1.5;
     color: var(--ink-mute);
   }
-  .preset-details dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+  .preset-details dl { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 4px 12px; margin: 0; }
   .preset-details dt { color: var(--ink-soft); font-weight: 600; }
   .preset-details dd { margin: 0; overflow-wrap: anywhere; }
   .preset-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
@@ -299,14 +342,13 @@
   }
 
   @container settings-panel (max-width: 560px) {
-    .preset-main { flex-direction: column; align-items: flex-start; gap: 2px; }
-    .preset-line, .preset-info { padding: 12px; }
+    .preset-main { grid-template-columns: minmax(0, 1fr); row-gap: 2px; }
+    .preset-line, .preset-info { padding: 10px 6px 10px 12px; }
     .preset-line { flex-wrap: wrap; row-gap: 4px; }
     .preset-trail { display: contents; }
-    .preset-more { width: 44px; height: 44px; margin: -6px -8px -6px 0; order: 2; }
-    .preset-action { order: 3; flex-basis: calc(100% - 28px); margin-left: 28px; text-align: left; padding-left: 0; }
+    .preset-more { width: 44px; height: 44px; order: 2; }
+    .preset-action { order: 3; flex-basis: calc(100% - 28px); margin-left: 28px; text-align: left; padding-left: 0; min-height: 36px; }
     .preset-speed { display: none; }
-    .preset-action { min-height: 36px; }
     .preset-details { padding-left: 12px; }
     .preset-actions :global(.btn-ghost) { min-height: 40px; flex: 1 1 auto; }
   }
