@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
+  import Callout from '../Callout.svelte';
   import { formatIpcError } from '../../errors';
   import { MOTION_MS, motionMs } from '../../motion';
   import { customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
@@ -201,7 +202,7 @@
   </div>
 {/if}
 
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+{#if error}<div class="error"><Callout severity="error" compact>{error}</Callout></div>{/if}
 {#if notice}<p class="notice" role="status" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>{notice}</p>{/if}
 
 <p class="fineprint">Logos belong to their owners. Verenu is not affiliated with these companies.</p>
@@ -243,7 +244,7 @@
   .empty-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; background: var(--paper-2); color: var(--ink-mute); }
   .empty-title { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--ink); }
 
-  .error { margin: 12px 0 0; color: var(--danger); font-size: 12px; }
+  .error { margin: 12px 0 0; }
   .notice { margin: 12px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 12px; background: var(--success-bg); color: var(--ink); }
   .fineprint { margin: 18px 0 0; font-size: 11px; color: var(--ink-faint); }
 
