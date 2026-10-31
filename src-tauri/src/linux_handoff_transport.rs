@@ -12,10 +12,37 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-const PROTOCOL: u32 = 2;
+const PROTOCOL: u32 = 3;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
+
+fn database_code_fingerprint() -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for source in [
+        &include_bytes!("data/db/mod.rs")[..],
+        &include_bytes!("data/db/schema.rs")[..],
+        &include_bytes!("data/db/activity.rs")[..],
+        &include_bytes!("data/db/agent_audit.rs")[..],
+        &include_bytes!("data/db/agent_history.rs")[..],
+        &include_bytes!("data/db/agent_library.rs")[..],
+        &include_bytes!("data/db/cleanup_cache.rs")[..],
+        &include_bytes!("data/db/contexts.rs")[..],
+        &include_bytes!("data/db/dictionary.rs")[..],
+        &include_bytes!("data/db/insights.rs")[..],
+        &include_bytes!("data/db/library_usage.rs")[..],
+        &include_bytes!("data/db/pricing.rs")[..],
+        &include_bytes!("data/db/snippets.rs")[..],
+        &include_bytes!("data/db/sub_apps.rs")[..],
+        &include_bytes!("data/db/transcriptions.rs")[..],
+        &include_bytes!("data/db/validation.rs")[..],
+    ] {
+        hash.update((source.len() as u64).to_le_bytes());
+        hash.update(source);
+    }
+    format!("{:x}", hash.finalize())
+}
 
 fn descends_from(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     for _ in 0..32 {
@@ -168,6 +195,7 @@ impl Child {
             protocol: PROTOCOL,
             pid: std::process::id(),
             schema,
+            database_code: database_code_fingerprint(),
         })?;
         match self.channel.receive()? {
             Message::Begin {
@@ -286,6 +314,7 @@ enum Message {
         protocol: u32,
         pid: u32,
         schema: i64,
+        database_code: String,
     },
     Begin {
         key_availability: KeyAvailability,
@@ -564,8 +593,10 @@ impl Parent {
                 protocol,
                 pid,
                 schema,
+                database_code,
             } if protocol == PROTOCOL
                 && schema == self.schema
+                && database_code == database_code_fingerprint()
                 && (pid == self.child_pid
                     || (pid <= i32::MAX as u32
                         && self.child_pid <= i32::MAX as u32
@@ -668,6 +699,7 @@ mod tests {
                     protocol: PROTOCOL,
                     pid: 42,
                     schema: 39,
+                    database_code: database_code_fingerprint(),
                 })
                 .unwrap();
             child.expect(begin()).unwrap();
@@ -691,6 +723,7 @@ mod tests {
                     protocol: PROTOCOL,
                     pid: 42,
                     schema: 39,
+                    database_code: database_code_fingerprint(),
                 })
                 .unwrap();
             child.expect(begin()).unwrap();
@@ -703,17 +736,25 @@ mod tests {
     }
 
     #[test]
-    fn wrong_pid_or_schema_is_rejected_before_startup() {
+    fn wrong_pid_schema_or_database_code_is_rejected_before_startup() {
         for message in [
             Message::Hello {
                 protocol: PROTOCOL,
                 pid: 43,
                 schema: 39,
+                database_code: database_code_fingerprint(),
             },
             Message::Hello {
                 protocol: PROTOCOL,
                 pid: 42,
                 schema: 40,
+                database_code: database_code_fingerprint(),
+            },
+            Message::Hello {
+                protocol: PROTOCOL,
+                pid: 42,
+                schema: 39,
+                database_code: "different".into(),
             },
         ] {
             let (parent, mut child) = pair();
@@ -731,6 +772,7 @@ mod tests {
                     protocol: PROTOCOL,
                     pid: 42,
                     schema: 39,
+                    database_code: database_code_fingerprint(),
                 })
                 .unwrap();
             child.expect(begin()).unwrap();
@@ -803,6 +845,7 @@ mod tests {
                     protocol: PROTOCOL,
                     pid: 42,
                     schema: 39,
+                    database_code: database_code_fingerprint(),
                 })
                 .unwrap();
             child.expect(begin()).unwrap();
