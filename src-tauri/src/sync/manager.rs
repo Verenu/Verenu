@@ -139,6 +139,7 @@ pub(crate) struct Inner {
     pub listener_port: AtomicU16,
     pub available: AtomicBool,
     pub listener_failed: AtomicBool,
+    initialization_started: AtomicBool,
     pub incoming_slots: Arc<Semaphore>,
     pub mute_lease_slots: Arc<Semaphore>,
 }
@@ -335,6 +336,32 @@ mod handoff_tests {
 
     #[test]
     #[ignore = "requires a private desktop"]
+    fn handoff_sync_activation_starts_at_most_one_gated_worker() {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        app.manage(gate.clone());
+        let db = crate::data::db::open(":memory:").unwrap();
+        let manager = SyncManager::new_unstarted(app.handle().clone(), db);
+        tauri::async_runtime::block_on(async {
+            let pause = gate.pause().await.unwrap();
+            assert!(!manager.inner.initialization_started.load(Ordering::Acquire));
+            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+            let worker = manager.activate_after_handoff(&parent_exited).unwrap();
+            assert!(manager.activate_after_handoff(&parent_exited).is_none());
+            tokio::task::yield_now().await;
+            assert!(!worker.inner().is_finished());
+            assert!(!manager.inner.available.load(Ordering::Acquire));
+            worker.abort();
+            let _ = worker.await;
+            drop(pause);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a private desktop"]
     fn handoff_rejects_active_sync_state() {
         let app = tauri::Builder::default()
             .any_thread()
@@ -455,6 +482,7 @@ impl SyncManager {
             listener_port: AtomicU16::new(0),
             available: AtomicBool::new(false),
             listener_failed: AtomicBool::new(false),
+            initialization_started: AtomicBool::new(false),
             incoming_slots: Arc::new(Semaphore::new(MAX_INCOMING_CONNECTIONS)),
             mute_lease_slots: Arc::new(Semaphore::new(MAX_ACTIVE_MUTE_LEASES)),
         });
@@ -463,14 +491,30 @@ impl SyncManager {
 
     pub fn start(app: AppHandle, db: DbHandle) -> SyncManager {
         let manager = Self::new_unstarted(app, db);
-        let init = manager.clone();
-        tauri::async_runtime::spawn(async move {
+        let _ = manager.start_initialization();
+        manager
+    }
+
+    fn start_initialization(&self) -> Option<tauri::async_runtime::JoinHandle<()>> {
+        if self.inner.initialization_started.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let init = self.clone();
+        Some(tauri::async_runtime::spawn(async move {
             if let Err(err) = init.initialize().await {
                 init.inner.listener_failed.store(true, Ordering::Relaxed);
                 log::error!("sync: disabled - {err:#}");
             }
-        });
-        manager
+        }))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    pub(crate) fn activate_after_handoff(
+        &self,
+        _parent_exited: &crate::linux_handoff_transport::ParentExited,
+    ) -> Option<tauri::async_runtime::JoinHandle<()>> {
+        self.start_initialization()
     }
 
     async fn initialize(&self) -> Result<()> {

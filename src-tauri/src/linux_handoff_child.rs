@@ -104,6 +104,10 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
             }
         })
         .setup(move |app| {
+            app.manage(crate::sync::SyncManager::new_unstarted(
+                app.handle().clone(),
+                app.state::<crate::DbHandle>().inner().clone(),
+            ));
             crate::pipeline::initialize_pill(app.handle());
             if app.get_webview_window("main").is_none() || app.get_webview_window("pill").is_none()
             {
