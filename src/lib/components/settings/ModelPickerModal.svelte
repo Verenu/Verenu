@@ -445,9 +445,9 @@
       </button>
     </div>
 
-    {#if catalogNote}
-      <div class="catalog-note"><Callout severity={catalogNote.severity} compact>{catalogNote.text}</Callout></div>
-    {/if}
+    <div class="catalog-note" role="status">
+      {#if catalogNote}<Callout severity={catalogNote.severity} compact role={null}>{catalogNote.text}</Callout>{/if}
+    </div>
 
     <div class="picker-list scroll-styled scroll-thumb-elev">
       {#key filter}
@@ -864,6 +864,8 @@
     padding: 8px 22px;
     border-bottom: 1px solid var(--line);
   }
+
+  .catalog-note:empty { height: 0; padding: 0; border: 0; overflow: hidden; }
 
   .picker-foot {
     flex-shrink: 0;
