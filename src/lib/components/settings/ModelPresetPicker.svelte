@@ -22,10 +22,12 @@
     selectionMode = 'manual',
     pendingPresetId = null,
     transformPreset,
+    activeLabel = $bindable(null),
   }: {
     showCustomNote?: boolean;
     options?: PresetOptions;
     transformPreset?: (preset: Preset) => Preset;
+    activeLabel?: string | null;
     onUseFallback?: (preset: Preset) => void;
     onTestLocal?: (preset: Preset) => void;
     testingLocal?: boolean;
@@ -46,6 +48,10 @@
   const originals = $derived(buildPresets(apiKeyStatus, hardware, localSupported, options));
   const presets = $derived(transformPreset ? originals.map(transformPreset) : originals);
   const activeId = $derived(matchActivePreset(presets, activeConfig));
+  $effect(() => {
+    const preset = presets.find(candidate => candidate.id === activeId);
+    activeLabel = preset ? `${preset.offline ? 'Local' : 'Cloud'} ${preset.name}` : null;
+  });
   function original(preset: Preset): Preset {
     return originals.find(candidate => candidate.id === preset.id) ?? preset;
   }
@@ -54,6 +60,12 @@
   const cloudActive = $derived(!activeConfig.transcriptionDefaultModel.startsWith('local/'));
   const offlineSpeech = $derived(activeConfig.transcriptionFallbacks.filter(id => id.startsWith('local/') && installedLocal.transcription.includes(id.slice('local/'.length))));
   const offlineCleanup = $derived(activeConfig.cleanupFallbacks.filter(id => id.startsWith('local/') && installedLocal.cleanup.includes(id.slice('local/'.length)) && options.localCleanupReady !== false));
+
+  function recommendedIdFor(group: Preset[]): string | null {
+    const choices = group.filter(preset => preset.kind === 'preset');
+    if (choices.length < 2) return null;
+    return (choices.find(preset => preset.id.endsWith('-balanced')) ?? choices[0]).id;
+  }
 
   let openDetailsId = $state<string | null>(null);
 
@@ -96,6 +108,7 @@
 <div class="preset-grid">
 {#each [{ title: 'Cloud', presets: cloudPresets }, { title: 'Local AI', presets: localPresets }] as group}
 {#if group.presets.length}
+{@const recommendedId = recommendedIdFor(group.presets)}
 <section class="preset-group" aria-label={`${group.title} models`}>
   <div class="group-head">
     <h3 class="settings-subhead">{group.title}</h3>
@@ -113,6 +126,7 @@
       downloadMb={downloadMbFor(preset)}
       downloading={isDownloading(preset)}
       busy={pendingPresetId !== null}
+      recommended={preset.id === recommendedId}
       installedCount={installedCountFor(preset)}
       onSelect={() => onApplyPreset(original(preset))}
       onAddKey={onOpenApiKeys}
@@ -138,15 +152,15 @@
 
 <style>
   .preset-grid { display: flex; flex-direction: column; gap: 0; margin-bottom: 6px; }
-  .preset-group { margin-top: 14px; animation: group-in var(--ui-duration-base) var(--ui-ease-out) both; }
+  .preset-group { margin-top: 20px; animation: group-in var(--ui-duration-base) var(--ui-ease-out) both; }
   .preset-group:nth-of-type(2) { animation-delay: 60ms; }
   .preset-group:last-of-type { margin-bottom: 14px; }
-  .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-height: 20px; margin-bottom: 6px; }
   .group-head :global(.settings-subhead) { margin: 0; }
   .group-status { font-family: var(--sans); font-size: 11.5px; color: var(--ink-mute); }
   .preset-list {
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: var(--r-md);
     background: var(--bg-elev);
     overflow: hidden;
   }
