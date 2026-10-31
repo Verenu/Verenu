@@ -161,37 +161,12 @@
 <svelte:window onkeydown={handleBetaModalKeydown} />
 
 <h2 class="settings-h">About</h2>
-<div class="setting-row" data-setting-target="about-version">
-  <div><div class="label">Version</div></div>
-  <button class="version-tap desc" onclick={handleVersionTap}>v{appVersion}</button>
-</div>
-{#if devModeHintVisible}
-  <div class="dev-hint-row">
-    <span class="desc dev-hint">Developer mode enabled for this session.</span>
-  </div>
-{/if}
-<div class="setting-row" data-setting-target="about-license">
-  <div><div class="label">License</div></div>
-  <span class="desc">MIT</span>
-</div>
-<div class="setting-row" data-setting-target="about-website">
-  <div><div class="label">Website</div></div>
-  <button class="btn-ghost" onclick={() => openExternal(WEBSITE_URL)}>verenu.com</button>
-</div>
-<div class="setting-row" data-setting-target="about-source">
-  <div><div class="label">Source</div></div>
-  <button class="btn-ghost" onclick={() => openExternal(`https://github.com/${SOURCE_REPO}`)}>github.com/{SOURCE_REPO}</button>
-</div>
-<div class="setting-row" data-setting-target="about-setup">
-  <div>
-    <div class="label">Setup</div>
-    <div class="desc">Re-run onboarding to review your provider, key, and defaults.</div>
-  </div>
-  <button class="btn-ghost" onclick={rerunSetup}>Re-run setup</button>
-</div>
+
+<h3 class="settings-subhead first">Updates</h3>
 <div class="setting-row" data-setting-target="about-updates">
   <div>
-    <div class="label">Updates</div>
+    <div class="label">Version</div>
+    <div class="desc"><button class="version-tap" data-setting-target="about-version" onclick={handleVersionTap}>v{appVersion}</button></div>
     <div role="status" aria-live="polite">
     {#if appStore.updateProgress}
       <div class="desc">{appStore.updateProgress}</div>
@@ -235,12 +210,37 @@
     {/if}
   </div>
 </div>
+{#if devModeHintVisible}
+  <div class="dev-hint-row">
+    <span class="desc dev-hint">Developer mode enabled for this session.</span>
+  </div>
+{/if}
 <div class="setting-row" data-setting-target="about-beta">
   <div>
     <div class="label">Beta updates</div>
     <div class="desc">Try early releases from the master branch. Expect bugs and possible data loss.</div>
   </div>
   <Toggle checked={betaUpdatesEnabled} disabled={appStore.updateInstalling || appStore.updateInstalled} onchange={handleBetaUpdatesToggle} label="Beta updates" bind:error={betaUpdatesError} />
+</div>
+
+
+<h3 class="settings-subhead">Links</h3>
+<div class="setting-row" data-setting-target="about-website">
+  <div><div class="label">Website</div></div>
+  <button class="btn-ghost" onclick={() => openExternal(WEBSITE_URL)}>verenu.com</button>
+</div>
+<div class="setting-row" data-setting-target="about-source">
+  <div><div class="label">Source</div><div class="desc" data-setting-target="about-license">Open source under the MIT license.</div></div>
+  <button class="btn-ghost" onclick={() => openExternal(`https://github.com/${SOURCE_REPO}`)}>github.com/{SOURCE_REPO}</button>
+</div>
+
+<h3 class="settings-subhead">Setup</h3>
+<div class="setting-row" data-setting-target="about-setup">
+  <div>
+    <div class="label">Onboarding</div>
+    <div class="desc">Re-run setup to review your provider, key, and defaults.</div>
+  </div>
+  <button class="btn-ghost" onclick={rerunSetup}>Re-run setup</button>
 </div>
 
 {#if confirmBetaUpdates}
@@ -282,6 +282,9 @@
     border: none;
     background: transparent;
     padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: default;
   }
   .dev-hint-row {
     margin-top: -4px;

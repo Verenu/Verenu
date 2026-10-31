@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { searchSettings } from './settingsSearch.svelte';
+import { SETTINGS_SEARCH_ENTRIES, searchSettings } from './settingsSearch.svelte';
+import { SETTINGS_SECTION_ORDER } from './settingsSections';
 
 const platform = vi.hoisted(() => ({ android: false }));
 vi.mock('./platform', async (importOriginal) => ({
@@ -8,7 +9,7 @@ vi.mock('./platform', async (importOriginal) => ({
 }));
 beforeEach(() => { platform.android = false; });
 
-const visibleSections = ['general', 'keys', 'models', 'privacy', 'advanced', 'about'] as const;
+const visibleSections = ['general', 'text', 'keys', 'models', 'privacy', 'advanced', 'about'] as const;
 
 describe('settings search', () => {
   it('keeps the offline pill setting out of desktop search', () => {
@@ -28,11 +29,11 @@ describe('settings search', () => {
     });
   });
 
-  it('routes voice command searches to the General voice commands row', () => {
+  it('routes voice command searches to the Text voice commands row', () => {
     for (const query of ['voice commands', 'spoken punctuation', 'scratch that', 'line break']) {
       expect(searchSettings(query, visibleSections)[0]).toMatchObject({
-        section: 'general',
-        target: 'general-voice-commands',
+        section: 'text',
+        target: 'text-voice-commands',
       });
     }
   });
@@ -84,5 +85,29 @@ describe('settings search', () => {
       expect.arrayContaining(['general-pill-position', 'general-cover-keyboard-mic']),
     );
     expect(searchSettings('pill', visibleSections, 24, false)).toEqual([]);
+  });
+});
+
+const sources = Object.values(
+  import.meta.glob('./components/**/*.svelte', { query: '?raw', import: 'default', eager: true }),
+).join('\n');
+
+describe('settings search targets', () => {
+  // The Models page builds its targets from the task id and belongs to a separate redesign.
+  const entries = SETTINGS_SEARCH_ENTRIES.filter((entry) => entry.section !== 'models');
+
+  it('points every entry at a known section', () => {
+    for (const entry of SETTINGS_SEARCH_ENTRIES) {
+      expect(SETTINGS_SECTION_ORDER, entry.id).toContain(entry.section);
+    }
+  });
+
+  it('points every entry at a data-setting-target rendered by a component', () => {
+    const missing = entries.filter((entry) => {
+      if (entry.target.startsWith('api-key-')) return !sources.includes('api-key-${');
+      // A row component can receive the target as a prop instead of rendering the attribute itself.
+      return !sources.includes(`data-setting-target="${entry.target}"`) && !sources.includes(`target="${entry.target}"`);
+    });
+    expect(missing.map((entry) => `${entry.id} -> ${entry.target}`)).toEqual([]);
   });
 });

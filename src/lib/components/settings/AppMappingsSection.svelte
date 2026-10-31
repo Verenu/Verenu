@@ -10,7 +10,7 @@
     <Callout
       severity="info"
       title="Cleanup is turned off"
-      action={{ label: 'Turn cleanup on', onclick: () => emit('open-flow:open-settings-section', 'general') }}
+      action={{ label: 'Turn cleanup on', onclick: () => emit('open-flow:open-settings-section', 'text') }}
     >App mappings have no effect right now. The tone and per-app overrides here only apply during the cleanup step. Your mappings are kept, just not used.</Callout>
   </div>
 {/if}
