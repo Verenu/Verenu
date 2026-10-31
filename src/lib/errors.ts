@@ -349,9 +349,13 @@ const WARNING_KINDS: ReadonlySet<ErrorKind> = new Set([
   'local-runtime',
   'model-download',
   'model-unavailable',
+  'no-speech',
+  'nothing-transcribed',
+  'too-short',
+  'too-quiet',
 ]);
 
-/** Transient or fixable-in-settings problems read as warnings; everything else is an error. */
+/** Transient, fixable-in-settings, or nothing-heard problems read as warnings; everything else is an error. */
 export function severityForKind(kind: ErrorKind): 'warning' | 'error' {
   return WARNING_KINDS.has(kind) ? 'warning' : 'error';
 }

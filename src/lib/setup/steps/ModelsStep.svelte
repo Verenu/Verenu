@@ -186,7 +186,7 @@
       title="On-device models are not available"
       role="note"
       action={{ label: 'Choose a cloud provider', onclick: () => onChooseCloudProvider('unsupported') }}
-    >On-device models are not available on Intel Macs yet. They have not been tested on Intel hardware. Choose a cloud provider to continue.</Callout>
+    >Intel Macs are not supported yet, and on-device models have not been tested on Intel hardware. Choose a cloud provider to continue.</Callout>
   {:else if provider === 'local' && platformLocalSupport === 'unknown'}
     <Callout
       class="local-support-recovery"
@@ -196,8 +196,8 @@
       role="group"
       aria-label="On-device model availability"
       action={{ label: 'Choose a cloud provider', onclick: () => onChooseCloudProvider('unknown') }}
-      secondaryAction={{ label: 'Retry check', onclick: checkPlatformLocalSupport }}
-    >Could not confirm whether on-device models are available. Retry the check or choose a cloud provider.</Callout>
+      secondaryAction={{ label: 'Check again', onclick: checkPlatformLocalSupport }}
+    >Verenu could not confirm that this device supports them. Check again or choose a cloud provider.</Callout>
   {:else}
     <div class="models-picker">
       <ModelPresetPicker

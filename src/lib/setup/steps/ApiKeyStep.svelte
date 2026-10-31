@@ -135,9 +135,9 @@
 
   {#if keySaved && !apiKeyDraft}
     {#if keyValidation.status === 'invalid'}
-      <Callout severity="error" compact title={`${providerName} rejected this key`}>{keyValidation.message || 'You can re-enter it or continue anyway.'}</Callout>
+      <Callout severity="error" compact title={`${providerName} rejected this key`}>{keyValidation.message || 'Re-enter the key or continue anyway.'}</Callout>
     {:else if keyValidation.status === 'unknown'}
-      <Callout severity="warning" compact title="Key saved, but not verified">{keyValidation.message || "Couldn't verify the key right now — saved anyway."}</Callout>
+      <Callout severity="warning" compact title="Key saved, but not verified">{keyValidation.message || 'Verenu could not verify the key right now, but it was saved.'}</Callout>
     {:else}
       <div class="key-status" role="status" aria-live="polite">
         {#if keyValidation.status === 'checking'}
@@ -285,7 +285,7 @@
       {@render keyField()}
 
       {#if !keySaved}
-        <Callout severity="warning" compact title="No API key yet">Dictation won't work until a key is added. You can also add one later in Settings → Providers.</Callout>
+        <Callout severity="warning" compact title="No API key set">Dictation will not work until you add a key. You can also add one later in Settings > Providers.</Callout>
       {/if}
 
       <div class="paste-help">
