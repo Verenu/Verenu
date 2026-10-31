@@ -2,18 +2,16 @@
   import { appStore } from '../../stores';
   import { emit } from '../../tauri';
   import AppMappingsEditor from '../AppMappingsEditor.svelte';
+  import Callout from '../Callout.svelte';
 </script>
 
 {#if !appStore.cleanupEnabled}
   <div class="cleanup-off-banner">
-    <p>
-      <strong>Cleanup is turned off</strong>, so app mappings have no effect right now — the tone
-      and per-app overrides here only apply during the cleanup step. Your mappings are kept, just
-      not used.
-    </p>
-    <button type="button" class="cleanup-off-link" onclick={() => emit('open-flow:open-settings-section', 'general')}>
-      Turn Cleanup back on in Settings → General
-    </button>
+    <Callout
+      severity="info"
+      title="Cleanup is turned off"
+      action={{ label: 'Turn cleanup on', onclick: () => emit('open-flow:open-settings-section', 'general') }}
+    >App mappings have no effect right now. The tone and per-app overrides here only apply during the cleanup step. Your mappings are kept, just not used.</Callout>
   </div>
 {/if}
 
@@ -33,36 +31,6 @@
   }
 
   .cleanup-off-banner {
-    padding: 12px 14px;
-    border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: color-mix(in srgb, var(--paper) 55%, var(--bg-elev));
     margin-bottom: 20px;
-  }
-
-  .cleanup-off-banner p {
-    margin: 0 0 8px;
-    font-size: 12.5px;
-    line-height: 1.5;
-    color: var(--ink-mute);
-  }
-
-  .cleanup-off-banner strong {
-    color: var(--ink-soft);
-  }
-
-  .cleanup-off-link {
-    font-size: 12.5px;
-    font-weight: 500;
-    color: var(--accent-ink);
-    background: transparent;
-    border: 0;
-    padding: 0;
-    cursor: pointer;
-    text-decoration: underline;
-  }
-
-  .cleanup-off-link:hover {
-    opacity: 0.8;
   }
 </style>

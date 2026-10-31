@@ -5,6 +5,7 @@
   import { fade } from 'svelte/transition';
   import { onMount } from 'svelte';
   import { motionMs } from '../../motion';
+  import Callout from '../../components/Callout.svelte';
   import {
     localSttStore,
     refreshLocalModels,
@@ -129,28 +130,28 @@
   </div>
 
   {#if keyError}
-    <p class="key-error" role="alert">{keyError}</p>
+    <Callout severity="error" compact>{keyError}</Callout>
   {/if}
 
   {#if keySaved && !apiKeyDraft}
-    <div class="key-status" role="status" aria-live="polite" class:is-bad={keyValidation.status === 'invalid'} class:is-warn={keyValidation.status === 'unknown'}>
-      {#if keyValidation.status === 'checking'}
-        <span class="status-spinner" aria-hidden="true"></span>
-        <span>Verifying key…</span>
-      {:else if keyValidation.status === 'invalid'}
-        <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
-        <span>{keyValidation.message || 'This key was rejected. You can re-enter it or continue anyway.'}</span>
-      {:else if keyValidation.status === 'unknown'}
-        <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.86.85c0 1.65-2.46 2.5-2.46 2.5"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
-        <span>{keyValidation.message || "Couldn't verify the key right now — saved anyway."}</span>
-      {:else if keyValidation.status === 'valid'}
-        <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-        <span>Key verified — {providerName} accepted it.</span>
-      {:else}
-        <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-        <span>Key saved for {providerName}.</span>
-      {/if}
-    </div>
+    {#if keyValidation.status === 'invalid'}
+      <Callout severity="error" compact title={`${providerName} rejected this key`}>{keyValidation.message || 'Re-enter the key or continue anyway.'}</Callout>
+    {:else if keyValidation.status === 'unknown'}
+      <Callout severity="warning" compact title="Key saved, but not verified">{keyValidation.message || 'Verenu could not verify the key right now, but it was saved.'}</Callout>
+    {:else}
+      <div class="key-status" role="status" aria-live="polite">
+        {#if keyValidation.status === 'checking'}
+          <span class="status-spinner" aria-hidden="true"></span>
+          <span>Verifying key…</span>
+        {:else if keyValidation.status === 'valid'}
+          <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Key verified — {providerName} accepted it.</span>
+        {:else}
+          <svg class="status-glyph" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span>Key saved for {providerName}.</span>
+        {/if}
+      </div>
+    {/if}
   {/if}
 {/snippet}
 
@@ -284,9 +285,7 @@
       {@render keyField()}
 
       {#if !keySaved}
-        <div class="key-warning">
-          Dictation won't work until a key is added — you can also do this later in Settings → Providers.
-        </div>
+        <Callout severity="warning" compact title="No API key set">Dictation will not work until you add a key. You can also add one later in Settings > Providers.</Callout>
       {/if}
 
       <div class="paste-help">
@@ -571,8 +570,6 @@
 
   .show-btn:hover { color: var(--ink-mute); }
 
-  .key-error { font-size: 12px; color: var(--danger); margin: 0; }
-
   .key-status {
     display: flex;
     align-items: center;
@@ -582,8 +579,6 @@
   }
 
   .status-glyph { color: var(--accent); flex-shrink: 0; }
-  .key-status.is-bad .status-glyph { color: var(--danger); }
-  .key-status.is-warn .status-glyph { color: var(--warning); }
 
   .status-spinner {
     width: 12px;
@@ -596,16 +591,6 @@
   }
 
   @keyframes spin { to { transform: rotate(360deg); } }
-
-  .key-warning {
-    padding: 9px 12px;
-    border-radius: var(--r-sm);
-    border: 1px solid var(--warning-line);
-    background: var(--warning-bg);
-    color: var(--ink-soft);
-    font-size: 12px;
-    line-height: 1.45;
-  }
 
   .paste-help { display: flex; align-items: stretch; gap: 8px; }
 
