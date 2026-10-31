@@ -163,7 +163,8 @@ test('a pending cleanup toggle reconciles after an agent change', async ({ page,
     await session.invoke('save_setting', { key: 'cleanup_enabled', value: true });
     await page.reload();
     await page.locator('[data-debug-id="nav.settings"]').click();
-    const toggle = page.locator('[data-setting-target="general-cleanup"] [role="switch"]');
+    await page.locator('[data-debug-id="settings.text"]').click();
+    const toggle = page.locator('[data-setting-target="text-cleanup"] [role="switch"]');
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
     await page.route('**/__verenu_dev/invoke', async route => {
       const request = route.request().postDataJSON();
