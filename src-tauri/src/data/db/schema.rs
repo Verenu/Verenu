@@ -339,7 +339,12 @@ pub(crate) fn handoff_data_version(db: &Db) -> Result<i64> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn probe_writable_for_handoff(path: impl AsRef<std::path::Path>) -> Result<()> {
+pub(crate) struct PreparedHandoffDb(Connection);
+
+#[cfg(target_os = "linux")]
+pub(crate) fn probe_writable_for_handoff(
+    path: impl AsRef<std::path::Path>,
+) -> Result<PreparedHandoffDb> {
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     anyhow::ensure!(
         !conn.is_readonly(rusqlite::DatabaseName::Main)?,
@@ -354,7 +359,23 @@ pub(crate) fn probe_writable_for_handoff(path: impl AsRef<std::path::Path>) -> R
     // Acquire the write reservation without changing data. Dropping the
     // connection also rolls back if either statement fails.
     conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")?;
-    Ok(())
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA query_only = ON;")?;
+    Ok(PreparedHandoffDb(conn))
+}
+
+#[cfg(target_os = "linux")]
+impl PreparedHandoffDb {
+    #[allow(dead_code)]
+    pub(crate) fn activate(
+        self,
+        db: &Db,
+        _parent_exited: &crate::linux_handoff_transport::ParentExited,
+    ) -> Result<()> {
+        self.0.execute_batch("PRAGMA query_only = OFF;")?;
+        self.0.busy_timeout(std::time::Duration::from_secs(5))?;
+        *lock_conn(db)? = self.0;
+        Ok(())
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -458,6 +479,46 @@ fn handoff_data_version_detects_another_connections_commit() {
     let version = handoff_data_version(&handoff).unwrap();
     original.execute("INSERT INTO fixture VALUES (1)", []).unwrap();
     assert_ne!(handoff_data_version(&handoff).unwrap(), version);
+    drop(handoff);
+    drop(original);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn prepared_handoff_connection_stays_read_only_until_activation() {
+    let path = std::env::temp_dir().join(format!("verenu-handoff-activate-{}.db", Uuid::new_v4()));
+    let original = Connection::open(&path).unwrap();
+    original
+        .execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE fixture (value INTEGER);")
+        .unwrap();
+    original
+        .pragma_update(None, "user_version", HANDOFF_SCHEMA_VERSION)
+        .unwrap();
+    let handoff = open_for_handoff(&path).unwrap();
+    let clone = handoff.clone();
+    let prepared = probe_writable_for_handoff(&path).unwrap();
+    assert!(prepared
+        .0
+        .execute("INSERT INTO fixture VALUES (1)", [])
+        .is_err());
+    assert!(clone
+        .lock()
+        .unwrap()
+        .execute("INSERT INTO fixture VALUES (1)", [])
+        .is_err());
+    let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+    prepared.activate(&handoff, &parent_exited).unwrap();
+    clone
+        .lock()
+        .unwrap()
+        .execute("INSERT INTO fixture VALUES (1)", [])
+        .unwrap();
+    assert_eq!(
+        original.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(),
+        1
+    );
+    drop(clone);
     drop(handoff);
     drop(original);
     std::fs::remove_file(path).unwrap();

@@ -181,14 +181,18 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             handle.exit(1);
                             return;
                         }
-                        if let Err(error) =
-                            crate::data::db::probe_writable_for_handoff(crate::app_db_path())
-                        {
-                            let _ = services
-                                .fail(format!("Replacement cannot prepare the database: {error}"));
-                            handle.exit(1);
-                            return;
-                        }
+                        let _prepared_db = match crate::data::db::probe_writable_for_handoff(
+                            crate::app_db_path(),
+                        ) {
+                            Ok(db) => db,
+                            Err(error) => {
+                                let _ = services.fail(format!(
+                                    "Replacement cannot prepare the database: {error}"
+                                ));
+                                handle.exit(1);
+                                return;
+                            }
+                        };
                         let (sent, received) = std::sync::mpsc::sync_channel(1);
                         let owner = handle.clone();
                         let scheduled = handle.run_on_main_thread(move || {
