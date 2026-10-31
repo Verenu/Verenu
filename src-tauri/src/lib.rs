@@ -548,6 +548,10 @@ pub fn run() {
             let local_stt_manager = local_transcription_manager.clone();
             let local_llm_manager = local_cleanup_manager.clone();
             let capture_state = shared.clone();
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            let mut memory_reclaimer = crate::system::memory::IdleMemoryReclaimer::new(
+                app.state::<DbHandle>().inner().clone(),
+            );
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -606,7 +610,13 @@ pub fn run() {
                             .await;
                         }
                     }
-                    crate::system::memory::reclaim_idle_memory(&capture_state).await;
+                    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+                    {
+                        let main_hidden = app_handle.get_webview_window("main")
+                            .and_then(|window| window.is_visible().ok())
+                            .is_some_and(|visible| !visible);
+                        memory_reclaimer.reclaim(&capture_state, main_hidden).await;
+                    }
                 }
             });
 
