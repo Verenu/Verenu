@@ -13,6 +13,7 @@
   import AgentApproval from './lib/components/AgentApproval.svelte';
   import Settings from './lib/views/Settings.svelte';
   import SubAppSheet from './lib/components/SubAppSheet.svelte';
+  import Callout from './lib/components/Callout.svelte';
   import { contextsStore, loadContexts } from './lib/contextsStore.svelte';
   import { SUB_APP_CAPTURED_EVENT, SUB_APP_CAPTURE_FAILED_EVENT, type SubAppCapture } from './lib/subApps';
   import { startSyncListeners, syncStore } from './lib/syncStore.svelte';
@@ -27,7 +28,7 @@
   import { startDownloadManagerListeners } from './lib/downloadManager.svelte';
   import { refreshTranscriptionModel } from './lib/transcriptionModelStore.svelte';
   import { startProviderStatusChecks } from './lib/serviceStatus';
-  import { classifyIpcError, settingsSectionForKind, type ErrorKind } from './lib/errors';
+  import { classifyIpcError, fixLabelForKind, settingsSectionForKind, severityForKind, type ErrorKind } from './lib/errors';
   import { SETTINGS_SAVE_ERROR_EVENT } from './lib/settings';
   import type { SettingsSectionId } from './lib/settingsSections';
   import { scrollEdges } from './lib/scrollFade';
@@ -688,20 +689,17 @@
   {#if errorToast}
     <div
       class="error-toast"
-      role="alert"
       style:bottom={!appStore.isOnline ? '66px' : '18px'}
       transition:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.base), easing: expoOut }}
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
-        <circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>
-      </svg>
-      <span class="toast-message">{errorToast}</span>
-      {#if errorToastKind && settingsSectionForKind(errorToastKind)}
-        <button class="toast-action ui-focus-ring" onclick={() => openSettingsSection(settingsSectionForKind(errorToastKind!)!)}>
-          Fix in Settings
-        </button>
-      {/if}
-      <button class="toast-close ui-focus-ring" onclick={() => { errorToast = ''; errorToastKind = null; clearTimeout(toastTimer); }}>✕</button>
+      <Callout
+        severity={errorToastKind ? severityForKind(errorToastKind) : 'error'}
+        role="alert"
+        action={errorToastKind && settingsSectionForKind(errorToastKind)
+          ? { label: fixLabelForKind(errorToastKind) ?? 'Fix in Settings', onclick: () => openSettingsSection(settingsSectionForKind(errorToastKind!)!) }
+          : undefined}
+        onDismiss={() => { errorToast = ''; errorToastKind = null; clearTimeout(toastTimer); }}
+      >{errorToast}</Callout>
     </div>
   {/if}
   {#if !appStore.isOnline}
@@ -711,9 +709,8 @@
     </div>
   {/if}
   {#if modelNotice}
-    <div class="model-notice" role="status" style:bottom={!appStore.isOnline ? '66px' : '18px'}>
-      <span>{modelNotice}</span>
-      <button class="btn-ghost btn-compact" aria-label="Dismiss model notice" onclick={() => { modelNotice = ''; clearTimeout(modelNoticeTimer); }}>Dismiss</button>
+    <div class="model-notice" style:bottom={!appStore.isOnline ? '66px' : '18px'}>
+      <Callout severity="info" onDismiss={() => { modelNotice = ''; clearTimeout(modelNoticeTimer); }} dismissLabel="Dismiss model notice">{modelNotice}</Callout>
     </div>
   {/if}
   {#if compactNav && !keyboardOpen}
@@ -726,17 +723,11 @@
     position: fixed;
     right: 18px;
     z-index: 150;
-    display: flex;
-    align-items: center;
-    gap: 12px;
+    width: max-content;
     max-width: min(520px, calc(100vw - 36px));
-    padding: 12px 16px;
-    border: 1px solid var(--line-strong);
-    border-radius: 10px;
     background: var(--bg-elev);
-    color: var(--ink);
-    font-size: 12px;
-    line-height: 1.5;
+    box-shadow: var(--shadow-popover);
+    border-radius: var(--r-md);
   }
   :global(*) {
     box-sizing: border-box;
@@ -955,54 +946,14 @@
     bottom: 18px;
     left: 50%;
     transform: translateX(-50%);
-    background: var(--danger-bg);
-    border: 1px solid var(--danger-line);
-    border-radius: var(--r-sm);
-    padding: 9px 14px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12.5px;
-    color: var(--danger);
+    background: var(--bg-elev);
     box-shadow: var(--shadow-popover);
+    border-radius: var(--r-md);
     z-index: 80;
     width: max-content;
     max-width: min(560px, calc(100% - 36px));
     transition: bottom 0.15s ease;
   }
-
-  .toast-message {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-
-  .toast-close {
-    background: transparent;
-    border: none;
-    color: var(--danger);
-    opacity: 0.6;
-    font-size: 11px;
-    cursor: pointer;
-    margin-left: 4px;
-    padding: 0;
-    line-height: 1;
-  }
-  .toast-close:hover { opacity: 1; }
-
-  .toast-action {
-    background: transparent;
-    border: 1px solid var(--danger-line);
-    border-radius: 6px;
-    color: var(--danger);
-    font-size: 11.5px;
-    font-weight: 600;
-    padding: 2px 9px;
-    cursor: pointer;
-    margin-left: 6px;
-    flex-shrink: 0;
-    transition: background 0.12s;
-  }
-  .toast-action:hover { background: var(--danger-bg); }
 
   .offline-toast {
     position: absolute;
