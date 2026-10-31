@@ -4,6 +4,7 @@
   import { isAndroid } from '../../platform';
   import { reducedMotionEnabled } from '../../motion';
   import ShortcutRecovery from '../../components/ShortcutRecovery.svelte';
+  import Callout from '../../components/Callout.svelte';
   import { desktopShortcut } from '../../shortcutStatus.svelte';
   import { openSetupSettings } from '../../settingsNavigation';
 
@@ -90,10 +91,19 @@
   <ShortcutRecovery />
 
   {#if !hasKey}
-    <div class="done-warning" role="status">No API key set. Add one before cloud dictation. <button class="btn-ghost btn-compact" disabled={modelRecoveryDisabled} onclick={() => openSetupSettings('keys')}>Add API key</button></div>
+    <Callout
+      class="done-warning"
+      severity="warning"
+      title="No API key set"
+      action={{ label: 'Add API key', onclick: () => openSetupSettings('keys'), disabled: modelRecoveryDisabled }}
+    >Add one before cloud dictation.</Callout>
   {/if}
   {#if !modelsReady}
-    <div class="done-warning done-model-warning" role="status">{modelReadinessMessage} <button class="btn-ghost btn-compact" disabled={modelRecoveryDisabled} onclick={onReviewModels}>Review models</button></div>
+    <Callout
+      class="done-warning done-model-warning"
+      severity="warning"
+      action={{ label: 'Review models', onclick: onReviewModels, disabled: modelRecoveryDisabled }}
+    >{modelReadinessMessage}</Callout>
   {/if}
 
   <div class="done-quickstart" aria-label="How to dictate">
@@ -148,20 +158,10 @@
   .done-title { font-family: var(--sans); font-size: 22px; font-weight: 600; color: var(--ink-strong); margin: 0; }
 
   .done-sub { font-size: 13px; color: var(--ink-mute); margin: 0; line-height: 1.5; }
-  .done-step :global(.shortcut-recovery) { width: 100%; box-sizing: border-box; margin-bottom: 0; text-align: left; }
+
+  .done-step :global(.shortcut-recovery) { width: 100%; margin-bottom: 0; text-align: left; }
 
   .done-plus { color: var(--ink-faint); padding: 0 3px; }
-
-  .done-warning {
-    padding: 9px 12px;
-    border-radius: var(--r-sm);
-    border: 1px solid var(--warning-line);
-    background: var(--warning-bg);
-    color: var(--ink-soft);
-    font-size: 12.5px;
-    line-height: 1.45;
-  }
-  .done-model-warning { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; }
 
   .done-quickstart {
     display: grid;
