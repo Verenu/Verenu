@@ -163,6 +163,13 @@ mod tests {
     }
 
     #[test]
+    fn discovered_sync_routes_are_not_writable_or_synced_settings() {
+        use crate::data::store::SYNC_DISCOVERED_ROUTES;
+        assert!(validate_setting(SYNC_DISCOVERED_ROUTES, &json!({})).is_err());
+        assert!(!crate::sync::engine::SYNCABLE_SETTINGS.contains(&SYNC_DISCOVERED_ROUTES));
+    }
+
+    #[test]
     fn github_settings_validate_username_and_keep_cache_private() {
         use crate::data::store;
         assert!(validate_setting(store::GITHUB_USERNAME, &json!("octocat")).is_ok());
