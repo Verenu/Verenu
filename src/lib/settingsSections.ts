@@ -3,14 +3,15 @@ import { isAndroid } from './platform';
 
 export type SettingsSectionId =
   | 'general'
+  | 'text'
+  | 'advanced'
   | 'subapps'
   | 'apps'
   | 'keys'
   | 'models'
   | 'privacy'
-  | 'integrations'
   | 'sync'
-  | 'advanced'
+  | 'integrations'
   | 'permissions'
   | 'developer'
   | 'about';
@@ -27,18 +28,19 @@ interface SettingsSection {
 }
 
 const SETTINGS_SECTIONS: readonly SettingsSection[] = [
-  { id: 'general',     label: 'General',      icon: 'sliders', group: 'Settings' },
-  { id: 'subapps',     label: 'Sub-apps',     icon: 'apps',    group: 'Settings', desktopOnly: true },
-  { id: 'apps',        label: 'App Mappings', icon: 'apps',    group: 'Settings', legacyOnly: true },
-  { id: 'keys',        label: 'Providers',    icon: 'key',     group: 'Settings' },
-  { id: 'models',      label: 'Models',       icon: 'command', group: 'Settings' },
-  { id: 'privacy',     label: 'Privacy',      icon: 'lock',    group: 'Settings' },
-  { id: 'integrations', label: 'Integrations', icon: 'layers', group: 'Settings' },
-  { id: 'sync',        label: 'Sync',         icon: 'devices', group: 'Settings' },
-  { id: 'advanced',    label: 'Audio',        icon: 'mic',     group: 'Settings' },
-  { id: 'permissions', label: 'Permissions',  icon: 'shield',  group: 'Settings', macOnly: true },
-  { id: 'developer',   label: 'Developer',    icon: 'command', group: 'Settings', devOnly: true },
-  { id: 'about',       label: 'About',        icon: 'help',    group: 'Verenu' },
+  { id: 'general',      label: 'General',      icon: 'sliders', group: 'Dictation' },
+  { id: 'text',         label: 'Text',         icon: 'type',    group: 'Dictation' },
+  { id: 'advanced',     label: 'Audio',        icon: 'mic',     group: 'Dictation' },
+  { id: 'subapps',      label: 'Sub-apps',     icon: 'apps',    group: 'Dictation', desktopOnly: true },
+  { id: 'apps',         label: 'App Mappings', icon: 'apps',    group: 'Dictation', legacyOnly: true },
+  { id: 'keys',         label: 'Providers',    icon: 'key',     group: 'AI' },
+  { id: 'models',       label: 'Models',       icon: 'command', group: 'AI' },
+  { id: 'privacy',      label: 'Privacy',      icon: 'lock',    group: 'Data' },
+  { id: 'sync',         label: 'Sync',         icon: 'devices', group: 'Data' },
+  { id: 'integrations', label: 'Integrations', icon: 'layers',  group: 'Data' },
+  { id: 'permissions',  label: 'Permissions',  icon: 'shield',  group: 'System', macOnly: true },
+  { id: 'developer',    label: 'Developer',    icon: 'code',    group: 'System', devOnly: true },
+  { id: 'about',        label: 'About',        icon: 'help',    group: 'Verenu' },
 ];
 
 export const SETTINGS_SECTION_ORDER: readonly SettingsSectionId[] =

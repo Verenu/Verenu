@@ -3,8 +3,8 @@
   import { onDestroy, onMount } from 'svelte';
   import { listenForSyncCompletion } from '../../syncStore.svelte';
   import { emit, invoke, listen } from '../../tauri';
-  import { fly, fade, slide } from 'svelte/transition';
-  import { expoOut, cubicOut } from 'svelte/easing';
+  import { fly, fade } from 'svelte/transition';
+  import { expoOut } from 'svelte/easing';
   import { isAndroid, isLinux, isMac, formatKeyLabel, defaultHotkey } from '../../platform';
   import Toggle from '../Toggle.svelte';
   import { appStore } from '../../stores';
@@ -129,8 +129,6 @@
     noDevicesFound: 'No devices found',
   };
   let autostart = $state(false);
-  let contextualFormatting = $state(true);
-  let capsLockUppercase = $state(false);
   let legacyFeaturesError = $state('');
   let hotkey = $state(defaultHotkey);
   type CaptureTarget = 'dictation' | 'cancel' | 'handsfree';
@@ -228,56 +226,47 @@
   }
 
   async function loadSettings() {
-    const cleanupVersion = appStore.cleanupChangeVersion;
     const appearanceVersion = appStore.appearanceChangeVersion;
     const legacyVersion = appStore.legacyFeaturesChangeVersion;
-    const snapshot = loadSettingsSnapshot().then(settings => { settingsBaseline = settings; return settings; });
-    const keys = [
-      'autostart_enabled', 'hotkey', 'appearance_mode', 'transcription_language',
-      'cleanup_enabled', 'contextual_formatting_enabled', 'caps_lock_uppercase_enabled',
-      'microphone_device', 'legacy_features_enabled', 'android_pill_position',
-      'android_pill_cover_keyboard_mic', 'android_pill_hide_offline', 'android_pill_dock_position',
-      'linux_cancel_key', 'linux_handsfree_key',
-    ] as const;
-    const requests: Promise<unknown>[] = keys.map(key => snapshot.then(settings => settings[key]));
-    requests.splice(7, 0, invoke<string[]>('get_microphones'));
-    const results = await Promise.allSettled(requests);
+    const [snapshotResult, micsResult] = await Promise.allSettled([
+      loadSettingsSnapshot().then(settings => { settingsBaseline = settings; return settings; }),
+      invoke<string[]>('get_microphones'),
+    ]);
+    const settings = snapshotResult.status === 'fulfilled' ? snapshotResult.value : null;
 
-    const val = <T>(i: number, fallback: T): T =>
-      results[i].status === 'fulfilled' ? (results[i] as PromiseFulfilledResult<T>).value ?? fallback : fallback;
+    autostart = settings?.autostart_enabled ?? false;
 
-    autostart = val<boolean | null>(0, null) ?? false;
-    if (cleanupVersion === appStore.cleanupChangeVersion) appStore.cleanupEnabled = val<boolean | null>(4, null) ?? true;
-    contextualFormatting = val<boolean | null>(5, null) ?? true;
-    capsLockUppercase = val<boolean | null>(6, null) ?? false;
-
-    const hk = val<string[] | null>(1, null);
+    const hk = settings?.hotkey;
     if (hk && hk.length > 0 && hk.some(Boolean)) hotkey = hk.filter(Boolean);
-    controlKeys = { cancel: val(14, 'Escape'), handsfree: val(15, 'Space') };
+    controlKeys = {
+      cancel: settings?.linux_cancel_key ?? 'Escape',
+      handsfree: settings?.linux_handsfree_key ?? 'Space',
+    };
 
-    const appearance = val<AppearanceMode | null>(2, null);
+    const appearance = settings?.appearance_mode;
     if (appearanceVersion === appStore.appearanceChangeVersion && !themeEditor.open && (appearance === 'system' || appearance === 'light' || appearance === 'dark' || appearance === 'omarchy' || appearance === 'custom')) {
       appStore.appearanceMode = appearance;
     }
 
-    const language = val<TranscriptionLanguageCode | null>(3, null);
+    const language = settings?.transcription_language;
     if (!languageTouched && language && transcriptionLanguages.some((option) => option.code === language)) {
       selectedLanguage = language;
     }
     initialLanguageLoaded = true;
 
-    microphones = val<string[]>(7, []);
-    selectedMic = val<string | null>(8, null) ?? '';
-    if (legacyVersion === appStore.legacyFeaturesChangeVersion) appStore.legacyFeaturesEnabled = val<boolean | null>(9, null) ?? false;
-    applyPillPlacement(val<AndroidPillPosition | null>(10, null), val<AndroidPillScreenPosition | null>(13, null));
+    microphones = micsResult.status === 'fulfilled' ? micsResult.value ?? [] : [];
+    selectedMic = settings?.microphone_device ?? '';
+    if (legacyVersion === appStore.legacyFeaturesChangeVersion) appStore.legacyFeaturesEnabled = settings?.legacy_features_enabled ?? false;
+    applyPillPlacement(
+      (settings?.android_pill_position ?? null) as AndroidPillPosition | null,
+      (settings?.android_pill_dock_position ?? null) as AndroidPillScreenPosition | null,
+    );
 
-    coverKeyboardMic = val<boolean | null>(11, null) ?? true;
-    hidePillOffline = val<boolean | null>(12, null) ?? true;
+    coverKeyboardMic = settings?.android_pill_cover_keyboard_mic ?? true;
+    hidePillOffline = settings?.android_pill_hide_offline ?? true;
 
-    results.forEach((r, i) => {
-      if (r.status === 'rejected') console.error(`GeneralSection: invoke[${i}] failed:`, r.reason);
-    });
-    await loadVoiceCommands();
+    if (snapshotResult.status === 'rejected') console.error('GeneralSection: settings snapshot failed:', snapshotResult.reason);
+    if (micsResult.status === 'rejected') console.error('GeneralSection: get_microphones failed:', micsResult.reason);
   }
 
   function handleWindowClick(e: MouseEvent) {
@@ -411,98 +400,6 @@
 
   function handleLegacyModalKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape' && confirmLegacyOn) confirmLegacyOn = false;
-  }
-
-  let voiceCommands = $state(false);
-  let voiceCommandsSaving = $state(false);
-  let voiceCommandsError = $state(false);
-  let voiceCommandsMessage = $state('');
-  let voiceCommandsDetailsOpen = $state(false);
-
-  async function loadVoiceCommands() {
-    try {
-      voiceCommands = (await invoke<boolean | null>('get_setting', { key: 'voice_commands_enabled' })) ?? false;
-    } catch (err) {
-      console.error('load voice_commands_enabled failed:', err);
-    }
-  }
-
-  async function handleVoiceCommands(value: boolean) {
-    voiceCommandsSaving = true;
-    voiceCommandsMessage = '';
-    try {
-      await saveGeneralSetting('voice_commands_enabled', value);
-      voiceCommands = value;
-    } catch (err) {
-      voiceCommandsError = true;
-      voiceCommandsMessage = formatIpcError(err, 'Could not save voice commands');
-    } finally {
-      voiceCommandsSaving = false;
-    }
-  }
-
-  let cleanupError = $state(false);
-
-  async function applyCleanup(value: boolean) {
-    const version = ++appStore.cleanupChangeVersion;
-    const previous = appStore.cleanupEnabled;
-    appStore.cleanupEnabled = value;
-    try {
-      await saveGeneralSetting('cleanup_enabled', value);
-      const refreshVersion = ++appStore.cleanupChangeVersion;
-      const persisted = await invoke<boolean | null>('get_setting', { key: 'cleanup_enabled' });
-      if (refreshVersion === appStore.cleanupChangeVersion) appStore.cleanupEnabled = persisted ?? true;
-    } catch (err) {
-      if (version === appStore.cleanupChangeVersion) appStore.cleanupEnabled = previous;
-      cleanupError = true;
-      console.error('save cleanup_enabled failed:', err);
-    }
-  }
-
-  let confirmCleanupOff = $state(false);
-  let cleanupCancelButton: HTMLButtonElement | null = $state(null);
-
-  function handleCleanup(value: boolean) {
-    if (!value) {
-      confirmCleanupOff = true;
-      return;
-    }
-    applyCleanup(true);
-  }
-
-  async function confirmCleanupOffAction() {
-    confirmCleanupOff = false;
-    await applyCleanup(false);
-  }
-
-  function handleCleanupModalKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && confirmCleanupOff) confirmCleanupOff = false;
-  }
-
-  let contextualFormattingError = $state(false);
-
-  async function handleContextualFormatting(value: boolean) {
-    contextualFormatting = value;
-    try {
-      await saveGeneralSetting('contextual_formatting_enabled', value);
-    } catch (err) {
-      contextualFormatting = !value;
-      contextualFormattingError = true;
-      console.error('save contextual_formatting_enabled failed:', err);
-    }
-  }
-
-  let capsLockUppercaseError = $state(false);
-
-  async function handleCapsLockUppercase(value: boolean) {
-    capsLockUppercase = value;
-    try {
-      await saveGeneralSetting('caps_lock_uppercase_enabled', value);
-    } catch (err) {
-      capsLockUppercase = !value;
-      capsLockUppercaseError = true;
-      console.error('save caps_lock_uppercase_enabled failed:', err);
-    }
   }
 
   async function handleAccentColor(color: string | null) {
@@ -643,13 +540,9 @@
     }
     listenForSyncCompletion(() => {
       const cleanupVersion = appStore.cleanupChangeVersion;
-      void loadSettingsSnapshot().then(({ contextual_formatting_enabled: formatting,
-        cleanup_enabled: cleanup, transcription_language: language,
-        voice_commands_enabled: commands }) => {
+      void loadSettingsSnapshot().then(({ cleanup_enabled: cleanup, transcription_language: language }) => {
         if (!active) return;
-        contextualFormatting = formatting ?? true;
         if (cleanupVersion === appStore.cleanupChangeVersion) appStore.cleanupEnabled = cleanup ?? true;
-        voiceCommands = commands ?? false;
         if (!languageDropdownOpen && language && transcriptionLanguages.some(option => option.code === language)) {
           selectedLanguage = language;
         }
@@ -665,11 +558,12 @@
 
   loadSettings();
 </script>
-<svelte:window onclick={handleWindowClick} onkeydown={(e) => { handleCleanupModalKeydown(e); handleLegacyModalKeydown(e); }} />
+<svelte:window onclick={handleWindowClick} onkeydown={handleLegacyModalKeydown} />
 
 <h2 class="settings-h">General</h2>
-<h3 class="settings-subhead first">Dictation</h3>
+
 {#if isAndroid}
+  <h3 class="settings-subhead first">Dictation pill</h3>
   <div class="setting-row" data-setting-target="general-hotkey">
     <div><div class="label">Dictation control</div><div class="desc">Open a text field and use the Verenu pill above your keyboard.</div></div>
     <span class="badge key-badge">Keyboard pill</span>
@@ -759,6 +653,7 @@
     <Toggle checked={hidePillOffline} onchange={handleHidePillOffline} label="Hide pill when offline" bind:error={hidePillOfflineError} />
   </div>
 {:else}
+  <h3 class="settings-subhead first">Shortcuts</h3>
   <div class="setting-row" data-setting-target="general-hotkey">
     <div><div class="label">Hotkey</div><div class="desc">Hold to record, release to transcribe. Click to change, hold all your keys, then release.</div></div>
     <button
@@ -821,6 +716,8 @@
     <DesktopShortcutStatus id={control.id as 'cancel' | 'handsfree'} />
   {/each}
 {/if}
+
+<h3 class="settings-subhead">Speech input</h3>
 <div class="setting-row" data-setting-target="general-language">
   <div class="lang-setting-text"><div class="label">Spoken Language</div><div class="desc">Tells transcription what language to expect{languageScopeNote}</div></div>
   <div class="ui-dropdown language-dropdown" role="presentation" onkeydown={(e) => { if (e.key === 'Escape' && languageDropdownOpen) { languageDropdownOpen = false; e.stopPropagation(); } }}>
@@ -902,104 +799,29 @@
     {/if}
   </div>
 </div>
-<h3 class="settings-subhead">Appearance & System</h3>
+
+<h3 class="settings-subhead">Appearance</h3>
 <AppearanceSettings />
 <div class="setting-row" data-setting-target="general-accent">
   <div><div class="label">Accent color</div><div class="desc">Used for actions, highlights, focus rings, and status details</div></div>
   <AccentColorPicker value={appStore.accentColor} onchange={handleAccentColor} />
 </div>
+
 {#if !isAndroid}
+  <h3 class="settings-subhead">Startup</h3>
   <div class="setting-row" data-setting-target="general-startup">
     <div><div class="label">Start on Boot</div><div class="desc">{isMac ? 'Launch Verenu when macOS starts' : isLinux ? 'Launch Verenu when you log in' : 'Launch Verenu when Windows starts'}</div></div>
     <Toggle checked={autostart} onchange={handleAutostart} label="Start on boot" bind:error={autostartError} />
   </div>
 {/if}
-<h3 class="settings-subhead">Text processing</h3>
-<div class="setting-row" data-setting-target="general-cleanup">
-  <div><div class="label">Cleanup</div><div class="desc">Cleans up dictation after transcription. Choose the level in Style and a cleanup model in Models.</div></div>
-  <Toggle checked={appStore.cleanupEnabled} onchange={handleCleanup} label="Cleanup" bind:error={cleanupError} />
-</div>
-<div class="setting-row" data-setting-target="general-spacing">
-  <div><div class="label">Smart spacing &amp; capitalization</div><div class="desc">Adjusts capitalization and spacing around inserted text when the cursor context is clear.</div></div>
-  <Toggle checked={contextualFormatting} onchange={handleContextualFormatting} label="Smart spacing and capitalization" bind:error={contextualFormattingError} />
-</div>
-<div class="setting-row voice-commands-row" data-setting-target="general-voice-commands">
-  <div>
-    <div class="label">Voice commands</div>
-    <div class="desc">Say punctuation, line breaks, or “scratch that” while dictating and Verenu applies them instead of typing the words. Off by default.</div>
-    <button
-      type="button"
-      class="voice-commands-more ui-focus-ring"
-      aria-expanded={voiceCommandsDetailsOpen}
-      aria-controls={voiceCommandsDetailsOpen ? 'voice-commands-details' : undefined}
-      onclick={() => (voiceCommandsDetailsOpen = !voiceCommandsDetailsOpen)}
-    >
-      <span>What you can say</span>
-      <svg class="ui-chevron" class:open={voiceCommandsDetailsOpen} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-    </button>
-  </div>
-  <Toggle checked={voiceCommands} onchange={handleVoiceCommands} disabled={voiceCommandsSaving} label="Voice commands" bind:error={voiceCommandsError} />
-</div>
-{#if voiceCommandsDetailsOpen}
-  <div id="voice-commands-details" class="voice-commands-details" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
-    <dl>
-      <dt>Punctuation</dt><dd>“comma”, “semicolon”, “full stop”, “question mark”, “exclamation mark” or “exclamation point”. For period, colon, dash or hyphen, say add, insert or put first: “put a colon”. A period at the very end also works.</dd>
-      <dt>Line breaks</dt><dd>“new line”, “next line”, “new paragraph” or “next paragraph”.</dd>
-      <dt>Mentions</dt><dd>“at sign” or “at the rate” followed by one word, such as “at sign maria”, becomes @maria.</dd>
-      <dt>Take back</dt><dd>“scratch that” or “strike that” removes the latest fragment of this dictation. “Remove that”, “delete that”, “undo that” or “cancel that” does the same only when set off by punctuation.</dd>
-    </dl>
-    <p class="voice-commands-limits">Limits: only English works, and Spoken Language must be set to English, not Auto. Cleanup must be on and not set to Off in Style. Commands only act on what you are dictating now and never edit text already in another app. Snippet and clipboard text, quoted text, and code stay literal. If you talk about a command without quoting it, it may still run.</p>
-  </div>
-{/if}
-{#if voiceCommandsMessage}
-  <p class="settings-error" role="alert">{voiceCommandsMessage}</p>
-{/if}
-{#if !isAndroid}
-  <div class="setting-row" data-setting-target="general-caps-lock">
-    <div><div class="label">Automatic caps lock detection</div><div class="desc">When Caps Lock is on, output your dictation in ALL CAPS</div></div>
-    <Toggle checked={capsLockUppercase} onchange={handleCapsLockUppercase} label="Automatic caps lock detection" bind:error={capsLockUppercaseError} />
-  </div>
-{/if}
-<h3 class="settings-subhead">Legacy</h3>
+
+<h3 class="settings-subhead">Compatibility</h3>
 <div class="setting-row" data-setting-target="general-legacy">
   <div><div class="label">Legacy pages</div><div class="desc">Bring back the standalone App Mappings settings page and the Dictionary/Snippets pages, superseded by Contexts.</div></div>
   <Toggle checked={appStore.legacyFeaturesEnabled} onchange={handleLegacyFeatures} label="Legacy pages" bind:error={legacyFeaturesToggleError} />
 </div>
 {#if legacyFeaturesError}
   <p class="settings-error" role="alert">{legacyFeaturesError}</p>
-{/if}
-
-{#if confirmCleanupOff}
-  <button class="modal-backdrop" aria-label="Close dialog" onclick={() => (confirmCleanupOff = false)} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
-  <div
-    class="modal-card"
-    use:modalFocusTrap={{
-      active: confirmCleanupOff,
-      initialFocus: () => cleanupCancelButton,
-    }}
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="cleanup-off-confirm-title"
-    tabindex="-1"
-    in:modalCard={{ duration: 220, distance: motionPx(MOTION_PX.panel), scaleFrom: 0.97 }}
-    out:modalCard={{ duration: 160, distance: motionPx(MOTION_PX.nudge), scaleFrom: 0.985 }}
-  >
-    <div class="modal-header">
-      <h2 id="cleanup-off-confirm-title" class="modal-title">Turn Cleanup off?</h2>
-    </div>
-    <div class="modal-body">
-      <p class="confirm-copy">
-        Dictation will keep the raw transcript as-is — faster, but tone, formatting, and the
-        Style and App Mappings pages stop having any effect. You can turn this back on anytime.
-      </p>
-    </div>
-    <div class="modal-footer">
-      <div class="footer-actions">
-        <button bind:this={cleanupCancelButton} class="btn-ghost" onclick={() => (confirmCleanupOff = false)}>Cancel</button>
-        <button class="btn-primary" onclick={confirmCleanupOffAction}>Turn off</button>
-      </div>
-    </div>
-  </div>
 {/if}
 
 {#if confirmLegacyOn}
@@ -1071,25 +893,6 @@
   .keybind-btn.saving { opacity: 0.9; }
   .keybind-btn.success { background: color-mix(in srgb, var(--accent) 82%, white 18%); color: var(--on-accent); transform: scale(1.03); }
   .keybind-btn.error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-line); animation: none; }
-  .voice-commands-more {
-    display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 2px 4px; margin-left: -4px;
-    background: transparent; border: 0; border-radius: var(--r-sm); color: var(--accent-ink);
-    font-size: 12px; font-weight: 500; cursor: pointer;
-    transition: background var(--ui-duration-fast) var(--ui-ease-out);
-  }
-  .voice-commands-more:hover { background: var(--control-hover); }
-  .voice-commands-details {
-    margin: -4px 0 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md);
-    background: color-mix(in srgb, var(--paper) 55%, var(--bg-elev)); font-size: 12px; line-height: 1.55; color: var(--ink-soft);
-  }
-  .voice-commands-details dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; }
-  .voice-commands-details dt { color: var(--ink); font-weight: 500; }
-  .voice-commands-details dd { margin: 0; }
-  .voice-commands-limits { margin: 10px 0 0; color: var(--ink-mute); }
-  @media (max-width: 520px) {
-    .voice-commands-details dl { grid-template-columns: 1fr; gap: 0; }
-    .voice-commands-details dd { margin-bottom: 8px; }
-  }
   .settings-error {
     margin: -2px 0 12px;
     color: var(--danger);
