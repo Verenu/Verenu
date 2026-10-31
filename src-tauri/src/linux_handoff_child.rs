@@ -79,6 +79,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         .manage(settings)
         .manage(key_availability)
         .manage(crate::new_shared_state())
+        .manage(Arc::new(crate::linux_activity::ActivityGate::default()))
         .manage(crate::local_stt::LocalTranscriptionManager::new())
         .manage(crate::local_llm::LocalLlmManager::new())
         .manage(readiness.clone())
@@ -134,6 +135,21 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                     handle.exit(1);
                     return;
                 }
+                let gate = handle
+                    .state::<Arc<crate::linux_activity::ActivityGate>>()
+                    .inner()
+                    .clone();
+                let child_pause = tauri::async_runtime::block_on(async {
+                    tokio::time::timeout(Duration::from_secs(10), gate.pause()).await
+                });
+                let _child_pause = match child_pause {
+                    Ok(Ok(pause)) => pause,
+                    _ => {
+                        let _ = frontends.fail("Replacement is still busy starting".into());
+                        handle.exit(1);
+                        return;
+                    }
+                };
                 let activation = match frontends.ready() {
                     Ok(activation) => activation,
                     Err(_) => {
