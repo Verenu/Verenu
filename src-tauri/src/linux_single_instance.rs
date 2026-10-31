@@ -1,11 +1,97 @@
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use zbus::{blocking::Connection, interface};
+
+struct CallbackRoute {
+    parent: Option<String>,
+    local: tokio::sync::watch::Sender<bool>,
+    order: Arc<CallbackOrder>,
+}
+
+#[derive(Default)]
+struct CallbackOrder {
+    state: Mutex<CallbackOrderState>,
+    changed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct CallbackOrderState {
+    issued: u64,
+    next: u64,
+    completed: BTreeSet<u64>,
+}
+
+struct CallbackTicket {
+    order: Arc<CallbackOrder>,
+    number: u64,
+}
+
+impl CallbackOrder {
+    fn ticket(self: &Arc<Self>) -> CallbackTicket {
+        let mut state = self.state.lock().expect("callback order lock");
+        let number = state.issued;
+        state.issued = state.issued.checked_add(1).expect("callback counter exhausted");
+        CallbackTicket { order: self.clone(), number }
+    }
+}
+
+impl CallbackTicket {
+    async fn wait_turn(&self) {
+        loop {
+            let notified = self.order.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.order.state.lock().expect("callback order lock").next == self.number {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Drop for CallbackTicket {
+    fn drop(&mut self) {
+        let mut state = self.order.state.lock().expect("callback order lock");
+        state.completed.insert(self.number);
+        while {
+            let next = state.next;
+            state.completed.remove(&next)
+        } {
+            state.next += 1;
+        }
+        self.order.changed.notify_waiters();
+    }
+}
+
+impl CallbackRoute {
+    fn new(parent: Option<String>) -> Self {
+        let (local, _) = tokio::sync::watch::channel(parent.is_none());
+        Self { parent, local, order: Arc::new(CallbackOrder::default()) }
+    }
+
+    fn activate(&self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
+        self.local.send_replace(true);
+    }
+
+    async fn wait_for_local(&self) -> Result<(), zbus::fdo::Error> {
+        let mut local = self.local.subscribe();
+        while !*local.borrow_and_update() {
+            local.changed().await.map_err(|_| {
+                zbus::fdo::Error::Failed("Restart callback routing stopped".into())
+            })?;
+        }
+        Ok(())
+    }
+}
 
 #[cfg(all(test, feature = "native-testing"))]
 static TEST_CALLBACK_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(all(test, feature = "native-testing"))]
 static TEST_CALLBACK_STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(all(test, feature = "native-testing"))]
+static TEST_FORWARD_FAILED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(all(test, feature = "native-testing"))]
 pub(crate) fn test_callback_count() -> usize {
@@ -19,28 +105,41 @@ pub(crate) fn test_callback_started() -> usize {
 
 struct SingleInstance {
     app: AppHandle,
-    forward_to: Option<String>,
+    route: Arc<CallbackRoute>,
 }
 
 #[interface(name = "org.SingleInstance.DBus")]
 impl SingleInstance {
     async fn execute_callback(&self, argv: Vec<String>, cwd: String) -> zbus::fdo::Result<()> {
-        if let Some(parent) = &self.forward_to {
-            let connection = zbus::Connection::session()
-                .await
-                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-            let (_, path) = address(&self.app.config().identifier);
-            connection
-                .call_method(
-                    Some(parent.as_str()),
-                    path.as_str(),
-                    Some("org.SingleInstance.DBus"),
-                    "ExecuteCallback",
-                    &(argv, cwd),
-                )
-                .await
-                .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
-            return Ok(());
+        let ticket = self.route.parent.as_ref().map(|_| self.route.order.ticket());
+        let local = *self.route.local.borrow();
+        if let Some(parent) = self.route.parent.as_ref().filter(|_| !local) {
+            let forwarded = async {
+                let connection = zbus::Connection::session().await?;
+                let (_, path) = address(&self.app.config().identifier);
+                connection
+                    .call_method(
+                        Some(parent.as_str()),
+                        path.as_str(),
+                        Some("org.SingleInstance.DBus"),
+                        "ExecuteCallback",
+                        &(argv.clone(), cwd),
+                    )
+                    .await?;
+                Ok::<(), zbus::Error>(())
+            }
+            .await;
+            if forwarded.is_ok() {
+                return Ok(());
+            }
+            #[cfg(all(test, feature = "native-testing"))]
+            TEST_FORWARD_FAILED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // During probation the parent is paused. A disconnected forward
+            // can run here only after its authenticated exit is confirmed.
+            self.route.wait_for_local().await?;
+        }
+        if let Some(ticket) = ticket.as_ref() {
+            ticket.wait_turn().await;
         }
         // The hotkey callbacks change gesture state before dispatching work.
         // Keep them out of a paused parent so a failed handoff can resume
@@ -68,6 +167,7 @@ impl SingleInstance {
 pub(crate) struct InstanceOwner {
     connection: Connection,
     name: String,
+    route: Arc<CallbackRoute>,
 }
 
 #[allow(dead_code)]
@@ -77,6 +177,13 @@ pub(crate) enum OwnershipMode {
 }
 
 impl InstanceOwner {
+    #[allow(dead_code)]
+    pub(crate) fn activate_callbacks(
+        &self,
+        parent_exited: &crate::linux_handoff_transport::ParentExited,
+    ) {
+        self.route.activate(parent_exited);
+    }
     #[allow(dead_code)]
     pub(crate) fn unique_name(&self) -> Result<String, String> {
         self.connection
@@ -133,6 +240,7 @@ pub(crate) fn replacement_plugin(parent: String) -> tauri::plugin::TauriPlugin<t
         .setup(move |app, _api| {
             zbus::names::UniqueName::try_from(parent.as_str())?;
             let (name, path) = address(&app.config().identifier);
+            let route = Arc::new(CallbackRoute::new(Some(parent.clone())));
             let connection = zbus::blocking::connection::Builder::session()?
                 .name(name.as_str())?
                 .replace_existing_names(true)
@@ -141,11 +249,11 @@ pub(crate) fn replacement_plugin(parent: String) -> tauri::plugin::TauriPlugin<t
                     path.as_str(),
                     SingleInstance {
                         app: app.clone(),
-                        forward_to: Some(parent.clone()),
+                        route: route.clone(),
                     },
                 )?
                 .build()?;
-            app.manage(InstanceOwner { connection, name });
+            app.manage(InstanceOwner { connection, name, route });
             Ok(())
         })
         .on_event(|app, event| {
@@ -168,6 +276,7 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("single-instance")
         .setup(|app, _api| {
             let (name, path) = address(&app.config().identifier);
+            let route = Arc::new(CallbackRoute::new(None));
             let result = zbus::blocking::connection::Builder::session()?
                 .name(name.as_str())?
                 .replace_existing_names(false)
@@ -176,13 +285,13 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                     path.as_str(),
                     SingleInstance {
                         app: app.clone(),
-                        forward_to: None,
+                        route: route.clone(),
                     },
                 )?
                 .build();
             match result {
                 Ok(connection) => {
-                    app.manage(InstanceOwner { connection, name });
+                    app.manage(InstanceOwner { connection, name, route });
                 }
                 Err(zbus::Error::NameTaken) => {
                     if let Ok(connection) = Connection::session() {
@@ -219,6 +328,81 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn callback_replay_keeps_order_and_skips_cancelled_calls() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let order = Arc::new(super::CallbackOrder::default());
+        let first = order.ticket();
+        let cancelled = order.ticket();
+        let last = order.ticket();
+        let waiting = tokio::spawn(async move { last.wait_turn().await });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(cancelled);
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(2), waiting).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn disconnected_forward_waits_for_confirmed_parent_exit() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let route = Arc::new(super::CallbackRoute::new(Some(":1.42".into())));
+        let waiting_route = route.clone();
+        let waiter = tokio::spawn(async move { waiting_route.wait_for_local().await });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+        route.activate(&parent_exited);
+        tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        route.wait_for_local().await.unwrap();
+    }
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires an isolated graphical and D-Bus session"]
+    fn disconnected_dbus_forward_dispatches_after_confirmed_parent_exit() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        let route = Arc::new(super::CallbackRoute::new(Some(":1.999999".into())));
+        let instance = super::SingleInstance {
+            app: app.handle().clone(),
+            route: route.clone(),
+        };
+        let before = super::test_callback_count();
+        let failures = super::TEST_FORWARD_FAILED.load(std::sync::atomic::Ordering::SeqCst);
+        tauri::async_runtime::block_on(async {
+            let call = tokio::spawn(async move {
+                instance.execute_callback(vec!["--verenu-hotkey-release".into()], String::new()).await
+            });
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while super::TEST_FORWARD_FAILED.load(std::sync::atomic::Ordering::SeqCst) == failures {
+                assert!(tokio::time::Instant::now() < deadline, "forward did not fail");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(!call.is_finished());
+            assert_eq!(super::test_callback_count(), before);
+            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+            route.activate(&parent_exited);
+            tokio::time::timeout(Duration::from_secs(5), call).await.unwrap().unwrap().unwrap();
+            assert_eq!(super::test_callback_count(), before + 1);
+        });
+    }
+
     #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires an isolated graphical and D-Bus session"]
@@ -375,6 +559,7 @@ mod tests {
         let original = super::InstanceOwner {
             connection: original,
             name: name.clone(),
+            route: std::sync::Arc::new(super::CallbackRoute::new(None)),
         };
         original
             .set_ownership_mode(super::OwnershipMode::Transferable)
@@ -456,7 +641,11 @@ mod tests {
             .allow_name_replacements(false)
             .build()
             .unwrap();
-        let original = super::InstanceOwner { connection, name };
+        let original = super::InstanceOwner {
+            connection,
+            name,
+            route: std::sync::Arc::new(super::CallbackRoute::new(None)),
+        };
         original
             .set_ownership_mode(super::OwnershipMode::Transferable)
             .unwrap();
