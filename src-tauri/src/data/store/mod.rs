@@ -495,6 +495,7 @@ pub const LEGACY_FEATURES_ENABLED: &str = "legacy_features_enabled";
 pub const SYNC_ENABLED: &str = "sync_enabled";
 pub const SYNC_MUTING_ENABLED: &str = "sync_muting_enabled";
 pub const SYNC_PEER_ADDRESSES: &str = "sync_peer_addresses";
+pub const SYNC_DISCOVERED_ROUTES: &str = "sync_discovered_routes";
 pub const AUTO_LEARN_ENABLED: &str = "auto_learn_enabled";
 pub const AUTO_LEARN_EVENT_MODE: &str = "auto_learn_event_mode";
 pub const CONTEXTUAL_FORMATTING: &str = "contextual_formatting_enabled";

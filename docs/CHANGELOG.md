@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Nearby devices can use their detected Tailscale addresses when pairing and syncing, even when their advertised LAN addresses are unreachable.
+- Paired devices remember discovered LAN and Tailscale routes and retry them when another route is unavailable.
 - Paired devices can share cleanup cache results through sync, reducing repeated cleanup requests when the same configuration is used. The cache privacy setting remains local.
 - Fixed the Dictionary editor moving focus back to the term field while entering a common mistranscription.
 - Redesigned the Providers page. One list shows only the providers you have added, with icons for transcription and cleanup instead of descriptions. The plus button opens a single flyout that adds built-in, preset, local, or custom providers, and adding a built-in or preset provider now needs only an API key. Added missing logos for more presets and fixed the flyout's close button overlapping the window controls.
