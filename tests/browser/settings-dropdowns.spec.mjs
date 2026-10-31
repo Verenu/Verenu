@@ -23,7 +23,7 @@ async function expectMenuInsideViewport(menu, page) {
 
 async function expectMenuOptionsNotClipped(menu) {
   const hasClippedText = await menu.evaluate((element) =>
-    [...element.querySelectorAll('.models-dropdown-item')]
+    [...element.querySelectorAll('.ui-dropdown-option')]
       .some((option) => option.scrollWidth > option.clientWidth + 1),
   );
   expect(hasClippedText).toBe(false);
@@ -122,7 +122,7 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
     await expect(strategyMenu).toHaveClass(/ui-dropdown-menu--padded/);
     await waitForPanelMotion(strategyMenu);
     await expectMenuInsideViewport(strategyMenu, page);
-    const strategyOption = strategyMenu.locator('.models-dropdown-item').first();
+    const strategyOption = strategyMenu.locator('.ui-dropdown-option').first();
     const optionMetrics = await strategyOption.evaluate((element) => {
       const style = getComputedStyle(element);
       return {
