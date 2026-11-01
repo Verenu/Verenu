@@ -725,9 +725,11 @@ mod tests {
                     ).unwrap();
                 }).await.unwrap();
                 assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
-                drop(staged);
+                let error = tauri::async_runtime::spawn_blocking(move || staged.activate_for_test())
+                    .await.unwrap().expect_err("unfinished activation must fail safely");
+                assert!(error.contains("Replacement services are not yet verified"), "unexpected activation failure: {error}");
                 drop(tokio::time::timeout(Duration::from_secs(20), gate.enter()).await
-                    .expect("aborted prepared replacement did not restore the parent"));
+                    .expect("failed activation did not restore the parent"));
                 assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
                 assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), settings_before);
                 drop(disk_db);

@@ -651,6 +651,18 @@ pub(crate) struct StagedRestart {
     preparation: crate::linux_handoff::PreparedHandoff,
 }
 
+#[cfg(all(test, feature = "native-testing"))]
+impl StagedRestart {
+    pub(crate) fn activate_for_test(self) -> Result<(), String> {
+        let Self { replacement, preparation } = self;
+        let PreparedReplacement { process, prepared } = replacement;
+        let result = prepared.activate().map(|_| ());
+        drop(process);
+        drop(preparation);
+        result
+    }
+}
+
 pub(crate) async fn stage_replacement(
     app: &tauri::AppHandle,
     command: std::process::Command,
