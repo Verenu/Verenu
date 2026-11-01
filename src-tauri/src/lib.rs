@@ -94,6 +94,26 @@ pub(crate) use app_setup::{
 pub(crate) use app_setup::{cleanup_update_helper_if_requested, wait_for_relaunch_parent_exit};
 pub(crate) use app_tray::apply_runtime_icons;
 
+#[cfg(target_os = "linux")]
+fn linux_app_builder() -> tauri::Builder<tauri::Wry> {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_shell::init())
+        .manage(Arc::new(linux_activity::ActivityGate::default()))
+        .manage(linux_handoff_transport::PendingRestart::default())
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                if let Some(readiness) = webview.app_handle().try_state::<FrontendReadiness>() {
+                    match webview.label() {
+                        "main" => readiness.main_page_started(),
+                        "pill" => readiness.pill_page_started(),
+                        _ => {}
+                    }
+                }
+            }
+        })
+}
+
 fn start_storage_maintenance(
     app: tauri::AppHandle,
     db: DbHandle,
@@ -643,6 +663,9 @@ pub fn run() {
     let local_transcription_manager = crate::local_stt::LocalTranscriptionManager::new();
     let frontend_readiness = FrontendReadiness::default();
 
+    #[cfg(target_os = "linux")]
+    let mut builder = linux_app_builder();
+    #[cfg(not(target_os = "linux"))]
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -665,23 +688,6 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     if !is_dev_session() {
         builder = builder.plugin(crate::linux_single_instance::plugin());
-    }
-    #[cfg(target_os = "linux")]
-    {
-        builder = builder
-            .manage(Arc::new(linux_activity::ActivityGate::default()))
-            .manage(linux_handoff_transport::PendingRestart::default())
-            .on_page_load(|webview, payload| {
-                if payload.event() == tauri::webview::PageLoadEvent::Started {
-                    if let Some(readiness) = webview.app_handle().try_state::<FrontendReadiness>() {
-                        match webview.label() {
-                            "main" => readiness.main_page_started(),
-                            "pill" => readiness.pill_page_started(),
-                            _ => {}
-                        }
-                    }
-                }
-            });
     }
     #[cfg(all(desktop, not(target_os = "linux")))]
     if !is_dev_session() {

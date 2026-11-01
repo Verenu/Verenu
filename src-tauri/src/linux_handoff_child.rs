@@ -166,9 +166,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
             crate::commands::list_local_llm_models,
             crate::commands::get_local_llm_runtime_info,
         ]);
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_shell::init())
+    let app = crate::linux_app_builder()
         .append_invoke_initialization_script(
             "if (sessionStorage.getItem('verenu-restart-activated') !== '1') Object.defineProperty(window, '__VERENU_RESTART_PROBE__', { value: true });",
         )
@@ -176,25 +174,10 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         .manage(settings)
         .manage(key_availability)
         .manage(crate::new_shared_state())
-        .manage(Arc::new(crate::linux_activity::ActivityGate::default()))
-        .manage(crate::linux_handoff_transport::PendingRestart::default())
         .manage(crate::local_stt::LocalTranscriptionManager::new())
         .manage(crate::local_llm::LocalLlmManager::new())
         .manage(readiness.clone())
         .manage(normal_commands)
-        .on_page_load(|webview, payload| {
-            if payload.event() == tauri::webview::PageLoadEvent::Started {
-                if let Some(readiness) =
-                    webview.app_handle().try_state::<crate::FrontendReadiness>()
-                {
-                    match webview.label() {
-                        "main" => readiness.main_page_started(),
-                        "pill" => readiness.pill_page_started(),
-                        _ => {}
-                    }
-                }
-            }
-        })
         .on_window_event(move |window, event| {
             if window_mode.load(Ordering::Acquire) {
                 crate::handle_window_event(window, event);
@@ -341,13 +324,6 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         let analytics_enabled = handle.state::<crate::data::store::SettingsHandle>()
                             .get(crate::data::store::ANALYTICS_ENABLED)
                             .and_then(|value| value.as_bool()).unwrap_or(true);
-                        let analytics = match crate::analytics::Analytics::prepare_for_handoff(analytics_enabled, crate::app_data_dir()) {
-                            Ok(analytics) => analytics,
-                            Err(error) => fail_paused_probation(services, format!("Replacement analytics could not prepare: {error}")),
-                        };
-                        if !handle.manage(analytics) {
-                            fail_paused_probation(services, "Replacement analytics was already initialized".into());
-                        }
                         if let Err(error) = prepare_saved_shortcut(&handle) {
                             fail_paused_probation(services, format!("Replacement shortcut settings are unavailable: {error}"));
                         }
@@ -571,6 +547,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         }
                         prepared_settings.activate(&parent_exited);
                         crate::system::logger::activate_handoff_files(&parent_exited);
+                        handle.manage(crate::analytics::Analytics::new(analytics_enabled, crate::app_data_dir()));
                         handle.state::<crate::sync::SyncManager>().start_discovery_after_handoff(&parent_exited);
                         handle.state::<Arc<AtomicBool>>().store(true, Ordering::Release);
                         ready_agent.activate(&parent_exited);
