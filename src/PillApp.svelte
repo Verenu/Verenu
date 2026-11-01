@@ -3,6 +3,7 @@
   import { onMount, tick } from 'svelte';
   import { createListenerScope } from './lib/listenerScope';
   import { createTimers } from './lib/timers';
+  import { createPillSnapshotReceiver } from './lib/pillSnapshot';
   import { fly } from 'svelte/transition';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
   import { pillBarSizing, snapBarHeight } from './lib/pillSizing';
@@ -637,8 +638,8 @@
         monitorScale = typeof scale === 'number' && Number.isFinite(scale) && scale >= 0.5 && scale <= 8 ? scale : null;
       });
 
-      void listen<string>('pill-state', (ev) => {
-        const incoming = (ev.payload as PillState) || 'idle';
+      function applyPillState(payload: string) {
+        const incoming = (payload as PillState) || 'idle';
         timers.clear('hfTimer');
 
         if (
@@ -743,14 +744,27 @@
             if (state === 'copied' || state === 'clipboard_warning') goIdle();
           }, 5000);
         } else timers.clear('copiedPillTimer');
-      });
+      }
 
-      void listen<string>('pill-error', (ev) => {
-        errorMsg = ev.payload ?? '';
+      function applyPillMessage(message: string) {
+        errorMsg = message;
         if (state === 'error') {
           openError();
         }
+      }
+
+      const receiveSnapshot = createPillSnapshotReceiver({
+        state: applyPillState,
+        message: (message) => applyPillMessage(message ?? ''),
+        context: (context, incoming) => {
+          if (incoming === 'idle' && context === null) return;
+          contextLabel = context?.trim() || null;
+        },
+        stage: (stage) => stage === null ? clearStage() : onPillStage(stage),
       });
+      void listen<unknown>('pill-snapshot', (ev) => receiveSnapshot(ev.payload));
+      void listen<string>('pill-state', (ev) => applyPillState(ev.payload));
+      void listen<string>('pill-error', (ev) => applyPillMessage(ev.payload ?? ''));
 
       void listen<number[]>('audio-envelope', (ev) => {
         if (ev.payload?.length) visualizer.pushEnvelope(ev.payload);

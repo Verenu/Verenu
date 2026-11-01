@@ -22,19 +22,84 @@ static LINUX_PILL_INPUT: Mutex<LinuxPillInput> = Mutex::new(LinuxPillInput {
     interactive: false,
     rect: None,
 });
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize)]
 struct PillSnapshot {
     state: String,
     context: Option<String>,
     #[cfg(target_os = "linux")]
     monitor_scale: Option<f64>,
+    message: Option<String>,
+    stage: Option<&'static str>,
+    revision: u64,
+    state_revision: u64,
+    context_revision: u64,
+    message_revision: u64,
+    stage_revision: u64,
 }
 
 impl PillSnapshot {
-    fn set_state(&mut self, state: &str) {
+    fn set_state(&mut self, state: &str, message: Option<&str>) {
+        self.revision += 1;
+        self.state_revision = self.revision;
         self.state = state.to_string();
         if !matches!(state, "processing" | "loading_local_model" | "handsfree") {
             self.context = None;
+            self.context_revision = self.revision;
+        }
+        if !matches!(state, "processing" | "loading_local_model") {
+            self.stage = None;
+            self.stage_revision = self.revision;
+        }
+        if matches!(
+            state,
+            "error" | "paste_failed" | "copied" | "clipboard_warning"
+        ) {
+            self.message = message.map(str::to_string);
+        } else {
+            self.message = None;
+        }
+        self.message_revision = self.revision;
+    }
+
+    fn set_stage(&mut self, stage: &str) {
+        if !matches!(self.state.as_str(), "processing" | "loading_local_model") {
+            return;
+        }
+        let next = match stage {
+            "transcribing" => Some("transcribing"),
+            "cleaning" => Some("cleaning"),
+            "pasting" => Some("pasting"),
+            _ => return,
+        };
+        self.revision += 1;
+        self.stage_revision = self.revision;
+        self.stage = next;
+    }
+
+    fn set_context(&mut self, context: &str) {
+        self.revision += 1;
+        self.context_revision = self.revision;
+        self.context = Some(context.to_string());
+    }
+
+    #[cfg(any(test, not(target_os = "linux")))]
+    fn replay(&self, mut emit: impl FnMut(&str, &str)) {
+        if let Some(message) = &self.message {
+            emit("pill-error", message);
+        }
+        emit(
+            "pill-state",
+            if self.state.is_empty() {
+                "idle"
+            } else {
+                &self.state
+            },
+        );
+        if let Some(context) = &self.context {
+            emit("pill-context", context);
+        }
+        if let Some(stage) = self.stage {
+            emit("pill-stage", stage);
         }
     }
 }
@@ -44,6 +109,13 @@ static CURRENT_PILL_SNAPSHOT: Mutex<PillSnapshot> = Mutex::new(PillSnapshot {
     context: None,
     #[cfg(target_os = "linux")]
     monitor_scale: None,
+    message: None,
+    stage: None,
+    revision: 0,
+    state_revision: 0,
+    context_revision: 0,
+    message_revision: 0,
+    stage_revision: 0,
 });
 
 #[cfg(target_os = "linux")]
@@ -58,6 +130,13 @@ fn publish_monitor_scale(
     }
     emit(snapshot.monitor_scale);
     Some(snapshot.clone())
+}
+
+#[cfg(target_os = "linux")]
+fn emit_snapshot(app: &AppHandle, snapshot: Option<PillSnapshot>) {
+    if let Some(snapshot) = snapshot {
+        app.emit_to("pill", "pill-snapshot", snapshot).ok();
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -91,15 +170,12 @@ pub(crate) fn replay_pill_state(app: &AppHandle) {
         .ok()
         .map(|snapshot| snapshot.clone());
     if let Some(snapshot) = snapshot {
-        let state = if snapshot.state.is_empty() {
-            "idle"
-        } else {
-            &snapshot.state
-        };
-        app.emit_to("pill", "pill-state", state).ok();
-        if let Some(context) = snapshot.context {
-            app.emit_to("pill", "pill-context", context).ok();
-        }
+        #[cfg(target_os = "linux")]
+        app.emit_to("pill", "pill-snapshot", snapshot).ok();
+        #[cfg(not(target_os = "linux"))]
+        snapshot.replay(|event, payload| {
+            app.emit_to("pill", event, payload).ok();
+        });
     }
 }
 
@@ -107,23 +183,27 @@ fn create_pill_if_needed(app: &AppHandle) -> bool {
     if app.get_webview_window("pill").is_some() {
         return false;
     }
-    match tauri::WebviewWindowBuilder::new(app, "pill", tauri::WebviewUrl::App("/pill.html".into()))
-        .title("Verenu Dictation Pill")
-        .inner_size(PILL_WIDTH_POINTS, PILL_HEIGHT_POINTS)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        // GTK advertises a non-resizable window's size as both its min and
-        // max, and Hyprland enforces those hints, pinning the pill at 200x200
-        // so wide error states clipped. Without decorations or focus it still
-        // cannot be resized by the user.
-        .resizable(cfg!(target_os = "linux"))
-        .shadow(false)
-        .focused(false)
-        .build()
-    {
+    #[cfg(target_os = "linux")]
+    let result = if let Some(main) = app.get_webview_window("main") {
+        // A related view shares WebKit's renderer while keeping a separate
+        // user content manager and Tauri window for the pill.
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let app = app.clone();
+        match main.with_webview(move |platform| {
+            let _ = sender.send(build_pill(&app, Some(platform.inner())));
+        }) {
+            Ok(()) => receiver
+                .recv()
+                .unwrap_or(Err(tauri::Error::FailedToReceiveMessage)),
+            Err(error) => Err(error),
+        }
+    } else {
+        build_pill(app, None)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let result = build_pill(app);
+
+    match result {
         Ok(pill) => {
             crate::apply_runtime_icons(app, None);
             #[cfg(target_os = "linux")]
@@ -138,6 +218,37 @@ fn create_pill_if_needed(app: &AppHandle) -> bool {
             false
         }
     }
+}
+
+fn build_pill(
+    app: &AppHandle,
+    #[cfg(target_os = "linux")] related: Option<webkit2gtk::WebView>,
+) -> tauri::Result<WebviewWindow> {
+    let builder = tauri::WebviewWindowBuilder::new(
+        app,
+        "pill",
+        tauri::WebviewUrl::App("/pill.html".into()),
+    )
+        .title("Verenu Dictation Pill")
+        .inner_size(PILL_WIDTH_POINTS, PILL_HEIGHT_POINTS)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        // GTK advertises a non-resizable window's size as both its min and
+        // max, and Hyprland enforces those hints, pinning the pill at 200x200
+        // so wide error states clipped. Without decorations or focus it still
+        // cannot be resized by the user.
+        .resizable(cfg!(target_os = "linux"))
+        .shadow(false)
+        .focused(false);
+    #[cfg(target_os = "linux")]
+    let builder = match related {
+        Some(view) => builder.with_related_view(view),
+        None => builder,
+    };
+    builder.build()
 }
 
 #[cfg(target_os = "linux")]
@@ -508,9 +619,10 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
     let _ = app;
     PILL_VISUALLY_ACTIVE.store(true, Ordering::SeqCst);
 
-    if let Ok(mut current) = CURRENT_PILL_SNAPSHOT.lock() {
-        current.set_state(state);
-    }
+    let snapshot = CURRENT_PILL_SNAPSHOT.lock().ok().map(|mut current| {
+        current.set_state(state, message);
+        current.clone()
+    });
     apply_pill_hit_testing(pill, false);
 
     #[cfg(target_os = "windows")]
@@ -559,9 +671,15 @@ fn reveal_pill(app: &AppHandle, pill: &WebviewWindow, state: &str, message: Opti
         });
     }
 
+    #[cfg(target_os = "linux")]
+    emit_snapshot(app, snapshot);
+    #[cfg(not(target_os = "linux"))]
+    let _ = snapshot;
+    #[cfg(not(target_os = "linux"))]
     if let Some(msg) = message {
         pill.emit("pill-error", msg).ok();
     }
+    #[cfg(not(target_os = "linux"))]
     pill.emit("pill-state", state).ok();
 
     if let Some(context) = PENDING_PILL_CONTEXT
@@ -718,9 +836,15 @@ pub(crate) fn hide_pill(app: &AppHandle) {
 
         #[cfg(target_os = "linux")]
         let was_idle = current_pill_state() == "idle";
-        if let Ok(mut current) = CURRENT_PILL_SNAPSHOT.lock() {
-            current.set_state("idle");
-        }
+        let snapshot = CURRENT_PILL_SNAPSHOT.lock().ok().map(|mut current| {
+            current.set_state("idle", None);
+            current.clone()
+        });
+        #[cfg(target_os = "linux")]
+        emit_snapshot(app, snapshot);
+        #[cfg(not(target_os = "linux"))]
+        let _ = snapshot;
+        #[cfg(not(target_os = "linux"))]
         pill.emit("pill-state", "idle").ok();
         #[cfg(target_os = "linux")]
         {
@@ -781,9 +905,15 @@ pub(crate) fn native_test_pill(
         } else {
             show_native_pill_msg(app, state, message);
             if let Some(context) = context {
-                if let Ok(mut snapshot) = CURRENT_PILL_SNAPSHOT.lock() {
-                    snapshot.context = Some(context.to_string());
-                }
+                let snapshot = CURRENT_PILL_SNAPSHOT.lock().ok().map(|mut snapshot| {
+                    snapshot.set_context(context);
+                    snapshot.clone()
+                });
+                #[cfg(target_os = "linux")]
+                emit_snapshot(app, snapshot);
+                #[cfg(not(target_os = "linux"))]
+                let _ = snapshot;
+                #[cfg(not(target_os = "linux"))]
                 app.emit_to("pill", "pill-context", context).ok();
             }
         }
@@ -850,29 +980,52 @@ pub(crate) fn show_copied_pill(app: &AppHandle, msg: &str) {
 }
 
 pub(crate) fn emit_pill_stage(app: &AppHandle, stage: &str) {
+    let snapshot = CURRENT_PILL_SNAPSHOT.lock().ok().map(|mut snapshot| {
+        snapshot.set_stage(stage);
+        snapshot.clone()
+    });
     if crate::is_dev_session() {
         app.emit("verenu:pill-stage", stage).ok();
         return;
     }
     if let Some(pill) = app.get_webview_window("pill") {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = pill;
+            emit_snapshot(app, snapshot);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = snapshot;
+        #[cfg(not(target_os = "linux"))]
         pill.emit("pill-stage", stage).ok();
     }
 }
 
 pub(crate) fn emit_pill_context(app: &AppHandle, context: &str) {
-    if let Ok(mut snapshot) = CURRENT_PILL_SNAPSHOT.lock() {
-        snapshot.context = Some(context.to_string());
-    }
+    let snapshot = CURRENT_PILL_SNAPSHOT.lock().ok().map(|mut snapshot| {
+        snapshot.set_context(context);
+        snapshot.clone()
+    });
     if crate::is_dev_session() {
         app.emit("verenu:pill-context", context).ok();
         return;
     }
     match app.get_webview_window("pill") {
         Some(pill) => {
-            let sent = pill.emit("pill-context", context).is_ok();
-            log::debug!("pill: context={context} sent={sent}");
+            #[cfg(target_os = "linux")]
+            {
+                let _ = pill;
+                emit_snapshot(app, snapshot);
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = snapshot;
+            #[cfg(not(target_os = "linux"))]
+            {
+                let sent = pill.emit("pill-context", context).is_ok();
+                log::debug!("pill: context sent={sent}");
+            }
         }
-        None => log::debug!("pill: context={context} sent=false (no pill window)"),
+        None => log::debug!("pill: context sent=false (no pill window)"),
     }
 }
 
@@ -916,6 +1069,27 @@ mod context_replay_tests {
         assert!(premature.is_err(), "new scale emitted before the old replay finished");
         assert_eq!(event_rx.recv().unwrap(), None);
         assert_eq!(event_rx.recv().unwrap(), Some(1.25));
+    }
+
+    #[test]
+    fn snapshots_capture_repeated_states_and_independent_updates() {
+        let mut snapshot = PillSnapshot::default();
+        snapshot.set_state("processing", None);
+        let first = snapshot.clone();
+        snapshot.set_context("Synthetic context");
+        snapshot.set_stage("cleaning");
+        let updated = snapshot.clone();
+        assert_eq!(updated.state_revision, first.state_revision);
+        assert!(updated.context_revision > first.revision);
+        assert!(updated.stage_revision > updated.context_revision);
+        snapshot.set_state("processing", None);
+        assert!(snapshot.state_revision > updated.revision);
+        assert_eq!(snapshot.stage, Some("cleaning"));
+        snapshot.set_state("error", Some("Synthetic status"));
+        snapshot.set_state("error", None);
+        assert_eq!(snapshot.message, None);
+        assert_eq!(snapshot.stage, None);
+        assert_eq!(snapshot.context, None);
     }
 
     #[test]
@@ -983,7 +1157,7 @@ mod context_replay_tests {
     #[test]
     fn context_survives_local_model_loading_and_processing() {
         let mut snapshot = PillSnapshot::default();
-        snapshot.set_state("recording");
+        snapshot.set_state("recording", None);
         snapshot.context = Some("Synthetic context".to_string());
         for state in [
             "handsfree",
@@ -991,7 +1165,7 @@ mod context_replay_tests {
             "loading_local_model",
             "processing",
         ] {
-            snapshot.set_state(state);
+            snapshot.set_state(state, None);
             assert_eq!(snapshot.context.as_deref(), Some("Synthetic context"));
         }
         let replay = snapshot.clone();
@@ -1016,9 +1190,53 @@ mod context_replay_tests {
                 context: Some("Previous context".to_string()),
                 ..Default::default()
             };
-            snapshot.set_state(state);
+            snapshot.set_state(state, None);
             assert!(snapshot.context.is_none(), "stale context in {state}");
         }
+    }
+
+    #[test]
+    fn replay_delivers_terminal_message_before_its_state() {
+        for state in ["error", "paste_failed", "copied", "clipboard_warning"] {
+            let mut snapshot = PillSnapshot::default();
+            snapshot.set_state(state, Some("Synthetic status"));
+            let mut events = Vec::new();
+            snapshot.replay(|event, payload| events.push((event.to_string(), payload.to_string())));
+            assert_eq!(
+                events,
+                vec![
+                    ("pill-error".to_string(), "Synthetic status".to_string()),
+                    ("pill-state".to_string(), state.to_string()),
+                ]
+            );
+            snapshot.set_state("idle", None);
+            assert!(snapshot.message.is_none(), "stale message after {state}");
+        }
+    }
+
+    #[test]
+    fn replay_restores_current_processing_stage_after_state_and_context() {
+        let mut snapshot = PillSnapshot::default();
+        snapshot.set_state("processing", None);
+        snapshot.context = Some("Synthetic context".to_string());
+        snapshot.set_stage("transcribing");
+        snapshot.set_state("loading_local_model", None);
+        snapshot.set_stage("cleaning");
+        snapshot.set_stage("unrecognized stage");
+        snapshot.set_state("processing", None);
+        let mut events = Vec::new();
+        snapshot.replay(|event, payload| events.push((event.to_string(), payload.to_string())));
+        assert_eq!(
+            events,
+            vec![
+                ("pill-state".to_string(), "processing".to_string()),
+                ("pill-context".to_string(), "Synthetic context".to_string()),
+                ("pill-stage".to_string(), "cleaning".to_string()),
+            ]
+        );
+        snapshot.set_state("recording", None);
+        snapshot.set_stage("pasting");
+        assert!(snapshot.stage.is_none());
     }
 }
 

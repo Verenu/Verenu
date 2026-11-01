@@ -52,6 +52,18 @@ as the app counter does. Compare startup, repeated navigation, and idle memory
 after dictation or model unload. The native allocator trim runs at most once
 every 30 seconds while dictation is idle and does not unload active models.
 
+To sample a running Linux app and its child processes, pass the app's PID:
+
+```bash
+node scripts/measure-linux-memory.mjs --pid <verenu-pid> --samples 12 --interval-ms 5000
+```
+
+The command reports per-process and total PSS in KiB, with the sample average
+and range. It does not read command lines, environment variables, or app data.
+Process-tree scans are not atomic; a child created during a scan can be missed.
+The command fails if a sampled process exits or a required `/proc` file cannot
+be read. Record the workload and desktop environment alongside the results.
+
 For request-allocation comparisons and capture-buffer regression coverage:
 
 ```bash
