@@ -80,6 +80,15 @@ pub(crate) fn is_replacement_group(group: u32) -> bool {
     pid != current && unsafe { libc::getpgid(pid) == pid } && descends_from(pid, current)
 }
 
+pub(crate) fn process_in_replacement_group(pid: u32, group: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 || !is_replacement_group(group) {
+        return false;
+    }
+    let pid = pid as libc::pid_t;
+    (unsafe { libc::getpgid(pid) == group as libc::pid_t })
+        && descends_from(pid, std::process::id() as libc::pid_t)
+}
+
 fn child_channel_from_environment(timeout: Duration) -> Result<Option<Channel>, String> {
     let Some(value) = std::env::var_os(CHILD_FD_ENV) else {
         return Ok(None);

@@ -329,6 +329,32 @@ impl InstanceOwner {
     }
 
     #[allow(dead_code)]
+    pub(crate) fn verify_replacement_owner(&self, group: u32) -> Result<(), String> {
+        let owner: String = self.connection.call_method(
+            Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"), "GetNameOwner", &(self.name.as_str(),),
+        ).and_then(|message| message.body().deserialize())
+            .map_err(|error| format!("Could not inspect replacement ownership: {error}"))?;
+        let pid: u32 = self.connection.call_method(
+            Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"), "GetConnectionUnixProcessID", &(owner.as_str(),),
+        ).and_then(|message| message.body().deserialize())
+            .map_err(|error| format!("Could not identify replacement owner: {error}"))?;
+        if !crate::linux_handoff_transport::process_in_replacement_group(pid, group) {
+            return Err("Single-instance ownership belongs to a different process".into());
+        }
+        let current: String = self.connection.call_method(
+            Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"), "GetNameOwner", &(self.name.as_str(),),
+        ).and_then(|message| message.body().deserialize())
+            .map_err(|error| format!("Could not confirm replacement ownership: {error}"))?;
+        if current != owner {
+            return Err("Single-instance ownership changed during restart".into());
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn set_ownership_mode(&self, mode: OwnershipMode) -> Result<(), String> {
         let flags = match mode {
             OwnershipMode::Transferable => zbus::fdo::RequestNameFlags::AllowReplacement as u32,
