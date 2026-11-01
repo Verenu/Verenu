@@ -168,6 +168,44 @@ mod chunk_native_tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "Requires an isolated Hyprland/Wayland clipboard"]
+    async fn restored_clipboard_survives_an_interrupted_reader() {
+        let _lock = super::super::injection_lock().lock().await;
+        let original = snapshot_clipboard().await.unwrap();
+        let bytes = vec![b'x'; 1024 * 1024];
+        restore_clipboard(vec![MimeSource {
+            source: Source::Bytes(bytes.clone().into_boxed_slice()),
+            mime_type: MimeType::Specific("text/plain".into()),
+        }])
+        .await
+        .unwrap();
+
+        let (reader, _) = paste::get_contents(
+            ClipboardType::Regular,
+            Seat::Unspecified,
+            PasteMimeType::Specific("text/plain"),
+        )
+        .unwrap();
+        drop(reader);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let result = paste::get_contents(
+            ClipboardType::Regular,
+            Seat::Unspecified,
+            PasteMimeType::Specific("text/plain"),
+        )
+        .map(|(mut reader, _)| {
+            let mut actual = Vec::new();
+            reader.read_to_end(&mut actual).unwrap();
+            actual
+        });
+        match original {
+            ClipboardSnapshot::Data(sources) => restore_clipboard(sources).await.unwrap(),
+            ClipboardSnapshot::Empty => clear_clipboard().await.unwrap(),
+        }
+        assert_eq!(result.unwrap(), bytes);
+    }
+
+    #[tokio::test]
     #[ignore = "Requires an owned terminal fixture on Hyprland/Wayland"]
     async fn paste_chunks_native_terminal_preserves_clipboard() {
         let address = std::env::var("VERENU_CHUNK_FIXTURE_ADDRESS").expect("owned terminal address");
