@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { createListenerScope } from '../listenerScope';
+  import { createPillSnapshotReceiver } from '../pillSnapshot';
   import { appStore } from '../stores';
   import { getVersion, invoke, listen } from '../tauri';
   import { classifyIpcError } from '../errors';
@@ -188,6 +189,16 @@
       });
     void watch('pill-state', (payload) => pushDumpEvent('pill-state', String(payload)));
     void watch('pill-stage', (payload) => pushDumpEvent('pill-stage', String(payload)));
+    const receiveSnapshot = createPillSnapshotReceiver({
+      state: (state) => pushDumpEvent('pill-state', state),
+      stage: (stage) => { if (stage !== null) pushDumpEvent('pill-stage', stage); },
+      context: () => {},
+      message: () => {},
+    });
+    void listeners.track(listen<unknown>('pill-snapshot', ({ payload }) => {
+      receiveSnapshot(payload);
+      scheduleRebuild();
+    }));
     void watch('verenu:error', (payload) => {
       pushError(payload);
       pushDumpEvent('error', classifyIpcError(payload).kind);

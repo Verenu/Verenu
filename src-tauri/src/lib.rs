@@ -345,6 +345,10 @@ pub fn run() {
             if !is_dev_session() {
                 crate::data::credentials::migrate_from_store(app.handle(), &settings);
             }
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                crate::system::linux_webview::configure_window(&window);
+            }
             #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
             if is_dev_session() {
                 app.manage(settings.clone());
@@ -505,7 +509,6 @@ pub fn run() {
             app_tray::setup_tray(app)?;
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
-                crate::system::linux_webview::configure_window(&window);
                 crate::system::linux_titlebar::enable(&window).map_err(|error| {
                     let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
                     tauri::Error::Setup(source.into())
