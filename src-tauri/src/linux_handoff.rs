@@ -76,6 +76,14 @@ impl Drop for PreparedHandoff {
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
+                let restored = match app.try_state::<crate::agent_api::AgentDrain>() {
+                    Some(agent) => agent.restore_discovery().await.map_err(|error| error.to_string()),
+                    None => Err("Agent service is unavailable".to_string()),
+                };
+                if let Err(error) = restored {
+                    log::error!("Could not restore agent discovery after restart: {error}");
+                    let _ = app.emit("verenu:error", "Verenu is still running, but local agent access could not be restored. Quit and reopen the app when convenient.");
+                }
             }
             if let Some(shortcuts) = shortcuts {
                 let restored =

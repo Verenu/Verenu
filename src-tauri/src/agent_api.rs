@@ -28,13 +28,14 @@ pub(crate) struct Agent {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) struct AgentDrain(Arc<tokio::sync::Semaphore>);
+#[allow(dead_code)]
+pub(crate) struct AgentDrain(Arc<tokio::sync::Semaphore>, Option<(u16, String)>);
 
 #[cfg(target_os = "linux")]
 impl AgentDrain {
     #[cfg(all(test, feature = "native-testing"))]
     pub(crate) fn for_test(gate: Arc<tokio::sync::Semaphore>) -> Self {
-        Self(gate)
+        Self(gate, None)
     }
     #[allow(dead_code)]
     pub(crate) async fn pause(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
@@ -43,6 +44,19 @@ impl AgentDrain {
             .acquire_owned()
             .await
             .map_err(|_| "The agent service is unavailable.".to_owned())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn restore_discovery(&self) -> anyhow::Result<()> {
+        if let Some((port, instance)) = &self.1 {
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build()?;
+            let status: Value = client.get(format!("http://127.0.0.1:{port}/v1/status"))
+                .send().await?.error_for_status()?.json().await?;
+            anyhow::ensure!(status.get("instance").and_then(Value::as_str) == Some(instance.as_str()),
+                "Original agent service is unavailable");
+            publish_discovery(*port, instance)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn check_pending_approval(app: &AppHandle) -> Result<(), String> {
@@ -362,7 +376,7 @@ impl PreparedAgent {
         app.manage(approvals.clone());
         let gate = Arc::new(tokio::sync::Semaphore::new(1));
         #[cfg(target_os = "linux")]
-        app.manage(AgentDrain(gate.clone()));
+        app.manage(AgentDrain(gate.clone(), Some((port, instance.clone()))));
         let state = Agent {
             app,
             instance,
@@ -411,7 +425,7 @@ impl PreparedAgent {
         let approvals = Arc::new(Mutex::new(Approvals { legacy_token: token, ..Approvals::default() }));
         anyhow::ensure!(app.manage(approvals.clone()), "Agent approvals are already initialized");
         let gate = Arc::new(tokio::sync::Semaphore::new(1));
-        anyhow::ensure!(app.manage(AgentDrain(gate.clone())), "Agent service is already initialized");
+        anyhow::ensure!(app.manage(AgentDrain(gate.clone(), Some((port, instance.clone())))), "Agent service is already initialized");
         let state = Agent { app, instance: instance.clone(), approvals, gate };
         let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let access = active.clone();
@@ -1393,6 +1407,19 @@ mod tests {
         });
         assert_eq!(response["version"], 1);
         assert_eq!(response["instance"], published["instance"]);
+        std::fs::write(&descriptor, b"replacement descriptor").unwrap();
+        let wrong_instance = AgentDrain(Arc::new(tokio::sync::Semaphore::new(1)), Some((port as u16, "wrong-instance".into())));
+        assert!(tauri::async_runtime::block_on(wrong_instance.restore_discovery()).is_err());
+        assert_eq!(std::fs::read(&descriptor).unwrap(), b"replacement descriptor");
+        tauri::async_runtime::block_on(app.state::<AgentDrain>().restore_discovery()).unwrap();
+        let restored: Value = serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+        assert_eq!(restored, published);
+        let response: Value = tauri::async_runtime::block_on(async {
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
+            client.get(format!("http://127.0.0.1:{port}/v1/status"))
+                .send().await.unwrap().error_for_status().unwrap().json().await.unwrap()
+        });
+        assert_eq!(response["instance"], restored["instance"]);
         drop(app);
         match previous {
             Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
@@ -1412,7 +1439,7 @@ mod tests {
         let gate = Arc::new(tokio::sync::Semaphore::new(1));
         let approvals = Arc::new(Mutex::new(Approvals::default()));
         app.manage(approvals.clone());
-        app.manage(AgentDrain(gate.clone()));
+        app.manage(AgentDrain(gate.clone(), None));
         let agent = Agent {
             app: app.handle().clone(),
             instance: "test".into(),
@@ -1440,7 +1467,7 @@ mod tests {
         let (finish, waiting) = tokio::sync::oneshot::channel::<()>();
         let task = spawn_with_permit(permit, async move { waiting.await.unwrap() });
         drop(task);
-        let drain = AgentDrain(gate.clone());
+        let drain = AgentDrain(gate.clone(), None);
         let mut pause = Box::pin(drain.pause());
         assert!(tokio::time::timeout(Duration::from_millis(20), &mut pause)
             .await
