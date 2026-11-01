@@ -10,9 +10,10 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const PROTOCOL: u32 = 3;
+const PROTOCOL: u32 = 4;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
@@ -37,6 +38,7 @@ fn database_code_fingerprint() -> String {
         &include_bytes!("data/db/sub_apps.rs")[..],
         &include_bytes!("data/db/transcriptions.rs")[..],
         &include_bytes!("data/db/validation.rs")[..],
+        &include_bytes!("linux_handoff_callbacks.rs")[..],
     ] {
         hash.update((source.len() as u64).to_le_bytes());
         hash.update(source);
@@ -210,10 +212,12 @@ impl Child {
             Message::Begin {
                 key_availability,
                 parent_unique_name,
+                callback_queue_path,
             } => Ok(ChildStartup {
                 channel: self.channel,
                 key_availability,
                 parent_unique_name,
+                callback_queue_path,
             }),
             _ => Err("Replacement received an invalid startup request".into()),
         }
@@ -224,6 +228,7 @@ pub(crate) struct ChildStartup {
     channel: Channel,
     key_availability: KeyAvailability,
     parent_unique_name: Option<String>,
+    callback_queue_path: Option<PathBuf>,
 }
 
 impl ChildStartup {
@@ -242,6 +247,10 @@ impl ChildStartup {
 
     pub(crate) fn parent_unique_name(&self) -> Option<&str> {
         self.parent_unique_name.as_deref()
+    }
+
+    pub(crate) fn callback_queue_path(&self) -> Option<&Path> {
+        self.callback_queue_path.as_deref()
     }
 }
 
@@ -328,6 +337,7 @@ enum Message {
     Begin {
         key_availability: KeyAvailability,
         parent_unique_name: Option<String>,
+        callback_queue_path: Option<PathBuf>,
     },
     BackendReady,
     FrontendsReady,
@@ -421,6 +431,7 @@ struct Parent {
     schema: i64,
     key_availability: KeyAvailability,
     parent_unique_name: Option<String>,
+    callback_queue_path: Option<PathBuf>,
 }
 
 struct ProcessGuard(std::process::Child, UnixStream);
@@ -544,6 +555,7 @@ impl Replacement {
             schema,
             key_availability,
             parent_unique_name: None,
+            callback_queue_path: None,
         };
         Ok(Self { process, parent })
     }
@@ -558,6 +570,11 @@ impl Replacement {
 
     fn with_parent_unique_name(mut self, name: String) -> Self {
         self.parent.parent_unique_name = Some(name);
+        self
+    }
+
+    fn with_callback_queue(mut self, path: PathBuf) -> Self {
+        self.parent.callback_queue_path = Some(path);
         self
     }
 }
@@ -617,6 +634,7 @@ impl Parent {
         self.channel.send(&Message::Begin {
             key_availability: self.key_availability,
             parent_unique_name: self.parent_unique_name,
+            callback_queue_path: self.callback_queue_path,
         })?;
         self.channel.expect(Message::BackendReady)?;
         self.channel.expect(Message::FrontendsReady)?;
@@ -698,6 +716,7 @@ mod tests {
         Message::Begin {
             key_availability: KeyAvailability::new(),
             parent_unique_name: None,
+            callback_queue_path: None,
         }
     }
 
@@ -711,6 +730,7 @@ mod tests {
                 schema: 39,
                 key_availability: KeyAvailability::new(),
                 parent_unique_name: None,
+                callback_queue_path: None,
             },
             Channel::new(child, timeout).unwrap(),
         )
@@ -982,6 +1002,7 @@ mod tests {
             schema: 39,
             key_availability: KeyAvailability::new(),
             parent_unique_name: None,
+            callback_queue_path: None,
         };
         assert!(parent.prepare().is_err());
         assert!(process.wait().unwrap().success());
@@ -1103,6 +1124,8 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         original_files.sort();
+        let (callback_queue, callback_path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
+        let callback_queue = std::sync::Arc::new(callback_queue);
         let mut command = Command::new(&binary);
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
@@ -1114,12 +1137,22 @@ mod tests {
             Duration::from_secs(25),
         )
         .unwrap()
-        .with_parent_unique_name(owner.unique_name().unwrap());
+        .with_parent_unique_name(owner.unique_name().unwrap())
+        .with_callback_queue(callback_path.clone());
         let child_pid = replacement.process.0.id();
         let ready = replacement
             .prepare()
             .expect("replacement did not complete frontend readiness");
-        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        let pause = gate.begin_pause_with(|| owner.install_callback_queue(callback_queue.clone())).unwrap();
+        tauri::async_runtime::block_on(pause.wait_drained());
+        let connection = zbus::blocking::Connection::session().unwrap();
+        connection.call_method(
+            Some("com.verenu.app.SingleInstance"),
+            "/com/verenu/app/SingleInstance",
+            Some("org.SingleInstance.DBus"),
+            "ExecuteCallback",
+            &(vec!["--verenu-hotkey-release".to_string()], String::new()),
+        ).unwrap();
         owner
             .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
             .unwrap();
@@ -1127,8 +1160,6 @@ mod tests {
             .acquire_ownership()
             .expect("replacement did not acquire ownership");
         assert!(!owner.owns_name().unwrap());
-        let connection = zbus::blocking::Connection::session().unwrap();
-        let started = crate::linux_single_instance::test_callback_started();
         let (sent, received) = std::sync::mpsc::channel();
         let callback_connection = connection.clone();
         let callback = std::thread::spawn(move || {
@@ -1137,15 +1168,12 @@ mod tests {
                 "/com/verenu/app/SingleInstance",
                 Some("org.SingleInstance.DBus"),
                 "ExecuteCallback",
-                &(vec!["--verenu-hotkey-release".to_string()], String::new()),
+                &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
             );
             let _ = sent.send(result.is_ok());
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while crate::linux_single_instance::test_callback_started() == started {
-            assert!(Instant::now() < deadline, "forwarded callback did not reach parent");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert_eq!(callback_queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
         assert_eq!(
             crate::linux_single_instance::test_callback_count(),
             callbacks_before
@@ -1180,15 +1208,17 @@ mod tests {
         owner
             .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
             .unwrap();
+        owner.drain_callback_queue(app.handle()).unwrap();
         drop(pause);
-        let _ = received.recv_timeout(Duration::from_secs(5)).unwrap();
         callback.join().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while crate::linux_single_instance::test_callback_count() == callbacks_before {
             assert!(Instant::now() < deadline, "parent did not handle the deferred callback");
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks_before + 1);
+        assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks_before + 2);
+        drop(callback_queue);
+        std::fs::remove_dir_all(callback_path.parent().unwrap()).unwrap();
         connection
             .call_method(
                 Some("com.verenu.app.SingleInstance"),
