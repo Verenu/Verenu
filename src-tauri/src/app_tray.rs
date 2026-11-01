@@ -42,10 +42,15 @@ pub(crate) async fn verify_probation_tray(app: &AppHandle) -> Result<(), String>
 
 #[cfg(target_os = "linux")]
 #[allow(dead_code)]
-pub(crate) async fn activate_after_handoff(
+pub(crate) async fn activate_while_paused(
     app: &AppHandle,
-    _parent_exited: &crate::linux_handoff_transport::ParentExited,
+    pause: &crate::linux_activity::Pause,
 ) -> Result<(), String> {
+    let gate = app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
+        .ok_or("Restart gate is unavailable")?;
+    if !pause.belongs_to(gate.inner()) {
+        return Err("Tray restart gate does not match".into());
+    }
     linux::activate_after_handoff(app).await
 }
 

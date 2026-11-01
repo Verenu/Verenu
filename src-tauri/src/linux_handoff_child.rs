@@ -62,6 +62,30 @@ fn fail_paused_probation(services: crate::linux_handoff_transport::ChildServices
     std::process::exit(1)
 }
 
+fn fail_committing(services: crate::linux_handoff_transport::ChildCommitting, reason: String) -> ! {
+    let _ = services.fail(reason);
+    std::process::exit(1)
+}
+
+fn verify_runtime(
+    readiness: &crate::FrontendReadiness,
+    microphone: Result<(), String>,
+    diagnostics_stopped: bool,
+    maintenance_stopped: bool,
+) -> Result<(), String> {
+    if !readiness.main.load(Ordering::Acquire)
+        || !readiness.current_pill_ready()
+        || !readiness.main_and_home_ready()
+    {
+        return Err("Replacement frontend became unavailable during activation".into());
+    }
+    microphone.map_err(|error| format!("Replacement microphone watcher became unavailable: {error}"))?;
+    if diagnostics_stopped || maintenance_stopped {
+        return Err("Replacement maintenance stopped during activation".into());
+    }
+    Ok(())
+}
+
 fn show_activation_error(app: &tauri::AppHandle, reason: &str) {
     let message = format!("The update was installed, but startup could not finish: {reason}. Quit and reopen Verenu.");
     log::error!("{message}");
@@ -426,17 +450,12 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = tauri::async_runtime::block_on(staged_agent.verify()) {
                             fail_paused_probation(services, format!("Replacement agent service became unavailable: {error}"));
                         }
-                        if let Err(error) = active_microphone.verify() {
-                            fail_paused_probation(services, format!("Replacement microphone watcher became unavailable: {error}"));
+                        if let Err(error) = verify_runtime(&readiness, active_microphone.verify(), diagnostic_worker.is_finished(),
+                            storage_maintenance.inner().is_finished() || runtime_maintenance.inner().is_finished()) {
+                            fail_paused_probation(services, error);
                         }
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener became unavailable: {error}"));
-                        }
-                        if diagnostic_worker.is_finished() {
-                            fail_paused_probation(services, "Replacement diagnostics stopped during preparation".into());
-                        }
-                        if storage_maintenance.inner().is_finished() || runtime_maintenance.inner().is_finished() {
-                            fail_paused_probation(services, "Replacement maintenance stopped during preparation".into());
                         }
                         let published_agent = match staged_agent.publish_while_paused(&handle, child_pause.guard()) {
                             Ok(agent) => agent,
@@ -453,26 +472,15 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             Ok(services) => services,
                             Err(_) => std::process::exit(1),
                         };
-                        if !readiness.main.load(Ordering::Acquire)
-                            || !readiness.current_pill_ready()
-                            || !readiness.main_and_home_ready()
-                        {
-                            fail_paused_probation(services, "Replacement frontend became unavailable before activation".into());
-                        }
-                        if let Err(error) = active_microphone.verify() {
-                            fail_paused_probation(services, format!("Replacement microphone watcher became unavailable before activation: {error}"));
+                        if let Err(error) = verify_runtime(&readiness, active_microphone.verify(), diagnostic_worker.is_finished(),
+                            storage_maintenance.inner().is_finished() || runtime_maintenance.inner().is_finished()) {
+                            fail_paused_probation(services, error);
                         }
                         if let Err(error) = tauri::async_runtime::block_on(published_agent.verify()) {
                             fail_paused_probation(services, format!("Replacement agent service became unavailable before activation: {error}"));
                         }
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener became unavailable before activation: {error}"));
-                        }
-                        if diagnostic_worker.is_finished() {
-                            fail_paused_probation(services, "Replacement diagnostics stopped before activation".into());
-                        }
-                        if storage_maintenance.inner().is_finished() || runtime_maintenance.inner().is_finished() {
-                            fail_paused_probation(services, "Replacement maintenance stopped before activation".into());
                         }
                         let tray_check = tauri::async_runtime::block_on(async {
                             tokio::time::timeout(Duration::from_secs(5), crate::app_tray::verify_probation_tray(&handle)).await
@@ -489,7 +497,60 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if std::env::var_os("VERENU_HANDOFF_TEST_FAIL_ACTIVATION").is_some() {
                             fail_paused_probation(services, "Synthetic replacement startup failure".into());
                         }
-                        let committed = match services.activated() {
+                        let committing = match services.activated() {
+                            Ok(committing) => committing,
+                            Err(_) => std::process::exit(1),
+                        };
+                        #[cfg(all(feature = "native-testing", debug_assertions))]
+                        if std::env::var_os("VERENU_HANDOFF_TEST_FAIL_AFTER_COMMIT").is_some() {
+                            if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_TRIGGER") {
+                                let path = std::path::PathBuf::from(path);
+                                let _ = std::fs::write(path.with_extension("committing"), b"ready");
+                                let deadline = Instant::now() + Duration::from_secs(15);
+                                while !path.with_extension("continue").exists() && Instant::now() < deadline {
+                                    std::thread::sleep(Duration::from_millis(25));
+                                }
+                            }
+                        }
+                        if let Err(error) = ready_db.activate_while_paused(child_pause.guard(), &gate) {
+                            fail_committing(committing, format!("Database activation failed: {error}"));
+                        }
+                        let ready_agent = match published_agent.prepare_activation(&handle, child_pause.guard()) {
+                            Ok(agent) => agent,
+                            Err(error) => fail_committing(committing, format!("Agent activation failed: {error}")),
+                        };
+                        let sync = match staged_sync.activate_while_paused(child_pause.guard(), &gate) {
+                            Ok(sync) => sync,
+                            Err(error) => fail_committing(committing, format!("Sync activation failed: {error}")),
+                        };
+                        let sync_result = tauri::async_runtime::block_on(async {
+                            tokio::time::timeout(Duration::from_secs(15), sync).await
+                        });
+                        if !matches!(sync_result, Ok(Ok(Ok(())))) {
+                            fail_committing(committing, "Sync could not start".into());
+                        }
+                        if let Err(error) = tauri::async_runtime::block_on(
+                            crate::app_tray::activate_while_paused(&handle, child_pause.guard()),
+                        ) {
+                            fail_committing(committing, format!("Tray activation failed: {error}"));
+                        }
+                        if let Err(error) = verify_runtime(&readiness, active_microphone.verify(), diagnostic_worker.is_finished(),
+                            storage_maintenance.inner().is_finished() || runtime_maintenance.inner().is_finished()) {
+                            fail_committing(committing, error);
+                        }
+                        if let Err(error) = tauri::async_runtime::block_on(ready_agent.verify()) {
+                            fail_committing(committing, format!("Replacement agent service became unavailable: {error}"));
+                        }
+                        let owner = handle.state::<crate::linux_single_instance::InstanceOwner>();
+                        let callbacks = match owner.prepare_callbacks(&callback_path, child_pause.guard(), &gate) {
+                            Ok(callbacks) => callbacks,
+                            Err(error) => fail_committing(committing, format!("Shortcut routing failed: {error}")),
+                        };
+                        #[cfg(all(feature = "native-testing", debug_assertions))]
+                        if std::env::var_os("VERENU_HANDOFF_TEST_FAIL_AFTER_COMMIT").is_some() {
+                            fail_committing(committing, "Synthetic late activation failure".into());
+                        }
+                        let committed = match committing.ready() {
                             Ok(committed) => committed,
                             Err(_) => std::process::exit(1),
                         };
@@ -500,44 +561,17 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 return;
                             }
                         };
-                        if let Err(error) = ready_db.activate(&parent_exited) {
-                            show_activation_error(&handle, &format!("Database activation failed: {error}"));
-                            return;
-                        }
                         prepared_settings.activate(&parent_exited);
                         crate::system::logger::activate_handoff_files(&parent_exited);
-                        let sync = staged_sync.activate(&parent_exited);
-                        let sync_result = tauri::async_runtime::block_on(async {
-                            tokio::time::timeout(Duration::from_secs(15), sync).await
-                        });
-                        if !matches!(sync_result, Ok(Ok(Ok(())))) {
-                            show_activation_error(&handle, "Sync could not start");
-                            return;
-                        }
+                        handle.state::<crate::sync::SyncManager>().start_discovery_after_handoff(&parent_exited);
                         handle.state::<Arc<AtomicBool>>().store(true, Ordering::Release);
+                        ready_agent.activate(&parent_exited);
+                        callbacks.activate(&handle, &parent_exited);
                         drop(child_pause.0.take());
-                        let Some(activity) = gate.try_enter() else {
-                            show_activation_error(&handle, "The application is busy");
-                            return;
-                        };
-                        if let Err(error) = published_agent.activate(&parent_exited, &activity) {
-                            show_activation_error(&handle, &format!("Agent activation failed: {error}"));
-                            return;
-                        }
-                        if let Err(error) = handle.state::<crate::linux_single_instance::InstanceOwner>()
-                            .activate_callbacks(&handle, &parent_exited) {
-                            show_activation_error(&handle, &format!("Shortcut routing failed: {error}"));
-                            return;
-                        }
                         if let Some(directory) = callback_path.parent() {
                             if let Err(error) = std::fs::remove_dir_all(directory) {
                                 log::warn!("Could not remove restart callback storage: {error}");
                             }
-                        }
-                        let tray = tauri::async_runtime::block_on(crate::app_tray::activate_after_handoff(&handle, &parent_exited));
-                        if let Err(error) = tray {
-                            show_activation_error(&handle, &format!("Tray activation failed: {error}"));
-                            return;
                         }
                         let window_handle = handle.clone();
                         let _ = handle.run_on_main_thread(move || {

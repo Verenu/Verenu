@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const PROTOCOL: u32 = 8;
+const PROTOCOL: u32 = 9;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
@@ -295,9 +295,21 @@ impl ChildServices {
         Ok(PreparedChildServices(self.0))
     }
 
-    pub(crate) fn activated(mut self) -> Result<ChildCommit, String> {
+    pub(crate) fn activated(mut self) -> Result<ChildCommitting, String> {
         self.0.send(&Message::Activated)?;
         self.0.expect(Message::Commit)?;
+        Ok(ChildCommitting(self.0))
+    }
+
+    pub(crate) fn fail(mut self, reason: String) -> Result<(), String> {
+        self.0.send(&Message::Failed { reason })
+    }
+}
+
+pub(crate) struct ChildCommitting(Channel);
+
+impl ChildCommitting {
+    pub(crate) fn ready(mut self) -> Result<ChildCommit, String> {
         self.0.send(&Message::CommitAccepted)?;
         Ok(ChildCommit(self.0))
     }
@@ -1045,6 +1057,8 @@ mod tests {
                 .wait_for_activation()
                 .unwrap()
                 .activated()
+                .unwrap()
+                .ready()
                 .unwrap();
         });
         parent

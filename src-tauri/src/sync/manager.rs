@@ -228,8 +228,12 @@ impl StagedSync {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited) -> tokio::sync::oneshot::Receiver<Result<()>> {
+    pub(crate) fn activate_while_paused(
+        mut self,
+        pause: &crate::linux_activity::Pause,
+        gate: &Arc<crate::linux_activity::ActivityGate>,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<()>>> {
+        anyhow::ensure!(pause.belongs_to(gate), "Sync restart gate does not match");
         let (finished, result) = tokio::sync::oneshot::channel();
         tauri::async_runtime::spawn(async move {
             let outcome = async {
@@ -244,7 +248,6 @@ impl StagedSync {
                 }
             }
             self.verify().await?;
-            self.manager.start_discovery_with_retry().await;
             drop(self.listener.take());
             drop(self.monitor.take());
             self.manager.inner.available.store(true, Ordering::Release);
@@ -253,7 +256,7 @@ impl StagedSync {
             }.await;
             let _ = finished.send(outcome);
         });
-        result
+        Ok(result)
     }
 
 }
@@ -560,10 +563,17 @@ mod handoff_tests {
             let change = prepared.prepare_database(&db.lock().unwrap()).unwrap();
             let staged = manager.start_while_paused(prepared, &pause, change).unwrap();
             let fallback_port = staged.port;
-            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-            drop(pause);
-            let activation = staged.activate(&parent_exited);
+            let activation = staged.activate_while_paused(&pause, &gate).unwrap();
             tokio::time::timeout(Duration::from_secs(15), activation).await.unwrap().unwrap().unwrap();
+            assert!(manager.inner.mdns.lock().await.is_none(), "discovery must not start while the parent can recover");
+            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+            manager.start_discovery_after_handoff(&parent_exited);
+            drop(pause);
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while manager.inner.mdns.lock().await.is_none() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("sync discovery did not start after the parent exited");
             assert!(manager.inner.available.load(Ordering::Relaxed));
             assert_eq!(manager.inner.listener_port.load(Ordering::Relaxed), fallback_port);
             tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, fallback_port))).await.unwrap().unwrap();
@@ -593,10 +603,9 @@ mod handoff_tests {
             let staged = manager.start_while_paused(prepared, &pause, change).unwrap();
             staged.verify().await.unwrap();
             let fallback_port = staged.port;
-            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
             drop(old_listener);
+            let activation = staged.activate_while_paused(&pause, &gate).unwrap();
             drop(pause);
-            let activation = staged.activate(&parent_exited);
             drop(activation);
             tokio::time::timeout(Duration::from_secs(15), async {
                 while !manager.inner.available.load(Ordering::Acquire) {
@@ -770,6 +779,13 @@ mod handoff_tests {
 }
 
 impl SyncManager {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn start_discovery_after_handoff(&self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            manager.start_discovery_with_retry().await;
+        });
+    }
     #[cfg(target_os = "linux")]
     #[allow(dead_code)]
     pub(crate) fn check_handoff_idle(&self, pause: &crate::linux_activity::Pause) -> Result<()> {
