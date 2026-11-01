@@ -366,6 +366,12 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             handle.state::<crate::local_stt::LocalTranscriptionManager>().inner().clone(),
                             handle.state::<crate::local_llm::LocalLlmManager>().inner().clone(),
                         );
+                        let diagnostic_worker = match crate::system::diagnostic_journal::start(
+                            handle.state::<crate::DbHandle>().inner().clone(), gate.clone(),
+                        ) {
+                            Some(worker) => worker,
+                            None => fail_paused_probation(services, "Replacement diagnostics was already initialized".into()),
+                        };
                         #[cfg(all(feature = "native-testing", debug_assertions))]
                         if std::env::var_os("VERENU_HANDOFF_TEST_STOP_MAINTENANCE").is_some() {
                             runtime_maintenance.abort();
@@ -416,6 +422,9 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener became unavailable: {error}"));
                         }
+                        if diagnostic_worker.is_finished() {
+                            fail_paused_probation(services, "Replacement diagnostics stopped during preparation".into());
+                        }
                         if storage_maintenance.inner().is_finished() || runtime_maintenance.inner().is_finished() {
                             fail_paused_probation(services, "Replacement maintenance stopped during preparation".into());
                         }
@@ -448,6 +457,9 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         }
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener became unavailable before activation: {error}"));
+                        }
+                        if diagnostic_worker.is_finished() {
+                            fail_paused_probation(services, "Replacement diagnostics stopped before activation".into());
                         }
                         if storage_maintenance.inner().is_finished() || runtime_maintenance.inner().is_finished() {
                             fail_paused_probation(services, "Replacement maintenance stopped before activation".into());
