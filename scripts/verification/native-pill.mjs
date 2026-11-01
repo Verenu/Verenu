@@ -20,7 +20,8 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
     assert.ok(box.cluster, 'Native pill cluster is missing');
     const { left, top, right, bottom } = box.capsule;
     assert.ok(left >= 0 && top >= 0 && right <= box.viewport[0] && bottom <= box.viewport[1], 'Native capsule is clipped');
-    assert.ok(box.viewport[0] >= box.cluster[0] && box.viewport[0] <= box.cluster[0] + 28, 'Native window keeps excessive horizontal margin');
+    assert.ok(box.viewport[0] >= box.cluster[0] && box.viewport[0] <= box.cluster[0] + 28,
+      `Native window keeps excessive horizontal margin: viewport=${box.viewport[0]}, cluster=${box.cluster[0]}`);
     assert.ok(Math.abs(box.viewport[1] - box.cluster[1] - 20) <= 1, 'Native window keeps excessive vertical margin');
   };
   const assertInput = async (state, enabled) => {
@@ -34,7 +35,8 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
       assert.ok(box, 'Interactive native pill is missing');
       assert.ok(policy.rect, 'Interactive capsule has no input rectangle');
       for (const [actual, expected] of policy.rect.map((value, i) => [value, [box.x, box.y, box.width, box.height][i]])) {
-        assert.ok(Math.abs(actual - expected) <= 1.5, 'Native input rectangle does not follow the capsule');
+        assert.ok(Math.abs(actual - expected) <= 1.5,
+          `Native input rectangle does not follow the capsule for ${state}: rect=${JSON.stringify(policy.rect)}, capsule=${JSON.stringify([box.x, box.y, box.width, box.height])}`);
       }
     }
   };
