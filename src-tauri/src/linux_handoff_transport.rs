@@ -1129,7 +1129,9 @@ mod tests {
         let mut command = Command::new(&binary);
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state);
+            .env("XDG_STATE_HOME", &state)
+            .env_remove("VERENU_AGENT_TOKEN")
+            .env_remove("VERENU_AGENT_PORT");
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1255,7 +1257,9 @@ mod tests {
         let mut command = Command::new(&binary);
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state);
+            .env("XDG_STATE_HOME", &state)
+            .env_remove("VERENU_AGENT_TOKEN")
+            .env_remove("VERENU_AGENT_PORT");
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1299,7 +1303,9 @@ mod tests {
         let mut command = Command::new(&binary);
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state);
+            .env("XDG_STATE_HOME", &state)
+            .env_remove("VERENU_AGENT_TOKEN")
+            .env_remove("VERENU_AGENT_PORT");
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1344,7 +1350,9 @@ mod tests {
         let mut command = Command::new(&binary);
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state);
+            .env("XDG_STATE_HOME", &state)
+            .env_remove("VERENU_AGENT_TOKEN")
+            .env_remove("VERENU_AGENT_PORT");
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1382,6 +1390,39 @@ mod tests {
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
         assert_eq!(registrations.lock().unwrap().len(), 1);
+
+        // A port already in use must fail preparation while the parent stays alive.
+        let reserved = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let occupied_port = reserved.local_addr().unwrap().port();
+        let mut command = Command::new(&binary);
+        command
+            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+            .env("XDG_STATE_HOME", &state)
+            .env("VERENU_AGENT_TOKEN", "a".repeat(64))
+            .env("VERENU_AGENT_PORT", occupied_port.to_string());
+        let replacement = Replacement::spawn(
+            command,
+            crate::data::db::HANDOFF_SCHEMA_VERSION,
+            KeyAvailability::new(),
+            Duration::from_secs(25),
+        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap());
+        let ready = replacement.prepare().unwrap();
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
+        let outcome = ready.acquire_ownership().unwrap().activate();
+        assert!(matches!(outcome, Err(reason) if reason.contains("agent service could not prepare")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !owner.owns_name().unwrap_or(false) {
+            assert!(Instant::now() < deadline, "parent did not regain ownership after agent failure");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        drop(pause);
+        assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
+        assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
+        assert_eq!(registrations.lock().unwrap().len(), 2);
+        assert!(!data.join("agent-session.json").exists());
+        drop(reserved);
         drop(parent_db);
         std::fs::remove_dir_all(root).unwrap();
     }
