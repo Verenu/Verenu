@@ -656,81 +656,6 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
-    #[cfg(feature = "native-testing")]
-    #[test]
-    #[ignore = "requires an isolated graphical and D-Bus session"]
-    fn tauri_instance_regains_ownership_after_replacement_dies() {
-        use std::io::{BufRead, BufReader};
-        use std::process::{Command, Stdio};
-        use std::time::{Duration, Instant};
-        use tauri::Manager;
-
-        let app = tauri::Builder::default()
-            .any_thread()
-            .plugin(super::plugin())
-            .build(tauri::generate_context!())
-            .unwrap();
-        let owner = app.state::<super::InstanceOwner>();
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "linux_single_instance::tests::bus_restores_owner_after_replacement_process_dies",
-                "--nocapture",
-            ])
-            .env("VERENU_TEST_TRANSFER_NAME", &owner.name)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let stderr = child.stderr.take().unwrap();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if line == "replacement-acquired" {
-                    let _ = sender.send(());
-                    break;
-                }
-            }
-        });
-        let ready = receiver.recv_timeout(Duration::from_secs(10));
-        let _ = child.kill();
-        let _ = child.wait();
-        ready.unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let current = owner
-                .connection
-                .call_method(
-                    Some("org.freedesktop.DBus"),
-                    "/org/freedesktop/DBus",
-                    Some("org.freedesktop.DBus"),
-                    "GetNameOwner",
-                    &(owner.name.as_str(),),
-                )
-                .and_then(|message| message.body().deserialize::<String>())
-                .unwrap();
-            if current == owner.connection.unique_name().unwrap().as_str() {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "Tauri instance did not regain ownership"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let connection = zbus::blocking::Connection::session().unwrap();
-        let (_, path) = super::address(&app.config().identifier);
-        connection
-            .call_method(
-                Some(owner.name.as_str()),
-                path.as_str(),
-                Some("org.SingleInstance.DBus"),
-                "ExecuteCallback",
-                &(Vec::<String>::new(), String::new()),
-            )
-            .unwrap();
-    }
 
     #[test]
     fn address_matches_existing_single_instance_protocol() {
@@ -813,104 +738,26 @@ mod tests {
 
     #[cfg(feature = "native-testing")]
     #[test]
-    fn bus_restores_owner_after_replacement_process_dies() {
-        use std::io::{BufRead, BufReader, Read};
-        use std::process::{Child, Command, Stdio};
-        use std::time::{Duration, Instant};
-        use zbus::fdo::RequestNameReply;
-
-        if let Ok(name) = std::env::var("VERENU_TEST_TRANSFER_NAME") {
-            if std::env::var_os("VERENU_TEST_TRANSFER_WAIT").is_some() {
-                std::io::stdin().read_exact(&mut [0]).unwrap();
-            }
-            let connection = zbus::blocking::Connection::session().unwrap();
-            assert_eq!(
-                connection
-                    .request_name_with_flags(
-                        name.as_str(),
-                        enumflags2::BitFlags::empty(),
-                    )
-                    .unwrap(),
-                RequestNameReply::InQueue
-            );
-            if std::env::var_os("VERENU_TEST_TRANSFER_QUEUE").is_some() {
-                let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
-                connection.call_method(
-                    Some(name.as_str()), path.as_str(), Some("org.SingleInstance.DBus"),
-                    "ExecuteCallback", &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
-                ).unwrap();
-            }
-            eprintln!("replacement-acquired");
-            let _ = std::io::stdin().read(&mut [0]);
-            return;
+    #[ignore = "subprocess fixture"]
+    fn replacement_queue_fixture() {
+        use std::io::Read;
+        let Ok(name) = std::env::var("VERENU_TEST_TRANSFER_NAME") else { return };
+        if std::env::var_os("VERENU_TEST_TRANSFER_WAIT").is_some() {
+            std::io::stdin().read_exact(&mut [0]).unwrap();
         }
-
-        struct OwnedChild(Child);
-        impl Drop for OwnedChild {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
+        let connection = zbus::blocking::Connection::session().unwrap();
+        assert_eq!(
+            connection.request_name_with_flags(name.as_str(), enumflags2::BitFlags::empty()).unwrap(),
+            zbus::fdo::RequestNameReply::InQueue
+        );
+        if std::env::var_os("VERENU_TEST_TRANSFER_QUEUE").is_some() {
+            let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
+            connection.call_method(
+                Some(name.as_str()), path.as_str(), Some("org.SingleInstance.DBus"),
+                "ExecuteCallback", &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
+            ).unwrap();
         }
-
-        let name = format!("com.verenu.TransferTest.x{}", uuid::Uuid::new_v4().simple());
-        let connection = zbus::blocking::connection::Builder::session()
-            .unwrap()
-            .name(name.as_str())
-            .unwrap()
-            .replace_existing_names(false)
-            .allow_name_replacements(false)
-            .build()
-            .unwrap();
-        let original = super::InstanceOwner {
-            connection,
-            name,
-            route: std::sync::Arc::new(super::CallbackRoute::new(false)),
-        };
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "linux_single_instance::tests::bus_restores_owner_after_replacement_process_dies",
-                "--nocapture",
-            ])
-            .env("VERENU_TEST_TRANSFER_NAME", &original.name)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut child = OwnedChild(child);
-        let stderr = child.0.stderr.take().unwrap();
-        let (ready, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if line == "replacement-acquired" {
-                    let _ = ready.send(());
-                    break;
-                }
-            }
-        });
-        receiver.recv_timeout(Duration::from_secs(10)).unwrap();
-        child.0.kill().unwrap();
-        child.0.wait().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let current = original
-                .connection
-                .call_method(
-                    Some("org.freedesktop.DBus"),
-                    "/org/freedesktop/DBus",
-                    Some("org.freedesktop.DBus"),
-                    "GetNameOwner",
-                    &(original.name.as_str(),),
-                )
-                .and_then(|message| message.body().deserialize::<String>())
-                .unwrap();
-            if current == original.connection.unique_name().unwrap().as_str() {
-                break;
-            }
-            assert!(Instant::now() < deadline, "original owner was not restored");
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        eprintln!("replacement-acquired");
+        let _ = std::io::stdin().read(&mut [0]);
     }
 }

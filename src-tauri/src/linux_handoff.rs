@@ -536,7 +536,8 @@ mod tests {
             let mut replacement = Replacement(Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "linux_single_instance::tests::bus_restores_owner_after_replacement_process_dies",
+                    "linux_single_instance::tests::replacement_queue_fixture",
+                    "--ignored",
                     "--nocapture",
                 ])
                 .env("VERENU_TEST_TRANSFER_NAME", format!("{}.SingleInstance", app.config().identifier))
