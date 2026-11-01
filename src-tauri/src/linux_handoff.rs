@@ -239,6 +239,22 @@ mod tests {
     use super::*;
     use tauri::{Listener, Manager};
 
+    fn replacement_command(
+        binary: &std::ffi::OsStr,
+        dir: &std::path::Path,
+    ) -> std::process::Command {
+        let mut command = std::process::Command::new(binary);
+        command
+            .env("VERENU_APP_DATA_DIR_OVERRIDE", dir)
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1")
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+            .env_remove("VERENU_AGENT_TOKEN")
+            .env_remove("VERENU_AGENT_PORT");
+        command
+    }
+
     struct TestWatcher {
         blocked: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
         entered: Arc<std::sync::atomic::AtomicBool>,
@@ -618,14 +634,7 @@ mod tests {
             if let Some(binary) = std::env::var_os("VERENU_HANDOFF_TEST_BINARY") {
                 let disk_db = crate::data::db::open(dir.join("verenu.db")).unwrap();
                 let settings_before = std::fs::read(dir.join("settings.json")).unwrap();
-                let mut real = Command::new(binary);
-                real.env("VERENU_APP_DATA_DIR_OVERRIDE", &dir)
-                    .env("XDG_CONFIG_HOME", dir.join("config"))
-                    .env("XDG_STATE_HOME", dir.join("state"))
-                    .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1")
-                    .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-                    .env_remove("VERENU_AGENT_TOKEN")
-                    .env_remove("VERENU_AGENT_PORT");
+                let real = replacement_command(&binary, &dir);
                 let outcome = crate::linux_handoff_transport::stage_replacement(
                     app.handle(), real, crate::data::db::HANDOFF_SCHEMA_VERSION,
                     Default::default(), Duration::from_secs(25),
@@ -646,15 +655,8 @@ mod tests {
                 crate::sync::secrets::store_identity_key(&dir, key.secret_pkcs8_der()).unwrap();
                 std::fs::write(dir.join("sync-identity.der"), identity.cert_der().as_ref()).unwrap();
                 crate::sync::store::ensure_self_identity(&disk_db.lock().unwrap(), &identity.uuid, &identity.name).unwrap();
-                let mut broken = Command::new(std::env::var_os("VERENU_HANDOFF_TEST_BINARY").unwrap());
-                broken.env("VERENU_APP_DATA_DIR_OVERRIDE", &dir)
-                    .env("XDG_CONFIG_HOME", dir.join("config"))
-                    .env("XDG_STATE_HOME", dir.join("state"))
-                    .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1")
-                    .env("VERENU_HANDOFF_TEST_STOP_MAINTENANCE", "1")
-                    .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-                    .env_remove("VERENU_AGENT_TOKEN")
-                    .env_remove("VERENU_AGENT_PORT");
+                let mut broken = replacement_command(&binary, &dir);
+                broken.env("VERENU_HANDOFF_TEST_STOP_MAINTENANCE", "1");
                 let failed = crate::linux_handoff_transport::stage_replacement(
                     app.handle(), broken, crate::data::db::HANDOFF_SCHEMA_VERSION,
                     Default::default(), Duration::from_secs(25),
@@ -663,15 +665,8 @@ mod tests {
                 drop(tokio::time::timeout(Duration::from_secs(20), gate.enter()).await
                     .expect("maintenance failure did not restore the parent"));
                 assert_eq!(std::fs::read(dir.join("agent-session.json")).unwrap(), agent_descriptor);
-                let mut real = Command::new(std::env::var_os("VERENU_HANDOFF_TEST_BINARY").unwrap());
-                real.env("VERENU_APP_DATA_DIR_OVERRIDE", &dir)
-                    .env("XDG_CONFIG_HOME", dir.join("config"))
-                    .env("XDG_STATE_HOME", dir.join("state"))
-                    .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1")
-                    .env("VERENU_HANDOFF_TEST_FAIL_ACTIVATION", "1")
-                    .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-                    .env_remove("VERENU_AGENT_TOKEN")
-                    .env_remove("VERENU_AGENT_PORT");
+                let mut real = replacement_command(&binary, &dir);
+                real.env("VERENU_HANDOFF_TEST_FAIL_ACTIVATION", "1");
                 let callbacks = crate::linux_single_instance::test_callback_count();
                 let staged = crate::linux_handoff_transport::stage_replacement(
                     app.handle(), real, crate::data::db::HANDOFF_SCHEMA_VERSION,
