@@ -329,6 +329,7 @@ mod tests {
             )
             .unwrap();
         settings.set(crate::data::store::SETUP_COMPLETE, serde_json::json!(true)).unwrap();
+        settings.set(crate::data::store::ANALYTICS_ENABLED, serde_json::json!(false)).unwrap();
         settings.save().unwrap();
         app.manage(settings);
         crate::app_tray::setup_tray(app.handle()).unwrap();

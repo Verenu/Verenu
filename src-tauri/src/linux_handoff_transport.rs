@@ -1258,7 +1258,7 @@ mod tests {
         let config = root.join("config");
         std::fs::create_dir_all(&data).unwrap();
         std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true}").unwrap();
+        std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true,\"analytics_enabled\":false}").unwrap();
         let parent_db = crate::data::db::open(data.join("verenu.db")).unwrap();
         let mut sync_identity = crate::sync::identity::generate_for_tests();
         sync_identity.name = "Test device".into();
@@ -1496,7 +1496,7 @@ mod tests {
         .with_parent_unique_name(owner.unique_name().unwrap())
         .with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
-        let updated_settings = b"{\"setup_complete\":true,\"test_changed\":true}";
+        let updated_settings = b"{\"setup_complete\":true,\"analytics_enabled\":false,\"test_changed\":true}";
         std::fs::write(data.join("settings.json"), updated_settings).unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner
@@ -1664,7 +1664,7 @@ mod tests {
         assert!(!data.join("agent-session.json").exists());
         assert!(crate::sync::secrets::load_identity_key(&data).unwrap().as_slice() == sync_key.secret_pkcs8_der());
 
-        std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true,\"cleanup_cache_enabled\":false}").unwrap();
+        std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true,\"analytics_enabled\":false,\"cleanup_cache_enabled\":false}").unwrap();
         let mut command = Command::new(&binary);
         command.env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
             .env("XDG_STATE_HOME", &state)
@@ -1690,6 +1690,40 @@ mod tests {
         drop(pause);
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
+        std::fs::write(data.join("settings.json"), &original_settings).unwrap();
+
+        std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true,\"analytics_enabled\":true}").unwrap();
+        let analytics_id = "00000000-0000-4000-8000-000000000001";
+        std::fs::write(data.join("analytics_install_id"), analytics_id).unwrap();
+        std::fs::write(data.join("analytics_first_seen_version"), "0.18.0").unwrap();
+        std::fs::write(data.join("analytics_usage_milestones"), "5\ndictations_5").unwrap();
+        let mut command = Command::new(&binary);
+        command.env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+            .env("XDG_STATE_HOME", &state)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+            .env_remove("VERENU_AGENT_TOKEN")
+            .env_remove("VERENU_AGENT_PORT")
+            .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
+        let replacement = Replacement::spawn(
+            command, crate::data::db::HANDOFF_SCHEMA_VERSION, KeyAvailability::new(), Duration::from_secs(25),
+        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
+        let ready = replacement.prepare().unwrap();
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
+        let staged = ready.acquire_ownership().unwrap().stage_services().expect("analytics-enabled replacement did not prepare");
+        drop(staged);
+        std::fs::remove_file(data.join("agent-session.json")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !owner.owns_name().unwrap_or(false) {
+            assert!(Instant::now() < deadline, "parent did not regain ownership after analytics preparation");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        drop(pause);
+        assert_eq!(std::fs::read_to_string(data.join("analytics_install_id")).unwrap(), analytics_id);
+        assert_eq!(std::fs::read_to_string(data.join("analytics_first_seen_version")).unwrap(), "0.18.0");
+        assert_eq!(std::fs::read_to_string(data.join("analytics_usage_milestones")).unwrap(), "5\ndictations_5");
         std::fs::write(data.join("settings.json"), &original_settings).unwrap();
 
         std::fs::remove_file(data.join("sync-identity.key")).unwrap();
@@ -1723,7 +1757,7 @@ mod tests {
         assert!(!data.join("sync-identity.key").exists());
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
-        assert_eq!(registrations.lock().unwrap().len(), 5);
+        assert_eq!(registrations.lock().unwrap().len(), 6);
         drop(callback_queue);
         std::fs::remove_dir_all(callback_path.parent().unwrap()).unwrap();
         drop(parent_db);
