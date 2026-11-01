@@ -182,6 +182,7 @@ impl PreparedSync {
 pub(crate) struct StagedSync {
     manager: SyncManager,
     listener: Option<tauri::async_runtime::JoinHandle<()>>,
+    monitor: Option<tauri::async_runtime::JoinHandle<()>>,
     identity: identity::DeviceIdentity,
     server_config: Arc<rustls::ServerConfig>,
     port: u16,
@@ -200,6 +201,7 @@ impl Drop for SyncListenerCandidate {
 #[cfg(target_os = "linux")]
 impl StagedSync {
     pub(crate) async fn verify(&self) -> Result<()> {
+        anyhow::ensure!(self.monitor.as_ref().is_some_and(|monitor| !monitor.inner().is_finished()), "Sync monitor stopped during restart");
         let listener = self.listener.as_ref().ok_or_else(|| anyhow!("Sync listener is unavailable"))?;
         Self::verify_listener(listener, &self.identity, self.port).await
     }
@@ -235,8 +237,9 @@ impl StagedSync {
                 }
             }
             self.verify().await?;
-            self.manager.start_background_services().await;
+            self.manager.start_discovery_with_retry().await;
             drop(self.listener.take());
+            drop(self.monitor.take());
             self.manager.inner.available.store(true, Ordering::Release);
             let _ = self.manager.inner.app.emit("verenu:sync-devices-changed", ());
             Ok(())
@@ -251,6 +254,7 @@ impl StagedSync {
 #[cfg(target_os = "linux")]
 impl Drop for StagedSync {
     fn drop(&mut self) {
+        if let Some(monitor) = self.monitor.take() { monitor.abort(); }
         if let Some(listener) = self.listener.take() {
             listener.abort();
             self.manager.inner.available.store(false, Ordering::Relaxed);
@@ -505,6 +509,18 @@ mod handoff_tests {
             let wrong = make_prepared();
             let change = wrong.prepare_database(&db.lock().unwrap()).unwrap();
             assert!(manager.start_while_paused(wrong, &wrong_pause, change).is_err());
+            let prepared = make_prepared();
+            let change = prepared.prepare_database(&db.lock().unwrap()).unwrap();
+            let staged = manager.start_while_paused(prepared, &pause, change).unwrap();
+            staged.verify().await.unwrap();
+            staged.monitor.as_ref().unwrap().abort();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !staged.monitor.as_ref().unwrap().inner().is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            }).await.expect("sync monitor did not stop");
+            assert!(staged.verify().await.is_err());
+            drop(staged);
             let prepared = make_prepared();
             let change = prepared.prepare_database(&db.lock().unwrap()).unwrap();
             let staged = manager.start_while_paused(prepared, &pause, change).unwrap();
@@ -937,7 +953,8 @@ impl SyncManager {
         drop(change_slot);
         drop(identity_slot);
         let worker = self.spawn_accept_loop(listener, server_config.clone());
-        Ok(StagedSync { manager: self.clone(), listener: Some(worker), identity, server_config, port })
+        let monitor = self.spawn_monitor();
+        Ok(StagedSync { manager: self.clone(), listener: Some(worker), monitor: Some(monitor), identity, server_config, port })
     }
 
     pub(crate) fn new_unstarted(app: AppHandle, db: DbHandle) -> SyncManager {
@@ -1171,14 +1188,21 @@ impl SyncManager {
     }
 
     async fn start_background_services(&self) {
+        drop(self.spawn_monitor());
+        self.start_discovery_with_retry().await;
+    }
+
+    fn spawn_monitor(&self) -> tauri::async_runtime::JoinHandle<()> {
         let monitor = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(CHANGE_CHECK_INTERVAL).await;
                 monitor.monitor_tick().await;
             }
-        });
+        })
+    }
 
+    async fn start_discovery_with_retry(&self) {
         if let Err(err) = self.start_discovery().await {
             log::warn!("sync: discovery failed; saved connections remain available: {err:#}");
             let discovery = self.clone();
