@@ -197,10 +197,17 @@ struct ActiveFade {
 
 impl ActiveFade {
     fn new(original: SinkLevel, fraction: f64, duration: Duration) -> Self {
+        // PulseAudio's normal (100%) volume is 65536. Never raise a quiet sink.
+        let maximum = original.channels.iter().copied().max().unwrap_or(0);
+        let scale = if maximum == 0 {
+            1.0
+        } else {
+            (65536.0 * fraction / f64::from(maximum)).min(1.0)
+        };
         let target = original
             .channels
             .iter()
-            .map(|&v| (v as f64 * fraction).round() as u32)
+            .map(|&v| (v as f64 * scale).round() as u32)
             .collect();
         Self {
             last_written: original.channels.clone(),
@@ -610,6 +617,21 @@ mod tests {
     }
 
     #[test]
+    fn target_is_an_absolute_ceiling_and_preserves_balance() {
+        let sink = |channels| SinkLevel {
+            name: "speaker".into(),
+            channels,
+            muted: false,
+        };
+        let fade = ActiveFade::new(sink(vec![26214, 13107]), 0.10, Duration::ZERO);
+        assert_eq!(fade.target, vec![6554, 3277]);
+        let quiet = ActiveFade::new(sink(vec![3277, 1638]), 0.10, Duration::ZERO);
+        assert_eq!(quiet.target, vec![3277, 1638]);
+        let silent = ActiveFade::new(sink(vec![0, 0]), 0.10, Duration::ZERO);
+        assert_eq!(silent.target, vec![0, 0]);
+    }
+
+    #[test]
     #[ignore = "requires a disposable PipeWire output"]
     fn private_sink_round_trip_preserves_mute_and_channel_balance() {
         struct Restore(SinkLevel);
@@ -639,7 +661,7 @@ mod tests {
         let original = read_sink(&name).unwrap();
         let path =
             std::env::temp_dir().join(format!("verenu-fade-test-{}.json", std::process::id()));
-        let mut fade = ActiveFade::new(original.clone(), 0.25, Duration::ZERO);
+        let mut fade = ActiveFade::new(original.clone(), 0.0, Duration::ZERO);
         let mut entries = Vec::new();
         fade_step(&mut fade, &path, &mut entries, true).unwrap();
         assert_ne!(read_sink(&name).unwrap().channels, original.channels);
@@ -664,7 +686,7 @@ mod tests {
             std::env::temp_dir().join(format!("verenu-interrupt-test-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let journal = directory.join("journal.json");
-        let mut fade = ActiveFade::new(original.clone(), 0.25, Duration::ZERO);
+        let mut fade = ActiveFade::new(original.clone(), 0.0, Duration::ZERO);
         let mut entries = Vec::new();
         fade_step(&mut fade, &journal, &mut entries, true).unwrap();
         std::fs::write(directory.join("interrupt-restore"), b"").unwrap();
@@ -694,7 +716,7 @@ mod tests {
             std::env::temp_dir().join(format!("verenu-return-test-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let journal = directory.join("journal.json");
-        let mut fade = ActiveFade::new(original.clone(), 0.25, Duration::ZERO);
+        let mut fade = ActiveFade::new(original.clone(), 0.0, Duration::ZERO);
         let mut entries = Vec::new();
         fade_step(&mut fade, &journal, &mut entries, true).unwrap();
         recover_inactive(&journal, &mut entries, Some("another-output")).unwrap();

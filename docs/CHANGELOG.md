@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- The Linux dictation volume setting now targets the selected system volume instead of a percentage of the current volume. It never increases audio that is already quieter than the target.
 - Fixed restored Linux clipboard items becoming unavailable after Omarchy's clipboard watcher stops reading them.
 - Settings rows now sit in rounded cards, one card per group under each heading. In General, each shortcut's help text and Linux shortcut status moved inside its row, so Shortcuts is one card instead of rows split by loose paragraphs.
 - Fixed nightly snapshots to update the Rust lockfile and compare changes against published nightlies, so failed attempts do not suppress later releases.
