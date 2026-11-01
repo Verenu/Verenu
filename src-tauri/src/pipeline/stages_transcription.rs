@@ -12,6 +12,7 @@ impl Drop for ExclusiveMicReleaseGuard {
 
 pub(crate) struct StoppedCapture {
     pub(crate) audio: CapturedAudio,
+    pub(crate) nvidia_reuse: bool,
     pub(crate) rms: f32,
     pub(crate) raw_rms: f32,
     pub(crate) recovery_write_failed: bool,
@@ -37,6 +38,7 @@ pub(super) async fn stop_and_capture_audio(
     session: audio::RecordingSession,
     exclusive_mic_session_id: Option<u64>,
 ) -> Option<StoppedCapture> {
+    let nvidia_reuse = session.nvidia_reuse;
     let stop_result = tokio::task::spawn_blocking(move || {
         let _mic_release = ExclusiveMicReleaseGuard(exclusive_mic_session_id);
         session.stop()
@@ -101,6 +103,7 @@ pub(super) async fn stop_and_capture_audio(
         }
     }
     Some(StoppedCapture {
+        nvidia_reuse,
         audio: CapturedAudio::from_samples(samples_16k, sample_rate, duration_ms),
         rms,
         raw_rms,
