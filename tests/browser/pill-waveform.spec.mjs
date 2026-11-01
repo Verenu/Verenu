@@ -48,8 +48,10 @@ test(`${mode} aligns resting bars and renders smooth audio-driven heights`, asyn
   await expect.poll(() => alignedAt(scale)).toBe(true);
   const changedScale = scale === 1.75 ? 1.25 : 1.75;
   await page.evaluate(factor => window.emitPillTestEvent('pill-monitor-scale', factor), changedScale);
+  await expect(page.locator('.bar-grid')).toHaveCount(1);
   await expect.poll(() => alignedAt(changedScale)).toBe(true);
   await page.evaluate(factor => window.emitPillTestEvent('pill-monitor-scale', factor), scale);
+  await expect(page.locator('.bar-grid')).toHaveCount(0);
   await expect.poll(() => alignedAt(scale)).toBe(true);
   const resting = await bars.evaluateAll(nodes => nodes.map(node => {
     const { width, height } = node.getBoundingClientRect();
