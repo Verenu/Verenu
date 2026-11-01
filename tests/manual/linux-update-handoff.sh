@@ -131,4 +131,3 @@ with sqlite3.connect(sys.argv[1]) as db:
 with open(sys.argv[2]) as settings:
     assert json.load(settings)['setup_complete'] is True
 PY
-
