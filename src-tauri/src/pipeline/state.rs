@@ -407,6 +407,29 @@ pub fn take_recording_plain_with_prepend(
     Option<CapturedAudio>,
     ResolvedContextIdentity,
 )> {
+    take_recording_with_prepend(state, || {})
+}
+
+pub fn take_recording_for_cancel(
+    state: &SharedState,
+) -> Option<(
+    audio::RecordingSession,
+    Option<u64>,
+    Option<CapturedAudio>,
+    ResolvedContextIdentity,
+)> {
+    take_recording_with_prepend(state, crate::system::media_control::end_dictation_media_pause)
+}
+
+fn take_recording_with_prepend(
+    state: &SharedState,
+    release_media: impl FnOnce(),
+) -> Option<(
+    audio::RecordingSession,
+    Option<u64>,
+    Option<CapturedAudio>,
+    ResolvedContextIdentity,
+)> {
     let mut st = lock_state(state).ok()?;
     match std::mem::replace(&mut st.lifecycle, DictationLifecycle::Idle) {
         DictationLifecycle::Recording {
@@ -416,6 +439,7 @@ pub fn take_recording_plain_with_prepend(
             prepend_audio,
             ..
         } => {
+            release_media();
             if let Some(claim) = mute_claim {
                 claim.release();
             }
@@ -1076,6 +1100,48 @@ mod tests {
         let _replacement = crate::media::sound::claim_local_mute();
         crate::pipeline::session::release_starting_reservation_for_claim(&state, Some(old));
         assert!(matches!(lock_state(&state).unwrap().lifecycle, DictationLifecycle::Starting { .. }));
+    }
+
+    #[test]
+    fn cancellation_releases_media_before_exposing_idle() {
+        let state = fresh_state();
+        lock_state(&state).unwrap().lifecycle = DictationLifecycle::Recording {
+            session: audio::RecordingSession::lifecycle_fixture(),
+            mute_claim: None,
+            exclusive_mic_session_id: None,
+            handless: false,
+            handless_from_hold: false,
+            prepend_audio: None,
+        };
+        let released = std::cell::Cell::new(false);
+        assert!(take_recording_with_prepend(&state, || {
+            assert!(state.try_lock().is_err());
+            released.set(true);
+        }).is_some());
+        assert!(released.get());
+        assert!(lock_state(&state).unwrap().lifecycle.is_idle());
+    }
+
+    #[test]
+    fn cancellation_without_recording_does_not_release_media() {
+        let state = fresh_state();
+        assert!(take_recording_with_prepend(&state, || panic!("idle owns no recording pause"))
+            .is_none());
+        reserve_starting(&state).unwrap();
+        assert!(take_recording_with_prepend(&state, || panic!("starting owns no recording pause"))
+            .is_none());
+        reserve_starting(&state).unwrap();
+        assert!(matches!(
+            lock_state(&state).unwrap().lifecycle,
+            DictationLifecycle::Starting { .. }
+        ));
+        lock_state(&state).unwrap().lifecycle = DictationLifecycle::Processing(fake_active(1));
+        assert!(take_recording_with_prepend(&state, || panic!("processing retains its own pause"))
+            .is_none());
+        assert!(matches!(
+            lock_state(&state).unwrap().lifecycle,
+            DictationLifecycle::Processing(_)
+        ));
     }
 
     #[test]
