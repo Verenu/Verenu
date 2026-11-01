@@ -42,6 +42,9 @@ mod linux_activity;
 #[cfg(target_os = "linux")]
 mod linux_handoff;
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod linux_handoff_callbacks;
+#[cfg(target_os = "linux")]
 mod linux_handoff_child;
 #[cfg(target_os = "linux")]
 mod linux_handoff_transport;
