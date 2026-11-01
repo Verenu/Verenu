@@ -13,6 +13,7 @@ struct CallbackRoute {
 struct CallbackQueueSlot {
     queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
     delivered: Option<i64>,
+    failed: bool,
 }
 
 #[derive(Default)]
@@ -77,10 +78,13 @@ impl CallbackRoute {
     }
 
     fn enqueue_if_active(&self, args: &[String]) -> Option<zbus::fdo::Result<()>> {
-        let queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
-        queue.as_ref().map(|slot| {
+        let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
+        queue.as_mut().map(|slot| {
             slot.queue.push(crate::linux_handoff_callbacks::Callback::from_args(args))
-                .map_err(|error| zbus::fdo::Error::Failed(format!("Could not queue restart callback: {error}")))
+                .map_err(|error| {
+                    slot.failed = true;
+                    zbus::fdo::Error::Failed(format!("Could not queue restart callback: {error}"))
+                })
         })
     }
 
@@ -122,8 +126,17 @@ struct SingleInstance {
     route: Arc<CallbackRoute>,
 }
 
-#[interface(name = "org.SingleInstance.DBus")]
+#[interface(name = "org.SingleInstance.DBus", spawn = false)]
 impl SingleInstance {
+    fn handoff_barrier(&self) -> zbus::fdo::Result<()> {
+        let queue = self.route.queue.lock().unwrap_or_else(|error| error.into_inner());
+        match queue.as_ref() {
+            Some(slot) if !slot.failed => Ok(()),
+            Some(_) => Err(zbus::fdo::Error::Failed("A restart callback could not be queued".into())),
+            None => Err(zbus::fdo::Error::Failed("Restart callback queue is unavailable".into())),
+        }
+    }
+
     async fn execute_callback(&self, argv: Vec<String>, cwd: String) -> zbus::fdo::Result<()> {
         if self.route.parent.is_some() {
             if let Some(result) = self.route.enqueue_if_active(&argv) {
@@ -239,8 +252,21 @@ impl InstanceOwner {
         if slot.is_some() {
             return Err("A restart callback queue is already active");
         }
-        *slot = Some(CallbackQueueSlot { queue, delivered: None });
+        *slot = Some(CallbackQueueSlot { queue, delivered: None, failed: false });
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn callback_barrier(&self) -> Result<(), String> {
+        let unique = self.unique_name()?;
+        let path = format!("/{}", self.name.replace('.', "/").replace('-', "_"));
+        Connection::session()
+            .and_then(|connection| connection.call_method(
+                Some(unique.as_str()), path.as_str(), Some("org.SingleInstance.DBus"),
+                "HandoffBarrier", &(),
+            ))
+            .map(|_| ())
+            .map_err(|error| format!("Could not finish pending restart callbacks: {error}"))
     }
 
     #[allow(dead_code)]
@@ -331,7 +357,7 @@ pub(crate) fn replacement_plugin(
             let (name, path) = address(&app.config().identifier);
             let route = Arc::new(CallbackRoute::new(Some(parent.clone())));
             *route.queue.lock().unwrap_or_else(|error| error.into_inner()) =
-                Some(CallbackQueueSlot { queue: queue.clone(), delivered: None });
+                Some(CallbackQueueSlot { queue: queue.clone(), delivered: None, failed: false });
             let connection = zbus::blocking::connection::Builder::session()?
                 .name(name.as_str())?
                 .replace_existing_names(true)
@@ -593,9 +619,21 @@ mod tests {
         }
         assert!(received.recv_timeout(Duration::from_millis(200)).is_err());
         assert_eq!(super::test_callback_count(), count);
+        let (barrier_sent, barrier_received) = std::sync::mpsc::channel();
+        let barrier = std::thread::spawn(move || {
+            let connection = zbus::blocking::Connection::session().unwrap();
+            let result = connection.call_method(
+                Some("com.verenu.app.SingleInstance"), "/com/verenu/app/SingleInstance",
+                Some("org.SingleInstance.DBus"), "HandoffBarrier", &(),
+            );
+            barrier_sent.send(result.is_err()).unwrap();
+        });
+        assert!(barrier_received.recv_timeout(Duration::from_millis(200)).is_err());
         drop(pause);
         assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert!(barrier_received.recv_timeout(Duration::from_secs(5)).unwrap());
         sender.join().unwrap();
+        barrier.join().unwrap();
         assert_eq!(super::test_callback_count(), count + 1);
         drop(app);
     }
@@ -631,6 +669,18 @@ mod tests {
         ).unwrap();
         assert_eq!(super::test_callback_count(), count);
         assert_eq!(queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
+        owner.callback_barrier().unwrap();
+        let filler = rusqlite::Connection::open(&path).unwrap();
+        filler.execute_batch(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 4095) INSERT INTO callbacks(kind) SELECT 3 FROM n;"
+        ).unwrap();
+        assert!(connection.call_method(
+            Some(owner.name.as_str()), object_path.as_str(), Some("org.SingleInstance.DBus"),
+            "ExecuteCallback", &(vec!["--verenu-hotkey-release".to_string()], String::new()),
+        ).is_err());
+        assert!(owner.callback_barrier().is_err());
+        filler.execute("DELETE FROM callbacks WHERE kind = 3", []).unwrap();
+        drop(filler);
         owner.drain_callback_queue(app.handle()).unwrap();
         assert_eq!(super::test_callback_count(), count + 1);
         assert_eq!(queue.first().unwrap(), None);
