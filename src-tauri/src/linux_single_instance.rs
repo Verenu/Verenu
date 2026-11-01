@@ -64,6 +64,122 @@ pub(crate) fn callback_lock(timeout: std::time::Duration) -> Result<std::fs::Fil
     }
 }
 
+// Tickets order launchers before they wait for the handoff lock. The callback
+// queue still owns callbacks already accepted by the running instance.
+struct LauncherTicket {
+    path: std::path::PathBuf,
+    _ticket: std::fs::File,
+    coordinator: std::fs::File,
+    lock: std::fs::File,
+}
+
+fn private_queue_file(path: &std::path::Path, create_new: bool) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let file = std::fs::OpenOptions::new().read(true).write(true)
+        .create(!create_new).create_new(create_new).truncate(false).mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path).map_err(|error| format!("Could not open shortcut queue: {error}"))?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0 || metadata.nlink() != 1
+    {
+        return Err("Shortcut queue file is not private".into());
+    }
+    Ok(file)
+}
+
+fn flock(file: &std::fs::File, flags: libc::c_int) -> Result<bool, String> {
+    use std::os::fd::AsRawFd;
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), flags) } == 0 { return Ok(true); }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted { continue; }
+        if error.kind() == std::io::ErrorKind::WouldBlock { return Ok(false); }
+        return Err(format!("Could not lock shortcut queue: {error}"));
+    }
+}
+
+fn unlock(file: &std::fs::File) {
+    let _ = flock(file, libc::LOCK_UN);
+}
+
+impl LauncherTicket {
+    fn acquire(timeout: Option<std::time::Duration>) -> Result<Self, String> {
+        use std::os::fd::AsRawFd;
+        let lock = open_callback_lock()?;
+        let lock_path = std::fs::read_link(format!("/proc/self/fd/{}", lock.as_raw_fd()))
+            .map_err(|error| format!("Could not locate shortcut queue: {error}"))?;
+        let directory = lock_path.parent().ok_or("Shortcut queue has no directory")?;
+        let coordinator = private_queue_file(&directory.join("queue"), false)?;
+        flock(&coordinator, libc::LOCK_EX)?;
+        let result = (|| -> Result<(std::path::PathBuf, std::fs::File), String> {
+            let mut next = 0u64;
+            for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                let name = entry.file_name();
+                let Some(number) = name.to_str().and_then(|s| s.strip_prefix("ticket-"))
+                    .and_then(|s| s.parse::<u64>().ok()) else { continue };
+                next = next.max(number.checked_add(1).ok_or("Shortcut queue is full")?);
+            }
+            let path = directory.join(format!("ticket-{next:020}"));
+            let ticket = private_queue_file(&path, true)?;
+            if !flock(&ticket, libc::LOCK_EX | libc::LOCK_NB)? {
+                return Err("Could not reserve shortcut queue ticket".into());
+            }
+            Ok((path, ticket))
+        })();
+        unlock(&coordinator);
+        let (path, ticket) = result?;
+        let result = Self { path, _ticket: ticket, coordinator, lock };
+        #[cfg(all(feature = "native-testing", debug_assertions))]
+        if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_LAUNCHER_WAIT") {
+            let _ = std::fs::write(path, b"waiting");
+        }
+        let deadline = timeout.map(|duration| std::time::Instant::now() + duration);
+        loop {
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                return Err("Timed out waiting for shortcut routing".into());
+            }
+            if result.is_first()? && flock(&result.lock, libc::LOCK_EX | libc::LOCK_NB)? {
+                return Ok(result);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn is_first(&self) -> Result<bool, String> {
+        flock(&self.coordinator, libc::LOCK_EX)?;
+        let result = (|| -> Result<bool, String> {
+            let directory = self.path.parent().ok_or("Shortcut queue has no directory")?;
+            let mut first = true;
+            for entry in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
+                let path = entry.map_err(|error| error.to_string())?.path();
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
+                if !name.strip_prefix("ticket-").is_some_and(|number| number.len() == 20 && number.parse::<u64>().is_ok())
+                    || path == self.path { continue; }
+                let ticket = private_queue_file(&path, false)?;
+                if flock(&ticket, libc::LOCK_EX | libc::LOCK_NB)? {
+                    std::fs::remove_file(path).map_err(|error| error.to_string())?;
+                } else if path < self.path {
+                    first = false;
+                }
+            }
+            Ok(first)
+        })();
+        unlock(&self.coordinator);
+        result
+    }
+}
+
+impl Drop for LauncherTicket {
+    fn drop(&mut self) {
+        if flock(&self.coordinator, libc::LOCK_EX).is_ok() {
+            let _ = std::fs::remove_file(&self.path);
+            unlock(&self.coordinator);
+        }
+    }
+}
+
 fn validate_callback_lock(fd: &zbus::zvariant::OwnedFd, expected_file: &std::fs::File) -> zbus::fdo::Result<()> {
     use std::os::{fd::{AsFd, AsRawFd}, unix::fs::MetadataExt};
     let received = std::fs::File::from(
@@ -424,7 +540,7 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                 }
                 Err(zbus::Error::NameTaken) => {
                     let result = (|| -> Result<(), String> {
-                        let lock = callback_lock(std::time::Duration::from_secs(45))?;
+                        let lock = LauncherTicket::acquire(None)?;
                         let connection = Connection::session().map_err(|error| error.to_string())?;
                         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
                         while connection.call_method(
@@ -447,7 +563,7 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                                     .unwrap_or_default()
                                     .to_string_lossy()
                                     .to_string(),
-                                zbus::zvariant::Fd::from(&lock),
+                                zbus::zvariant::Fd::from(&lock.lock),
                             ),
                         ).map_err(|error| format!("Could not deliver shortcut: {error}"))?;
                         Ok(())
@@ -476,6 +592,42 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires an isolated D-Bus session"]
+    fn launchers_wait_in_registration_order_and_cancel_cleanly() {
+        use std::{os::fd::AsRawFd, sync::mpsc, time::{Duration, Instant}};
+        let held = super::callback_lock(Duration::from_secs(1)).unwrap();
+        let lock_path = std::fs::read_link(format!("/proc/self/fd/{}", held.as_raw_fd())).unwrap();
+        let directory = lock_path.parent().unwrap();
+        let (send, receive) = mpsc::channel();
+        let mut workers = Vec::new();
+        for index in 0..8 {
+            let send = send.clone();
+            workers.push(std::thread::spawn(move || {
+                let _ticket = super::LauncherTicket::acquire(Some(Duration::from_secs(10))).unwrap();
+                send.send(index).unwrap();
+            }));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let count = std::fs::read_dir(directory).unwrap().filter(|entry| {
+                    entry.as_ref().unwrap().file_name().to_string_lossy().starts_with("ticket-")
+                }).count();
+                if count == index + 1 { break; }
+                assert!(Instant::now() < deadline, "launcher did not register");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let canceled = std::thread::spawn(|| super::LauncherTicket::acquire(Some(Duration::from_millis(100))).is_err());
+        assert!(canceled.join().unwrap());
+        drop(held);
+        assert_eq!((0..8).map(|_| receive.recv_timeout(Duration::from_secs(5)).unwrap()).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>());
+        for worker in workers { worker.join().unwrap(); }
+        let stale = directory.join("ticket-00000000000000000000");
+        drop(super::private_queue_file(&stale, true).unwrap());
+        let _ticket = super::LauncherTicket::acquire(Some(Duration::from_secs(1))).unwrap();
+        assert!(!stale.exists());
+    }
+
     #[test]
     #[ignore = "requires an isolated D-Bus session"]
     fn shortcut_lock_waits_for_inflight_launchers() {

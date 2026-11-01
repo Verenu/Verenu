@@ -56,9 +56,13 @@ parent=$!
 child=''
 launcher=''
 show_launcher=''
+abandoned_launcher=''
+callback_monitor=''
 cleanup() {
   if [[ -n "$launcher" ]]; then kill "$launcher" 2>/dev/null || true; fi
   if [[ -n "$show_launcher" ]]; then kill "$show_launcher" 2>/dev/null || true; fi
+  if [[ -n "$abandoned_launcher" ]]; then kill "$abandoned_launcher" 2>/dev/null || true; fi
+  if [[ -n "$callback_monitor" ]]; then kill "$callback_monitor" 2>/dev/null || true; fi
   if [[ -n "$child" ]]; then kill "$child" 2>/dev/null || true; fi
   kill "$parent" 2>/dev/null || true
   kill "$watcher" 2>/dev/null || true
@@ -112,11 +116,37 @@ if gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/
   echo 'Legacy callback unexpectedly succeeded' >&2; exit 1
 fi
 grep -q 'Legacy shortcut callbacks are unsupported' "$root/legacy.log"
+stdbuf -oL dbus-monitor --session "interface='org.SingleInstance.DBus',member='ExecuteCallbackGuarded'" > "$root/callbacks.log" 2>&1 &
+callback_monitor=$!
+for _ in $(seq 1 100); do
+  grep -q NameAcquired "$root/callbacks.log" && break
+  kill -0 "$callback_monitor"
+  sleep .05
+done
+grep -q NameAcquired "$root/callbacks.log"
 env -u VERENU_HANDOFF_TEST_TRIGGER VERENU_HANDOFF_TEST_LAUNCHER_WAIT="$root/launcher.waiting" \
-  "$binary" --verenu-hotkey-release > "$root/launcher.log" 2>&1 &
+  "$binary" --verenu-hotkey-release verenu-order-first > "$root/launcher.log" 2>&1 &
 launcher=$!
+for _ in $(seq 1 200); do
+  [[ -e "$root/launcher.waiting" ]] && break
+  kill -0 "$launcher"
+  sleep .1
+done
+test -s "$root/launcher.waiting"
+env -u VERENU_HANDOFF_TEST_TRIGGER VERENU_HANDOFF_TEST_LAUNCHER_WAIT="$root/abandoned.waiting" \
+  "$binary" --verenu-hotkey-release verenu-order-abandoned > "$root/abandoned.log" 2>&1 &
+abandoned_launcher=$!
+for _ in $(seq 1 200); do
+  [[ -e "$root/abandoned.waiting" ]] && break
+  kill -0 "$abandoned_launcher"
+  sleep .1
+done
+test -s "$root/abandoned.waiting"
+kill -KILL "$abandoned_launcher"
+wait "$abandoned_launcher" 2>/dev/null || true
+abandoned_launcher=''
 env -u VERENU_HANDOFF_TEST_TRIGGER VERENU_HANDOFF_TEST_LAUNCHER_WAIT="$root/show.waiting" \
-  "$binary" > "$root/show.log" 2>&1 &
+  "$binary" verenu-order-second > "$root/show.log" 2>&1 &
 show_launcher=$!
 for _ in $(seq 1 200); do
   [[ -e "$root/launcher.waiting" && -e "$root/show.waiting" ]] && break
@@ -135,6 +165,7 @@ wait "$launcher"
 launcher=''
 wait "$show_launcher"
 show_launcher=''
+test "$(sed -n 's/.*string "\(verenu-order-[^"]*\)".*/\1/p' "$root/callbacks.log" | paste -sd ' ')" = 'verenu-order-first verenu-order-second'
 if [[ "$mode" = fail ]]; then
   test -s "$root/trigger.error"
   grep -q 'Synthetic late activation failure' "$root/trigger.error"
