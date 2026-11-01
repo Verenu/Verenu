@@ -269,38 +269,6 @@ impl Analytics {
             let _ = std::fs::remove_file(&milestones_path);
             None
         };
-        Self::from_existing_state(enabled, data_dir, install_id, first_seen_version)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn prepare_for_handoff(enabled: bool, data_dir: std::path::PathBuf) -> Result<Self, String> {
-        let (install_id, first_seen_version) = if enabled {
-            let id = std::fs::read_to_string(data_dir.join("analytics_install_id"))
-                .map_err(|_| "Analytics identity is unavailable during restart".to_owned())?;
-            let id = id.trim();
-            Uuid::parse_str(id).map_err(|_| "Analytics identity is invalid during restart".to_owned())?;
-            let version = std::fs::read_to_string(data_dir.join("analytics_first_seen_version"))
-                .map_err(|_| "Analytics version is unavailable during restart".to_owned())?;
-            let version = version.trim();
-            if !is_official_version(version) {
-                return Err("Analytics version is invalid during restart".into());
-            }
-            (Some(id.to_owned()), Some(version.to_owned()))
-        } else {
-            (None, None)
-        };
-        Ok(Self::from_existing_state(enabled, data_dir, install_id, first_seen_version))
-    }
-
-    fn from_existing_state(
-        enabled: bool,
-        data_dir: std::path::PathBuf,
-        install_id: Option<String>,
-        first_seen_version: Option<String>,
-    ) -> Self {
-        let install_id_path = data_dir.join("analytics_install_id");
-        let first_seen_version_path = data_dir.join("analytics_first_seen_version");
-        let milestones_path = data_dir.join("analytics_usage_milestones");
         let transport_configured =
             option_env!("VERENU_POSTHOG_PROJECT_TOKEN").is_some_and(|token| !token.is_empty());
         log::info!(
@@ -1761,29 +1729,6 @@ fn is_official_version(value: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn handoff_analytics_reads_existing_state_without_writing_or_creating_identity() {
-        let path = std::env::temp_dir().join(format!("verenu-analytics-handoff-{}", Uuid::new_v4()));
-        std::fs::create_dir(&path).unwrap();
-        assert!(Analytics::prepare_for_handoff(true, path.clone()).is_err());
-        let disabled = Analytics::prepare_for_handoff(false, path.clone()).unwrap();
-        assert!(!disabled.enabled.load(Ordering::Relaxed));
-        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
-        let id = Uuid::new_v4().to_string();
-        std::fs::write(path.join("analytics_install_id"), &id).unwrap();
-        std::fs::write(path.join("analytics_first_seen_version"), "0.18.0").unwrap();
-        std::fs::write(path.join("analytics_usage_milestones"), "5\ndictations_5").unwrap();
-        let analytics = Analytics::prepare_for_handoff(true, path.clone()).unwrap();
-        assert_eq!(analytics.install_id.lock().unwrap().as_deref(), Some(id.as_str()));
-        assert_eq!(analytics.milestone_state.lock().unwrap().successful_dictations, 5);
-        assert_eq!(std::fs::read_to_string(path.join("analytics_install_id")).unwrap(), id);
-        assert_eq!(std::fs::read_to_string(path.join("analytics_first_seen_version")).unwrap(), "0.18.0");
-        assert_eq!(std::fs::read_to_string(path.join("analytics_usage_milestones")).unwrap(), "5\ndictations_5");
-        std::fs::write(path.join("analytics_first_seen_version"), "invalid").unwrap();
-        assert!(Analytics::prepare_for_handoff(true, path.clone()).is_err());
-        std::fs::remove_dir_all(path).unwrap();
-    }
 
     #[test]
     fn adoption_and_healthy_input_are_once_per_session_but_failures_are_not() {

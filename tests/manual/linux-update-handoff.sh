@@ -28,7 +28,7 @@ if [[ -n "$update_image" ]]; then
   /usr/bin/python3 -m http.server 18765 --bind 127.0.0.1 --directory "$(dirname "$update_image")" > "$root/server.log" 2>&1 &
   server=$!
 fi
-printf '%s\n' '{"setup_complete":true,"analytics_enabled":false,"cleanup_cache_enabled":true}' > "$root/data/settings.json"
+printf '%s\n' '{"setup_complete":true,"analytics_enabled":true,"cleanup_cache_enabled":true}' > "$root/data/settings.json"
 cat > "$root/watcher.py" <<'PY_WATCHER'
 from gi.repository import Gio, GLib
 
@@ -95,6 +95,7 @@ with sqlite3.connect(sys.argv[1]) as db:
     db.execute("INSERT INTO handoff_fixture VALUES ('synthetic')")
 PY
 sha256sum "$root/data/sync-identity.key" > "$root/identity.before"
+sha256sum "$root/data/analytics_install_id" "$root/data/analytics_first_seen_version" > "$root/analytics.before"
 touch "$root/trigger"
 for _ in $(seq 1 450); do
   if [[ -e "$root/trigger.committing" || -e "$root/trigger.error" ]]; then break; fi
@@ -170,6 +171,7 @@ else
   echo "replacement=$child"
 fi
 sha256sum -c "$root/identity.before"
+sha256sum -c "$root/analytics.before"
 test "$(secret-tool lookup service com.verenu.app username api_key_groq)" = synthetic-key-value
 if [[ -n "$update_image" ]]; then
   test -s "$binary.previous"
