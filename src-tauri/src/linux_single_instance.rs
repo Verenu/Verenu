@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(all(test, feature = "native-testing"))]
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use zbus::{blocking::Connection, interface};
 
@@ -41,6 +43,7 @@ fn open_callback_lock() -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+#[cfg(test)]
 pub(crate) fn callback_lock(timeout: std::time::Duration) -> Result<std::fs::File, String> {
     let file = open_callback_lock()?;
     let deadline = std::time::Instant::now() + timeout;
@@ -64,8 +67,19 @@ pub(crate) fn callback_lock(timeout: std::time::Duration) -> Result<std::fs::Fil
     }
 }
 
-// Tickets order launchers before they wait for the handoff lock. The callback
-// queue still owns callbacks already accepted by the running instance.
+pub(crate) async fn prepare_callback_lock() -> Result<std::fs::File, String> {
+    // Only opening runs on the blocking pool. Cancellation cannot leave a
+    // worker that later acquires and retains the lock.
+    let file = tauri::async_runtime::spawn_blocking(open_callback_lock)
+        .await.map_err(|error| format!("Could not prepare shortcut routing: {error}"))??;
+    loop {
+        if flock(&file, libc::LOCK_EX | libc::LOCK_NB)? { return Ok(file); }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+// Tickets order launchers before they wait for the handoff lock. Each ticket
+// stays live until the running instance acknowledges the callback.
 struct LauncherTicket {
     path: std::path::PathBuf,
     _ticket: std::fs::File,
@@ -131,6 +145,8 @@ impl LauncherTicket {
         unlock(&coordinator);
         let (path, ticket) = result?;
         let result = Self { path, _ticket: ticket, coordinator, lock };
+        #[cfg(all(test, feature = "native-testing"))]
+        TEST_LAUNCHER_REGISTERED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         #[cfg(all(feature = "native-testing", debug_assertions))]
         if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_LAUNCHER_WAIT") {
             let _ = std::fs::write(path, b"waiting");
@@ -197,25 +213,22 @@ fn validate_callback_lock(fd: &zbus::zvariant::OwnedFd, expected_file: &std::fs:
 
 #[cfg(all(test, feature = "native-testing"))]
 pub(crate) fn test_callback(connection: &Connection, destination: &str, path: &str, argv: Vec<String>) -> Result<(), String> {
-    let lock = callback_lock(std::time::Duration::from_secs(10))?;
+    let lock = LauncherTicket::acquire(None)?;
     connection.call_method(
         Some(destination), path, Some("org.SingleInstance.DBus"), "ExecuteCallbackGuarded",
-        &(argv, String::new(), zbus::zvariant::Fd::from(&lock)),
+        &(argv, String::new(), zbus::zvariant::Fd::from(&lock.lock)),
     ).map(|_| ()).map_err(|error| error.to_string())
 }
 
 struct CallbackRoute {
-    replacement: std::sync::atomic::AtomicBool,
-    local_ready: std::sync::atomic::AtomicBool,
-    queue: Mutex<Option<CallbackQueueSlot>>,
+    activation: std::sync::atomic::AtomicU8,
+    changed: tokio::sync::Notify,
     lock_file: Option<std::fs::File>,
 }
 
-struct CallbackQueueSlot {
-    queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
-    delivered: Option<i64>,
-    failed: bool,
-}
+const PENDING: u8 = 0;
+const READY: u8 = 1;
+const FAILED: u8 = 2;
 
 impl CallbackRoute {
     fn new(replacement: bool) -> Self {
@@ -226,21 +239,46 @@ impl CallbackRoute {
                 None
             }
         };
-        Self { replacement: std::sync::atomic::AtomicBool::new(replacement), local_ready: std::sync::atomic::AtomicBool::new(!replacement), queue: Mutex::new(None), lock_file }
+        Self { activation: std::sync::atomic::AtomicU8::new(if replacement { PENDING } else { READY }), changed: tokio::sync::Notify::new(), lock_file }
     }
 
-    fn enqueue_if_active(&self, args: &[String]) -> Option<zbus::fdo::Result<()>> {
-        let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
-        queue.as_mut().map(|slot| {
-            let callback = crate::linux_handoff_callbacks::Callback::from_args(args);
-            slot.queue.push(callback)
-                .map_err(|error| {
-                    slot.failed = true;
-                    zbus::fdo::Error::Failed(format!("Could not queue restart callback: {error}"))
-                })
-        })
+    fn set_activation(&self, state: u8) {
+        self.activation.store(state, std::sync::atomic::Ordering::Release);
+        self.changed.notify_waiters();
     }
 
+    async fn wait_ready(&self) -> zbus::fdo::Result<()> {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            match self.activation.load(std::sync::atomic::Ordering::Acquire) {
+                READY => return Ok(()),
+                FAILED => return Err(zbus::fdo::Error::Failed("Verenu could not finish restarting".into())),
+                _ => {
+                    #[cfg(all(test, feature = "native-testing"))]
+                    TEST_ACTIVATION_WAITING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    notified.await
+                }
+            }
+        }
+    }
+}
+
+pub(crate) struct CallbackActivation(Arc<CallbackRoute>);
+
+impl CallbackActivation {
+    pub(crate) fn ready(self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
+        self.0.set_activation(READY);
+    }
+}
+
+impl Drop for CallbackActivation {
+    fn drop(&mut self) {
+        if self.0.activation.load(std::sync::atomic::Ordering::Acquire) == PENDING {
+            self.0.set_activation(FAILED);
+        }
+    }
 }
 
 #[cfg(all(test, feature = "native-testing"))]
@@ -253,13 +291,29 @@ static TEST_CALLBACKS: Mutex<Vec<crate::linux_handoff_callbacks::Callback>> = Mu
 static TEST_CALLBACK_STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(all(test, feature = "native-testing"))]
+static TEST_LAUNCHER_REGISTERED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(all(test, feature = "native-testing"))]
+static TEST_ACTIVATION_WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(all(test, feature = "native-testing"))]
 pub(crate) fn test_callback_count() -> usize {
     TEST_CALLBACK_COUNT.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 #[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_callbacks_since(index: usize) -> Vec<crate::linux_handoff_callbacks::Callback> {
+    TEST_CALLBACKS.lock().unwrap()[index..].to_vec()
+}
+
+#[cfg(all(test, feature = "native-testing"))]
 pub(crate) fn test_callback_started() -> usize {
     TEST_CALLBACK_STARTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_launcher_registered() -> usize {
+    TEST_LAUNCHER_REGISTERED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 struct SingleInstance {
@@ -269,15 +323,6 @@ struct SingleInstance {
 
 #[interface(name = "org.SingleInstance.DBus", spawn = false)]
 impl SingleInstance {
-    fn handoff_barrier(&self) -> zbus::fdo::Result<()> {
-        let queue = self.route.queue.lock().unwrap_or_else(|error| error.into_inner());
-        match queue.as_ref() {
-            Some(slot) if !slot.failed => Ok(()),
-            Some(_) => Err(zbus::fdo::Error::Failed("A restart callback could not be queued".into())),
-            None => Err(zbus::fdo::Error::Failed("Restart callback queue is unavailable".into())),
-        }
-    }
-
     fn execute_callback(&self, _argv: Vec<String>, _cwd: String) -> zbus::fdo::Result<()> {
         Err(zbus::fdo::Error::NotSupported("Legacy shortcut callbacks are unsupported; launch the installed Verenu application instead".into()))
     }
@@ -290,15 +335,7 @@ impl SingleInstance {
     ) -> zbus::fdo::Result<()> {
         let expected = self.route.lock_file.as_ref().ok_or_else(|| zbus::fdo::Error::Failed("Shortcut routing lock is unavailable".into()))?;
         validate_callback_lock(&lock, expected)?;
-        if self.route.replacement.load(std::sync::atomic::Ordering::Acquire) {
-            if let Some(result) = self.route.enqueue_if_active(&argv) {
-                return result;
-            }
-            if !self.route.local_ready.load(std::sync::atomic::Ordering::Acquire) {
-                return Err(zbus::fdo::Error::Failed("Restart callback routing is not active".into()));
-            }
-            return self.dispatch_callback(argv).await;
-        }
+        self.route.wait_ready().await?;
         self.dispatch_callback(argv).await
     }
 }
@@ -317,12 +354,7 @@ impl SingleInstance {
         let _activity = if let Some(gate) = gate {
             match gate.try_enter() {
                 Some(activity) => Some(Arc::new(activity)),
-                None => {
-                    if let Some(result) = self.route.enqueue_if_active(&argv) {
-                        return result;
-                    }
-                    Some(Arc::new(gate.enter().await))
-                }
+                None => Some(Arc::new(gate.enter().await)),
             }
         } else {
             None
@@ -352,86 +384,9 @@ pub(crate) struct InstanceOwner {
     route: Arc<CallbackRoute>,
 }
 
-pub(crate) struct PreparedCallbacks<'a> {
-    route: &'a CallbackRoute,
-    slot: std::sync::MutexGuard<'a, Option<CallbackQueueSlot>>,
-    reader: crate::linux_handoff_callbacks::CallbackReader,
-}
-
-impl PreparedCallbacks<'_> {
-    pub(crate) fn activate(mut self, app: &AppHandle, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
-        if let Err(error) = self.reader.drain(|callback| dispatch_callback(app, callback)) {
-            use tauri::Emitter;
-            log::error!("Could not read restart callbacks: {error}");
-            let _ = app.emit("verenu:error", "Some shortcuts could not be restored after restarting.");
-        }
-        self.route.local_ready.store(true, std::sync::atomic::Ordering::Release);
-        self.route.replacement.store(false, std::sync::atomic::Ordering::Release);
-        *self.slot = None;
-    }
-}
-
 impl InstanceOwner {
-    pub(crate) fn prepare_callbacks<'a>(
-        &'a self,
-        reader: crate::linux_handoff_callbacks::CallbackReader,
-        pause: &crate::linux_activity::Pause,
-        gate: &Arc<crate::linux_activity::ActivityGate>,
-    ) -> Result<PreparedCallbacks<'a>, String> {
-        if !pause.belongs_to(gate) || !self.route.replacement.load(std::sync::atomic::Ordering::Acquire) {
-            return Err("Restart callback gate does not match".into());
-        }
-        let slot = self.route.queue.lock().map_err(|_| "Restart callback queue is unavailable")?;
-        Ok(PreparedCallbacks { route: &self.route, slot, reader })
-    }
-
-    pub(crate) fn install_callback_queue(
-        &self,
-        queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
-    ) -> Result<(), &'static str> {
-        let mut slot = self.route.queue.lock().unwrap_or_else(|error| error.into_inner());
-        if slot.is_some() {
-            return Err("A restart callback queue is already active");
-        }
-        *slot = Some(CallbackQueueSlot { queue, delivered: None, failed: false });
-        Ok(())
-    }
-
-    pub(crate) fn callback_barrier(&self) -> Result<(), String> {
-        let unique = self.unique_name()?;
-        self.callback_barrier_at(&unique)
-    }
-
-    fn callback_barrier_at(&self, unique: &str) -> Result<(), String> {
-        let path = format!("/{}", self.name.replace('.', "/").replace('-', "_"));
-        Connection::session()
-            .and_then(|connection| connection.call_method(
-                Some(unique), path.as_str(), Some("org.SingleInstance.DBus"),
-                "HandoffBarrier", &(),
-            ))
-            .map(|_| ())
-            .map_err(|error| format!("Could not finish pending restart callbacks: {error}"))
-    }
-
-    pub(crate) fn drain_callback_queue(&self, app: &AppHandle) -> Result<(), String> {
-        if self.route.replacement.load(std::sync::atomic::Ordering::Acquire) {
-            return Err("Replacement callbacks require confirmed parent exit".into());
-        }
-        let mut slot = self.route.queue.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(active) = slot.as_mut() {
-            while let Some((id, callback)) = active.queue.first().map_err(|error| error.to_string())? {
-                if active.delivered != Some(id) {
-                    dispatch_callback(app, callback);
-                    active.delivered = Some(id);
-                }
-                if !active.queue.acknowledge(id).map_err(|error| error.to_string())? {
-                    return Err("Restart callback queue changed unexpectedly".into());
-                }
-                active.delivered = None;
-            }
-        }
-        *slot = None;
-        Ok(())
+    pub(crate) fn callback_activation(&self) -> CallbackActivation {
+        CallbackActivation(self.route.clone())
     }
     pub(crate) fn unique_name(&self) -> Result<String, String> {
         self.connection
@@ -594,6 +549,23 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 mod tests {
     #[test]
     #[ignore = "requires an isolated D-Bus session"]
+    fn cancelling_lock_preparation_does_not_strand_launchers() {
+        use std::time::Duration;
+        let held = super::callback_lock(Duration::from_secs(1)).unwrap();
+        tauri::async_runtime::block_on(async {
+            let waiting = tokio::spawn(super::prepare_callback_lock());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!waiting.is_finished());
+            waiting.abort();
+            let _ = waiting.await;
+        });
+        drop(held);
+        let next = super::callback_lock(Duration::from_secs(1)).unwrap();
+        drop(next);
+    }
+
+    #[test]
+    #[ignore = "requires an isolated D-Bus session"]
     fn launchers_wait_in_registration_order_and_cancel_cleanly() {
         use std::{os::fd::AsRawFd, sync::mpsc, time::{Duration, Instant}};
         let held = super::callback_lock(Duration::from_secs(1)).unwrap();
@@ -650,105 +622,59 @@ mod tests {
     #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires an isolated graphical and D-Bus session"]
-    fn replacement_routes_callbacks_locally_after_queue_activation() {
+    fn replacement_callbacks_wait_for_terminal_activation() {
         use std::sync::Arc;
+        use std::time::Duration;
         use tauri::Manager;
 
-        let (queue, path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
-        let reader = crate::linux_handoff_callbacks::CallbackReader::open(&path).unwrap();
-        let queue = Arc::new(queue);
         let gate = Arc::new(crate::linux_activity::ActivityGate::default());
-        let app = tauri::Builder::default()
-            .any_thread()
-            .manage(gate.clone())
-            .build(tauri::generate_context!())
-            .unwrap();
-        let (_, path_on_bus) = super::address(&app.config().identifier);
-        let route = Arc::new(super::CallbackRoute::new(false));
-        *route.queue.lock().unwrap() = Some(super::CallbackQueueSlot {
-            queue: queue.clone(), delivered: None, failed: false,
-        });
+        let app = tauri::Builder::default().any_thread().manage(gate.clone())
+            .build(tauri::generate_context!()).unwrap();
         let original = zbus::blocking::connection::Builder::session().unwrap()
-            .name("com.verenu.app.SingleInstance").unwrap()
-            .allow_name_replacements(false)
-            .serve_at(path_on_bus.as_str(), super::SingleInstance { app: app.handle().clone(), route: route.clone() }).unwrap()
-            .build().unwrap();
+            .name("com.verenu.app.SingleInstance").unwrap().build().unwrap();
         app.handle().plugin(super::replacement_plugin()).unwrap();
-        let uninitialized = super::SingleInstance {
-            app: app.handle().clone(),
-            route: Arc::new(super::CallbackRoute::new(true)),
-        };
-        assert!(uninitialized.execute_callback(vec!["--verenu-hotkey-release".into()], String::new()).is_err());
         let owner = app.state::<super::InstanceOwner>();
-        assert!(owner.drain_callback_queue(app.handle()).is_err());
-        let connection = zbus::blocking::Connection::session().unwrap();
-        assert!(super::test_callback(&connection, &owner.unique_name().unwrap(), &path_on_bus,
-            vec!["--verenu-hotkey-release".into()]).is_err());
-        let send = |flag: &str| super::test_callback(&connection, &owner.name, &path_on_bus,
-            vec![flag.to_owned()]).unwrap();
-        let before = super::test_callback_count();
-        let recorded = super::TEST_CALLBACKS.lock().unwrap().len();
+        let activation = owner.callback_activation();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        let held = route.queue.lock().unwrap();
-        let started = super::test_callback_started();
-        let old_name = original.unique_name().unwrap().to_string();
-        let first_path = path_on_bus.clone();
-        let first = std::thread::spawn(move || {
-            super::test_callback(&zbus::blocking::Connection::session().unwrap(), &old_name,
-                &first_path, vec!["--verenu-hotkey-release".into()]).unwrap();
-        });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while super::test_callback_started() == started {
-            assert!(std::time::Instant::now() < deadline, "first callback did not arrive");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let (done, wait_done) = std::sync::mpsc::channel();
-        let second = std::thread::spawn(move || {
-            super::test_callback(&zbus::blocking::Connection::session().unwrap(),
-                "com.verenu.app.SingleInstance", "/com/verenu/app/SingleInstance",
-                vec!["--verenu-hotkey-handsfree".into()]).unwrap();
-            done.send(()).unwrap();
-        });
-        assert!(wait_done.recv_timeout(std::time::Duration::from_millis(100)).is_err());
-        drop(held);
-        first.join().unwrap();
-        wait_done.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        second.join().unwrap();
-        send("--verenu-capture-sub-app");
-        assert_eq!(super::test_callback_count(), before);
-        assert!(!owner.owns_name().unwrap());
-        let callbacks = owner.prepare_callbacks(reader, &pause, &gate).unwrap();
         original.release_name("com.verenu.app.SingleInstance").unwrap();
         drop(original);
-        drop(route);
-        drop(queue);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !owner.owns_name().unwrap_or(false) {
-            assert!(std::time::Instant::now() < deadline, "replacement did not acquire the name");
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
         }
-        let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-        callbacks.activate(app.handle(), &parent_exited);
+        let before = super::test_callback_count();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let connection = zbus::blocking::Connection::session().unwrap();
+            sent.send(super::test_callback(&connection, "com.verenu.app.SingleInstance",
+                "/com/verenu/app/SingleInstance", vec!["--verenu-hotkey-release".into()])).unwrap();
+        });
+        assert!(received.recv_timeout(Duration::from_millis(200)).is_err());
+        assert_eq!(super::test_callback_count(), before);
         drop(pause);
-        assert_eq!(super::test_callback_count(), before + 3);
-        assert_eq!(&super::TEST_CALLBACKS.lock().unwrap()[recorded..], &[
-            crate::linux_handoff_callbacks::Callback::Release,
-            crate::linux_handoff_callbacks::Callback::Handsfree,
-            crate::linux_handoff_callbacks::Callback::CaptureSubApp,
-        ]);
-        send("--verenu-hotkey-handsfree");
-        assert_eq!(super::test_callback_count(), before + 4);
-        let (next_queue, next_path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
-        let next_queue = Arc::new(next_queue);
-        owner.install_callback_queue(next_queue.clone()).unwrap();
-        next_queue.push(crate::linux_handoff_callbacks::Callback::Release).unwrap();
-        owner.drain_callback_queue(app.handle()).unwrap();
-        assert_eq!(super::test_callback_count(), before + 5);
-        drop(next_queue);
-        std::fs::remove_dir_all(next_path.parent().unwrap()).unwrap();
-        drop(owner);
-        drop(app);
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        activation.ready(&crate::linux_handoff_transport::parent_exited_for_test());
+        received.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        worker.join().unwrap();
+        assert_eq!(super::test_callback_count(), before + 1);
+
+        owner.route.set_activation(super::PENDING);
+        let guard = owner.callback_activation();
+        let waiting_before = super::TEST_ACTIVATION_WAITING.load(std::sync::atomic::Ordering::SeqCst);
+        let (sent, received) = std::sync::mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            let connection = zbus::blocking::Connection::session().unwrap();
+            sent.send(super::test_callback(&connection, "com.verenu.app.SingleInstance",
+                "/com/verenu/app/SingleInstance", vec!["--verenu-hotkey-handsfree".into()]).is_err()).unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while super::TEST_ACTIVATION_WAITING.load(std::sync::atomic::Ordering::SeqCst) == waiting_before {
+            assert!(std::time::Instant::now() < deadline, "callback did not wait for activation");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(guard);
+        assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
+        waiting.join().unwrap();
     }
 
     #[cfg(feature = "native-testing")]
@@ -757,6 +683,7 @@ mod tests {
     fn paused_instance_handles_forwarded_hotkey_after_resuming() {
         use std::sync::Arc;
         use std::time::Duration;
+        use tauri::Manager;
 
         let gate = Arc::new(crate::linux_activity::ActivityGate::default());
         let app = tauri::Builder::default()
@@ -783,18 +710,17 @@ mod tests {
         assert!(received.recv_timeout(Duration::from_millis(200)).is_err());
         assert_eq!(super::test_callback_count(), count);
         let (barrier_sent, barrier_received) = std::sync::mpsc::channel();
+        let owner_connection = app.state::<super::InstanceOwner>().connection.clone();
         let barrier = std::thread::spawn(move || {
-            let connection = zbus::blocking::Connection::session().unwrap();
-            let result = connection.call_method(
-                Some("com.verenu.app.SingleInstance"), "/com/verenu/app/SingleInstance",
-                Some("org.SingleInstance.DBus"), "HandoffBarrier", &(),
+            let result = owner_connection.call_method(
+                Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
+                Some("org.freedesktop.DBus"), "GetNameOwner", &("com.verenu.app.SingleInstance",),
             );
-            barrier_sent.send(result.is_err()).unwrap();
+            barrier_sent.send(result.is_ok()).unwrap();
         });
-        assert!(barrier_received.recv_timeout(Duration::from_millis(200)).is_err());
+        assert!(barrier_received.recv_timeout(Duration::from_secs(5)).unwrap());
         drop(pause);
         assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
-        assert!(barrier_received.recv_timeout(Duration::from_secs(5)).unwrap());
         sender.join().unwrap();
         barrier.join().unwrap();
         assert_eq!(super::test_callback_count(), count + 1);
@@ -804,7 +730,7 @@ mod tests {
     #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires an isolated graphical and D-Bus session"]
-    fn paused_owner_records_and_drains_callbacks() {
+    fn paused_owner_rejects_unguarded_callbacks() {
         use std::sync::Arc;
         use tauri::Manager;
 
@@ -815,11 +741,8 @@ mod tests {
             .plugin(super::plugin())
             .build(tauri::generate_context!())
             .unwrap();
-        let (queue, path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
-        let queue = Arc::new(queue);
         let owner = app.state::<super::InstanceOwner>();
-        let pause = gate.begin_pause_with(|| owner.install_callback_queue(queue.clone())).unwrap();
-        tauri::async_runtime::block_on(pause.wait_drained());
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let count = super::test_callback_count();
         let connection = zbus::blocking::Connection::session().unwrap();
         let (_, object_path) = super::address(&app.config().identifier);
@@ -831,23 +754,11 @@ mod tests {
             Some("org.SingleInstance.DBus"), "ExecuteCallbackGuarded",
             &(Vec::<String>::new(), String::new(), zbus::zvariant::Fd::from(&wrong)));
         assert!(forged.is_err());
-        super::test_callback(&connection, &owner.name, &object_path,
-            vec!["--verenu-hotkey-release".into()]).unwrap();
         assert_eq!(super::test_callback_count(), count);
-        assert_eq!(queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
-        owner.callback_barrier().unwrap();
-        for _ in 0..4095 { queue.push(crate::linux_handoff_callbacks::Callback::Show).unwrap(); }
-        assert!(super::test_callback(&connection, &owner.name, &object_path,
-            vec!["--verenu-hotkey-release".into()]).is_err());
-        assert!(owner.callback_barrier().is_err());
-        assert_eq!(queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
-        *owner.route.queue.lock().unwrap() = None;
         assert!(gate.try_enter().is_none());
         drop(pause);
         drop(owner);
         drop(app);
-        drop(queue);
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
 
@@ -944,11 +855,6 @@ mod tests {
             connection.request_name_with_flags(name.as_str(), enumflags2::BitFlags::empty()).unwrap(),
             zbus::fdo::RequestNameReply::InQueue
         );
-        if std::env::var_os("VERENU_TEST_TRANSFER_QUEUE").is_some() {
-            let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
-            super::test_callback(&connection, &name, &path,
-                vec!["--verenu-hotkey-handsfree".into()]).unwrap();
-        }
         eprintln!("replacement-acquired");
         let _ = std::io::stdin().read(&mut [0]);
     }
