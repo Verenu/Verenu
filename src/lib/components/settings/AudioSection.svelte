@@ -8,6 +8,8 @@
   import { onDestroy } from 'svelte';
   import Toggle from '../Toggle.svelte';
   import Callout from '../Callout.svelte';
+  import Disclosure from '../Disclosure.svelte';
+  import RollingNumber from '../RollingNumber.svelte';
   import LocalDownloadProgress from './LocalDownloadProgress.svelte';
   import { isAndroid, isLinux, isMac, isWindows } from '../../platform';
   import { booleanSettingHandler, loadSettingsSnapshot, saveSetting, saveSettingIfUnchanged } from '../../settings';
@@ -15,7 +17,7 @@
   import { defaultMicGain, micGainAdvice, shouldPersistMicGain } from './audioGain';
   import { invoke } from '../../tauri';
 
-  type ReuseStatus = { state: 'unknown' | 'not_installed' | 'unavailable' | 'checking' | 'installing' | 'removing' | 'ready' | 'error'; message: string; has_files?: boolean };
+  type ReuseStatus = { state: 'unknown' | 'not_installed' | 'unavailable' | 'checking' | 'installing' | 'removing' | 'ready' | 'error'; message: string; has_files?: boolean; progress?: number | null };
   let reuseStatus = $state<ReuseStatus>({ state: 'unknown', message: 'Checking availability…' });
   let reuseEnabled = $state(false);
   let reuseError = $state(false);
@@ -29,6 +31,7 @@
   let reuseEligible = $state(false);
   let reuseCleanupOnly = $state(false);
   let reuseConfirmRemove = $state(false);
+  let fadesOpen = $state(false);
   let reuseRemoveError = $state('');
   let realtimeSetupError = $state(false);
 
@@ -323,7 +326,7 @@
       <div class="label">Microphone gain</div>
       <div class="desc">Speech level adjusts automatically. Leave this at the default unless speech is too quiet or not detected; higher values target a louder level.</div>
     </div>
-    <span class="gain-value">{micGain.toFixed(1)}×</span>
+    <span class="gain-value"><RollingNumber value={micGain} decimals={1} suffix="×" /></span>
   </div>
   <div class="gain-slider-wrap">
     <input
@@ -374,6 +377,12 @@
         </div>
         <Toggle checked={reuseEnabled} onchange={changeReuse} label="Use NVIDIA RE-USE" disabled={reuseBusy} bind:error={reuseError} />
       {/if}
+      {#if reuseBusy}
+        <div class="reuse-progress" transition:slide={{ duration: motionMs(MOTION_MS.base) }} role="status" aria-live="polite">
+          <LocalDownloadProgress stage="downloading" label={reuseProgressLabel} percent={reuseStatus.progress ?? 0} indeterminate={reuseStatus.progress == null} />
+          {#if reuseStatus.message}<div class="desc reuse-note">{reuseStatus.message}</div>{/if}
+        </div>
+      {/if}
     </div>
     {#if reuseEnabled && reuseStatus.state === 'ready'}
       <div class="setting-row">
@@ -386,12 +395,6 @@
       {#if (realtimeEnabled && !realtimeReady) || realtimeSetupError}
         <div class="reuse-extra"><Callout severity="warning" compact title="Real-time model unavailable" action={{ label: 'Retry setup', onclick: retryRealtime }}>Noise reduction uses RNNoise until setup succeeds. Turn off real-time RE-USE to use the existing NVIDIA model.</Callout></div>
       {/if}
-    {/if}
-    {#if reuseBusy}
-      <div transition:slide={{ duration: motionMs(MOTION_MS.base) }} role="status" aria-live="polite">
-        <LocalDownloadProgress stage="downloading" label={reuseProgressLabel} indeterminate />
-        {#if reuseStatus.message}<div class="desc reuse-note">{reuseStatus.message}</div>{/if}
-      </div>
     {/if}
     {#if reuseStatus.state === 'error' && !reuseRemoveError && !reuseCleanupOnly}
       <div class="reuse-extra" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
@@ -428,24 +431,26 @@
   <div data-setting-target="audio-system-mute">
     {#if duckSettingError}<div class="setting-row"><div class="desc" role="alert">Could not save the volume setting. Try changing it again.</div></div>{/if}
     <div class="setting-row sound-volume-row" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
-      <div class="sound-volume-header"><div><div class="label">Volume of audio while dictating</div><div class="desc">Maximum system volume while dictating. Audio already below this level stays unchanged. 0% mutes immediately; 100% leaves it unchanged. Other levels fade down smoothly. Playback continues unless media pause is enabled. Partial reduction requires PipeWire's PulseAudio service and pactl.</div></div><span class="sound-volume-value">{duckTarget}%</span></div>
+      <div class="sound-volume-header"><div><div class="label">Volume of audio while dictating</div><div class="desc">Maximum system volume while dictating. Audio already below this level stays unchanged. 0% mutes immediately; 100% leaves it unchanged. Other levels fade down smoothly. Playback continues unless media pause is enabled. Partial reduction requires PipeWire's PulseAudio service and pactl.</div></div><span class="sound-volume-value"><RollingNumber value={duckTarget} suffix="%" /></span></div>
       <div class="sound-volume-slider-wrap">
         <input type="range" class="sound-volume-slider" min="0" max="100" step="1" bind:value={duckTarget} onchange={() => saveDuckSetting('duck_target', duckTarget)} style="--pct: {duckTarget}%" aria-label="Volume of audio while dictating" />
         <div class="sound-volume-ticks"><span>0%</span><span>50%</span><span>100%</span></div>
       </div>
     </div>
     {#if duckTarget > 0 && duckTarget < 100}
-    <details class="volume-fades"><summary>Advanced volume fades</summary>
+    <div class="volume-fades" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
+    <Disclosure label="Advanced volume fades" id="volume-fades-details" bind:open={fadesOpen}>
     <div class="setting-row sound-volume-row">
-      <div class="sound-volume-header"><div><div class="label">Fade down duration</div><div class="desc">Time to reach the target when dictation starts.</div></div><span class="sound-volume-value">{duckFadeDown} ms</span></div>
+      <div class="sound-volume-header"><div><div class="label">Fade down duration</div><div class="desc">Time to reach the target when dictation starts.</div></div><span class="sound-volume-value"><RollingNumber value={duckFadeDown} suffix=" ms" /></span></div>
       <div class="sound-volume-slider-wrap"><input type="range" class="sound-volume-slider" min="0" max="5000" step="50" bind:value={duckFadeDown} onchange={() => saveDuckSetting('duck_fade_down_ms', duckFadeDown)} style="--pct: {duckFadeDown / 50}%" aria-label="Fade down duration" /></div>
     </div>
     <div class="setting-row sound-volume-row">
-      <div class="sound-volume-header"><div><div class="label">Fade up duration</div><div class="desc">Time to restore the volume when dictation ends.</div></div><span class="sound-volume-value">{duckFadeUp} ms</span></div>
+      <div class="sound-volume-header"><div><div class="label">Fade up duration</div><div class="desc">Time to restore the volume when dictation ends.</div></div><span class="sound-volume-value"><RollingNumber value={duckFadeUp} suffix=" ms" /></span></div>
       <div class="sound-volume-slider-wrap"><input type="range" class="sound-volume-slider" min="0" max="5000" step="50" bind:value={duckFadeUp} onchange={() => saveDuckSetting('duck_fade_up_ms', duckFadeUp)} style="--pct: {duckFadeUp / 50}%" aria-label="Fade up duration" /></div>
     </div>
     <div class="setting-row"><div><div class="label">Smooth fade up</div><div class="desc">Ease the start and end of the fade; turn off for a linear curve.</div></div><Toggle checked={duckUpSmooth} onchange={setDuckCurve} label="Smooth fade up" bind:error={duckUpCurveError} /></div>
-    </details>
+    </Disclosure>
+    </div>
     {/if}
   </div>
 {/if}
@@ -484,7 +489,7 @@
       <div class="label">Sound effects volume</div>
       <div class="desc">Set to 0% to silence dictation chimes</div>
     </div>
-    <span class="sound-volume-value">{Math.round(soundEffectsVolume)}%</span>
+    <span class="sound-volume-value"><RollingNumber value={Math.round(soundEffectsVolume)} suffix="%" /></span>
   </div>
   <div class="sound-volume-slider-wrap">
     <input
@@ -505,7 +510,8 @@
 </div>
 
 <style>
-  .volume-fades summary { cursor: pointer; padding: 14px 0; }
+  .volume-fades { margin-top: 8px; }
+  .volume-fades :global(.disclosure-body) { padding-top: 4px; }
 
   .setting-row.gain-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
   .gain-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
@@ -653,6 +659,7 @@
     font-weight: 500;
     vertical-align: 1px;
   }
+  .reuse-progress { grid-column: 1 / -1; margin-top: -12px; }
   .reuse-note { margin-top: 6px; }
   .reuse-extra { margin-top: 8px; }
   .reuse-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
