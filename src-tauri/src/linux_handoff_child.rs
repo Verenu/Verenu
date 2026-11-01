@@ -35,15 +35,16 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
     };
     let key_availability = startup.key_availability().clone();
     let parent_unique_name = startup.parent_unique_name().map(str::to_owned);
-    let callback_queue = match startup.callback_queue_path() {
-        Some(path) => match crate::linux_handoff_callbacks::CallbackQueue::open(path) {
-            Ok(queue) => Some(Arc::new(queue)),
-            Err(error) => {
-                let _ = startup.fail(format!("Could not open restart callback queue: {error}"));
-                return;
-            }
-        },
-        None => None,
+    let Some(callback_path) = startup.callback_queue_path() else {
+        let _ = startup.fail("Restart callback queue is missing".into());
+        return;
+    };
+    let callback_queue = match crate::linux_handoff_callbacks::CallbackQueue::open(callback_path) {
+        Ok(queue) => Arc::new(queue),
+        Err(error) => {
+            let _ = startup.fail(format!("Could not open restart callback queue: {error}"));
+            return;
+        }
     };
     let db = match crate::data::db::open_for_handoff(crate::app_db_path()) {
         Ok(db) => db,

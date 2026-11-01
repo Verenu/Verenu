@@ -1137,6 +1137,23 @@ mod tests {
         original_files.sort();
         let (callback_queue, callback_path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
         let callback_queue = std::sync::Arc::new(callback_queue);
+        let mut missing_queue = Command::new(&binary);
+        missing_queue
+            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+            .env("XDG_STATE_HOME", &state)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+            .env_remove("VERENU_AGENT_TOKEN")
+            .env_remove("VERENU_AGENT_PORT")
+            .env_remove("VERENU_HANDOFF_TEST_SHORTCUTS");
+        let replacement = Replacement::spawn(
+            missing_queue,
+            crate::data::db::HANDOFF_SCHEMA_VERSION,
+            KeyAvailability::new(),
+            Duration::from_secs(25),
+        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap());
+        assert!(matches!(replacement.prepare(), Err(error) if error.contains("callback queue is missing")));
+        assert!(owner.owns_name().unwrap());
         let mut command = Command::new(&binary);
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
@@ -1233,8 +1250,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks_before + 2);
-        drop(callback_queue);
-        std::fs::remove_dir_all(callback_path.parent().unwrap()).unwrap();
         connection
             .call_method(
                 Some("com.verenu.app.SingleInstance"),
@@ -1284,7 +1299,8 @@ mod tests {
             Duration::from_secs(25),
         )
         .unwrap()
-        .with_parent_unique_name(owner.unique_name().unwrap());
+        .with_parent_unique_name(owner.unique_name().unwrap())
+        .with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner
@@ -1333,7 +1349,8 @@ mod tests {
             Duration::from_secs(25),
         )
         .unwrap()
-        .with_parent_unique_name(owner.unique_name().unwrap());
+        .with_parent_unique_name(owner.unique_name().unwrap())
+        .with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let updated_settings = b"{\"setup_complete\":true,\"test_changed\":true}";
         std::fs::write(data.join("settings.json"), updated_settings).unwrap();
@@ -1383,7 +1400,8 @@ mod tests {
             Duration::from_secs(25),
         )
         .unwrap()
-        .with_parent_unique_name(owner.unique_name().unwrap());
+        .with_parent_unique_name(owner.unique_name().unwrap())
+        .with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         parent_db
             .lock()
@@ -1431,7 +1449,7 @@ mod tests {
             crate::data::db::HANDOFF_SCHEMA_VERSION,
             KeyAvailability::new(),
             Duration::from_secs(25),
-        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap());
+        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
@@ -1466,7 +1484,7 @@ mod tests {
             crate::data::db::HANDOFF_SCHEMA_VERSION,
             KeyAvailability::new(),
             Duration::from_secs(25),
-        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap());
+        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
@@ -1500,7 +1518,7 @@ mod tests {
             crate::data::db::HANDOFF_SCHEMA_VERSION,
             KeyAvailability::new(),
             Duration::from_secs(25),
-        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap());
+        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
@@ -1517,6 +1535,8 @@ mod tests {
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
         assert_eq!(registrations.lock().unwrap().len(), 4);
+        drop(callback_queue);
+        std::fs::remove_dir_all(callback_path.parent().unwrap()).unwrap();
         drop(parent_db);
         std::fs::remove_dir_all(root).unwrap();
     }
