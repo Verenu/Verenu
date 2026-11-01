@@ -21,6 +21,9 @@ pub(crate) type KeyAvailability = BTreeMap<String, bool>;
 fn database_code_fingerprint() -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
+    // Recovery resumes the older process against the same database and settings.
+    // Require matching storage and migration code until an explicit compatibility
+    // contract can prove that a particular pair of versions can share that state.
     for source in [
         &include_bytes!("data/db/mod.rs")[..],
         &include_bytes!("data/db/schema.rs")[..],
@@ -38,6 +41,11 @@ fn database_code_fingerprint() -> String {
         &include_bytes!("data/db/sub_apps.rs")[..],
         &include_bytes!("data/db/transcriptions.rs")[..],
         &include_bytes!("data/db/validation.rs")[..],
+        &include_bytes!("data/store/mod.rs")[..],
+        &include_bytes!("data/store/config.rs")[..],
+        &include_bytes!("commands/settings.rs")[..],
+        &include_bytes!("sync/manager.rs")[..],
+        &include_bytes!("sync/store.rs")[..],
         &include_bytes!("linux_handoff_callbacks.rs")[..],
     ] {
         hash.update((source.len() as u64).to_le_bytes());
@@ -856,6 +864,20 @@ mod tests {
             child.send(&message).unwrap();
             assert!(parent.prepare().is_err());
         }
+    }
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires a previous custom-protocol replacement binary"]
+    fn real_replacement_with_incompatible_state_code_is_rejected() {
+        let binary = std::env::var_os("VERENU_HANDOFF_TEST_OLD_BINARY").expect("previous replacement binary");
+        let replacement = Replacement::spawn(
+            std::process::Command::new(binary),
+            crate::data::db::HANDOFF_SCHEMA_VERSION,
+            KeyAvailability::new(),
+            Duration::from_secs(10),
+        ).unwrap();
+        assert!(matches!(replacement.prepare(), Err(reason) if reason.contains("compatibility did not match")));
     }
 
     #[test]
