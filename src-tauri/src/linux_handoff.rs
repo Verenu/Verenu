@@ -671,14 +671,14 @@ mod tests {
                 assert!(tauri::async_runtime::spawn_blocking(move || {
                     app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
                 }).await.unwrap());
-                let registered = crate::linux_single_instance::test_launcher_registered();
-                let pending_callback = tauri::async_runtime::spawn_blocking(|| {
-                    crate::linux_single_instance::test_callback(&zbus::blocking::Connection::session().unwrap(),
-                        "com.verenu.app.SingleInstance", "/com/verenu/app/SingleInstance",
-                        vec!["--verenu-hotkey-handsfree".into()]).unwrap();
-                });
+                let marker = dir.join("late-callback-waiting");
+                let mut launcher = replacement_command(&binary, &dir);
+                launcher.arg("--verenu-hotkey-handsfree")
+                    .env("VERENU_HANDOFF_TEST_LAUNCHER_WAIT", &marker)
+                    .stdout(Stdio::null()).stderr(Stdio::null());
+                let mut pending_callback = Replacement(launcher.spawn().unwrap());
                 tokio::time::timeout(Duration::from_secs(5), async {
-                    while crate::linux_single_instance::test_launcher_registered() == registered {
+                    while !marker.exists() {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 }).await.expect("callback did not enter the shortcut queue");
@@ -688,7 +688,13 @@ mod tests {
                 assert!(error.contains("Synthetic replacement startup failure"), "unexpected activation failure: {error}");
                 drop(tokio::time::timeout(Duration::from_secs(20), gate.enter()).await
                     .expect("failed activation did not restore the parent"));
-                tokio::time::timeout(Duration::from_secs(5), pending_callback).await.unwrap().unwrap();
+                let status = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let Some(status) = pending_callback.0.try_wait().unwrap() { break status; }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.expect("callback launcher did not finish");
+                assert!(status.success(), "callback launcher failed: {status}");
                 assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
                 assert_eq!(std::fs::read(dir.join("agent-session.json")).unwrap(), agent_descriptor);
                 assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), settings_before);
