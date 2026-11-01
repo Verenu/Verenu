@@ -11,99 +11,91 @@ pub(crate) struct FrontendReadiness {
     pub(crate) main: Arc<AtomicBool>,
     pub(crate) pill: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
-    pub(crate) main_navigation: Arc<std::sync::atomic::AtomicU32>,
+    main_navigation: Arc<PageReadiness>,
     #[cfg(target_os = "linux")]
-    pub(crate) pill_navigation: Arc<std::sync::atomic::AtomicU32>,
+    pill_navigation: Arc<PageReadiness>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct PageReadiness(std::sync::Mutex<(u32, u8)>);
+
+#[cfg(target_os = "linux")]
+impl PageReadiness {
+    fn start(&self, mask: u32) {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.0 = state.0.wrapping_add(1) & mask;
+        state.1 = 0;
+    }
+
+    fn generation(&self) -> u32 {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).0
+    }
+
+    fn mark(&self, generation: u32, flag: u8, error: &'static str) -> Result<(), String> {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.0 != generation {
+            return Err(error.into());
+        }
+        state.1 |= flag;
+        Ok(())
+    }
+
+    fn has(&self, flags: u8) -> bool {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).1 & flags == flags
+    }
 }
 
 #[cfg(target_os = "linux")]
 impl FrontendReadiness {
     pub(crate) fn main_page_started(&self) {
-        use std::sync::atomic::Ordering;
-        let mut current = self.main_navigation.load(Ordering::SeqCst);
-        loop {
-            let next = ((current >> 2).wrapping_add(1) & 0x3fff_ffff) << 2;
-            match self.main_navigation.compare_exchange_weak(
-                current,
-                next,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => break,
-                Err(state) => current = state,
-            }
-        }
+        self.main_navigation.start(0x3fff_ffff);
     }
 
     pub(crate) fn main_settings_generation(&self) -> u32 {
-        self.main_navigation.load(std::sync::atomic::Ordering::SeqCst) >> 2
+        self.main_navigation.generation()
     }
 
     pub(crate) fn mark_main_settings_ready(&self, generation: u32) -> Result<(), String> {
-        self.mark_main_ready(generation, 1)
+        self.main_navigation.mark(
+            generation,
+            1,
+            "Settings readiness belongs to an earlier page.",
+        )
     }
 
     pub(crate) fn mark_home_ready(&self, generation: u32) -> Result<(), String> {
-        self.mark_main_ready(generation, 2)
-    }
-
-    fn mark_main_ready(&self, generation: u32, flag: u32) -> Result<(), String> {
-        use std::sync::atomic::Ordering;
-        if generation > 0x3fff_ffff {
-            return Err("Settings readiness belongs to an earlier page.".into());
-        }
-        let mut state = self.main_navigation.load(Ordering::SeqCst);
-        loop {
-            if state >> 2 != generation {
-                return Err("Settings readiness belongs to an earlier page.".into());
-            }
-            match self.main_navigation.compare_exchange_weak(
-                state, state | flag, Ordering::SeqCst, Ordering::SeqCst,
-            ) {
-                Ok(_) => return Ok(()),
-                Err(actual) => state = actual,
-            }
-        }
+        self.main_navigation.mark(
+            generation,
+            2,
+            "Settings readiness belongs to an earlier page.",
+        )
     }
 
     #[allow(dead_code)]
     pub(crate) fn main_settings_ready(&self) -> bool {
-        self.main_navigation.load(std::sync::atomic::Ordering::SeqCst) & 1 != 0
+        self.main_navigation.has(1)
     }
 
     pub(crate) fn main_and_home_ready(&self) -> bool {
-        self.main_navigation.load(std::sync::atomic::Ordering::SeqCst) & 3 == 3
+        self.main_navigation.has(3)
     }
 
     pub(crate) fn pill_page_started(&self) {
-        use std::sync::atomic::Ordering;
-        let mut current = self.pill_navigation.load(Ordering::SeqCst);
-        loop {
-            let next = ((current >> 1).wrapping_add(1) & 0x7fff_ffff) << 1;
-            match self.pill_navigation.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
-                Ok(_) => break,
-                Err(state) => current = state,
-            }
-        }
+        self.pill_navigation.start(0x7fff_ffff);
     }
 
     pub(crate) fn pill_generation(&self) -> u32 {
-        self.pill_navigation.load(std::sync::atomic::Ordering::SeqCst) >> 1
+        self.pill_navigation.generation()
     }
 
     pub(crate) fn mark_pill_ready(&self, generation: u32) -> Result<(), String> {
-        use std::sync::atomic::Ordering;
-        if generation > 0x7fff_ffff { return Err("Pill readiness belongs to an earlier page.".into()); }
-        let expected = generation << 1;
-        match self.pill_navigation.compare_exchange(expected, expected | 1, Ordering::SeqCst, Ordering::SeqCst) {
-            Ok(_) => Ok(()),
-            Err(state) if state == (expected | 1) => Ok(()),
-            Err(_) => Err("Pill readiness belongs to an earlier page.".into()),
-        }
+        self.pill_navigation
+            .mark(generation, 1, "Pill readiness belongs to an earlier page.")
     }
 
     pub(crate) fn current_pill_ready(&self) -> bool {
-        self.pill_navigation.load(std::sync::atomic::Ordering::SeqCst) & 1 != 0
+        self.pill_navigation.has(1)
     }
 }
 
