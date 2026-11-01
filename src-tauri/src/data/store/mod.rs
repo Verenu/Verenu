@@ -473,6 +473,7 @@ pub const CLEANUP_INTENSITY: &str = "cleanup_intensity";
 pub const VOICE_COMMANDS_ENABLED: &str = "voice_commands_enabled";
 pub const APP_MAPPINGS: &str = "app_mappings";
 pub const NOISE_REDUCTION: &str = "noise_reduction";
+pub const NVIDIA_REUSE_ENABLED: &str = "nvidia_reuse_enabled";
 pub const ECHO_CANCELLATION: &str = "echo_cancellation";
 pub const DUCK_AUDIO: &str = "duck_audio";
 pub const DUCK_TARGET: &str = "duck_target";
