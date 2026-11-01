@@ -117,9 +117,9 @@ mod common {
         EVENT_TX.get_or_init(|| std::sync::Mutex::new(None))
     }
 
-    pub fn setup(app: &mut tauri::App, shared: SharedState) {
+    pub fn setup(app: &AppHandle, shared: SharedState) {
         if STARTED.swap(true, Ordering::SeqCst) {
-            reload(app.handle());
+            reload(app);
             return;
         }
 
@@ -128,14 +128,14 @@ mod common {
             *slot = Some(tx);
         }
 
-        let app_handle = app.handle().clone();
+        let app_handle = app.clone();
         let state_watch = shared.clone();
         std::thread::Builder::new()
             .name("mic-mute-trigger".into())
             .spawn(move || watcher_loop(app_handle, state_watch))
             .expect("spawn mic-mute-trigger thread");
 
-        let app_hk = app.handle().clone();
+        let app_hk = app.clone();
         let state_hk = shared;
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -1086,7 +1086,7 @@ mod win {
 pub use common::{reload, setup};
 
 #[cfg(not(any(windows, target_os = "linux")))]
-pub fn setup(_app: &mut tauri::App, _shared: crate::pipeline::SharedState) {}
+pub fn setup(_app: &tauri::AppHandle, _shared: crate::pipeline::SharedState) {}
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn reload(_app: &tauri::AppHandle) {}
