@@ -406,8 +406,16 @@ fn output_budgets_are_output_only_and_intensity_specific() {
     assert_eq!(cleanup_max_output_tokens("none", input), 64);
     assert_eq!(cleanup_max_output_tokens("light", input), 96);
     assert_eq!(cleanup_max_output_tokens("medium", input), 128);
-    assert_eq!(cleanup_max_output_tokens("high", input), 96);
+    assert_eq!(cleanup_max_output_tokens("high", input), 2096);
     assert_eq!(fusion_max_output_tokens(input, "one two three"), 64);
+}
+
+#[test]
+fn strong_cleanup_budget_accounts_for_long_technical_text() {
+    let input = "technical_identifier_with_long_tokens ".repeat(100);
+    assert_eq!(cleanup_max_output_tokens("high", &input), 5848);
+    assert_eq!(cleanup_max_output_tokens("high", &input.repeat(10)), 8192);
+    assert!(cleanup_max_output_tokens("high", "你好世界") > 2048);
 }
 
 #[test]

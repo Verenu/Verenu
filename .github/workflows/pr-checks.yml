@@ -135,6 +135,7 @@ jobs:
         with:
           workspaces: src-tauri
           shared-key: pr-${{ matrix.check }}
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Run clippy
         if: matrix.check == 'clippy'
@@ -315,6 +316,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri
+          save-if: ${{ github.event_name != 'pull_request' }}
       - run: npm ci
       - run: npm run build
       - name: Run Android unit tests
@@ -341,6 +343,7 @@ jobs:
         with:
           workspaces: src-tauri
           shared-key: pr-linux-arm64
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -379,6 +382,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
         run: |

@@ -104,8 +104,8 @@ test('free GitHub runners execute every owned file once and both full browser pr
   assert.deepEqual(jobs['all-in-one-fast'].needs, ['fast-partitions', 'linux-regressions']);
   const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
   assert.equal(shared.inputs.profile.default, 'all');
-  // Some Node transport files also launch Chromium internally.
-  assert.equal(shared.runs.steps.find(step => step.name === 'Install browser').if, "inputs.profile != 'linux'");
+  // Node transport tests launch Chromium; only these two fast partitions do not.
+  assert.equal(shared.runs.steps.find(step => step.name === 'Install browser').if, "inputs.profile != 'linux' && !(inputs.profile == 'fast' && (inputs.fast-suites == 'preflight,contract' || inputs.fast-suites == 'rust'))");
   assert.deepEqual(workflow('pr-checks.yml').env, { CARGO_PROFILE_DEV_DEBUG: '0', CARGO_PROFILE_TEST_DEBUG: '0' });
   assert.equal(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).if, "inputs.profile == 'all' || inputs.profile == 'owned'");
   assert.equal(shared.runs.steps.find(step => step.run?.includes('npm test -- --strict')).if, "inputs.profile == 'all' || inputs.profile == 'fast'");
@@ -113,6 +113,15 @@ test('free GitHub runners execute every owned file once and both full browser pr
   assert.match(promptCompile.if, /inputs\.fast-suites == ''/);
   assert.match(promptCompile.if, /,contract,/);
   assert.equal(shared.runs.steps.find(step => step.run?.includes('cargo build --manifest-path src-tauri/Cargo.toml --features dev-session')).if, "inputs.profile == 'all' || inputs.profile == 'owned'");
+});
+
+test('PR jobs restore Rust caches without evicting caches seeded by master', () => {
+  const checks = workflow('pr-checks.yml');
+  const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
+  const cacheSteps = [...Object.values(checks.jobs).flatMap(job => job.steps || []), ...shared.runs.steps]
+    .filter(step => step.uses?.startsWith('Swatinem/rust-cache@'));
+  assert.ok(cacheSteps.length >= 4);
+  for (const step of cacheSteps) assert.equal(step.with['save-if'], "${{ github.event_name != 'pull_request' }}");
 });
 
 test('Rust partitions retain every platform check and required status fails closed', () => {
@@ -148,6 +157,10 @@ test('nightly publication requires exact-source regression verification', () => 
   const nightly = workflow('morning-release.yml');
   assert.ok(nightly.jobs.publish.needs.includes('verify'));
   assert.equal(nightly.jobs.verify.with['source-ref'], '${{ needs.prepare.outputs.release_sha }}');
+  const publishSteps = nightly.jobs.publish.steps;
+  const upload = publishSteps.findIndex(step => step.uses === 'softprops/action-gh-release@v3');
+  assert.equal(publishSteps[upload].with.draft, true);
+  assert.ok(publishSteps.findIndex(step => step.name === 'Publish completed draft') > upload);
   const release = workflow('release-quality.yml');
   for (const job of Object.values(release.jobs)) {
     assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout')).with.ref, '${{ inputs.source-ref }}');
@@ -172,6 +185,77 @@ test('nightly preparation derives a numeric base from stable and beta manifests'
   } finally { fs.rmSync(directory, {recursive:true, force:true}); }
 });
 
+test('an unpublished nightly tag cannot hide changes from the next run', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'verenu-nightly-baseline-'));
+  const checkout = path.join(directory, 'checkout');
+  const remote = path.join(directory, 'remote.git');
+  const git = (...args) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8', stdio: 'pipe' }).trim();
+  try {
+    fs.mkdirSync(checkout);
+    execFileSync('git', ['init', '--bare', remote], { stdio: 'pipe' });
+    git('init', '-b', 'master');
+    git('config', 'user.name', 'Nightly Test');
+    git('config', 'user.email', 'nightly-test@example.invalid');
+    git('remote', 'add', 'origin', remote);
+    fs.mkdirSync(path.join(checkout, 'src-tauri'));
+    for (const file of ['package.json', 'src-tauri/tauri.conf.json']) fs.writeFileSync(path.join(checkout, file), '{"version":"0.20.0"}\n');
+    fs.writeFileSync(path.join(checkout, 'src-tauri/Cargo.toml'), '[package]\nversion = "0.20.0"\n');
+    git('add', '.');
+    git('commit', '-m', 'Stable');
+    git('tag', 'Verenu-0.20.0');
+    fs.writeFileSync(path.join(checkout, 'changes.txt'), 'change\n'.repeat(20));
+    git('add', 'changes.txt');
+    git('commit', '-m', 'Changes');
+    git('tag', 'Verenu-9.99.0'); // An unpublished tag at master is not a baseline.
+    git('push', 'origin', 'master', '--tags');
+    fs.writeFileSync(path.join(checkout, 'snapshot.txt'), 'failed snapshot\n');
+    fs.writeFileSync(path.join(checkout, 'src-tauri/Cargo.lock'), '[[package]]\nname = "verenu"\nversion = "0.20.0"\n');
+    git('add', 'snapshot.txt', 'src-tauri/Cargo.lock');
+    git('commit', '-m', 'Failed nightly');
+    git('tag', 'Verenu-0.20.0-nightly.20261030');
+    git('push', 'origin', '--tags');
+    fs.mkdirSync(path.join(directory, 'bin'));
+    fs.writeFileSync(path.join(directory, 'bin/gh'), '#!/bin/sh\nprintf "%s\\n" "$FAKE_RELEASES"\n', { mode: 0o755 });
+    const step = workflow('morning-release.yml').jobs.prepare.steps.find(item => item.id === 'changes');
+    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', step.run], {
+      cwd: checkout, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, PATH: `${path.join(directory, 'bin')}:${process.env.PATH}`, GITHUB_OUTPUT: path.join(directory, 'output') },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Baseline: \(no complete published nightly\)/);
+    assert.match(fs.readFileSync(path.join(directory, 'output'), 'utf8'), /should_release=true/);
+
+    const date = execFileSync('date', ['+%Y%m%d'], { env: { ...process.env, TZ: 'America/Vancouver' }, encoding: 'utf8' }).trim();
+    const version = `0.20.0-nightly.${date}`;
+    const tag = `Verenu-${version}`;
+    git('tag', tag);
+    git('push', 'origin', '--tags');
+    const assets = [`Verenu_${version}_x64-setup.exe`, `Verenu_${version}_x64_en-US.msi`, `Verenu_${version}_Apple_Silicon.dmg`, `Verenu_${version}_Intel.dmg`, `Verenu_${version}_amd64.AppImage`, `verenu-${version.replaceAll('-', '_')}-1-x86_64.pkg.tar.zst`, 'SHA256SUMS.txt'];
+    for (const [available, expected] of [[assets.slice(0, -1), 'true'], [assets, 'false']]) {
+      fs.writeFileSync(path.join(directory, 'output'), '');
+      const retry = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', step.run], {
+        cwd: checkout, encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, PATH: `${path.join(directory, 'bin')}:${process.env.PATH}`, GITHUB_OUTPUT: path.join(directory, 'output'), FAKE_RELEASES: `${tag}\t${available.join('|')}` },
+      });
+      assert.equal(retry.status, 0, retry.stderr);
+      assert.match(fs.readFileSync(path.join(directory, 'output'), 'utf8'), new RegExp(`should_release=${expected}`));
+      if (expected === 'true') assert.match(fs.readFileSync(path.join(directory, 'output'), 'utf8'), new RegExp(`release_tag=${tag}\\.1`));
+    }
+    git('checkout', '-b', 'advanced', 'origin/master');
+    fs.writeFileSync(path.join(checkout, 'more.txt'), 'new change\n'.repeat(20));
+    git('add', 'more.txt');
+    git('commit', '-m', 'Advance master');
+    git('push', 'origin', 'HEAD:master');
+    fs.writeFileSync(path.join(directory, 'output'), '');
+    const advanced = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', step.run], {
+      cwd: checkout, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, PATH: `${path.join(directory, 'bin')}:${process.env.PATH}`, GITHUB_OUTPUT: path.join(directory, 'output') },
+    });
+    assert.equal(advanced.status, 0, advanced.stderr);
+    assert.match(fs.readFileSync(path.join(directory, 'output'), 'utf8'), new RegExp(`release_tag=${tag}\\.1`));
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('nightly version snapshot preserves CRLF files and still rejects trailing spaces', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'verenu-nightly-crlf-'));
   const checkout = path.join(directory, 'checkout');
@@ -190,6 +274,7 @@ test('nightly version snapshot preserves CRLF files and still rejects trailing s
       'package.json': '{\r\n  "version": "0.20.0"\r\n}\r\n',
       'src-tauri/tauri.conf.json': '{\r\n  "version": "0.20.0"\r\n}\r\n',
       'src-tauri/Cargo.toml': '[package]\nname = "verenu"\nversion = "0.20.0"\n',
+      'src-tauri/Cargo.lock': 'version = 4\n\n[[package]]\nname = "verenu"\nversion = "0.20.0"\n',
     };
     for (const [file, contents] of Object.entries(originals)) fs.writeFileSync(path.join(checkout, file), contents);
     git('add', 'package.json', 'src-tauri');
@@ -212,6 +297,7 @@ test('nightly version snapshot preserves CRLF files and still rejects trailing s
     assert.equal(config.version, version);
     assert.equal(config.bundle.windows.wix.version, '0.20.0.0');
     assert.match(git('show', `${tag}:src-tauri/Cargo.toml`), /version = "0.20.0-nightly.20261009"/);
+    assert.match(git('show', `${tag}:src-tauri/Cargo.lock`), /name = "verenu"\nversion = "0.20.0-nightly.20261009"/);
     assert.match(git('ls-remote', 'origin', `refs/tags/${tag}^{}`), new RegExp(releaseSha));
     assert.match(fs.readFileSync(path.join(directory, 'output'), 'utf8'), new RegExp(`release_sha=${releaseSha}`));
     for (const [file, contents] of Object.entries(originals)) assert.equal(fs.readFileSync(path.join(checkout, file), 'utf8'), contents);

@@ -168,7 +168,7 @@ pub fn cleanup_max_output_tokens(intensity: &str, input_text: &str) -> u32 {
     match intensity {
         "none" => (input_words + 32).clamp(64, 512),
         "light" => (input_words * 2 + 32).clamp(96, 768),
-        "high" => (input_words + 64).clamp(96, 768),
+        "high" => (input_text.len().min(6144) as u32 + 2048).clamp(2048, 8192),
         _ => (input_words * 2 + 64).clamp(128, 1024),
     }
 }

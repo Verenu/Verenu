@@ -5,6 +5,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Fixed restored Linux clipboard items becoming unavailable after Omarchy's clipboard watcher stops reading them.
+- Fixed nightly snapshots to update the Rust lockfile and compare changes against published nightlies, so failed attempts do not suppress later releases.
 - On Linux, verify that playback was unmuted after dictation, retry transient restore failures, and retain failed restores for another attempt.
 - Restore paused media when a shortcut cancels a just-started dictation, including when another recording starts immediately afterward.
 - Redesigned Settings > Models. Pick a Cloud or Local AI setup (Balanced is marked Recommended) and Verenu sets the speech model, clean-up model, and backups. A new Active models card always shows what is in use, with fixed label and action columns and fixed row heights so text no longer shifts when values change. Advanced Models adds Change, backup editing, prompt editing, and the single/dual strategy. Memory policy and Models folder now live under Local models.
