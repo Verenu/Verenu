@@ -417,6 +417,76 @@ fn app_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
     ]
 }
 
+fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    if window.label() != "main" {
+        return;
+    }
+    match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            if crate::system::session::system_is_shutting_down() {
+                return;
+            }
+            api.prevent_close();
+            #[cfg(target_os = "macos")]
+            hide_main_window(window.app_handle());
+            #[cfg(not(target_os = "macos"))]
+            { window.hide().ok(); }
+        }
+        #[cfg(target_os = "macos")]
+        tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
+            crate::system::mac_app::set_regular_activation_policy_on_main_thread(window.app_handle());
+        }
+        tauri::WindowEvent::Focused(true) => {
+            #[cfg(target_os = "windows")]
+            apply_runtime_icons(window.app_handle(), window.theme().ok());
+            #[cfg(target_os = "macos")]
+            crate::system::mac_app::set_regular_activation_policy_on_main_thread(window.app_handle());
+        }
+        tauri::WindowEvent::ThemeChanged(theme) => {
+            let app = window.app_handle();
+            #[cfg(target_os = "windows")]
+            if let Some(webview) = app.get_webview_window("main") {
+                crate::system::windows_titlebar::refresh(&webview, Some(*theme));
+            }
+            if app_tray::appearance_mode(app).as_deref().unwrap_or("system") == "system" {
+                apply_runtime_icons(app, Some(*theme));
+            }
+        }
+        #[cfg(target_os = "windows")]
+        tauri::WindowEvent::Moved(_) => {}
+        #[cfg(target_os = "windows")]
+        tauri::WindowEvent::Resized(_) => schedule_settled_titlebar_refresh(window.app_handle()),
+        #[cfg(target_os = "windows")]
+        tauri::WindowEvent::ScaleFactorChanged { .. } => {
+            if let Some(webview) = window.app_handle().get_webview_window("main") {
+                crate::system::windows_titlebar::refresh(&webview, window.theme().ok());
+                apply_runtime_icons(window.app_handle(), window.theme().ok());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_run_event(_app: &tauri::AppHandle, _event: tauri::RunEvent) {
+    #[cfg(target_os = "macos")]
+    if let tauri::RunEvent::Reopen { .. } = _event {
+        show_main_window(_app);
+    }
+    if let tauri::RunEvent::ExitRequested { .. } = _event {
+        log::info!("app exit requested");
+    }
+    if let tauri::RunEvent::Exit = _event {
+        crate::media::sound::release_all_mutes_on_exit();
+        log::info!("app exiting; unloading local models");
+        crate::pipeline::failover::flush_on_exit(_app);
+        crate::system::shutdown_local_models(_app);
+        #[cfg(target_os = "windows")]
+        app_tray::cleanup_runtime_icon_files();
+        log::info!("app shutdown complete");
+        log::logger().flush();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -878,93 +948,11 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if window.label() == "main" {
-                match event {
-                    tauri::WindowEvent::CloseRequested { api, .. } => {
-                        if crate::system::session::system_is_shutting_down() {
-                            return;
-                        }
-                        api.prevent_close();
-                        #[cfg(target_os = "macos")]
-                        {
-                            hide_main_window(window.app_handle());
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            window.hide().ok();
-                        }
-                    }
-                    #[cfg(target_os = "macos")]
-                    tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
-                        crate::system::mac_app::set_regular_activation_policy_on_main_thread(
-                            window.app_handle(),
-                        );
-                    }
-                    tauri::WindowEvent::Focused(true) => {
-                        #[cfg(target_os = "windows")]
-                        apply_runtime_icons(window.app_handle(), window.theme().ok());
-                        #[cfg(target_os = "macos")]
-                        {
-                            crate::system::mac_app::set_regular_activation_policy_on_main_thread(
-                                window.app_handle(),
-                            );
-                        }
-                    }
-                    tauri::WindowEvent::ThemeChanged(theme) => {
-                        let app = window.app_handle();
-                        #[cfg(target_os = "windows")]
-                        if let Some(webview) = app.get_webview_window("main") {
-                            crate::system::windows_titlebar::refresh(&webview, Some(*theme));
-                        }
-                        if app_tray::appearance_mode(app)
-                            .as_deref()
-                            .unwrap_or("system")
-                            == "system"
-                        {
-                            apply_runtime_icons(app, Some(*theme));
-                        }
-                    }
-                    #[cfg(target_os = "windows")]
-                    tauri::WindowEvent::Moved(_) => {
-                    }
-                    #[cfg(target_os = "windows")]
-                    tauri::WindowEvent::Resized(_) => {
-                        schedule_settled_titlebar_refresh(window.app_handle());
-                    }
-                    #[cfg(target_os = "windows")]
-                    tauri::WindowEvent::ScaleFactorChanged { .. } => {
-                        if let Some(webview) = window.app_handle().get_webview_window("main") {
-                            crate::system::windows_titlebar::refresh(&webview, window.theme().ok());
-                            apply_runtime_icons(window.app_handle(), window.theme().ok());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        })
+        .on_window_event(handle_window_event)
         .invoke_handler(app_invoke_handler())
         .build(tauri::generate_context!())
         .expect("error building Verenu")
-        .run(|_app, _event| {
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
-                show_main_window(_app);
-            }
-            if let tauri::RunEvent::ExitRequested { .. } = _event {
-                log::info!("app exit requested");
-            }
-            if let tauri::RunEvent::Exit = _event {
-                crate::media::sound::release_all_mutes_on_exit();
-                log::info!("app exiting; unloading local models");
-                crate::pipeline::failover::flush_on_exit(_app);
-                crate::system::shutdown_local_models(_app);
-                #[cfg(target_os = "windows")]
-                app_tray::cleanup_runtime_icon_files();
-                log::info!("app shutdown complete");
-                log::logger().flush();
-            }
-        });
+        .run(handle_run_event);
 }
 
 #[cfg(target_os = "linux")]

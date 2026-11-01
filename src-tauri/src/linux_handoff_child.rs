@@ -74,6 +74,8 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
     let readiness = crate::FrontendReadiness::default();
     let normal_commands = Arc::new(AtomicBool::new(false));
     let command_mode = normal_commands.clone();
+    let window_mode = normal_commands.clone();
+    let run_mode = normal_commands.clone();
     let normal_handler = crate::app_invoke_handler();
     let probation_handler: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
         Box::new(tauri::generate_handler![
@@ -83,6 +85,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
             crate::commands::frontend_home_ready,
             crate::commands::frontend_pill_generation,
             crate::commands::frontend_pill_ready,
+            crate::system::windows_titlebar::get_native_titlebar_metrics,
             crate::commands::get_setting,
             get_api_key_status,
             crate::api::apple_intelligence::get_apple_intelligence_availability,
@@ -118,6 +121,11 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         _ => {}
                     }
                 }
+            }
+        })
+        .on_window_event(move |window, event| {
+            if window_mode.load(Ordering::Acquire) {
+                crate::handle_window_event(window, event);
             }
         })
         .invoke_handler(move |invoke| {
@@ -324,7 +332,11 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         })
         .build(tauri::generate_context!());
     match app {
-        Ok(app) => app.run(|_, _| {}),
+        Ok(app) => app.run(move |app, event| {
+            if run_mode.load(Ordering::Acquire) {
+                crate::handle_run_event(app, event);
+            }
+        }),
         Err(error) => eprintln!("Could not initialize update replacement: {error}"),
     }
 }
