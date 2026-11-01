@@ -402,7 +402,7 @@ mod handoff_tests {
         let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
         tauri::async_runtime::block_on(async {
             let worker = manager.activate_after_handoff(prepared, &parent_exited).unwrap();
-            tokio::time::timeout(Duration::from_secs(15), worker).await.unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(15), worker).await.unwrap().unwrap().unwrap();
             assert!(manager.inner.available.load(Ordering::Relaxed));
             assert_eq!(manager.inner.listener_port.load(Ordering::Relaxed), fallback_port);
             tokio::time::timeout(
@@ -424,6 +424,7 @@ mod handoff_tests {
     #[ignore = "requires a private desktop and isolated network namespace"]
     fn failed_sync_initialization_does_not_leave_a_listener_active() {
         let identity = crate::sync::identity::generate_for_tests();
+        let retry_identity = identity.clone();
         let preferred = listener_port_for_uuid(&identity.uuid);
         let occupied = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, preferred)).unwrap();
         let fallback_listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
@@ -440,9 +441,27 @@ mod handoff_tests {
         }
         let manager = SyncManager::new_unstarted(app.handle().clone(), db);
         let prepared = PreparedSync { identity, fallback_listener, server_config };
-        assert!(tauri::async_runtime::block_on(manager.initialize_prepared(prepared)).is_err());
+        let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+        let worker = manager.activate_after_handoff(prepared, &parent_exited).unwrap();
+        assert!(tauri::async_runtime::block_on(worker).unwrap().is_err());
         assert!(!manager.inner.available.load(Ordering::Relaxed));
+        assert!(manager.inner.listener_failed.load(Ordering::Relaxed));
         assert!(std::net::TcpListener::bind(fallback_address).is_ok());
+        manager.inner.db.lock().unwrap().execute_batch(
+            "CREATE TABLE lifetime_stats (id INTEGER PRIMARY KEY, total_words INTEGER NOT NULL, dictionary_fixes INTEGER NOT NULL);"
+        ).unwrap();
+        let fallback_listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        fallback_listener.set_nonblocking(true).unwrap();
+        let server_config = crate::sync::transport::server_config(
+            retry_identity.cert_der().clone(), retry_identity.tls_key(),
+        ).unwrap();
+        let retry = PreparedSync { identity: retry_identity, fallback_listener, server_config };
+        let worker = manager.activate_after_handoff(retry, &parent_exited).expect("sync could not retry");
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(Duration::from_secs(15), worker).await.unwrap().unwrap().unwrap();
+        });
+        assert!(manager.inner.available.load(Ordering::Relaxed));
+        assert!(!manager.inner.listener_failed.load(Ordering::Relaxed));
         drop(occupied);
     }
 
@@ -655,16 +674,21 @@ impl SyncManager {
         &self,
         prepared: PreparedSync,
         _parent_exited: &crate::linux_handoff_transport::ParentExited,
-    ) -> Option<tauri::async_runtime::JoinHandle<()>> {
+    ) -> Option<tauri::async_runtime::JoinHandle<Result<()>>> {
         if self.inner.initialization_started.swap(true, Ordering::AcqRel) {
             return None;
         }
         let init = self.clone();
         Some(tauri::async_runtime::spawn(async move {
-            if let Err(err) = init.initialize_prepared(prepared).await {
+            let result = init.initialize_prepared(prepared).await;
+            if let Err(err) = &result {
                 init.inner.listener_failed.store(true, Ordering::Relaxed);
+                init.inner.initialization_started.store(false, Ordering::Release);
                 log::error!("sync: disabled - {err:#}");
+            } else {
+                init.inner.listener_failed.store(false, Ordering::Relaxed);
             }
+            result
         }))
     }
 
