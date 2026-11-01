@@ -1560,6 +1560,34 @@ mod tests {
         assert!(!data.join("agent-session.json").exists());
         assert!(crate::sync::secrets::load_identity_key(&data).unwrap().as_slice() == sync_key.secret_pkcs8_der());
 
+        std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true,\"cleanup_cache_enabled\":false}").unwrap();
+        let mut command = Command::new(&binary);
+        command.env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+            .env("XDG_STATE_HOME", &state)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+            .env_remove("VERENU_AGENT_TOKEN")
+            .env_remove("VERENU_AGENT_PORT")
+            .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
+        let replacement = Replacement::spawn(
+            command, crate::data::db::HANDOFF_SCHEMA_VERSION, KeyAvailability::new(), Duration::from_secs(25),
+        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
+        let ready = replacement.prepare().unwrap();
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
+        let outcome = ready.acquire_ownership().unwrap().activate();
+        assert!(matches!(outcome, Err(reason) if reason.contains("Cleanup cache settings require a manual restart")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !owner.owns_name().unwrap_or(false) {
+            assert!(Instant::now() < deadline, "parent did not regain ownership after cache mismatch");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        drop(pause);
+        assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
+        assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
+        std::fs::write(data.join("settings.json"), &original_settings).unwrap();
+
         std::fs::remove_file(data.join("sync-identity.key")).unwrap();
         let mut command = Command::new(&binary);
         command
@@ -1591,7 +1619,7 @@ mod tests {
         assert!(!data.join("sync-identity.key").exists());
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
-        assert_eq!(registrations.lock().unwrap().len(), 4);
+        assert_eq!(registrations.lock().unwrap().len(), 5);
         drop(callback_queue);
         std::fs::remove_dir_all(callback_path.parent().unwrap()).unwrap();
         drop(parent_db);

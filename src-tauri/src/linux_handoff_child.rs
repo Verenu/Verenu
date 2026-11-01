@@ -25,6 +25,18 @@ fn prepare_saved_shortcut(app: &tauri::AppHandle) -> Result<(), String> {
     crate::commands::apply_linux_control_keys(app)
 }
 
+fn verify_cleanup_cache_setting(
+    connection: &rusqlite::Connection,
+    enabled: bool,
+) -> Result<(), String> {
+    let stored = crate::data::db::cleanup_cache_enabled_conn(connection)
+        .map_err(|error| format!("Could not check cleanup cache state: {error}"))?;
+    if stored != enabled {
+        return Err("Cleanup cache settings require a manual restart to reconcile.".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
     let startup = match child.begin(crate::data::db::HANDOFF_SCHEMA_VERSION) {
         Ok(startup) => startup,
@@ -341,6 +353,15 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 return;
                             }
                         };
+                        let cache_enabled = handle.state::<crate::data::store::SettingsHandle>()
+                            .get(crate::data::store::CLEANUP_CACHE_ENABLED)
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true);
+                        if let Err(error) = verify_cleanup_cache_setting(locked_db.connection(), cache_enabled) {
+                            let _ = services.fail(error);
+                            handle.exit(1);
+                            return;
+                        }
                         if let Err(error) = prepared_sync.prepare_database(locked_db.connection()) {
                             let _ = services.fail(format!("Replacement sync database could not prepare: {error}"));
                             handle.exit(1);
@@ -368,5 +389,17 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
             }
         }),
         Err(error) => eprintln!("Could not initialize update replacement: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rejects_cleanup_cache_state_that_needs_startup_reconciliation() {
+        let db = crate::data::db::open(":memory:").unwrap();
+        crate::data::db::cleanup_cache_set_enabled(&db, false).unwrap();
+        let conn = db.lock().unwrap();
+        assert!(super::verify_cleanup_cache_setting(&conn, false).is_ok());
+        assert!(super::verify_cleanup_cache_setting(&conn, true).is_err());
     }
 }
