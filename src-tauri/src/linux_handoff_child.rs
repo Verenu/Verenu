@@ -235,12 +235,20 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 crate::app_tray::resume_after_handoff(&handle),
                             )
                             .is_ok();
-                        let reason = if tray_started {
-                            "Replacement services are not yet verified"
-                        } else {
-                            "Replacement tray could not start"
+                        if !tray_started {
+                            let _ = services.fail("Replacement tray could not start".into());
+                            handle.exit(1);
+                            return;
+                        }
+                        let _prepared_agent = match crate::agent_api::prepare_for_handoff() {
+                            Ok(agent) => agent,
+                            Err(error) => {
+                                let _ = services.fail(format!("Replacement agent service could not prepare: {error}"));
+                                handle.exit(1);
+                                return;
+                            }
                         };
-                        let _ = services.fail(reason.into());
+                        let _ = services.fail("Replacement services are not yet verified".into());
                     }
                 } else {
                     let reason = if acquired {

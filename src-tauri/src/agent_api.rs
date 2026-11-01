@@ -286,14 +286,25 @@ fn required_scopes(request: &Request) -> Vec<&'static str> {
     scopes
 }
 
-pub fn start(app: AppHandle) -> anyhow::Result<()> {
-    let token = std::env::var("VERENU_AGENT_TOKEN").ok();
+pub(crate) struct PreparedAgent {
+    listener: std::net::TcpListener,
+    token: Option<String>,
+    port: u16,
+    instance: String,
+}
+
+fn prepare_agent(
+    token: Option<String>,
+    configured_port: Option<String>,
+) -> anyhow::Result<PreparedAgent> {
     let port: u16 = if let Some(ref token) = token {
         anyhow::ensure!(
             valid_token(token),
             "VERENU_AGENT_TOKEN must be 32 random bytes encoded as 64 hex characters"
         );
-        let port = std::env::var("VERENU_AGENT_PORT")?.parse()?;
+        let port = configured_port
+            .ok_or_else(|| anyhow::anyhow!("VERENU_AGENT_PORT is required"))?
+            .parse()?;
         anyhow::ensure!(port > 0, "VERENU_AGENT_PORT must be 1..65535");
         port
     } else {
@@ -303,39 +314,81 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
     listener.set_nonblocking(true)?;
     let actual_port = listener.local_addr()?.port();
     let instance = uuid::Uuid::new_v4().to_string();
-    publish_discovery(actual_port, &instance)?;
-    let approvals = Arc::new(Mutex::new(Approvals {
-        legacy_token: token,
-        ..Approvals::default()
-    }));
-    app.manage(approvals.clone());
-    let gate = Arc::new(tokio::sync::Semaphore::new(1));
-    #[cfg(target_os = "linux")]
-    app.manage(AgentDrain(gate.clone()));
-    let state = Agent {
-        app,
+    Ok(PreparedAgent {
+        listener,
+        token,
+        port: actual_port,
         instance,
-        approvals,
-        gate,
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) fn prepare_for_handoff() -> anyhow::Result<PreparedAgent> {
+    prepare_from_environment()
+}
+
+fn prepare_from_environment() -> anyhow::Result<PreparedAgent> {
+    let token = std::env::var("VERENU_AGENT_TOKEN").ok();
+    let configured_port = if token.as_ref().is_some_and(|token| valid_token(token)) {
+        Some(std::env::var("VERENU_AGENT_PORT")?)
+    } else {
+        None
     };
-    tauri::async_runtime::spawn(async move {
-        let listener = match tokio::net::TcpListener::from_std(listener) {
-            Ok(l) => l,
-            Err(_) => return,
+    prepare_agent(token, configured_port)
+}
+
+pub fn start(app: AppHandle) -> anyhow::Result<()> {
+    prepare_from_environment()?.activate(app)
+}
+
+impl PreparedAgent {
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    pub(crate) fn activate_after_handoff(
+        self,
+        app: AppHandle,
+        _parent_exited: &crate::linux_handoff_transport::ParentExited,
+    ) -> anyhow::Result<()> {
+        self.activate(app)
+    }
+
+    fn activate(self, app: AppHandle) -> anyhow::Result<()> {
+        let Self { listener, token, port, instance } = self;
+        publish_discovery(port, &instance)?;
+        let approvals = Arc::new(Mutex::new(Approvals {
+            legacy_token: token,
+            ..Approvals::default()
+        }));
+        app.manage(approvals.clone());
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        #[cfg(target_os = "linux")]
+        app.manage(AgentDrain(gate.clone()));
+        let state = Agent {
+            app,
+            instance,
+            approvals,
+            gate,
         };
-        let routes = Router::new()
-            .route("/v1/invoke", post(invoke))
-            .route("/v1/status", get(status))
-            .route("/v1/authorize", post(authorize))
-            .route("/v1/authorization-status", post(authorization_status))
-            .route("/v1/revoke", post(revoke))
-            .layer(DefaultBodyLimit::max(64 * 1024))
-            .with_state(state);
-        if axum::serve(listener, routes).await.is_err() {
-            log::error!("Agent API stopped");
-        }
-    });
-    Ok(())
+        tauri::async_runtime::spawn(async move {
+            let listener = match tokio::net::TcpListener::from_std(listener) {
+                Ok(l) => l,
+                Err(_) => return,
+            };
+            let routes = Router::new()
+                .route("/v1/invoke", post(invoke))
+                .route("/v1/status", get(status))
+                .route("/v1/authorize", post(authorize))
+                .route("/v1/authorization-status", post(authorization_status))
+                .route("/v1/revoke", post(revoke))
+                .layer(DefaultBodyLimit::max(64 * 1024))
+                .with_state(state);
+            if axum::serve(listener, routes).await.is_err() {
+                log::error!("Agent API stopped");
+            }
+        });
+        Ok(())
+    }
 }
 
 async fn status(State(agent): State<Agent>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
@@ -1132,6 +1185,54 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_agent_reserves_and_releases_its_local_port() {
+        let reserved = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        assert!(prepare_agent(Some("a".repeat(64)), Some(port.to_string())).is_err());
+        drop(reserved);
+
+        let prepared = prepare_agent(None, None).unwrap();
+        let address = prepared.listener.local_addr().unwrap();
+        assert!(std::net::TcpListener::bind(address).is_err());
+        drop(prepared);
+        assert!(std::net::TcpListener::bind(address).is_ok());
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn prepared_agent_publishes_a_working_endpoint_only_after_activation() {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = std::env::temp_dir().join(format!("verenu-agent-test-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        let previous = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &directory);
+        let prepared = prepare_agent(None, None).unwrap();
+        let descriptor = directory.join("agent-session.json");
+        assert!(!descriptor.exists());
+        let app = tauri::Builder::default().any_thread().build(tauri::generate_context!()).unwrap();
+        prepared.activate(app.handle().clone()).unwrap();
+        let published: Value = serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+        let port = published["port"].as_u64().unwrap();
+        let response: Value = tauri::async_runtime::block_on(async {
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                client.get(format!("http://127.0.0.1:{port}/v1/status"))
+                    .send().await.unwrap().error_for_status().unwrap().json().await.unwrap()
+            }).await.unwrap()
+        });
+        assert_eq!(response["version"], 1);
+        assert_eq!(response["instance"], published["instance"]);
+        drop(app);
+        match previous {
+            Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
+            None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[cfg(all(target_os = "linux", feature = "native-testing"))]
     #[test]
     #[ignore = "requires an isolated graphical session"]
