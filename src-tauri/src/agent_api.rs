@@ -435,7 +435,10 @@ impl PreparedAgent {
                 let access = access.clone();
                 async move {
                     use axum::response::IntoResponse;
-                    if access.load(Ordering::Acquire) {
+                    if access.load(Ordering::Acquire)
+                        || (request.method() == axum::http::Method::GET
+                            && request.uri().path() == "/v1/status")
+                    {
                         next.run(request).await
                     } else {
                         StatusCode::SERVICE_UNAVAILABLE.into_response()
@@ -459,7 +462,10 @@ impl StagedAgent {
     pub(crate) async fn verify(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.server.as_ref().is_some_and(|server| !server.inner().is_finished()), "Agent service stopped during restart");
         let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build()?;
-        let response = client.get(format!("http://127.0.0.1:{}/v1/status", self.port)).send().await?;
+        let endpoint = format!("http://127.0.0.1:{}", self.port);
+        let status: Value = client.get(format!("{endpoint}/v1/status")).send().await?.error_for_status()?.json().await?;
+        anyhow::ensure!(status.get("instance").and_then(Value::as_str) == Some(self.instance.as_str()), "Agent service returned the wrong identity");
+        let response = client.post(format!("{endpoint}/v1/authorize")).json(&json!({"token": "a".repeat(64)})).send().await?;
         anyhow::ensure!(response.status() == StatusCode::SERVICE_UNAVAILABLE, "Agent probation endpoint was not isolated");
         Ok(())
     }
@@ -1373,8 +1379,13 @@ mod tests {
             let staged = prepared.stage_for_handoff(app.handle().clone()).await.unwrap();
             let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
             let endpoint = format!("http://127.0.0.1:{port}");
-            assert_eq!(client.get(format!("{endpoint}/v1/status")).send().await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
-            assert_eq!(client.post(format!("{endpoint}/v1/authorize")).body("{}").send().await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
+            let status: Value = client.get(format!("{endpoint}/v1/status")).send().await.unwrap().json().await.unwrap();
+            assert_eq!(status["instance"], staged.instance);
+            for path in ["authorize", "authorization-status", "revoke", "invoke"] {
+                assert_eq!(client.post(format!("{endpoint}/v1/{path}"))
+                    .json(&json!({"token": "a".repeat(64)}))
+                    .send().await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
+            }
             assert_eq!(std::fs::read(&descriptor).unwrap(), b"parent descriptor");
             let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
             staged.activate(&parent_exited).unwrap();
