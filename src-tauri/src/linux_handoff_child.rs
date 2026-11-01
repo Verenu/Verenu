@@ -6,6 +6,24 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
+struct ProbationPause(Option<crate::linux_activity::Pause>);
+
+impl ProbationPause {
+    fn guard(&self) -> &crate::linux_activity::Pause {
+        self.0.as_ref().expect("probation remains paused")
+    }
+}
+
+impl Drop for ProbationPause {
+    fn drop(&mut self) {
+        // If the coordinator panics, no child service may resume while the
+        // parent is recovering. The supervising process stops this child.
+        if let Some(pause) = self.0.take() {
+            std::mem::forget(pause);
+        }
+    }
+}
+
 #[tauri::command]
 fn get_api_key_status(
     availability: tauri::State<'_, crate::linux_handoff_transport::KeyAvailability>,
@@ -198,8 +216,8 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                 let child_pause = tauri::async_runtime::block_on(async {
                     tokio::time::timeout(Duration::from_secs(10), gate.pause()).await
                 });
-                let _child_pause = match child_pause {
-                    Ok(Ok(pause)) => pause,
+                let child_pause = match child_pause {
+                    Ok(Ok(pause)) => ProbationPause(Some(pause)),
                     _ => {
                         let _ = frontends.fail("Replacement is still busy starting".into());
                         handle.exit(1);
@@ -323,7 +341,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 fail_paused_probation(services, format!("Replacement microphone watcher could not prepare: {error}"));
                             }
                         };
-                        let active_microphone = match prepared_microphone.activate_while_paused(&_child_pause) {
+                        let active_microphone = match prepared_microphone.activate_while_paused(child_pause.guard()) {
                             Ok(microphone) => microphone,
                             Err(error) => fail_paused_probation(services, format!("Replacement microphone watcher could not start: {error}")),
                         };
@@ -341,8 +359,18 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = verify_cleanup_cache_setting(locked_db.connection(), cache_enabled) {
                             fail_paused_probation(services, error);
                         }
-                        if let Err(error) = prepared_sync.prepare_database(locked_db.connection()) {
-                            fail_paused_probation(services, format!("Replacement sync database could not prepare: {error}"));
+                        let sync_change = match prepared_sync.prepare_database(locked_db.connection()) {
+                            Ok(change) => change,
+                            Err(error) => fail_paused_probation(services, format!("Replacement sync database could not prepare: {error}")),
+                        };
+                        let staged_sync = match tauri::async_runtime::block_on(async {
+                            handle.state::<crate::sync::SyncManager>().start_while_paused(prepared_sync, child_pause.guard(), sync_change)
+                        }) {
+                            Ok(sync) => sync,
+                            Err(error) => fail_paused_probation(services, format!("Replacement sync listener could not start: {error}")),
+                        };
+                        if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
+                            fail_paused_probation(services, format!("Replacement sync listener could not verify: {error}"));
                         }
                         let tray_check = tauri::async_runtime::block_on(async {
                             tokio::time::timeout(Duration::from_secs(5), crate::app_tray::verify_probation_tray(&handle)).await
@@ -355,6 +383,9 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         }
                         if let Err(error) = active_microphone.verify() {
                             fail_paused_probation(services, format!("Replacement microphone watcher became unavailable: {error}"));
+                        }
+                        if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
+                            fail_paused_probation(services, format!("Replacement sync listener became unavailable: {error}"));
                         }
                         fail_paused_probation(services, "Replacement services are not yet verified".into());
                     }
@@ -383,6 +414,18 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn coordinator_panic_keeps_probation_paused() {
+        let gate = std::sync::Arc::new(crate::linux_activity::ActivityGate::default());
+        let pause = gate.pause().await.unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _pause = super::ProbationPause(Some(pause));
+            panic!("synthetic restart failure");
+        }));
+        assert!(result.is_err());
+        assert!(gate.try_enter().is_none());
+    }
+
     #[test]
     fn rejects_cleanup_cache_state_that_needs_startup_reconciliation() {
         let db = crate::data::db::open(":memory:").unwrap();
