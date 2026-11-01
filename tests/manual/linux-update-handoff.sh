@@ -54,7 +54,9 @@ watcher=$!
 "$binary" > "$root/app.log" 2>&1 &
 parent=$!
 child=''
+launcher=''
 cleanup() {
+  if [[ -n "$launcher" ]]; then kill "$launcher" 2>/dev/null || true; fi
   if [[ -n "$child" ]]; then kill "$child" 2>/dev/null || true; fi
   kill "$parent" 2>/dev/null || true
   kill "$watcher" 2>/dev/null || true
@@ -102,11 +104,22 @@ test "$owner_during" = "$(cat "$root/owner-before")"
 window=$(xdotool search --onlyvisible --name Verenu | head -1)
 xdotool windowunmap "$window"
 gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback '[]' ''
+env -u VERENU_HANDOFF_TEST_TRIGGER VERENU_HANDOFF_TEST_LAUNCHER_WAIT="$root/launcher.waiting" \
+  "$binary" --verenu-hotkey-release > "$root/launcher.log" 2>&1 &
+launcher=$!
+for _ in $(seq 1 200); do
+  [[ -e "$root/launcher.waiting" ]] && break
+  kill -0 "$launcher"
+  sleep .1
+done
+test -s "$root/launcher.waiting"
 touch "$root/trigger.continue"
 for _ in $(seq 1 900); do
   if [[ -e "$root/trigger.error" || -e "$root/trigger.activated" ]]; then break; fi
   sleep .1
 done
+wait "$launcher"
+launcher=''
 if [[ "$mode" = fail ]]; then
   test -s "$root/trigger.error"
   grep -q 'Synthetic late activation failure' "$root/trigger.error"

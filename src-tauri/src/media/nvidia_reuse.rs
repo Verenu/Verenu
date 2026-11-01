@@ -276,8 +276,6 @@ mod tests {
     #[ignore = "requires an isolated graphical session"]
     fn runtime_operations_refuse_to_start_during_restart() {
         use std::sync::Arc;
-        use tauri::Manager;
-
         let gate = Arc::new(crate::linux_activity::ActivityGate::default());
         let app = tauri::Builder::default()
             .any_thread()

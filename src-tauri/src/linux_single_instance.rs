@@ -2,6 +2,63 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager};
 use zbus::{blocking::Connection, interface};
 
+// A launcher holds this lock until its callback is acknowledged. The original
+// holds it exclusively across the final handoff and until process exit, so a
+// call cannot be directed to an owner that is in the middle of exiting.
+pub(crate) fn callback_lock(timeout: std::time::Duration) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+    use sha2::{Digest, Sha256};
+    let uid = unsafe { libc::geteuid() };
+    let bus: String = Connection::session()
+        .and_then(|connection| connection.call_method(
+            Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"), "GetId", &(),
+        ))
+        .and_then(|message| message.body().deserialize())
+        .map_err(|error| format!("Could not identify the shortcut session: {error}"))?;
+    let digest = format!("{:x}", Sha256::digest(bus.as_bytes()));
+    let directory = std::path::PathBuf::from(format!("/tmp/verenu-callbacks-{uid}-{}", &digest[..16]));
+    match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(format!("Could not prepare shortcut routing: {error}")),
+    }
+    let metadata = std::fs::symlink_metadata(&directory)
+        .map_err(|error| format!("Could not inspect shortcut routing: {error}"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != uid
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err("Shortcut routing directory is not private".into());
+    }
+    let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(directory.join("lock"))
+        .map_err(|error| format!("Could not open shortcut routing lock: {error}"))?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
+        return Err("Shortcut routing lock is not private".into());
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        use std::os::fd::AsRawFd;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::WouldBlock && error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(format!("Could not lock shortcut routing: {error}"));
+        }
+        #[cfg(all(feature = "native-testing", debug_assertions))]
+        if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_LAUNCHER_WAIT") {
+            let _ = std::fs::write(path, b"waiting");
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("Timed out waiting for shortcut routing".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 struct CallbackRoute {
     replacement: std::sync::atomic::AtomicBool,
     local_ready: std::sync::atomic::AtomicBool,
@@ -318,8 +375,20 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                     app.manage(InstanceOwner { connection, name, route });
                 }
                 Err(zbus::Error::NameTaken) => {
-                    if let Ok(connection) = Connection::session() {
-                        let _ = connection.call_method(
+                    let result = (|| -> Result<(), String> {
+                        let _lock = callback_lock(std::time::Duration::from_secs(45))?;
+                        let connection = Connection::session().map_err(|error| error.to_string())?;
+                        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                        while connection.call_method(
+                            Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
+                            Some("org.freedesktop.DBus"), "GetNameOwner", &(name.as_str(),),
+                        ).is_err() {
+                            if std::time::Instant::now() >= deadline {
+                                return Err("Verenu's shortcut service is unavailable".into());
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        }
+                        connection.call_method(
                             Some(name.as_str()),
                             path.as_str(),
                             Some("org.SingleInstance.DBus"),
@@ -331,7 +400,13 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                                     .to_string_lossy()
                                     .to_string(),
                             ),
-                        );
+                        ).map_err(|error| format!("Could not deliver shortcut: {error}"))?;
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        log::error!("{error}");
+                        app.cleanup_before_exit();
+                        std::process::exit(1);
                     }
                     app.cleanup_before_exit();
                     std::process::exit(0);
@@ -352,6 +427,18 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires an isolated D-Bus session"]
+    fn shortcut_lock_waits_for_inflight_launchers() {
+        use std::time::Duration;
+        let inflight = super::callback_lock(Duration::from_secs(1)).unwrap();
+        let blocked = std::thread::spawn(|| super::callback_lock(Duration::from_millis(100)));
+        assert!(blocked.join().unwrap().is_err());
+        drop(inflight);
+        let next = super::callback_lock(Duration::from_secs(1)).unwrap();
+        drop(next);
+    }
+
     #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires an isolated graphical and D-Bus session"]

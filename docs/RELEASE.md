@@ -139,6 +139,13 @@ checksum, backup, or authorization failures keep the running app open and allow
 another attempt. Releases without a GitHub SHA256 digest or a matching checksum
 entry cannot be installed automatically. Other Linux installs offer a download.
 
+Linux restart compatibility uses the database schema version and the explicit
+`STATE_COMPATIBILITY` contract in `linux_handoff_transport.rs`. A replacement
+must keep probation read-only and allow the old process to resume with its
+settings, credentials, database, and pending work intact. Bump the contract when
+that rollback promise or the callback handoff format changes. Incompatible
+versions require a quit and reopen; ordinary source changes do not.
+
 The release folder should contain:
 
 - `Verenu_<version>_x64-setup.exe`
