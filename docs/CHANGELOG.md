@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed restored Linux clipboard items becoming unavailable after Omarchy's clipboard watcher stops reading them.
 - Fixed nightly snapshots to update the Rust lockfile and compare changes against published nightlies, so failed attempts do not suppress later releases.
 - The local model loading pill now uses the same shimmering label as Transcribing, Cleaning, and Pasting instead of a spinner.
 - On Linux, verify that playback was unmuted after dictation, retry transient restore failures, and retain failed restores for another attempt.
