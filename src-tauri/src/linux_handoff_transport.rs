@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const PROTOCOL: u32 = 9;
+const PROTOCOL: u32 = 10;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
@@ -276,8 +276,8 @@ impl ChildFrontends {
 pub(crate) struct ChildActivation(Channel);
 
 impl ChildActivation {
-    pub(crate) fn ownership_acquired(mut self) -> Result<ChildServices, String> {
-        self.0.send(&Message::OwnershipAcquired)?;
+    pub(crate) fn ownership_queued(mut self) -> Result<ChildServices, String> {
+        self.0.send(&Message::OwnershipQueued)?;
         self.0.expect(Message::ContinueActivation)?;
         Ok(ChildServices(self.0))
     }
@@ -373,7 +373,7 @@ enum Message {
     BackendReady,
     FrontendsReady,
     Activate,
-    OwnershipAcquired,
+    OwnershipQueued,
     ContinueActivation,
     ServicesPrepared,
     BeginServiceActivation,
@@ -615,21 +615,21 @@ struct ReadyReplacement {
 }
 
 impl ReadyReplacement {
-    fn acquire_ownership(self) -> Result<OwnedReplacement, String> {
-        let ownership = self.probation.acquire_ownership()?;
-        Ok(OwnedReplacement {
+    fn queue_ownership(self) -> Result<QueuedReplacement, String> {
+        let ownership = self.probation.queue_ownership()?;
+        Ok(QueuedReplacement {
             process: self.process,
             ownership,
         })
     }
 }
 
-struct OwnedReplacement {
+struct QueuedReplacement {
     process: ProcessGuard,
-    ownership: Ownership,
+    ownership: QueuedOwnership,
 }
 
-impl OwnedReplacement {
+impl QueuedReplacement {
     fn stage_services(self) -> Result<PreparedReplacement, String> {
         let prepared = self.ownership.stage_services()?;
         Ok(PreparedReplacement { process: self.process, prepared })
@@ -685,9 +685,8 @@ impl StagedRestart {
         let owner = app.try_state::<crate::linux_single_instance::InstanceOwner>()
             .ok_or("Single-instance ownership is unavailable")?;
         let group = process.child.id();
-        owner.verify_replacement_owner(group)?;
+        owner.verify_queued_replacement(group)?;
         owner.callback_barrier()?;
-        owner.replacement_callback_barrier(group)?;
         activated.commit()?;
         let state = app.state::<PendingRestart>();
         let mut pending = state.0.lock().map_err(|_| "Restart state is unavailable")?;
@@ -730,15 +729,13 @@ pub(crate) async fn stage_replacement(
             .with_callback_queue(preparation.callback_queue_path().to_path_buf());
         let ready = replacement.prepare()?;
         let group = ready.process.child.id();
-        preparation.begin_instance_transfer(group)?;
-        let owned = ready.acquire_ownership()?;
-        owner.verify_replacement_owner(group)?;
+        preparation.register_replacement(group)?;
+        let owned = ready.queue_ownership()?;
+        owner.verify_queued_replacement(group)?;
         owner.callback_barrier()?;
-        owner.replacement_callback_barrier(group)?;
         let replacement = owned.stage_services()?;
-        owner.verify_replacement_owner(group)?;
+        owner.verify_queued_replacement(group)?;
         owner.callback_barrier()?;
-        owner.replacement_callback_barrier(group)?;
         Ok(StagedRestart { replacement, preparation })
     }).await.map_err(|error| format!("Restart preparation stopped: {error}"))?
 }
@@ -773,16 +770,16 @@ impl Parent {
 struct Probation(Channel);
 
 impl Probation {
-    fn acquire_ownership(mut self) -> Result<Ownership, String> {
+    fn queue_ownership(mut self) -> Result<QueuedOwnership, String> {
         self.0.send(&Message::Activate)?;
-        self.0.expect(Message::OwnershipAcquired)?;
-        Ok(Ownership(self.0))
+        self.0.expect(Message::OwnershipQueued)?;
+        Ok(QueuedOwnership(self.0))
     }
 }
 
-struct Ownership(Channel);
+struct QueuedOwnership(Channel);
 
-impl Ownership {
+impl QueuedOwnership {
     fn stage_services(mut self) -> Result<PreparedServices, String> {
         self.0.send(&Message::ContinueActivation)?;
         self.0.expect(Message::ServicesPrepared)?;
@@ -915,7 +912,7 @@ mod tests {
         });
         let probation = parent.prepare().unwrap();
         worker.join().unwrap();
-        assert!(probation.acquire_ownership().is_err());
+        assert!(probation.queue_ownership().is_err());
     }
 
     #[test]
@@ -925,10 +922,10 @@ mod tests {
         let worker = std::thread::spawn(move || {
             Child { channel: child }.begin(39).unwrap()
                 .backend_ready().unwrap().ready().unwrap()
-                .ownership_acquired().unwrap().prepared().unwrap()
+                .ownership_queued().unwrap().prepared().unwrap()
                 .wait_for_activation()
         });
-        let mut prepared = parent.prepare().unwrap().acquire_ownership().unwrap().stage_services().unwrap();
+        let mut prepared = parent.prepare().unwrap().queue_ownership().unwrap().stage_services().unwrap();
         prepared.0.send(&Message::Commit).unwrap();
         assert!(worker.join().unwrap().is_err());
     }
@@ -991,7 +988,7 @@ mod tests {
             child.send(&Message::BackendReady).unwrap();
             child.send(&Message::FrontendsReady).unwrap();
             child.expect(Message::Activate).unwrap();
-            child.send(&Message::OwnershipAcquired).unwrap();
+            child.send(&Message::OwnershipQueued).unwrap();
             child.expect(Message::ContinueActivation).unwrap();
             child.send(&Message::ServicesPrepared).unwrap();
             child.expect(Message::BeginServiceActivation).unwrap();
@@ -1002,7 +999,7 @@ mod tests {
         parent
             .prepare()
             .unwrap()
-            .acquire_ownership()
+            .queue_ownership()
             .unwrap()
             .stage_services()
             .unwrap()
@@ -1024,14 +1021,14 @@ mod tests {
             child.send(&Message::BackendReady).unwrap();
             child.send(&Message::FrontendsReady).unwrap();
             child.expect(Message::Activate).unwrap();
-            child.send(&Message::OwnershipAcquired).unwrap();
+            child.send(&Message::OwnershipQueued).unwrap();
             child.expect(Message::ContinueActivation).unwrap();
             child.send(&Message::ServicesPrepared).unwrap();
             child.expect(Message::BeginServiceActivation).unwrap();
             child.send(&Message::Activated).unwrap();
             child.expect(Message::Commit).unwrap();
         });
-        let activated = parent.prepare().unwrap().acquire_ownership().unwrap()
+        let activated = parent.prepare().unwrap().queue_ownership().unwrap()
             .stage_services().unwrap().activate().unwrap();
         assert!(activated.commit().is_err());
         worker.join().unwrap();
@@ -1050,7 +1047,7 @@ mod tests {
                 .unwrap()
                 .ready()
                 .unwrap()
-                .ownership_acquired()
+                .ownership_queued()
                 .unwrap()
                 .prepared()
                 .unwrap()
@@ -1064,7 +1061,7 @@ mod tests {
         parent
             .prepare()
             .unwrap()
-            .acquire_ownership()
+            .queue_ownership()
             .unwrap()
             .stage_services()
             .unwrap()
@@ -1153,7 +1150,7 @@ mod tests {
                 if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_DESCRIPTOR") {
                     std::fs::write(path, b"replacement descriptor").unwrap();
                 }
-                activation.ownership_acquired()
+                activation.ownership_queued()
             })
                 .and_then(|services| services.prepared())
                 .and_then(|services| services.wait_for_activation())
@@ -1270,7 +1267,7 @@ mod tests {
         let prepared = replacement
             .prepare()
             .unwrap()
-            .acquire_ownership()
+            .queue_ownership()
             .unwrap()
             .stage_services()
             .unwrap();
@@ -1319,6 +1316,13 @@ mod tests {
             .unwrap();
         let owner = app.state::<crate::linux_single_instance::InstanceOwner>();
         assert!(owner.owns_name().unwrap());
+        let restore_owner = |context: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !owner.owns_name().unwrap_or(false) {
+                assert!(Instant::now() < deadline, "parent did not regain ownership after {context}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
         let callbacks_before = crate::linux_single_instance::test_callback_count();
 
         let binary = std::env::var_os("VERENU_HANDOFF_TEST_BINARY").expect("replacement binary");
@@ -1327,8 +1331,23 @@ mod tests {
         let data = root.join("data");
         let state = root.join("state");
         let config = root.join("config");
+        let replacement_command = || {
+            let mut command = Command::new(&binary);
+            command.env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+                .env("XDG_STATE_HOME", &state)
+                .env("XDG_CONFIG_HOME", &config)
+                .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+                .env_remove("VERENU_AGENT_TOKEN")
+                .env_remove("VERENU_AGENT_PORT")
+                .env_remove("VERENU_HANDOFF_TEST_SHORTCUTS");
+            command
+        };
         std::fs::create_dir_all(&data).unwrap();
         std::fs::create_dir_all(&config).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        for directory in [&root, &data, &config] {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true,\"analytics_enabled\":false}").unwrap();
         let parent_db = crate::data::db::open(data.join("verenu.db")).unwrap();
         let mut sync_identity = crate::sync::identity::generate_for_tests();
@@ -1350,15 +1369,7 @@ mod tests {
         original_files.sort();
         let (callback_queue, callback_path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
         let callback_queue = std::sync::Arc::new(callback_queue);
-        let mut missing_queue = Command::new(&binary);
-        missing_queue
-            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env_remove("VERENU_AGENT_TOKEN")
-            .env_remove("VERENU_AGENT_PORT")
-            .env_remove("VERENU_HANDOFF_TEST_SHORTCUTS");
+        let missing_queue = replacement_command();
         let replacement = Replacement::spawn(
             missing_queue,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1367,15 +1378,7 @@ mod tests {
         ).unwrap();
         assert!(matches!(replacement.prepare(), Err(error) if error.contains("callback queue is missing")));
         assert!(owner.owns_name().unwrap());
-        let mut command = Command::new(&binary);
-        command
-            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env_remove("VERENU_AGENT_TOKEN")
-            .env_remove("VERENU_AGENT_PORT")
-            .env_remove("VERENU_HANDOFF_TEST_SHORTCUTS");
+        let command = replacement_command();
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1398,13 +1401,10 @@ mod tests {
             "ExecuteCallback",
             &(vec!["--verenu-hotkey-release".to_string()], String::new()),
         ).unwrap();
-        owner
-            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
-            .unwrap();
         let owned = ready
-            .acquire_ownership()
-            .expect("replacement did not acquire ownership");
-        assert!(!owner.owns_name().unwrap());
+            .queue_ownership()
+            .expect("replacement did not queue for ownership");
+        assert!(owner.owns_name().unwrap());
         let (sent, received) = std::sync::mpsc::channel();
         let callback_connection = connection.clone();
         let callback = std::thread::spawn(move || {
@@ -1420,13 +1420,13 @@ mod tests {
         assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
         assert_eq!(callback_queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
         owner.callback_barrier().unwrap();
-        owner.replacement_callback_barrier(child_pid).unwrap();
+        owner.verify_queued_replacement(child_pid).unwrap();
         assert_eq!(
             crate::linux_single_instance::test_callback_count(),
             callbacks_before
         );
         let outcome = owned.stage_services();
-        assert!(matches!(outcome, Err(reason) if reason.contains("Replacement shortcuts could not start")));
+        assert!(matches!(&outcome, Err(reason) if reason.contains("Replacement shortcuts could not start")), "unexpected result: {:?}", outcome.err());
         let tray_names = registrations.lock().unwrap().clone();
         assert_eq!(tray_names.len(), 1, "replacement tray did not register");
         let tray_alive: bool = watcher
@@ -1444,17 +1444,7 @@ mod tests {
         assert!(!tray_alive, "failed replacement left its tray running");
         assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, -1);
         assert!(!group_has_live_members(child_pid).unwrap());
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !owner.owns_name().unwrap_or(false) {
-            assert!(
-                Instant::now() < deadline,
-                "parent did not regain single-instance ownership"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        owner
-            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
-            .unwrap();
+        restore_owner("replacement shutdown");
         owner.drain_callback_queue(app.handle()).unwrap();
         drop(pause);
         callback.join().unwrap();
@@ -1497,15 +1487,7 @@ mod tests {
         // registers its tray, leaving the original instance in control.
         let writer = parent_db.lock().unwrap();
         writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
-        let mut command = Command::new(&binary);
-        command
-            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env_remove("VERENU_AGENT_TOKEN")
-            .env_remove("VERENU_AGENT_PORT")
-            .env_remove("VERENU_HANDOFF_TEST_SHORTCUTS");
+        let command = replacement_command();
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1516,22 +1498,9 @@ mod tests {
         .with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        owner
-            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
-            .unwrap();
-        let outcome = ready.acquire_ownership().unwrap().stage_services();
+        let outcome = ready.queue_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("cannot prepare the database")));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !owner.owns_name().unwrap_or(false) {
-            assert!(
-                Instant::now() < deadline,
-                "parent did not regain ownership after database failure"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        owner
-            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
-            .unwrap();
+        restore_owner("database failure");
         assert_eq!(registrations.lock().unwrap().len(), 1);
         writer.execute_batch("ROLLBACK;").unwrap();
         drop(writer);
@@ -1546,15 +1515,7 @@ mod tests {
             original_settings
         );
 
-        let mut command = Command::new(&binary);
-        command
-            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env_remove("VERENU_AGENT_TOKEN")
-            .env_remove("VERENU_AGENT_PORT")
-            .env_remove("VERENU_HANDOFF_TEST_SHORTCUTS");
+        let command = replacement_command();
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1567,22 +1528,9 @@ mod tests {
         let updated_settings = b"{\"setup_complete\":true,\"analytics_enabled\":false,\"test_changed\":true}";
         std::fs::write(data.join("settings.json"), updated_settings).unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        owner
-            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
-            .unwrap();
-        let outcome = ready.acquire_ownership().unwrap().stage_services();
+        let outcome = ready.queue_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("Settings changed")));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !owner.owns_name().unwrap_or(false) {
-            assert!(
-                Instant::now() < deadline,
-                "parent did not regain ownership after settings changed"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        owner
-            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
-            .unwrap();
+        restore_owner("settings changed");
         drop(pause);
         assert_eq!(
             std::fs::read(data.join("settings.json")).unwrap(),
@@ -1596,15 +1544,7 @@ mod tests {
         assert_eq!(registrations.lock().unwrap().len(), 1);
 
         std::fs::write(data.join("settings.json"), &original_settings).unwrap();
-        let mut command = Command::new(&binary);
-        command
-            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env_remove("VERENU_AGENT_TOKEN")
-            .env_remove("VERENU_AGENT_PORT")
-            .env_remove("VERENU_HANDOFF_TEST_SHORTCUTS");
+        let command = replacement_command();
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1622,22 +1562,9 @@ mod tests {
         let updated_db = std::fs::read(data.join("verenu.db")).unwrap();
         let updated_wal = std::fs::read(data.join("verenu.db-wal")).unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        owner
-            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
-            .unwrap();
-        let outcome = ready.acquire_ownership().unwrap().stage_services();
+        let outcome = ready.queue_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("Database changed")));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !owner.owns_name().unwrap_or(false) {
-            assert!(
-                Instant::now() < deadline,
-                "parent did not regain ownership after database changed"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        owner
-            .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)
-            .unwrap();
+        restore_owner("database changed");
         drop(pause);
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
@@ -1646,15 +1573,9 @@ mod tests {
         // A port already in use must fail preparation while the parent stays alive.
         let reserved = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let occupied_port = reserved.local_addr().unwrap().port();
-        let mut command = Command::new(&binary);
-        command
-            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env("VERENU_AGENT_TOKEN", "a".repeat(64))
-            .env("VERENU_AGENT_PORT", occupied_port.to_string())
-            .env_remove("VERENU_HANDOFF_TEST_SHORTCUTS");
+        let mut command = replacement_command();
+        command.env("VERENU_AGENT_TOKEN", "a".repeat(64))
+            .env("VERENU_AGENT_PORT", occupied_port.to_string());
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1663,15 +1584,9 @@ mod tests {
         ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
-        let outcome = ready.acquire_ownership().unwrap().stage_services();
+        let outcome = ready.queue_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("agent service could not prepare")));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !owner.owns_name().unwrap_or(false) {
-            assert!(Instant::now() < deadline, "parent did not regain ownership after agent failure");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        restore_owner("agent failure");
         drop(pause);
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
@@ -1681,15 +1596,8 @@ mod tests {
 
         // A controlled shortcut driver exercises later startup on a desktop
         // without claiming that a real Hyprland portal has been verified.
-        let mut command = Command::new(&binary);
-        command
-            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env_remove("VERENU_AGENT_TOKEN")
-            .env_remove("VERENU_AGENT_PORT")
-            .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
+        let mut command = replacement_command();
+        command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1700,10 +1608,9 @@ mod tests {
         let child_pid = ready.process.child.id();
         let pause = gate.begin_pause_with(|| owner.install_callback_queue(callback_queue.clone())).unwrap();
         tauri::async_runtime::block_on(pause.wait_drained());
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
-        let staged = ready.acquire_ownership().unwrap().stage_services().expect("replacement services did not prepare");
+        let staged = ready.queue_ownership().unwrap().stage_services().expect("replacement services did not prepare");
         assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, 0);
-        assert!(!owner.owns_name().unwrap());
+        assert!(owner.owns_name().unwrap());
         assert!(!data.join("logs").exists(), "replacement wrote logs while the parent was active");
         let descriptor = data.join("agent-session.json");
         assert!(descriptor.exists(), "replacement did not publish its paused agent");
@@ -1717,12 +1624,7 @@ mod tests {
         assert_eq!(callback_queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Handsfree);
         drop(staged);
         std::fs::remove_file(descriptor).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !owner.owns_name().unwrap_or(false) {
-            assert!(Instant::now() < deadline, "parent did not regain ownership after shortcut probe");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        restore_owner("shortcut probe");
         owner.drain_callback_queue(app.handle()).unwrap();
         drop(pause);
         assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
@@ -1733,28 +1635,16 @@ mod tests {
         assert!(crate::sync::secrets::load_identity_key(&data).unwrap().as_slice() == sync_key.secret_pkcs8_der());
 
         std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true,\"analytics_enabled\":false,\"cleanup_cache_enabled\":false}").unwrap();
-        let mut command = Command::new(&binary);
-        command.env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env_remove("VERENU_AGENT_TOKEN")
-            .env_remove("VERENU_AGENT_PORT")
-            .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
+        let mut command = replacement_command();
+        command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
         let replacement = Replacement::spawn(
             command, crate::data::db::HANDOFF_SCHEMA_VERSION, KeyAvailability::new(), Duration::from_secs(25),
         ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
-        let outcome = ready.acquire_ownership().unwrap().stage_services();
+        let outcome = ready.queue_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("Cleanup cache settings require a manual restart")));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !owner.owns_name().unwrap_or(false) {
-            assert!(Instant::now() < deadline, "parent did not regain ownership after cache mismatch");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        restore_owner("cache mismatch");
         drop(pause);
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
@@ -1765,29 +1655,17 @@ mod tests {
         std::fs::write(data.join("analytics_install_id"), analytics_id).unwrap();
         std::fs::write(data.join("analytics_first_seen_version"), "0.18.0").unwrap();
         std::fs::write(data.join("analytics_usage_milestones"), "5\ndictations_5").unwrap();
-        let mut command = Command::new(&binary);
-        command.env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env_remove("VERENU_AGENT_TOKEN")
-            .env_remove("VERENU_AGENT_PORT")
-            .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
+        let mut command = replacement_command();
+        command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
         let replacement = Replacement::spawn(
             command, crate::data::db::HANDOFF_SCHEMA_VERSION, KeyAvailability::new(), Duration::from_secs(25),
         ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
-        let staged = ready.acquire_ownership().unwrap().stage_services().expect("analytics-enabled replacement did not prepare");
+        let staged = ready.queue_ownership().unwrap().stage_services().expect("analytics-enabled replacement did not prepare");
         drop(staged);
         std::fs::remove_file(data.join("agent-session.json")).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !owner.owns_name().unwrap_or(false) {
-            assert!(Instant::now() < deadline, "parent did not regain ownership after analytics preparation");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        restore_owner("analytics preparation");
         drop(pause);
         assert_eq!(std::fs::read_to_string(data.join("analytics_install_id")).unwrap(), analytics_id);
         assert_eq!(std::fs::read_to_string(data.join("analytics_first_seen_version")).unwrap(), "0.18.0");
@@ -1795,15 +1673,8 @@ mod tests {
         std::fs::write(data.join("settings.json"), &original_settings).unwrap();
 
         std::fs::remove_file(data.join("sync-identity.key")).unwrap();
-        let mut command = Command::new(&binary);
-        command
-            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
-            .env("XDG_STATE_HOME", &state)
-            .env("XDG_CONFIG_HOME", &config)
-            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
-            .env_remove("VERENU_AGENT_TOKEN")
-            .env_remove("VERENU_AGENT_PORT")
-            .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
+        let mut command = replacement_command();
+        command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
         let replacement = Replacement::spawn(
             command,
             crate::data::db::HANDOFF_SCHEMA_VERSION,
@@ -1812,15 +1683,9 @@ mod tests {
         ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
-        let outcome = ready.acquire_ownership().unwrap().stage_services();
+        let outcome = ready.queue_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("Replacement sync could not prepare")));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !owner.owns_name().unwrap_or(false) {
-            assert!(Instant::now() < deadline, "parent did not regain ownership after sync failure");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        restore_owner("sync failure");
         drop(pause);
         assert!(!data.join("sync-identity.key").exists());
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);

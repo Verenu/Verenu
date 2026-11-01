@@ -108,8 +108,8 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         let _ = startup.fail("Restart callback queue is missing".into());
         return;
     };
-    let callback_queue = match crate::linux_handoff_callbacks::CallbackQueue::open(&callback_path) {
-        Ok(queue) => Arc::new(queue),
+    let callback_reader = match crate::linux_handoff_callbacks::CallbackReader::open(&callback_path) {
+        Ok(reader) => reader,
         Err(error) => {
             let _ = startup.fail(format!("Could not open restart callback queue: {error}"));
             return;
@@ -268,7 +268,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                 let owner = handle.clone();
                 let scheduled = handle.run_on_main_thread(move || {
                     let _ = sent.send(owner.plugin(
-                        crate::linux_single_instance::replacement_plugin(callback_queue),
+                        crate::linux_single_instance::replacement_plugin(),
                     ));
                 });
                 let acquired = scheduled.is_ok()
@@ -277,7 +277,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                     && readiness.current_pill_ready()
                     && readiness.main_and_home_ready();
                 if acquired && ready {
-                    if let Ok(services) = activation.ownership_acquired() {
+                    if let Ok(services) = activation.ownership_queued() {
                         let current_version = crate::data::db::handoff_data_version(
                             handle.state::<crate::DbHandle>().inner(),
                         );
@@ -502,7 +502,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             Err(_) => std::process::exit(1),
                         };
                         #[cfg(all(feature = "native-testing", debug_assertions))]
-                        if std::env::var_os("VERENU_HANDOFF_TEST_FAIL_AFTER_COMMIT").is_some() {
+                        if std::env::var_os("VERENU_HANDOFF_TEST_WAIT_AT_COMMIT").is_some() {
                             if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_TRIGGER") {
                                 let path = std::path::PathBuf::from(path);
                                 let _ = std::fs::write(path.with_extension("committing"), b"ready");
@@ -542,7 +542,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             fail_committing(committing, format!("Replacement agent service became unavailable: {error}"));
                         }
                         let owner = handle.state::<crate::linux_single_instance::InstanceOwner>();
-                        let callbacks = match owner.prepare_callbacks(&callback_path, child_pause.guard(), &gate) {
+                        let callbacks = match owner.prepare_callbacks(callback_reader, child_pause.guard(), &gate) {
                             Ok(callbacks) => callbacks,
                             Err(error) => fail_committing(committing, format!("Shortcut routing failed: {error}")),
                         };
@@ -561,6 +561,14 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 return;
                             }
                         };
+                        let deadline = Instant::now() + Duration::from_secs(10);
+                        while !owner.owns_name().unwrap_or(false) {
+                            if Instant::now() >= deadline {
+                                show_activation_error(&handle, "Single-instance ownership did not transfer");
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
                         prepared_settings.activate(&parent_exited);
                         crate::system::logger::activate_handoff_files(&parent_exited);
                         handle.state::<crate::sync::SyncManager>().start_discovery_after_handoff(&parent_exited);

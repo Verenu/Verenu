@@ -16,16 +16,14 @@ impl PreparedHandoff {
         self.callback_path.as_deref().expect("restart callback queue is active")
     }
 
-    pub(crate) fn begin_instance_transfer(&mut self, replacement_group: u32) -> Result<(), String> {
+    pub(crate) fn register_replacement(&mut self, replacement_group: u32) -> Result<(), String> {
         if self.replacement_group.is_some()
             || !crate::linux_handoff_transport::is_replacement_group(replacement_group)
         {
             return Err("Invalid restart ownership transfer.".into());
         }
-        let owner = self.app.try_state::<crate::linux_single_instance::InstanceOwner>()
-            .ok_or("Single-instance ownership is unavailable.")?;
         self.replacement_group = Some(replacement_group);
-        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
+        Ok(())
     }
 }
 
@@ -58,7 +56,6 @@ impl Drop for PreparedHandoff {
                         if !owner.owns_name()? {
                             return Ok(false);
                         }
-                        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)?;
                         Ok(true)
                     }).await;
                     if matches!(restored, Ok(Ok(true))) {
@@ -584,23 +581,23 @@ mod tests {
             let app_handle = app.handle().clone();
             assert!(tauri::async_runtime::spawn_blocking(move || {
                 app_handle.state::<crate::linux_single_instance::InstanceOwner>()
-                    .verify_replacement_owner(replacement_group).is_err()
+                    .verify_queued_replacement(replacement_group).is_err()
             }).await.unwrap());
             let lease = tauri::async_runtime::spawn_blocking(move || {
                 let mut lease = lease;
-                lease.begin_instance_transfer(replacement_group).unwrap();
+                lease.register_replacement(replacement_group).unwrap();
                 lease
             }).await.unwrap();
             replacement.0.stdin.as_mut().unwrap().write_all(&[1]).unwrap();
             tokio::time::timeout(Duration::from_secs(10), ready_rx).await.unwrap().unwrap();
             let app_handle = app.handle().clone();
-            assert!(!tauri::async_runtime::spawn_blocking(move || {
+            assert!(tauri::async_runtime::spawn_blocking(move || {
                 app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
             }).await.unwrap());
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 let owner = app_handle.state::<crate::linux_single_instance::InstanceOwner>();
-                owner.verify_replacement_owner(replacement_group).unwrap();
+                owner.verify_queued_replacement(replacement_group).unwrap();
                 owner.callback_barrier().unwrap();
             }).await.unwrap();
             assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
@@ -640,7 +637,7 @@ mod tests {
             let outcome = crate::linux_handoff_transport::stage_replacement(
                 app.handle(), impostor, 39, Default::default(), Duration::from_secs(5),
             ).await;
-            assert!(matches!(outcome, Err(ref reason) if reason.contains("different process")));
+            assert!(matches!(outcome, Err(ref reason) if reason.contains("not queued")));
             drop(tokio::time::timeout(Duration::from_secs(15), gate.enter()).await.unwrap());
             assert_eq!(std::fs::read(dir.join("agent-session.json")).unwrap(), agent_descriptor);
             let app_handle = app.handle().clone();
