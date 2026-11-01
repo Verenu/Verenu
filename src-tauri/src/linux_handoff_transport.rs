@@ -988,6 +988,12 @@ mod tests {
             0
         );
         let frontends = child.begin(39).unwrap().backend_ready().unwrap();
+        if mode == "hang" {
+            let marker = std::env::var_os("VERENU_HANDOFF_TEST_MARKER").unwrap();
+            std::fs::write(marker, std::process::id().to_string()).unwrap();
+            std::thread::sleep(Duration::from_secs(60));
+            return;
+        }
         if mode == "activate" {
             let _ = frontends
                 .ready()
