@@ -7,6 +7,22 @@ pub(crate) struct PreparedHandoff {
     pause: Option<crate::linux_activity::Pause>,
     agent: Option<tokio::sync::OwnedSemaphorePermit>,
     shortcuts: Option<crate::core::hotkey::ShortcutPause>,
+    replacement_group: Option<u32>,
+}
+
+impl PreparedHandoff {
+    #[allow(dead_code)]
+    pub(crate) fn begin_instance_transfer(&mut self, replacement_group: u32) -> Result<(), String> {
+        if self.replacement_group.is_some()
+            || !crate::linux_handoff_transport::is_replacement_group(replacement_group)
+        {
+            return Err("Invalid restart ownership transfer.".into());
+        }
+        let owner = self.app.try_state::<crate::linux_single_instance::InstanceOwner>()
+            .ok_or("Single-instance ownership is unavailable.")?;
+        self.replacement_group = Some(replacement_group);
+        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
+    }
 }
 
 impl Drop for PreparedHandoff {
@@ -16,7 +32,38 @@ impl Drop for PreparedHandoff {
         };
         let app = self.app.clone();
         let shortcuts = self.shortcuts.take();
+        let replacement_group = self.replacement_group.take();
         tauri::async_runtime::spawn(async move {
+            if let Some(group) = replacement_group {
+                let mut warned = false;
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    let owner_app = app.clone();
+                    let restored = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+                        if crate::linux_handoff_transport::group_has_live_members(group)? {
+                            return Ok(false);
+                        }
+                        let owner = owner_app.try_state::<crate::linux_single_instance::InstanceOwner>()
+                            .ok_or("Single-instance ownership is unavailable")?;
+                        if !owner.owns_name()? {
+                            return Ok(false);
+                        }
+                        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive)?;
+                        Ok(true)
+                    }).await;
+                    if matches!(restored, Ok(Ok(true))) {
+                        break;
+                    }
+                    if !warned && tokio::time::Instant::now() >= deadline {
+                        warned = true;
+                        log::error!("Waiting for replacement cleanup and instance ownership: {restored:?}");
+                        let window_app = app.clone();
+                        let _ = app.run_on_main_thread(move || crate::show_main_window(&window_app));
+                        let _ = app.emit("verenu:error", "Restart could not finish. Verenu is waiting for the replacement to stop before restoring its services.");
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
             if let Some(shortcuts) = shortcuts {
                 let restored =
                     tokio::time::timeout(Duration::from_secs(35), shortcuts.resume()).await;
@@ -118,6 +165,7 @@ async fn prepare_inner(app: &AppHandle) -> Result<PreparedHandoff, String> {
         pause: Some(pause),
         agent: Some(agent_permit),
         shortcuts: None,
+        replacement_group: None,
     };
     prepared.shortcuts = Some(crate::core::hotkey::ShortcutPause::begin()?);
     prepared
@@ -195,6 +243,7 @@ mod tests {
         std::fs::write(dir.join("settings.json"), "{}").unwrap();
         let app = tauri::Builder::default()
             .any_thread()
+            .plugin(crate::linux_single_instance::plugin())
             .build(tauri::generate_context!())
             .unwrap();
         let gate = Arc::new(crate::linux_activity::ActivityGate::default());
@@ -402,6 +451,31 @@ mod tests {
             let restored_tray = tray_names(&bus).await;
             assert_eq!(restored_tray.len(), 1);
             assert_ne!(original_tray, restored_tray);
+
+            use std::os::unix::process::CommandExt;
+            let mut replacement = std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let lease = prepare(app.handle()).await.unwrap();
+            let replacement_group = replacement.id();
+            let lease = tauri::async_runtime::spawn_blocking(move || {
+                let mut lease = lease;
+                lease.begin_instance_transfer(replacement_group).unwrap();
+                lease
+            }).await.unwrap();
+            drop(lease);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(gate.try_enter().is_none(), "activity resumed while replacement was alive");
+            assert!(!crate::core::hotkey::test_shortcuts_active());
+            replacement.kill().unwrap();
+            replacement.wait().unwrap();
+            let activity = tokio::time::timeout(Duration::from_secs(15), gate.enter())
+                .await
+                .expect("activity did not resume after replacement stopped");
+            drop(activity);
+            assert!(crate::core::hotkey::test_shortcuts_active());
 
             let lease = prepare(app.handle()).await.unwrap();
             entered.store(false, std::sync::atomic::Ordering::SeqCst);

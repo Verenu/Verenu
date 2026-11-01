@@ -69,6 +69,15 @@ fn descends_from(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     false
 }
 
+pub(crate) fn is_replacement_group(group: u32) -> bool {
+    if group == 0 || group > i32::MAX as u32 {
+        return false;
+    }
+    let pid = group as libc::pid_t;
+    let current = std::process::id() as libc::pid_t;
+    pid != current && unsafe { libc::getpgid(pid) == pid } && descends_from(pid, current)
+}
+
 fn child_channel_from_environment(timeout: Duration) -> Result<Option<Channel>, String> {
     let Some(value) = std::env::var_os(CHILD_FD_ENV) else {
         return Ok(None);
@@ -416,9 +425,10 @@ struct Parent {
 
 struct ProcessGuard(std::process::Child, UnixStream);
 
-fn group_has_live_members(group: u32) -> Result<bool, String> {
+pub(crate) fn group_has_live_members(group: u32) -> Result<bool, String> {
     let entries = std::fs::read_dir("/proc").map_err(|error| error.to_string())?;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
         if entry
             .file_name()
             .to_str()
@@ -427,17 +437,18 @@ fn group_has_live_members(group: u32) -> Result<bool, String> {
         {
             continue;
         }
-        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
-            continue;
+        let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
         };
-        let Some((_, fields)) = stat.rsplit_once(')') else {
-            continue;
-        };
+        let (_, fields) = stat.rsplit_once(')').ok_or("Invalid process status")?;
         let mut fields = fields.split_whitespace();
         let state = fields.next();
         let _parent = fields.next();
-        let process_group = fields.next().and_then(|value| value.parse::<u32>().ok());
-        if process_group == Some(group) && !matches!(state, Some("Z" | "X")) {
+        let process_group = fields.next().and_then(|value| value.parse::<u32>().ok())
+            .ok_or("Invalid process group")?;
+        if process_group == group && !matches!(state, Some("Z" | "X")) {
             return Ok(true);
         }
     }
@@ -644,6 +655,21 @@ impl Activated {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_group_must_be_a_child_process_group() {
+        use std::os::unix::process::CommandExt;
+        assert!(!is_replacement_group(0));
+        assert!(!is_replacement_group(std::process::id()));
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        assert!(is_replacement_group(child.id()));
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
 
     #[test]
     fn parent_monitor_waits_for_the_exact_process_to_exit() {
