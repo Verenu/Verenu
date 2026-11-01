@@ -3,6 +3,7 @@
   import { onMount, tick } from 'svelte';
   import { createListenerScope } from './lib/listenerScope';
   import { createTimers } from './lib/timers';
+  import { createPillSnapshotReceiver } from './lib/pillSnapshot';
   import { fly } from 'svelte/transition';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
   import { pillBarSizing, snapBarHeight } from './lib/pillSizing';
@@ -641,8 +642,8 @@
         monitorScale = typeof scale === 'number' && Number.isFinite(scale) && scale >= 0.5 && scale <= 8 ? scale : null;
       });
 
-      void listen<string>('pill-state', (ev) => {
-        const incoming = (ev.payload as PillState) || 'idle';
+      function applyPillState(payload: string) {
+        const incoming = (payload as PillState) || 'idle';
         timers.clear('hfTimer');
 
         if (
@@ -747,14 +748,27 @@
             if (state === 'copied' || state === 'clipboard_warning') goIdle();
           }, 5000);
         } else timers.clear('copiedPillTimer');
-      });
+      }
 
-      void listen<string>('pill-error', (ev) => {
-        errorMsg = ev.payload ?? '';
+      function applyPillMessage(message: string) {
+        errorMsg = message;
         if (state === 'error') {
           openError();
         }
+      }
+
+      const receiveSnapshot = createPillSnapshotReceiver({
+        state: applyPillState,
+        message: (message) => applyPillMessage(message ?? ''),
+        context: (context, incoming) => {
+          if (incoming === 'idle' && context === null) return;
+          contextLabel = context?.trim() || null;
+        },
+        stage: (stage) => stage === null ? clearStage() : onPillStage(stage),
       });
+      void listen<unknown>('pill-snapshot', (ev) => receiveSnapshot(ev.payload));
+      void listen<string>('pill-state', (ev) => applyPillState(ev.payload));
+      void listen<string>('pill-error', (ev) => applyPillMessage(ev.payload ?? ''));
 
       void listen<number[]>('audio-envelope', (ev) => {
         if (ev.payload?.length) visualizer.pushEnvelope(ev.payload);
@@ -977,8 +991,10 @@
 
   {:else if state === 'loading_local_model'}
     <div class="pill loading-local" class:from-processing={prevState === 'processing'} class:dying={dying}>
-      <div class="loading-spinner"></div>
-      <span>Loading model</span>
+      <span class="stage-row loading-row">
+        <span class="stage-label">Loading model…</span>
+        <span class="stage-label stage-shine" aria-hidden="true">Loading model…</span>
+      </span>
     </div>
 
   {:else if state === 'error'}
@@ -1294,7 +1310,7 @@
     position: relative;
     transition: width 0.26s cubic-bezier(0.22, 1, 0.36, 1);
   }
-  .pill.loading-local { width: 144px; padding: 0 14px; gap: 9px; }
+  .pill.loading-local { width: 144px; padding: 0 14px; justify-content: center; }
 
   .pill.processing.from-rec {
     animation: processIn 0.28s cubic-bezier(0.22, 1, 0.36, 1) backwards,
@@ -1319,11 +1335,8 @@
     from { width: calc(var(--stage-w, 116px) + 24px); }
     to   { width: 144px; }
   }
-  .pill.loading-local.from-processing .loading-spinner {
-    animation: scanIn 0.16s ease 0.16s both, spin 0.8s linear infinite;
-  }
-  .pill.loading-local.from-processing span {
-    animation: scanIn 0.16s ease 0.16s both, loadingPulse 1.6s ease-in-out 0.4s infinite alternate;
+  .pill.loading-local.from-processing .loading-row {
+    animation: scanIn 0.16s ease 0.16s both;
   }
 
   .pill.processing.from-loading {
@@ -1404,30 +1417,6 @@
   }
   @keyframes scanIn {
     from { opacity: 0; }
-    to   { opacity: 1; }
-  }
-
-  .loading-spinner {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: 2px solid var(--pill-spinner-track);
-    border-top-color: var(--pill-fg);
-    animation: spin 0.8s linear infinite;
-    flex-shrink: 0;
-  }
-
-  .pill.loading-local span {
-    font-size: 11.5px;
-    font-weight: 600;
-    letter-spacing: 0.1px;
-    white-space: nowrap;
-    animation: loadingPulse 1.6s ease-in-out 0.4s infinite alternate;
-  }
-
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes loadingPulse {
-    from { opacity: 0.6; }
     to   { opacity: 1; }
   }
 
