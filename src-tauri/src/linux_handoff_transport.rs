@@ -995,9 +995,12 @@ mod tests {
             return;
         }
         if mode == "activate" {
-            let _ = frontends
-                .ready()
-                .and_then(|activation| activation.ownership_acquired())
+            let _ = frontends.ready().and_then(|activation| {
+                if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_DESCRIPTOR") {
+                    std::fs::write(path, b"replacement descriptor").unwrap();
+                }
+                activation.ownership_acquired()
+            })
                 .and_then(|services| services.activated());
         }
         // Exit before frontend readiness to model a failed replacement.

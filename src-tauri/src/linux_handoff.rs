@@ -303,8 +303,9 @@ mod tests {
             .unwrap()
             .build()
             .unwrap();
-        let dir = std::env::temp_dir().join(format!("verenu-handoff-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::env::temp_dir().join(format!("verenu-handoff-test-{}", uuid::Uuid::new_v4()));
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
         let old_dir = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
         std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &dir);
         std::fs::write(dir.join("settings.json"), "{}").unwrap();
@@ -317,9 +318,8 @@ mod tests {
         app.manage(gate.clone());
         app.manage(crate::local_stt::LocalTranscriptionManager::new());
         app.manage(crate::local_llm::LocalLlmManager::new());
-        let agent = Arc::new(tokio::sync::Semaphore::new(1));
-        app.manage(crate::agent_api::AgentDrain::for_test(agent.clone()));
-        crate::agent_api::manage_test_approvals(app.handle());
+        let agent = crate::agent_api::start_test_agent(app.handle().clone()).unwrap();
+        let agent_descriptor = std::fs::read(dir.join("agent-session.json")).unwrap();
         let settings =
             crate::data::store::SettingsHandle::empty_for_test(dir.join("settings.json"));
         settings
@@ -630,12 +630,14 @@ mod tests {
             impostor.args([
                 "--exact",
                 "linux_handoff_transport::tests::replacement_process_fixture",
-            ]).env("VERENU_HANDOFF_TEST_CHILD", "activate");
+            ]).env("VERENU_HANDOFF_TEST_CHILD", "activate")
+                .env("VERENU_HANDOFF_TEST_DESCRIPTOR", dir.join("agent-session.json"));
             let outcome = crate::linux_handoff_transport::stage_replacement(
                 app.handle(), impostor, 39, Default::default(), Duration::from_secs(5),
             ).await;
             assert!(matches!(outcome, Err(ref reason) if reason.contains("different process")));
             drop(tokio::time::timeout(Duration::from_secs(15), gate.enter()).await.unwrap());
+            assert_eq!(std::fs::read(dir.join("agent-session.json")).unwrap(), agent_descriptor);
             let app_handle = app.handle().clone();
             assert!(tauri::async_runtime::spawn_blocking(move || {
                 app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
