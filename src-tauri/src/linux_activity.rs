@@ -17,6 +17,12 @@ pub(crate) struct ActivityGate {
 
 pub(crate) struct Activity(Arc<ActivityGate>);
 
+impl Activity {
+    pub(crate) fn belongs_to(&self, gate: &Arc<ActivityGate>) -> bool {
+        Arc::ptr_eq(&self.0, gate)
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) struct Pause(Arc<ActivityGate>);
 

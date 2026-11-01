@@ -389,6 +389,13 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener became unavailable: {error}"));
                         }
+                        let published_agent = match staged_agent.publish_while_paused(&handle, child_pause.guard()) {
+                            Ok(agent) => agent,
+                            Err(error) => fail_paused_probation(services, format!("Replacement agent discovery could not be prepared: {error}")),
+                        };
+                        if let Err(error) = tauri::async_runtime::block_on(published_agent.verify()) {
+                            fail_paused_probation(services, format!("Replacement agent discovery could not be verified: {error}"));
+                        }
                         let prepared = match services.prepared() {
                             Ok(prepared) => prepared,
                             Err(_) => std::process::exit(1),
@@ -406,7 +413,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = active_microphone.verify() {
                             fail_paused_probation(services, format!("Replacement microphone watcher became unavailable before activation: {error}"));
                         }
-                        if let Err(error) = tauri::async_runtime::block_on(staged_agent.verify()) {
+                        if let Err(error) = tauri::async_runtime::block_on(published_agent.verify()) {
                             fail_paused_probation(services, format!("Replacement agent service became unavailable before activation: {error}"));
                         }
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
