@@ -23,6 +23,18 @@ pub struct SettingsHandle {
     path: Arc<PathBuf>,
     values: Arc<RwLock<Arc<Map<String, Value>>>>,
     read_only: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
+    handoff_baseline: Arc<Mutex<Option<SettingsSnapshot>>>,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct PreparedHandoffSettings(SettingsHandle);
+
+#[cfg(target_os = "linux")]
+impl PreparedHandoffSettings {
+    pub(crate) fn activate(self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
+        self.0.read_only.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -90,6 +102,8 @@ impl SettingsHandle {
             path: Arc::new(path),
             values: Arc::new(RwLock::new(Arc::new(Map::new()))),
             read_only: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "linux")]
+            handoff_baseline: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -103,6 +117,8 @@ impl SettingsHandle {
             path: Arc::new(path),
             values: Arc::new(RwLock::new(Arc::new(values))),
             read_only: Arc::new(AtomicBool::new(false)),
+            #[cfg(target_os = "linux")]
+            handoff_baseline: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -114,6 +130,7 @@ impl SettingsHandle {
             path: Arc::new(path),
             values: Arc::new(RwLock::new(snapshot.values)),
             read_only: Arc::new(AtomicBool::new(true)),
+            handoff_baseline: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -131,33 +148,39 @@ impl SettingsHandle {
     }
 
     #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    pub(crate) fn activate_after_handoff(
+    pub(crate) fn prepare_activation(
         &self,
-        _parent_exited: &crate::linux_handoff_transport::ParentExited,
-    ) -> Result<(), String> {
-        if !self.read_only.load(Ordering::Acquire) {
-            return Ok(());
+        pause: &crate::linux_activity::Pause,
+        gate: &Arc<crate::linux_activity::ActivityGate>,
+    ) -> Result<PreparedHandoffSettings, String> {
+        if !pause.belongs_to(gate) {
+            return Err("Settings restart gate does not match.".into());
         }
-        let snapshot = SettingsSnapshot::read_for_handoff(&self.path)?;
-        let mut values = self
-            .values
-            .write()
-            .map_err(|_| "Settings lock was poisoned".to_string())?;
         if !self.read_only.load(Ordering::Acquire) {
-            return Ok(());
+            return Err("Settings are already writable during restart.".into());
         }
-        *values = snapshot.values;
-        self.read_only.store(false, Ordering::Release);
-        Ok(())
+        self.validate_handoff_snapshot()?;
+        let values = self.snapshot()?;
+        *self.handoff_baseline.lock().map_err(|_| "Settings restart lock was poisoned".to_owned())? = Some(values);
+        Ok(PreparedHandoffSettings(self.clone()))
     }
 
     fn ensure_writable(&self) -> Result<(), String> {
         if self.read_only.load(Ordering::Acquire) {
-            Err("Settings are read-only while the update is starting.".into())
-        } else {
-            Ok(())
+            return Err("Settings are read-only while the update is starting.".into());
         }
+        #[cfg(target_os = "linux")]
+        {
+            let mut baseline = self.handoff_baseline.lock().map_err(|_| "Settings restart lock was poisoned".to_owned())?;
+            if let Some(expected) = baseline.as_ref() {
+                let current = SettingsSnapshot::read_for_handoff(&self.path)?;
+                if current.values != expected.values {
+                    return Err("Settings changed on disk during restart. Quit and reopen Verenu before changing settings.".into());
+                }
+                *baseline = None;
+            }
+        }
+        Ok(())
     }
 
     pub fn snapshot(&self) -> Result<SettingsSnapshot, String> {

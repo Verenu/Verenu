@@ -75,26 +75,46 @@ fn handoff_rejects_unsaved_settings_in_the_running_app() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn handoff_settings_reload_before_all_clones_become_writable() {
+fn handoff_prepares_settings_without_enabling_writes() {
+    let path = unique_tmp_path();
+    std::fs::write(&path, br#"{"value":1}"#).unwrap();
+    let settings = SettingsHandle::open_for_handoff(path.clone()).unwrap();
+    let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+    let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+    let other = Arc::new(crate::linux_activity::ActivityGate::default());
+    let wrong = tauri::async_runtime::block_on(other.pause()).unwrap();
+    assert!(settings.prepare_activation(&wrong, &gate).is_err());
+    std::fs::write(&path, b"invalid synthetic json").unwrap();
+    assert!(settings.prepare_activation(&pause, &gate).is_err());
+    std::fs::write(&path, br#"{"value":1}"#).unwrap();
+    let prepared = settings.prepare_activation(&pause, &gate).unwrap();
+    assert!(settings.save_value("value", json!(2)).is_err());
+    let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+    prepared.activate(&parent_exited);
+    drop(pause);
+    settings.save_value("value", json!(2)).unwrap();
+    assert_eq!(settings.get("value"), Some(json!(2)));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn handoff_settings_reject_changes_after_preparation_without_overwriting_them() {
     let path = unique_tmp_path();
     std::fs::write(&path, br#"{"value":1}"#).unwrap();
     let settings = SettingsHandle::open_for_handoff(path.clone()).unwrap();
     let clone = settings.clone();
-    let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-
-    std::fs::write(&path, b"invalid synthetic json").unwrap();
-    assert!(settings.activate_after_handoff(&parent_exited).is_err());
+    let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+    let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+    let prepared = settings.prepare_activation(&pause, &gate).unwrap();
     assert!(clone.save_value("value", json!(2)).is_err());
-    assert_eq!(settings.get("value"), Some(json!(1)));
-
     std::fs::write(&path, br#"{"value":3,"other":true}"#).unwrap();
-    settings.activate_after_handoff(&parent_exited).unwrap();
-    assert_eq!(clone.get("value"), Some(json!(3)));
-    clone.save_value("value", json!(4)).unwrap();
-    assert_eq!(settings.get("value"), Some(json!(4)));
-    assert!(settings.activate_after_handoff(&parent_exited).is_ok());
+    let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+    prepared.activate(&parent_exited);
+    drop(pause);
+    assert!(clone.save_value("value", json!(4)).is_err());
     let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(saved["value"], json!(4));
+    assert_eq!(saved["value"], json!(3));
     assert_eq!(saved["other"], json!(true));
     std::fs::remove_file(path).unwrap();
 }
@@ -196,6 +216,8 @@ fn github_cache_persists_and_a_disconnect_rejects_late_refreshes() {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(Map::new()))),
         read_only: Arc::new(AtomicBool::new(false)),
+        #[cfg(target_os = "linux")]
+        handoff_baseline: Arc::new(Mutex::new(None)),
     };
     handle
         .save_value(GITHUB_USERNAME, json!("octocat"))
@@ -320,6 +342,8 @@ fn failed_settings_save_does_not_publish_in_memory_values() {
         path: Arc::new(path),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
         read_only: Arc::new(AtomicBool::new(false)),
+        #[cfg(target_os = "linux")]
+        handoff_baseline: Arc::new(Mutex::new(None)),
     };
 
     assert!(handle
@@ -363,6 +387,8 @@ fn settings_snapshots_share_unchanged_maps_and_skip_noop_writes() {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
         read_only: Arc::new(AtomicBool::new(false)),
+        #[cfg(target_os = "linux")]
+        handoff_baseline: Arc::new(Mutex::new(None)),
     };
 
     let first = handle.snapshot().expect("first snapshot");

@@ -4,7 +4,7 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 struct ProbationPause(Option<crate::linux_activity::Pause>);
 
@@ -62,6 +62,14 @@ fn fail_paused_probation(services: crate::linux_handoff_transport::ChildServices
     std::process::exit(1)
 }
 
+fn show_activation_error(app: &tauri::AppHandle, reason: &str) {
+    let message = format!("The update was installed, but startup could not finish: {reason}. Quit and reopen Verenu.");
+    log::error!("{message}");
+    let _ = app.emit("verenu:error", message);
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || crate::show_main_window(&handle));
+}
+
 pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
     crate::system::logger::init_for_handoff();
     let startup = match child.begin(crate::data::db::HANDOFF_SCHEMA_VERSION) {
@@ -72,11 +80,11 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         }
     };
     let key_availability = startup.key_availability().clone();
-    let Some(callback_path) = startup.callback_queue_path() else {
+    let Some(callback_path) = startup.callback_queue_path().map(std::path::Path::to_path_buf) else {
         let _ = startup.fail("Restart callback queue is missing".into());
         return;
     };
-    let callback_queue = match crate::linux_handoff_callbacks::CallbackQueue::open(callback_path) {
+    let callback_queue = match crate::linux_handoff_callbacks::CallbackQueue::open(&callback_path) {
         Ok(queue) => Arc::new(queue),
         Err(error) => {
             let _ = startup.fail(format!("Could not open restart callback queue: {error}"));
@@ -138,13 +146,14 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .append_invoke_initialization_script(
-            "Object.defineProperty(window, '__VERENU_RESTART_PROBE__', { value: true });",
+            "if (sessionStorage.getItem('verenu-restart-activated') !== '1') Object.defineProperty(window, '__VERENU_RESTART_PROBE__', { value: true });",
         )
         .manage(db)
         .manage(settings)
         .manage(key_availability)
         .manage(crate::new_shared_state())
         .manage(Arc::new(crate::linux_activity::ActivityGate::default()))
+        .manage(crate::linux_handoff_transport::PendingRestart::default())
         .manage(crate::local_stt::LocalTranscriptionManager::new())
         .manage(crate::local_llm::LocalLlmManager::new())
         .manage(readiness.clone())
@@ -219,7 +228,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                 let child_pause = tauri::async_runtime::block_on(async {
                     tokio::time::timeout(Duration::from_secs(10), gate.pause()).await
                 });
-                let child_pause = match child_pause {
+                let mut child_pause = match child_pause {
                     Ok(Ok(pause)) => ProbationPause(Some(pause)),
                     _ => {
                         let _ = frontends.fail("Replacement is still busy starting".into());
@@ -404,7 +413,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener could not verify: {error}"));
                         }
-                        let _ready_db = match locked_db.prepare_readonly(child_pause.guard(), &gate) {
+                        let ready_db = match locked_db.prepare_readonly(child_pause.guard(), &gate) {
                             Ok(db) => db,
                             Err(error) => fail_paused_probation(services, format!("Replacement database could not prepare safely: {error}")),
                         };
@@ -471,7 +480,79 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if !matches!(tray_check, Ok(Ok(()))) {
                             fail_paused_probation(services, "Replacement tray became unavailable before activation".into());
                         }
-                        fail_paused_probation(services, "Replacement services are not yet verified".into());
+                        let prepared_settings = match handle.state::<crate::data::store::SettingsHandle>()
+                            .prepare_activation(child_pause.guard(), &gate) {
+                            Ok(settings) => settings,
+                            Err(error) => fail_paused_probation(services, format!("Replacement settings could not prepare: {error}")),
+                        };
+                        #[cfg(all(feature = "native-testing", debug_assertions))]
+                        if std::env::var_os("VERENU_HANDOFF_TEST_FAIL_ACTIVATION").is_some() {
+                            fail_paused_probation(services, "Synthetic replacement startup failure".into());
+                        }
+                        let committed = match services.activated() {
+                            Ok(committed) => committed,
+                            Err(_) => std::process::exit(1),
+                        };
+                        let parent_exited = match committed.wait_for_parent_exit(Duration::from_secs(30)) {
+                            Ok(parent_exited) => parent_exited,
+                            Err(error) => {
+                                show_activation_error(&handle, &error);
+                                return;
+                            }
+                        };
+                        if let Err(error) = ready_db.activate(&parent_exited) {
+                            show_activation_error(&handle, &format!("Database activation failed: {error}"));
+                            return;
+                        }
+                        prepared_settings.activate(&parent_exited);
+                        crate::system::logger::activate_handoff_files(&parent_exited);
+                        let sync = staged_sync.activate(&parent_exited);
+                        let sync_result = tauri::async_runtime::block_on(async {
+                            tokio::time::timeout(Duration::from_secs(15), sync).await
+                        });
+                        if !matches!(sync_result, Ok(Ok(Ok(())))) {
+                            show_activation_error(&handle, "Sync could not start");
+                            return;
+                        }
+                        handle.state::<Arc<AtomicBool>>().store(true, Ordering::Release);
+                        drop(child_pause.0.take());
+                        let Some(activity) = gate.try_enter() else {
+                            show_activation_error(&handle, "The application is busy");
+                            return;
+                        };
+                        if let Err(error) = published_agent.activate(&parent_exited, &activity) {
+                            show_activation_error(&handle, &format!("Agent activation failed: {error}"));
+                            return;
+                        }
+                        if let Err(error) = handle.state::<crate::linux_single_instance::InstanceOwner>()
+                            .activate_callbacks(&handle, &parent_exited) {
+                            show_activation_error(&handle, &format!("Shortcut routing failed: {error}"));
+                            return;
+                        }
+                        if let Some(directory) = callback_path.parent() {
+                            if let Err(error) = std::fs::remove_dir_all(directory) {
+                                log::warn!("Could not remove restart callback storage: {error}");
+                            }
+                        }
+                        let tray = tauri::async_runtime::block_on(crate::app_tray::activate_after_handoff(&handle, &parent_exited));
+                        if let Err(error) = tray {
+                            show_activation_error(&handle, &format!("Tray activation failed: {error}"));
+                            return;
+                        }
+                        let window_handle = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            for label in ["main", "pill"] {
+                                if let Some(window) = window_handle.get_webview_window(label) {
+                                    let _ = window.eval("sessionStorage.setItem('verenu-restart-activated', '1'); location.reload()");
+                                }
+                            }
+                            crate::show_main_window(&window_handle);
+                        });
+                        #[cfg(all(feature = "native-testing", debug_assertions))]
+                        if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_TRIGGER") {
+                            let _ = std::fs::write(std::path::PathBuf::from(path).with_extension("activated"), std::process::id().to_string());
+                        }
+                        return;
                     }
                 } else {
                     let reason = if acquired {

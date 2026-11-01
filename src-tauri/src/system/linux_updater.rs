@@ -192,9 +192,28 @@ pub async fn install(
         app.shell().open(url, None).map_err(|e| e.to_string())?;
         return Ok(crate::commands::InstallOutcome::DownloadOpened);
     }
-    let (name, hash) = crate::api::updater::resolve_linux_download(url, channel)
-        .await
-        .map_err(|e| e.to_string())?;
+    #[cfg(all(feature = "native-testing", debug_assertions))]
+    let fixture = match (std::env::var("VERENU_UPDATE_TEST_LOCAL_URL"), std::env::var("VERENU_UPDATE_TEST_SHA256")) {
+        (Ok(url), Ok(hash)) => {
+            let parsed = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
+            if parsed.scheme() != "http" || parsed.host_str() != Some("127.0.0.1")
+                || hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("Invalid local update fixture".into());
+            }
+            Some(("Verenu-test.AppImage".to_owned(), hash, url))
+        }
+        _ => None,
+    };
+    #[cfg(not(all(feature = "native-testing", debug_assertions)))]
+    let fixture: Option<(String, String, String)> = None;
+    let (name, hash, download_url) = match fixture {
+        Some(fixture) => fixture,
+        None => {
+            let (name, hash) = crate::api::updater::resolve_linux_download(url, channel)
+                .await.map_err(|e| e.to_string())?;
+            (name, hash, url.to_owned())
+        }
+    };
     if Path::new(&name).file_name().and_then(|name| name.to_str()) != Some(&name) {
         return Err("Invalid release installer filename.".into());
     }
@@ -205,7 +224,7 @@ pub async fn install(
     };
     let staging = StagingDirectory::new(&cache)?;
     let installer = staging.0.join(&name);
-    download_file(url, &installer, &hash, |phase, downloaded, total| {
+    download_file(&download_url, &installer, &hash, |phase, downloaded, total| {
         progress(app, phase, downloaded, total)
     })
     .await?;

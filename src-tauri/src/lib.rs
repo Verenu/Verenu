@@ -544,8 +544,18 @@ fn handle_run_event(_app: &tauri::AppHandle, _event: tauri::RunEvent) {
     if let tauri::RunEvent::Reopen { .. } = _event {
         show_main_window(_app);
     }
-    if let tauri::RunEvent::ExitRequested { .. } = _event {
+    if let tauri::RunEvent::ExitRequested { ref api, .. } = _event {
         log::info!("app exit requested");
+        #[cfg(target_os = "linux")]
+        if let Some(pending) = _app.try_state::<linux_handoff_transport::PendingRestart>() {
+            if let Err(error) = pending.check_exit() {
+                api.prevent_exit();
+                use tauri::Emitter;
+                let _ = _app.emit("verenu:error", error);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = api;
     }
     if let tauri::RunEvent::Exit = _event {
         crate::media::sound::release_all_mutes_on_exit();
@@ -556,6 +566,10 @@ fn handle_run_event(_app: &tauri::AppHandle, _event: tauri::RunEvent) {
         app_tray::cleanup_runtime_icon_files();
         log::info!("app shutdown complete");
         log::logger().flush();
+        #[cfg(target_os = "linux")]
+        if let Some(pending) = _app.try_state::<linux_handoff_transport::PendingRestart>() {
+            pending.finish_exit();
+        }
     }
 }
 
@@ -634,6 +648,7 @@ pub fn run() {
     {
         builder = builder
             .manage(Arc::new(linux_activity::ActivityGate::default()))
+            .manage(linux_handoff_transport::PendingRestart::default())
             .on_page_load(|webview, payload| {
                 if payload.event() == tauri::webview::PageLoadEvent::Started {
                     if let Some(readiness) = webview.app_handle().try_state::<FrontendReadiness>() {
@@ -940,6 +955,29 @@ pub fn run() {
                 app.handle().clone(), shared.clone(), local_transcription_manager.clone(),
                 local_cleanup_manager.clone(),
             ));
+
+            #[cfg(all(target_os = "linux", feature = "native-testing", debug_assertions))]
+            if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_TRIGGER") {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let trigger = std::path::PathBuf::from(path);
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+                    while !trigger.exists() && std::time::Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    if trigger.exists() {
+                        let result = tauri::async_runtime::block_on(async {
+                            if std::env::var_os("VERENU_UPDATE_TEST_LOCAL_URL").is_some() {
+                                commands::install_update(handle.clone(), "https://github.com/Verenu/Verenu/releases/download/v0.21.0/Verenu_0.21.0-beta.1_x86_64.AppImage".into()).await?;
+                            }
+                            commands::restart_app(handle).await
+                        });
+                        if let Err(error) = result {
+                            let _ = std::fs::write(trigger.with_extension("error"), error);
+                        }
+                    }
+                });
+            }
 
             Ok(())
         })

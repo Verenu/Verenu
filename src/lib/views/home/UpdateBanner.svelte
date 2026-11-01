@@ -14,7 +14,7 @@
   <div class="update-banner">
     <span class="update-text">
       {#if appStore.updateInstalled}
-        Update installed. Quit and reopen Verenu to finish.
+        {appStore.updateProgress || 'Update installed. Restart Verenu to finish.'}
       {:else}
         Update available: v{currentVersion} → v{updateInfo.version}
         {#if updateInfo.installHint}<span class="update-hint">{updateInfo.installHint}</span>{/if}
@@ -24,8 +24,8 @@
     </span>
     <div class="update-actions">
       {#if !appStore.updateInstalled}<button class="update-dismiss" onclick={onDismiss}>Dismiss</button>{/if}
-      <button class="update-btn" onclick={onInstall} disabled={installing || appStore.updateInstalled}>
-        {appStore.updateInstalled ? 'Installed' : installing
+      <button class="update-btn" onclick={onInstall} disabled={installing}>
+        {appStore.updateInstalled ? (installing ? 'Restarting…' : 'Restart') : installing
           ? (updateInfo.installMode === 'download' ? 'Opening…' : 'Installing…')
           : installActionLabel(updateInfo)}
       </button>
