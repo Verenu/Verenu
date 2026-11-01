@@ -718,6 +718,16 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 telemetry.fallback("cleanup");
             }
         }
+        if guarded.is_none() {
+            if let Some(app) = app {
+                app.emit(
+                    "verenu:model-notice",
+                    "Cleanup was unavailable. Your transcript was preserved.",
+                )
+                .ok();
+                crate::system::notify::notify_cleanup_failed(app);
+            }
+        }
         match guarded {
             Some(cleaned) => {
                 if cleanup_api_used.starts_with("local/")
@@ -784,13 +794,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             }
             None if !provider_succeeded && saw_soft_timeout => {
                 log::warn!("pipeline: cleanup stalled twice, delivering pre-cleanup transcription");
-                if let Some(app) = app {
-                    app.emit(
-                        "verenu:model-notice",
-                        "Cleanup was unavailable. Your transcript was preserved.",
-                    )
-                    .ok();
-                }
                 cleanup_api_used.clear();
                 let text =
                     snippets::apply_cleanup_instruction_overrides(&expanded, &snippet_instructions);
@@ -801,13 +804,6 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                 }
             }
             None if !provider_succeeded && last_cleanup_err.is_some() => {
-                if let Some(app) = app {
-                    app.emit(
-                        "verenu:model-notice",
-                        "Cleanup was unavailable. Your transcript was preserved.",
-                    )
-                    .ok();
-                }
                 cleanup_api_used.clear();
                 snippets::apply_cleanup_instruction_overrides(&expanded, &snippet_instructions)
             }
