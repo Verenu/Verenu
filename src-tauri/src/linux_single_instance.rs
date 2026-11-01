@@ -265,10 +265,14 @@ impl InstanceOwner {
     #[allow(dead_code)]
     pub(crate) fn callback_barrier(&self) -> Result<(), String> {
         let unique = self.unique_name()?;
+        self.callback_barrier_at(&unique)
+    }
+
+    fn callback_barrier_at(&self, unique: &str) -> Result<(), String> {
         let path = format!("/{}", self.name.replace('.', "/").replace('-', "_"));
         Connection::session()
             .and_then(|connection| connection.call_method(
-                Some(unique.as_str()), path.as_str(), Some("org.SingleInstance.DBus"),
+                Some(unique), path.as_str(), Some("org.SingleInstance.DBus"),
                 "HandoffBarrier", &(),
             ))
             .map(|_| ())
@@ -329,7 +333,7 @@ impl InstanceOwner {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn verify_replacement_owner(&self, group: u32) -> Result<(), String> {
+    pub(crate) fn verify_replacement_owner(&self, group: u32) -> Result<String, String> {
         let owner: String = self.connection.call_method(
             Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
             Some("org.freedesktop.DBus"), "GetNameOwner", &(self.name.as_str(),),
@@ -350,6 +354,16 @@ impl InstanceOwner {
             .map_err(|error| format!("Could not confirm replacement ownership: {error}"))?;
         if current != owner {
             return Err("Single-instance ownership changed during restart".into());
+        }
+        Ok(owner)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn replacement_callback_barrier(&self, group: u32) -> Result<(), String> {
+        let owner = self.verify_replacement_owner(group)?;
+        self.callback_barrier_at(&owner)?;
+        if self.verify_replacement_owner(group)? != owner {
+            return Err("Single-instance ownership changed during callback handoff".into());
         }
         Ok(())
     }

@@ -1216,6 +1216,8 @@ mod tests {
         });
         assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
         assert_eq!(callback_queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
+        owner.callback_barrier().unwrap();
+        owner.replacement_callback_barrier(child_pid).unwrap();
         assert_eq!(
             crate::linux_single_instance::test_callback_count(),
             callbacks_before
