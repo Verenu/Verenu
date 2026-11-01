@@ -449,15 +449,21 @@ impl PreparedAgent {
             }
         });
         let staged = StagedAgent { port, instance, active, server: Some(server) };
-        let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build()?;
-        let response = client.get(format!("http://127.0.0.1:{port}/v1/status")).send().await?;
-        anyhow::ensure!(response.status() == StatusCode::SERVICE_UNAVAILABLE, "Agent probation endpoint was not isolated");
+        staged.verify().await?;
         Ok(staged)
     }
 }
 
 #[cfg(target_os = "linux")]
 impl StagedAgent {
+    pub(crate) async fn verify(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.server.as_ref().is_some_and(|server| !server.inner().is_finished()), "Agent service stopped during restart");
+        let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build()?;
+        let response = client.get(format!("http://127.0.0.1:{}/v1/status", self.port)).send().await?;
+        anyhow::ensure!(response.status() == StatusCode::SERVICE_UNAVAILABLE, "Agent probation endpoint was not isolated");
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited) -> anyhow::Result<()> {
         use std::sync::atomic::Ordering;
@@ -1330,6 +1336,9 @@ mod tests {
         let port = prepared.port;
         tauri::async_runtime::block_on(async {
             let staged = prepared.stage_for_handoff(app.handle().clone()).await.unwrap();
+            staged.verify().await.unwrap();
+            staged.server.as_ref().unwrap().abort();
+            assert!(staged.verify().await.is_err());
             drop(staged);
             tokio::time::timeout(Duration::from_secs(5), async {
                 while tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await.is_ok() {

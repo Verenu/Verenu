@@ -287,7 +287,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 return;
                             }
                         };
-                        let _staged_agent = match tauri::async_runtime::block_on(
+                        let staged_agent = match tauri::async_runtime::block_on(
                             prepared_agent.stage_for_handoff(handle.clone()),
                         ) {
                             Ok(agent) => agent,
@@ -372,6 +372,11 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         });
                         if !matches!(tray_check, Ok(Ok(()))) {
                             let _ = services.fail("Replacement tray became unavailable during preparation".into());
+                            handle.exit(1);
+                            return;
+                        }
+                        if let Err(error) = tauri::async_runtime::block_on(staged_agent.verify()) {
+                            let _ = services.fail(format!("Replacement agent service became unavailable: {error}"));
                             handle.exit(1);
                             return;
                         }
