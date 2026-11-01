@@ -1,19 +1,50 @@
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-/// Return freed audio/provider/model allocations to the OS while idle. glibc
-/// otherwise retains free pages in its arenas for later allocations. This only
-/// affects the native process; WebKit children own their separate allocators.
-pub async fn reclaim_idle_memory(state: &crate::pipeline::SharedState) {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    {
-        let idle = state.lock().is_ok_and(|state| state.lifecycle.is_idle());
-        if idle {
-            let _ = tauri::async_runtime::spawn_blocking(|| unsafe { libc::malloc_trim(0) }).await;
+/// Reclaim native memory while dictation is idle.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub struct IdleMemoryReclaimer {
+    db: crate::DbHandle,
+    hidden_idle_seen: bool,
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+impl IdleMemoryReclaimer {
+    pub fn new(db: crate::DbHandle) -> Self {
+        Self {
+            db,
+            hidden_idle_seen: false,
         }
     }
-    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-    let _ = state;
+
+    pub async fn reclaim(&mut self, state: &crate::pipeline::SharedState, main_hidden: bool) {
+        let idle = state.lock().is_ok_and(|state| state.lifecycle.is_idle());
+        let release_cache = self.should_release_cache(idle, main_hidden);
+        if !idle {
+            return;
+        }
+        let db = self.db.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            if release_cache {
+                reclaim_idle_database_cache(&db);
+            }
+            // Return freed database, audio, provider, and model pages to the OS.
+            unsafe { libc::malloc_trim(0) };
+        })
+        .await;
+    }
+
+    fn should_release_cache(&mut self, idle: bool, main_hidden: bool) -> bool {
+        let release = self.hidden_idle_seen && idle && main_hidden;
+        self.hidden_idle_seen = idle && main_hidden;
+        release
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn reclaim_idle_database_cache(db: &crate::DbHandle) -> bool {
+    db.try_lock()
+        .is_ok_and(|conn| conn.execute_batch("PRAGMA shrink_memory").is_ok())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -261,6 +292,78 @@ pub fn detect_resource_pressure() -> Option<String> {
 #[cfg(test)]
 mod pressure_tests {
     use super::*;
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn database_cache_waits_for_two_hidden_idle_checks() {
+        let db = std::sync::Arc::new(std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+        let mut reclaimer = IdleMemoryReclaimer::new(db);
+        assert!(!reclaimer.should_release_cache(true, false));
+        assert!(!reclaimer.should_release_cache(true, true));
+        assert!(reclaimer.should_release_cache(true, true));
+        assert!(!reclaimer.should_release_cache(false, true));
+        assert!(!reclaimer.should_release_cache(true, true));
+        assert!(!reclaimer.should_release_cache(true, false));
+        assert!(!reclaimer.should_release_cache(true, true));
+    }
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn idle_database_cache_release_preserves_data_and_skips_busy_database() {
+        use std::sync::{Arc, Mutex};
+
+        let path = std::env::temp_dir().join(format!(
+            "verenu-memory-test-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE entries (value TEXT);\
+             WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000)\
+             INSERT INTO entries SELECT printf('%01000d', x) FROM n;",
+        )
+        .unwrap();
+        let db = Arc::new(Mutex::new(conn));
+        let read = || {
+            db.lock()
+                .unwrap()
+                .query_row("SELECT count(*) FROM entries", [], |row| row.get::<_, i64>(0))
+                .unwrap()
+        };
+        let cache_bytes = || {
+            let conn = db.lock().unwrap();
+            let mut value = 0;
+            let mut unused = 0;
+            assert_eq!(
+                unsafe {
+                    rusqlite::ffi::sqlite3_db_status(
+                        conn.handle(),
+                        rusqlite::ffi::SQLITE_DBSTATUS_CACHE_USED,
+                        &mut value,
+                        &mut unused,
+                        0,
+                    )
+                },
+                rusqlite::ffi::SQLITE_OK
+            );
+            value
+        };
+        assert_eq!(read(), 1000);
+        let warm = cache_bytes();
+        assert!(reclaim_idle_database_cache(&db));
+        assert!(cache_bytes() < warm);
+        assert_eq!(read(), 1000);
+
+        let held = db.lock().unwrap();
+        assert!(!reclaim_idle_database_cache(&db));
+        drop(held);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn nvidia_smi_csv_parses_used_and_total() {

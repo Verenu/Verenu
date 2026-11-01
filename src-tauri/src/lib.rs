@@ -168,6 +168,10 @@ fn start_runtime_maintenance(
 ) -> tauri::async_runtime::JoinHandle<()> {
     #[cfg(target_os = "linux")]
     let gate = app.state::<Arc<linux_activity::ActivityGate>>().inner().clone();
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    let mut memory_reclaimer = crate::system::memory::IdleMemoryReclaimer::new(
+        app.state::<DbHandle>().inner().clone(),
+    );
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -227,7 +231,13 @@ fn start_runtime_maintenance(
                     }).await;
                 }
             }
-            crate::system::memory::reclaim_idle_memory(&capture_state).await;
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            {
+                let main_hidden = app.get_webview_window("main")
+                    .and_then(|window| window.is_visible().ok())
+                    .is_some_and(|visible| !visible);
+                memory_reclaimer.reclaim(&capture_state, main_hidden).await;
+            }
         }
     })
 }

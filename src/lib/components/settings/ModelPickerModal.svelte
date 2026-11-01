@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Callout from '../Callout.svelte';
   import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount, untrack } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
@@ -151,12 +152,12 @@
     ]);
   }
   const catalogNote = $derived(refreshing
-    ? 'Refreshing model lists… You can still choose a model.'
+    ? { severity: 'info' as const, text: 'Refreshing model lists… You can still choose a model.' }
     : refreshProviders.some((provider) => context.cache[provider]?.lastError)
-      ? 'Refresh unavailable. Keeping cached models.'
+      ? { severity: 'warning' as const, text: 'Refresh unavailable. Keeping cached models.' }
       : refreshProviders.some((provider) => context.cache[provider]?.warning)
-        ? 'Some capability metadata is unavailable. Keeping known models.'
-        : '');
+        ? { severity: 'warning' as const, text: 'Some capability metadata is unavailable. Keeping known models.' }
+        : null);
 
   const needle = $derived(query.trim().toLowerCase());
   function matches(row: ModelRow): boolean {
@@ -444,21 +445,21 @@
       </button>
     </div>
 
-    <p class="catalog-note" role="status">{catalogNote}</p>
+    <div class="catalog-note" role="status">
+      {#if catalogNote}<Callout severity={catalogNote.severity} compact role={null}>{catalogNote.text}</Callout>{/if}
+    </div>
 
     <div class="picker-list scroll-styled scroll-thumb-elev">
       {#key filter}
       <div in:fade={{ duration: motionMs(MOTION_MS.fast) }}>
       {#if filter === 'local' && local.runtime?.info && runtimePending}
-        <p class="list-note runtime-note">
+        <div class="runtime-note">
           {#if local.runtime.info.is_downloading}
-            Fetching the on-device runtime…
-            <button class="row-tool" type="button" onclick={() => local.runtime?.onCancel()}>Cancel</button>
+            <Callout severity="info" compact action={{ label: 'Cancel', onclick: () => local.runtime?.onCancel() }}>Fetching the on-device runtime…</Callout>
           {:else}
-            On-device models need a one-time runtime (~{local.runtime.info.approx_download_mb} MB).
-            <button class="row-tool row-tool-strong" type="button" onclick={() => local.runtime?.onDownload()}>Install engine</button>
+            <Callout severity="warning" compact action={{ label: 'Install engine', onclick: () => local.runtime?.onDownload() }}>On-device models need a one-time runtime (~{local.runtime.info.approx_download_mb} MB).</Callout>
           {/if}
-        </p>
+        </div>
       {/if}
 
       {#each pinnedRows as row (row.key)}
@@ -860,11 +861,8 @@
 
   .catalog-note {
     flex-shrink: 0;
-    margin: 0;
-    padding: 6px 22px;
+    padding: 8px 22px;
     border-bottom: 1px solid var(--line);
-    font-size: 12px;
-    color: var(--ink-mute);
   }
 
   .catalog-note:empty { height: 0; padding: 0; border: 0; overflow: hidden; }
@@ -901,6 +899,7 @@
     color: var(--ink-mute);
   }
 
+  .runtime-note { padding: 8px 12px; }
   .list-note { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
   .list-empty { padding-top: 56px; text-align: center; font-size: 13px; }
   .list-error { color: var(--danger); }
