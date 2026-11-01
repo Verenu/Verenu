@@ -170,6 +170,9 @@
     <div role="status" aria-live="polite">
     {#if appStore.updateInstallError || updateCheckError}
       <div class="desc">{appStore.updateInstallError || updateCheckError}</div>
+      {#if appStore.updateInstalled && appStore.updateProgress}
+        <div class="desc">{appStore.updateProgress}</div>
+      {/if}
     {:else if appStore.updateProgress}
       <div class="desc">{appStore.updateProgress}</div>
     {/if}
