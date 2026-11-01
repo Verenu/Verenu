@@ -397,6 +397,27 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             Ok(services) => services,
                             Err(_) => std::process::exit(1),
                         };
+                        if !readiness.main.load(Ordering::Acquire)
+                            || !readiness.current_pill_ready()
+                            || !readiness.main_and_home_ready()
+                        {
+                            fail_paused_probation(services, "Replacement frontend became unavailable before activation".into());
+                        }
+                        if let Err(error) = active_microphone.verify() {
+                            fail_paused_probation(services, format!("Replacement microphone watcher became unavailable before activation: {error}"));
+                        }
+                        if let Err(error) = tauri::async_runtime::block_on(staged_agent.verify()) {
+                            fail_paused_probation(services, format!("Replacement agent service became unavailable before activation: {error}"));
+                        }
+                        if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
+                            fail_paused_probation(services, format!("Replacement sync listener became unavailable before activation: {error}"));
+                        }
+                        let tray_check = tauri::async_runtime::block_on(async {
+                            tokio::time::timeout(Duration::from_secs(5), crate::app_tray::verify_probation_tray(&handle)).await
+                        });
+                        if !matches!(tray_check, Ok(Ok(()))) {
+                            fail_paused_probation(services, "Replacement tray became unavailable before activation".into());
+                        }
                         fail_paused_probation(services, "Replacement services are not yet verified".into());
                     }
                 } else {
