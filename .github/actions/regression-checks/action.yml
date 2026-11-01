@@ -36,6 +36,7 @@ runs:
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       with:
         workspaces: src-tauri
+        save-if: ${{ github.event_name != 'pull_request' }}
     - name: Install Linux build and fixture tools
       shell: bash
       run: |
@@ -52,7 +53,7 @@ runs:
       shell: bash
       run: npm ci
     - name: Install browser
-      if: inputs.profile != 'linux'
+      if: inputs.profile != 'linux' && !(inputs.profile == 'fast' && (inputs.fast-suites == 'preflight,contract' || inputs.fast-suites == 'rust'))
       shell: bash
       run: npx playwright install --with-deps chromium
     - name: Compile Rust prompt contract tests
