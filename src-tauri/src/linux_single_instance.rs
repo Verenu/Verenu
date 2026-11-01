@@ -80,7 +80,13 @@ impl CallbackRoute {
     fn enqueue_if_active(&self, args: &[String]) -> Option<zbus::fdo::Result<()>> {
         let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
         queue.as_mut().map(|slot| {
-            slot.queue.push(crate::linux_handoff_callbacks::Callback::from_args(args))
+            let callback = crate::linux_handoff_callbacks::Callback::from_args(args);
+            let result = if self.parent.is_some() {
+                slot.queue.push_replacement(callback)
+            } else {
+                slot.queue.push(callback)
+            };
+            result
                 .map_err(|error| {
                     slot.failed = true;
                     zbus::fdo::Error::Failed(format!("Could not queue restart callback: {error}"))
@@ -871,7 +877,7 @@ mod tests {
             if let Some(path) = std::env::var_os("VERENU_TEST_TRANSFER_QUEUE") {
                 crate::linux_handoff_callbacks::CallbackQueue::open(std::path::Path::new(&path))
                     .unwrap()
-                    .push(crate::linux_handoff_callbacks::Callback::Handsfree)
+                    .push_replacement(crate::linux_handoff_callbacks::Callback::Handsfree)
                     .unwrap();
             }
             eprintln!("replacement-acquired");
