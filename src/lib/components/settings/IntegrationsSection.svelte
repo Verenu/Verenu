@@ -140,7 +140,7 @@
 
 <style>
   .section-intro { color: var(--ink-mute); font-size: 12.5px; line-height: 1.5; margin: -8px 0 22px; }
-  .integration-list { border-bottom: 1px solid var(--line); }
+  .integration-list { display: grid; gap: 12px; }
   .github-dark { display: none; }
   :global(:root[data-theme="dark"]) .github-light { display: none; }
   :global(:root[data-theme="dark"]) .github-dark { display: block; }

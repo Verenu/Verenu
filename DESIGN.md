@@ -12,6 +12,8 @@ This is the source of truth for shared frontend controls. Use it before adding o
 | [`src/lib/components/Dropdown.svelte`](src/lib/components/Dropdown.svelte) | Headless outside-click and Escape handling for composed dropdowns. |
 | [`src/lib/components/Toggle.svelte`](src/lib/components/Toggle.svelte) | The shared accessible switch control. The `toggle` class is a smoke-test contract. |
 | [`src/lib/components/Callout.svelte`](src/lib/components/Callout.svelte) | The shared warning surface for provider, key, quota, outage, and model-readiness messages. |
+| [`src/lib/components/Disclosure.svelte`](src/lib/components/Disclosure.svelte) | The animated "show more" trigger and region. Use it instead of a native `<details>`. |
+| [`src/lib/components/RollingNumber.svelte`](src/lib/components/RollingNumber.svelte) | A numeric readout whose digits roll when the value changes, for sliders and counters. |
 | [`docs/colors.md`](docs/colors.md) | Palette and typography reference. |
 
 Do not define `.btn-primary`, `.btn-ghost`, `.btn-danger`, `.ui-dropdown-*`, or their basic interactive states inside a Svelte component. Add a semantic modifier only for layout or content that the primitive cannot know, such as a menu width or text truncation.
