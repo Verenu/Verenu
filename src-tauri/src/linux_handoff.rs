@@ -693,6 +693,43 @@ mod tests {
                     app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
                 }).await.unwrap());
                 assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), settings_before);
+
+                let identity = crate::sync::identity::generate_for_tests();
+                let key = identity.tls_key();
+                crate::sync::secrets::store_identity_key(&dir, key.secret_pkcs8_der()).unwrap();
+                std::fs::write(dir.join("sync-identity.der"), identity.cert_der().as_ref()).unwrap();
+                crate::sync::store::ensure_self_identity(&disk_db.lock().unwrap(), &identity.uuid, &identity.name).unwrap();
+                let mut real = Command::new(std::env::var_os("VERENU_HANDOFF_TEST_BINARY").unwrap());
+                real.env("VERENU_APP_DATA_DIR_OVERRIDE", &dir)
+                    .env("XDG_CONFIG_HOME", dir.join("config"))
+                    .env("XDG_STATE_HOME", dir.join("state"))
+                    .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1")
+                    .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+                    .env_remove("VERENU_AGENT_TOKEN")
+                    .env_remove("VERENU_AGENT_PORT");
+                let callbacks = crate::linux_single_instance::test_callback_count();
+                let staged = crate::linux_handoff_transport::stage_replacement(
+                    app.handle(), real, crate::data::db::HANDOFF_SCHEMA_VERSION,
+                    Default::default(), Duration::from_secs(25),
+                ).await.expect("replacement did not prepare its services");
+                assert!(gate.try_enter().is_none());
+                let app_handle = app.handle().clone();
+                assert!(!tauri::async_runtime::spawn_blocking(move || {
+                    app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
+                }).await.unwrap());
+                tauri::async_runtime::spawn_blocking(|| {
+                    zbus::blocking::Connection::session().unwrap().call_method(
+                        Some("com.verenu.app.SingleInstance"), "/com/verenu/app/SingleInstance",
+                        Some("org.SingleInstance.DBus"), "ExecuteCallback",
+                        &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
+                    ).unwrap();
+                }).await.unwrap();
+                assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
+                drop(staged);
+                drop(tokio::time::timeout(Duration::from_secs(20), gate.enter()).await
+                    .expect("aborted prepared replacement did not restore the parent"));
+                assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
+                assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), settings_before);
                 drop(disk_db);
             }
 

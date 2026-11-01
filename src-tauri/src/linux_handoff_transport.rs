@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const PROTOCOL: u32 = 5;
+const PROTOCOL: u32 = 6;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
@@ -302,6 +302,11 @@ impl ChildActivation {
 pub(crate) struct ChildServices(Channel);
 
 impl ChildServices {
+    pub(crate) fn prepared(mut self) -> Result<PreparedChildServices, String> {
+        self.0.send(&Message::ServicesPrepared)?;
+        Ok(PreparedChildServices(self.0))
+    }
+
     pub(crate) fn activated(mut self) -> Result<ChildCommit, String> {
         self.0.send(&Message::Activated)?;
         self.0.expect(Message::Commit)?;
@@ -310,6 +315,15 @@ impl ChildServices {
 
     pub(crate) fn fail(mut self, reason: String) -> Result<(), String> {
         self.0.send(&Message::Failed { reason })
+    }
+}
+
+pub(crate) struct PreparedChildServices(Channel);
+
+impl PreparedChildServices {
+    pub(crate) fn wait_for_activation(mut self) -> Result<ChildServices, String> {
+        self.0.expect(Message::BeginServiceActivation)?;
+        Ok(ChildServices(self.0))
     }
 }
 
@@ -361,6 +375,8 @@ enum Message {
     Activate,
     OwnershipAcquired,
     ContinueActivation,
+    ServicesPrepared,
+    BeginServiceActivation,
     Activated,
     Commit,
     Failed {
@@ -617,24 +633,21 @@ struct OwnedReplacement {
 }
 
 impl OwnedReplacement {
-    fn activate(self) -> Result<ActivatedReplacement, String> {
-        let activated = self.ownership.activate()?;
-        Ok(ActivatedReplacement {
-            process: self.process,
-            activated,
-        })
+    fn stage_services(self) -> Result<PreparedReplacement, String> {
+        let prepared = self.ownership.stage_services()?;
+        Ok(PreparedReplacement { process: self.process, prepared })
     }
 }
 
-struct ActivatedReplacement {
+struct PreparedReplacement {
     process: ProcessGuard,
-    activated: Activated,
+    prepared: PreparedServices,
 }
 
 #[must_use]
 pub(crate) struct StagedRestart {
     // Drop the replacement before the preparation lease resumes the parent.
-    replacement: ActivatedReplacement,
+    replacement: PreparedReplacement,
     preparation: crate::linux_handoff::PreparedHandoff,
 }
 
@@ -663,7 +676,7 @@ pub(crate) async fn stage_replacement(
         owner.verify_replacement_owner(group)?;
         owner.callback_barrier()?;
         owner.replacement_callback_barrier(group)?;
-        let replacement = owned.activate()?;
+        let replacement = owned.stage_services()?;
         owner.verify_replacement_owner(group)?;
         owner.callback_barrier()?;
         owner.replacement_callback_barrier(group)?;
@@ -712,8 +725,18 @@ impl Probation {
 struct Ownership(Channel);
 
 impl Ownership {
-    fn activate(mut self) -> Result<Activated, String> {
+    fn stage_services(mut self) -> Result<PreparedServices, String> {
         self.0.send(&Message::ContinueActivation)?;
+        self.0.expect(Message::ServicesPrepared)?;
+        Ok(PreparedServices(self.0))
+    }
+}
+
+struct PreparedServices(Channel);
+
+impl PreparedServices {
+    fn activate(mut self) -> Result<Activated, String> {
+        self.0.send(&Message::BeginServiceActivation)?;
         self.0.expect(Message::Activated)?;
         Ok(Activated(self.0))
     }
@@ -839,6 +862,21 @@ mod tests {
     }
 
     #[test]
+    fn prepared_services_cannot_be_committed_without_activation() {
+        let (mut parent, child) = pair();
+        parent.child_pid = std::process::id();
+        let worker = std::thread::spawn(move || {
+            Child { channel: child }.begin(39).unwrap()
+                .backend_ready().unwrap().ready().unwrap()
+                .ownership_acquired().unwrap().prepared().unwrap()
+                .wait_for_activation()
+        });
+        let mut prepared = parent.prepare().unwrap().acquire_ownership().unwrap().stage_services().unwrap();
+        prepared.0.send(&Message::Commit).unwrap();
+        assert!(worker.join().unwrap().is_err());
+    }
+
+    #[test]
     fn wrong_pid_schema_or_database_code_is_rejected_before_startup() {
         for message in [
             Message::Hello {
@@ -898,6 +936,8 @@ mod tests {
             child.expect(Message::Activate).unwrap();
             child.send(&Message::OwnershipAcquired).unwrap();
             child.expect(Message::ContinueActivation).unwrap();
+            child.send(&Message::ServicesPrepared).unwrap();
+            child.expect(Message::BeginServiceActivation).unwrap();
             child.send(&Message::Activated).unwrap();
             child.expect(Message::Commit).unwrap();
         });
@@ -905,6 +945,8 @@ mod tests {
             .prepare()
             .unwrap()
             .acquire_ownership()
+            .unwrap()
+            .stage_services()
             .unwrap()
             .activate()
             .unwrap()
@@ -928,6 +970,10 @@ mod tests {
                 .unwrap()
                 .ownership_acquired()
                 .unwrap()
+                .prepared()
+                .unwrap()
+                .wait_for_activation()
+                .unwrap()
                 .activated()
                 .unwrap();
         });
@@ -935,6 +981,8 @@ mod tests {
             .prepare()
             .unwrap()
             .acquire_ownership()
+            .unwrap()
+            .stage_services()
             .unwrap()
             .activate()
             .unwrap()
@@ -1023,6 +1071,8 @@ mod tests {
                 }
                 activation.ownership_acquired()
             })
+                .and_then(|services| services.prepared())
+                .and_then(|services| services.wait_for_activation())
                 .and_then(|services| services.activated());
         }
         // Exit before frontend readiness to model a failed replacement.
@@ -1122,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn abandoning_an_activated_replacement_kills_and_reaps_it() {
+    fn abandoning_a_prepared_replacement_kills_and_reaps_it() {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
             .args([
@@ -1134,14 +1184,14 @@ mod tests {
             Replacement::spawn(command, 39, KeyAvailability::new(), Duration::from_secs(5))
                 .unwrap();
         let pid = replacement.process.0.id();
-        let activated = replacement
+        let prepared = replacement
             .prepare()
             .unwrap()
             .acquire_ownership()
             .unwrap()
-            .activate()
+            .stage_services()
             .unwrap();
-        drop(activated);
+        drop(prepared);
         assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
     }
 
@@ -1293,7 +1343,7 @@ mod tests {
             crate::linux_single_instance::test_callback_count(),
             callbacks_before
         );
-        let outcome = owned.activate();
+        let outcome = owned.stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("Replacement shortcuts could not start")));
         let tray_names = registrations.lock().unwrap().clone();
         assert_eq!(tray_names.len(), 1, "replacement tray did not register");
@@ -1388,7 +1438,7 @@ mod tests {
         owner
             .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
             .unwrap();
-        let outcome = ready.acquire_ownership().unwrap().activate();
+        let outcome = ready.acquire_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("cannot prepare the database")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !owner.owns_name().unwrap_or(false) {
@@ -1440,7 +1490,7 @@ mod tests {
         owner
             .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
             .unwrap();
-        let outcome = ready.acquire_ownership().unwrap().activate();
+        let outcome = ready.acquire_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("Settings changed")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !owner.owns_name().unwrap_or(false) {
@@ -1496,7 +1546,7 @@ mod tests {
         owner
             .set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable)
             .unwrap();
-        let outcome = ready.acquire_ownership().unwrap().activate();
+        let outcome = ready.acquire_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("Database changed")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !owner.owns_name().unwrap_or(false) {
@@ -1535,7 +1585,7 @@ mod tests {
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
-        let outcome = ready.acquire_ownership().unwrap().activate();
+        let outcome = ready.acquire_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("agent service could not prepare")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !owner.owns_name().unwrap_or(false) {
@@ -1568,17 +1618,31 @@ mod tests {
             Duration::from_secs(25),
         ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
-        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        let child_pid = ready.process.0.id();
+        let pause = gate.begin_pause_with(|| owner.install_callback_queue(callback_queue.clone())).unwrap();
+        tauri::async_runtime::block_on(pause.wait_drained());
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
-        let outcome = ready.acquire_ownership().unwrap().activate();
-        assert!(matches!(outcome, Err(reason) if reason.contains("services are not yet verified")));
+        let staged = ready.acquire_ownership().unwrap().stage_services().expect("replacement services did not prepare");
+        assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, 0);
+        assert!(!owner.owns_name().unwrap());
+        let callbacks = crate::linux_single_instance::test_callback_count();
+        connection.call_method(
+            Some("com.verenu.app.SingleInstance"), "/com/verenu/app/SingleInstance",
+            Some("org.SingleInstance.DBus"), "ExecuteCallback",
+            &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
+        ).unwrap();
+        assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
+        assert_eq!(callback_queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Handsfree);
+        drop(staged);
         let deadline = Instant::now() + Duration::from_secs(5);
         while !owner.owns_name().unwrap_or(false) {
             assert!(Instant::now() < deadline, "parent did not regain ownership after shortcut probe");
             std::thread::sleep(Duration::from_millis(20));
         }
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        owner.drain_callback_queue(app.handle()).unwrap();
         drop(pause);
+        assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
         assert_eq!(registrations.lock().unwrap().len(), 3);
@@ -1600,7 +1664,7 @@ mod tests {
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
-        let outcome = ready.acquire_ownership().unwrap().activate();
+        let outcome = ready.acquire_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("Cleanup cache settings require a manual restart")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !owner.owns_name().unwrap_or(false) {
@@ -1632,7 +1696,7 @@ mod tests {
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
-        let outcome = ready.acquire_ownership().unwrap().activate();
+        let outcome = ready.acquire_ownership().unwrap().stage_services();
         assert!(matches!(outcome, Err(reason) if reason.contains("Replacement sync could not prepare")));
         let deadline = Instant::now() + Duration::from_secs(5);
         while !owner.owns_name().unwrap_or(false) {
