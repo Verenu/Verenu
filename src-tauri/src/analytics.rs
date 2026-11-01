@@ -1711,8 +1711,12 @@ fn is_official_version(value: &str) -> bool {
         || suffix.strip_prefix("beta.").is_some_and(|number| {
             !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
         })
-        || suffix.strip_prefix("nightly.").is_some_and(|date| {
-            date.len() == 8 && date.bytes().all(|byte| byte.is_ascii_digit())
+        || suffix.strip_prefix("nightly.").is_some_and(|nightly| {
+            let (date, sequence) = nightly.split_once('.').unwrap_or((nightly, ""));
+            date.len() == 8
+                && date.bytes().all(|byte| byte.is_ascii_digit())
+                && (sequence.is_empty() && !nightly.ends_with('.')
+                    || !sequence.is_empty() && sequence.bytes().all(|byte| byte.is_ascii_digit()))
         });
     let mut parts = core.split('.');
     valid_suffix
@@ -1990,6 +1994,7 @@ mod tests {
             "0.18.1-beta",
             "0.21.0-beta.1",
             "0.20.0-nightly.20261005",
+            "0.20.0-nightly.20261005.1",
         ] {
             let payload = add_common_properties(serde_json::Map::new(), "session", Some(version));
             assert_eq!(payload["first_seen_version"], version);
@@ -2001,6 +2006,8 @@ mod tests {
             "0.21.0-beta.private-text",
             "0.21.0-nightly.20261005-private-text",
             "0.21.0-nightly.2026100",
+            "0.21.0-nightly.20261005.",
+            "0.21.0-nightly.20261005.private",
         ] {
             let payload = add_common_properties(serde_json::Map::new(), "session", Some(version));
             assert!(payload.get("first_seen_version").is_none());
