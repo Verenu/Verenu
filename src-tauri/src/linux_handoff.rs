@@ -612,6 +612,21 @@ mod tests {
             }).await.unwrap();
             assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
 
+            let mut impostor = Command::new(std::env::current_exe().unwrap());
+            impostor.args([
+                "--exact",
+                "linux_handoff_transport::tests::replacement_process_fixture",
+            ]).env("VERENU_HANDOFF_TEST_CHILD", "activate");
+            let outcome = crate::linux_handoff_transport::stage_replacement(
+                app.handle(), impostor, 39, Default::default(), Duration::from_secs(5),
+            ).await;
+            assert!(matches!(outcome, Err(ref reason) if reason.contains("different process")));
+            drop(tokio::time::timeout(Duration::from_secs(15), gate.enter()).await.unwrap());
+            let app_handle = app.handle().clone();
+            assert!(tauri::async_runtime::spawn_blocking(move || {
+                app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
+            }).await.unwrap());
+
             let lease = prepare(app.handle()).await.unwrap();
             entered.store(false, std::sync::atomic::Ordering::SeqCst);
             *blocked.0.lock().unwrap() = true;

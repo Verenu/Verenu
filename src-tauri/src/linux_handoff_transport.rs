@@ -623,6 +623,46 @@ struct ActivatedReplacement {
     activated: Activated,
 }
 
+#[must_use]
+pub(crate) struct StagedRestart {
+    // Drop the replacement before the preparation lease resumes the parent.
+    replacement: ActivatedReplacement,
+    preparation: crate::linux_handoff::PreparedHandoff,
+}
+
+pub(crate) async fn stage_replacement(
+    app: &tauri::AppHandle,
+    command: std::process::Command,
+    schema: i64,
+    key_availability: KeyAvailability,
+    timeout: Duration,
+) -> Result<StagedRestart, String> {
+    use tauri::Manager;
+
+    let preparation = crate::linux_handoff::prepare(app).await?;
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut preparation = preparation;
+        let owner = app.try_state::<crate::linux_single_instance::InstanceOwner>()
+            .ok_or("Single-instance ownership is unavailable")?;
+        let replacement = Replacement::spawn(command, schema, key_availability, timeout)?
+            .with_parent_unique_name(owner.unique_name()?)
+            .with_callback_queue(preparation.callback_queue_path().to_path_buf());
+        let ready = replacement.prepare()?;
+        let group = ready.process.0.id();
+        preparation.begin_instance_transfer(group)?;
+        let owned = ready.acquire_ownership()?;
+        owner.verify_replacement_owner(group)?;
+        owner.callback_barrier()?;
+        owner.replacement_callback_barrier(group)?;
+        let replacement = owned.activate()?;
+        owner.verify_replacement_owner(group)?;
+        owner.callback_barrier()?;
+        owner.replacement_callback_barrier(group)?;
+        Ok(StagedRestart { replacement, preparation })
+    }).await.map_err(|error| format!("Restart preparation stopped: {error}"))?
+}
+
 impl Parent {
     fn prepare(mut self) -> Result<Probation, String> {
         match self.channel.receive()? {
