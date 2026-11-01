@@ -484,6 +484,7 @@ pub trait DurableSink: Send {
 }
 
 pub struct RecordingSession {
+    pub nvidia_reuse: bool,
     #[cfg(target_os = "linux")]
     output_duck: Option<crate::system::output_duck::DuckGuard>,
     stop_tx: mpsc::SyncSender<()>,
@@ -653,6 +654,7 @@ impl RecordingSession {
         let (stop_tx, _) = mpsc::sync_channel(1);
         let (_, result_rx) = mpsc::channel();
         Self {
+            nvidia_reuse: false,
             #[cfg(target_os = "linux")]
             output_duck: None,
             stop_tx,
@@ -1113,6 +1115,7 @@ impl RecordingSession {
             .context("recording thread exited before signalling ready")??;
 
         Ok(RecordingSession {
+            nvidia_reuse: false,
             #[cfg(target_os = "linux")]
             output_duck: None,
             stop_tx,
