@@ -659,7 +659,12 @@
     font-weight: 500;
     vertical-align: 1px;
   }
-  .reuse-progress { grid-column: 1 / -1; margin-top: -12px; }
+  .reuse-progress { grid-column: 1 / -1; margin-top: -12px; width: 100%; }
+  @container settings-panel (max-width: 440px) {
+    .reuse > .setting-row:first-child { grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 16px; }
+    .reuse > .setting-row:first-child > :global(.toggle) { justify-self: end; }
+    .reuse-progress { margin-top: 0; }
+  }
   .reuse-note { margin-top: 6px; }
   .reuse-extra { margin-top: 8px; }
   .reuse-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
