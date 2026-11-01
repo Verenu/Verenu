@@ -272,6 +272,8 @@ pub fn run() {
 
     builder
         .setup(move |app| {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            tauri::async_runtime::spawn(async { let _ = crate::media::nvidia_reuse::nvidia_reuse_check().await; });
             #[cfg(target_os = "linux")]
             if std::env::args().any(|arg| {
                 arg == "--verenu-hotkey-release"
@@ -719,6 +721,10 @@ pub fn run() {
             commands::set_storage_full_simulation,
             commands::get_storage_full_simulation,
             commands::get_all_settings,
+            media::nvidia_reuse::nvidia_reuse_status,
+            media::nvidia_reuse::nvidia_reuse_check,
+            media::nvidia_reuse::nvidia_reuse_install,
+            media::nvidia_reuse::nvidia_reuse_remove,
             commands::get_effective_transcription_model,
             commands::list_local_stt_models,
             commands::list_local_llm_models,
