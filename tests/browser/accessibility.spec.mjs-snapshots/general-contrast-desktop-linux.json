@@ -6,8 +6,8 @@
     "checks": [
       {
         "fgColor": "#9b9a96",
-        "bgColor": "#fcfcfa",
-        "contrastRatio": 2.74,
+        "bgColor": "#fffffe",
+        "contrastRatio": 2.81,
         "fontSize": "7.9pt (10.5px)",
         "fontWeight": "normal",
         "messageKey": null,

@@ -655,7 +655,21 @@
 {:else}
   <h3 class="settings-subhead first">Shortcuts</h3>
   <div class="setting-row" data-setting-target="general-hotkey">
-    <div><div class="label">Hotkey</div><div class="desc">Hold to record, release to transcribe. Click to change, hold all your keys, then release.</div></div>
+    <div>
+      <div class="label">Hotkey</div>
+      <div class="desc">Hold to record, release to transcribe. Click to change, hold all your keys, then release.</div>
+      <div id="hotkey-help" class="desc hotkey-tip" class:hotkey-error={captureTarget === 'dictation' && Boolean(hotkeyError)} role={captureTarget === 'dictation' && hotkeyError ? 'alert' : undefined}>
+        {(captureTarget === 'dictation' && hotkeyError) || (recordingHotkey && captureTarget === 'dictation' ? 'Hold every key in the combination. Release any key to save. Escape before pressing keys or click outside to cancel.' : isMac ? 'Use any modifiers with one key, or a function key on its own.' : isLinux ? 'Use any modifiers with one key, a function key on its own, or a modifier-only combination.' : 'You can use one key or hold several keys together.')}
+      </div>
+      {#if isMac && hotkey[0] === 'F5'}
+        <div class="desc hotkey-tip">
+          F5 is the 🎤 key on Mac keyboards. If pressing it opens macOS Dictation instead of
+          Verenu, turn off Dictation in <strong>System Settings → Keyboard → Dictation</strong>
+          (or hold <strong>Fn</strong> with F5). You can also pick any other key above.
+        </div>
+      {/if}
+      {#if isLinux && !isAndroid}<DesktopShortcutStatus id="dictation" />{/if}
+    </div>
     <button
       bind:this={keybindEl}
       class="badge key-badge keybind-btn"
@@ -675,31 +689,32 @@
       {/key}
     </button>
   </div>
-  <p id="hotkey-help" class="hotkey-tip" class:hotkey-error={captureTarget === 'dictation' && Boolean(hotkeyError)} role={captureTarget === 'dictation' && hotkeyError ? 'alert' : undefined}>
-    {(captureTarget === 'dictation' && hotkeyError) || (recordingHotkey && captureTarget === 'dictation' ? 'Hold every key in the combination. Release any key to save. Escape before pressing keys or click outside to cancel.' : isMac ? 'Use any modifiers with one key, or a function key on its own.' : isLinux ? 'Use any modifiers with one key, a function key on its own, or a modifier-only combination.' : 'You can use one key or hold several keys together.')}
-  </p>
 {/if}
-{#if isMac && hotkey[0] === 'F5'}
-  <p class="hotkey-tip">
-    F5 is the 🎤 key on Mac keyboards. If pressing it opens macOS Dictation instead of
-    Verenu, turn off Dictation in <strong>System Settings → Keyboard → Dictation</strong>
-    (or hold <strong>Fn</strong> with F5). You can also pick any other key above.
-  </p>
-{/if}
-{#if isLinux && !isAndroid}<DesktopShortcutStatus id="dictation" />{/if}
 {#if !isAndroid}
   <div class="setting-row" data-setting-target="general-copy-last">
-    <div><div class="label">Copy last dictation</div><div class="desc">Re-copies your last dictation to the clipboard, in case a paste didn't land</div></div>
+    <div>
+      <div class="label">Copy last dictation</div>
+      <div class="desc">Re-copies your last dictation to the clipboard, in case a paste didn't land</div>
+      {#if isLinux && !isAndroid}<DesktopShortcutStatus id="copy" />{/if}
+    </div>
     <span class="badge key-badge">{isLinux && !isAndroid && desktopShortcut('copy') ? desktopShortcut('copy')?.active ?? 'Unavailable' : isMac ? '⌥⌘C' : 'Ctrl+Alt+C'}</span>
   </div>
 {/if}
 {#if isLinux && !isAndroid}
-  <DesktopShortcutStatus id="copy" />
   {#each secondaryControls as control}
     {@const status = desktopShortcut(control.id)}
     {@const capturing = recordingHotkey && captureTarget === control.id}
     <div class="setting-row">
-      <div><div class="label">{control.label}</div><div class="desc">{control.description}</div></div>
+      <div>
+        <div class="label">{control.label}</div>
+        <div class="desc">{control.description}</div>
+        <div id={`${control.id}-help`} class="desc hotkey-tip" class:hotkey-error={captureTarget === control.id && Boolean(hotkeyError)} role={captureTarget === control.id && hotkeyError ? 'alert' : undefined}>
+          {captureTarget === control.id && hotkeyError ? hotkeyError : capturing
+            ? 'Press and release one key to save, including Escape. Click outside to cancel.'
+            : 'Click to change. Desktop shortcuts take priority when the full key combination matches.'}
+        </div>
+        <DesktopShortcutStatus id={control.id as 'cancel' | 'handsfree'} />
+      </div>
       <button class="badge key-badge secondary-keybind-btn" class:recording={capturing}
         disabled={hotkeyState === 'saving' || (recordingHotkey && !capturing)}
         aria-label={`Change ${control.label} shortcut`} aria-describedby={`${control.id}-help`}
@@ -708,12 +723,6 @@
           : `${formatKeyLabel(controlKeys[control.id])}${status?.active === null || (status?.conflict && control.id === 'handsfree') ? ' · Unavailable' : status?.conflict ? ' · Conflict' : ''}`}
       </button>
     </div>
-    <p id={`${control.id}-help`} class="hotkey-tip" role={captureTarget === control.id && hotkeyError ? 'alert' : undefined}>
-      {captureTarget === control.id && hotkeyError ? hotkeyError : capturing
-        ? 'Press and release one key to save, including Escape. Click outside to cancel.'
-        : 'Click to change. Desktop shortcuts take priority when the full key combination matches.'}
-    </p>
-    <DesktopShortcutStatus id={control.id as 'cancel' | 'handsfree'} />
   {/each}
 {/if}
 
@@ -859,13 +868,7 @@
 {/if}
 
 <style>
-  .hotkey-tip {
-    margin: -2px 0 2px;
-    font-size: 11.5px;
-    line-height: 1.5;
-    color: var(--ink-mute);
-    max-width: 52ch;
-  }
+  .hotkey-tip { margin-top: 8px; }
   .hotkey-tip strong { color: var(--ink-soft); font-weight: 600; }
 
   .keybind-btn, .secondary-keybind-btn {
@@ -885,7 +888,7 @@
     max-width: 100%;
     overflow-wrap: anywhere;
   }
-  .hotkey-error { color: var(--danger); }
+  .desc.hotkey-error { color: var(--danger); }
   .keybind-btn:hover, .secondary-keybind-btn:hover { background: var(--control-hover); }
   .keybind-btn.recording, .secondary-keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
   .keybind-btn.armed { transform: scale(1.02); }

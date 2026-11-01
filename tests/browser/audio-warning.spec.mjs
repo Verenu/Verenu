@@ -16,7 +16,12 @@ async function expectFullWidthAdvice(page) {
     await Promise.all(panel.getAnimations({ subtree: true })
       .map(animation => animation.finished.catch(() => {})));
   });
-  const content = await row.boundingBox();
+  const outer = await row.boundingBox();
+  const padding = await row.evaluate(element => {
+    const style = getComputedStyle(element);
+    return { left: parseFloat(style.paddingLeft), right: parseFloat(style.paddingRight) };
+  });
+  const content = outer && { x: outer.x + padding.left, width: outer.width - padding.left - padding.right };
   const bounds = await advice.boundingBox();
   expect(content, 'Audio row has rendered bounds').not.toBeNull();
   expect(bounds, 'Advice has rendered bounds').not.toBeNull();
