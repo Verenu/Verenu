@@ -5,7 +5,7 @@
   import { createTimers } from './lib/timers';
   import { fly } from 'svelte/transition';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
-  import { pillBarSizing } from './lib/pillSizing';
+  import { pillBarSizing, snapBarHeight } from './lib/pillSizing';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
   import { isAndroid, isLinux } from './lib/platform';
 
@@ -450,6 +450,7 @@
   let dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
   let monitorScale: number | null = null;
   $: barSizing = pillBarSizing(monitorScale ?? dpr);
+  $: barScale = monitorScale ?? dpr;
   $: barW = barSizing.width;
   $: barGap = barSizing.gap;
 
@@ -939,7 +940,7 @@
   {#if state === 'recording'}
     <div class="pill recording" class:dying={dying}>
       {#each barHeights as h, i (i)}
-        <div class="bar" style="height: {h}px"></div>
+        <div class="bar" style="height: {snapBarHeight(h, barScale, barW)}px"></div>
       {/each}
     </div>
 
@@ -1072,7 +1073,7 @@
       {/if}
       <div class="bars-hf">
         {#each barHeights as h, i (i)}
-          <div class="bar" style="height: {h}px"></div>
+          <div class="bar" style="height: {snapBarHeight(h, barScale, barW)}px"></div>
         {/each}
       </div>
       {#if showHfButtons}
@@ -1275,7 +1276,7 @@
   .bar {
     width: var(--bar-w, 3px);
     background: var(--pill-bar);
-    border-radius: calc(var(--bar-w, 3px) / 2);
+    border-radius: 999px;
     flex-shrink: 0;
   }
 
