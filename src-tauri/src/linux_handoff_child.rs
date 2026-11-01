@@ -72,7 +72,6 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         }
     };
     let key_availability = startup.key_availability().clone();
-    let parent_unique_name = startup.parent_unique_name().map(str::to_owned);
     let Some(callback_path) = startup.callback_queue_path() else {
         let _ = startup.fail("Restart callback queue is missing".into());
         return;
@@ -232,15 +231,11 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                     Ok(activation) => activation,
                     Err(_) => std::process::exit(1),
                 };
-                let Some(parent_unique_name) = parent_unique_name else {
-                    let _ = activation.fail("Parent single-instance identity is missing".into());
-                    std::process::exit(1);
-                };
                 let (sent, received) = std::sync::mpsc::sync_channel(1);
                 let owner = handle.clone();
                 let scheduled = handle.run_on_main_thread(move || {
                     let _ = sent.send(owner.plugin(
-                        crate::linux_single_instance::replacement_plugin(parent_unique_name, callback_queue),
+                        crate::linux_single_instance::replacement_plugin(callback_queue),
                     ));
                 });
                 let acquired = scheduled.is_ok()

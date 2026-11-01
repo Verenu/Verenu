@@ -4,7 +4,8 @@ use tauri::{AppHandle, Manager};
 use zbus::{blocking::Connection, interface};
 
 struct CallbackRoute {
-    parent: Option<String>,
+    replacement: bool,
+    local_ready: std::sync::atomic::AtomicBool,
     order: Arc<CallbackOrder>,
     queue: Mutex<Option<CallbackQueueSlot>>,
 }
@@ -71,15 +72,15 @@ impl Drop for CallbackTicket {
 }
 
 impl CallbackRoute {
-    fn new(parent: Option<String>) -> Self {
-        Self { parent, order: Arc::new(CallbackOrder::default()), queue: Mutex::new(None) }
+    fn new(replacement: bool) -> Self {
+        Self { replacement, local_ready: std::sync::atomic::AtomicBool::new(!replacement), order: Arc::new(CallbackOrder::default()), queue: Mutex::new(None) }
     }
 
     fn enqueue_if_active(&self, args: &[String]) -> Option<zbus::fdo::Result<()>> {
         let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
         queue.as_mut().map(|slot| {
             let callback = crate::linux_handoff_callbacks::Callback::from_args(args);
-            let result = if self.parent.is_some() {
+            let result = if self.replacement {
                 slot.queue.push_replacement(callback)
             } else {
                 slot.queue.push(callback)
@@ -127,9 +128,12 @@ impl SingleInstance {
     }
 
     async fn execute_callback(&self, argv: Vec<String>, _cwd: String) -> zbus::fdo::Result<()> {
-        if self.route.parent.is_some() {
+        if self.route.replacement {
             if let Some(result) = self.route.enqueue_if_active(&argv) {
                 return result;
+            }
+            if !self.route.local_ready.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(zbus::fdo::Error::Failed("Restart callback routing is not active".into()));
             }
             let ticket = self.route.order.ticket();
             let instance = SingleInstance { app: self.app.clone(), route: self.route.clone() };
@@ -230,6 +234,9 @@ impl InstanceOwner {
 
     #[allow(dead_code)]
     pub(crate) fn drain_callback_queue(&self, app: &AppHandle) -> Result<(), String> {
+        if self.route.replacement {
+            return Err("Replacement callbacks require confirmed parent exit".into());
+        }
         self.drain_callback_queue_inner(app, None)
     }
 
@@ -251,7 +258,9 @@ impl InstanceOwner {
                 active.delivered = None;
             }
         }
-        let _ = parent_exited;
+        if parent_exited.is_some() {
+            self.route.local_ready.store(true, std::sync::atomic::Ordering::Release);
+        }
         *slot = None;
         Ok(())
     }
@@ -351,14 +360,12 @@ impl InstanceOwner {
 
 #[allow(dead_code)]
 pub(crate) fn replacement_plugin(
-    parent: String,
     queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
 ) -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("single-instance-replacement")
         .setup(move |app, _api| {
-            zbus::names::UniqueName::try_from(parent.as_str())?;
             let (name, path) = address(&app.config().identifier);
-            let route = Arc::new(CallbackRoute::new(Some(parent.clone())));
+            let route = Arc::new(CallbackRoute::new(true));
             *route.queue.lock().unwrap_or_else(|error| error.into_inner()) =
                 Some(CallbackQueueSlot { queue: queue.clone(), delivered: None, failed: false });
             let connection = zbus::blocking::connection::Builder::session()?
@@ -396,7 +403,7 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("single-instance")
         .setup(|app, _api| {
             let (name, path) = address(&app.config().identifier);
-            let route = Arc::new(CallbackRoute::new(None));
+            let route = Arc::new(CallbackRoute::new(false));
             let result = zbus::blocking::connection::Builder::session()?
                 .name(name.as_str())?
                 .replace_existing_names(false)
@@ -477,10 +484,18 @@ mod tests {
         let queue = Arc::new(queue);
         let app = tauri::Builder::default()
             .any_thread()
-            .plugin(super::replacement_plugin(":1.999999".into(), queue.clone()))
+            .plugin(super::replacement_plugin(queue.clone()))
             .build(tauri::generate_context!())
             .unwrap();
+        let uninitialized = super::SingleInstance {
+            app: app.handle().clone(),
+            route: Arc::new(super::CallbackRoute::new(true)),
+        };
+        assert!(tauri::async_runtime::block_on(
+            uninitialized.execute_callback(vec!["--verenu-hotkey-release".into()], String::new())
+        ).is_err());
         let owner = app.state::<super::InstanceOwner>();
+        assert!(owner.drain_callback_queue(app.handle()).is_err());
         let connection = zbus::blocking::Connection::session().unwrap();
         let (_, path_on_bus) = super::address(&app.config().identifier);
         let send = |flag: &str| connection.call_method(
@@ -725,7 +740,7 @@ mod tests {
         let original = super::InstanceOwner {
             connection: original,
             name: name.clone(),
-            route: std::sync::Arc::new(super::CallbackRoute::new(None)),
+            route: std::sync::Arc::new(super::CallbackRoute::new(false)),
         };
         original
             .set_ownership_mode(super::OwnershipMode::Transferable)
@@ -819,7 +834,7 @@ mod tests {
         let original = super::InstanceOwner {
             connection,
             name,
-            route: std::sync::Arc::new(super::CallbackRoute::new(None)),
+            route: std::sync::Arc::new(super::CallbackRoute::new(false)),
         };
         original
             .set_ownership_mode(super::OwnershipMode::Transferable)
