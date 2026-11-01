@@ -126,7 +126,7 @@
   grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
   gap: 10px;
-  padding: 16px 0;
+  padding: 16px;
 }
 
 .app[data-android='true'] .settings-body .setting-row > :last-child {
@@ -138,7 +138,7 @@
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
-  padding: 14px 0;
+  padding: 14px 16px;
 }
 
 .app[data-android='true'] .settings-body .setting-row:has(> .toggle:last-child) > .toggle {

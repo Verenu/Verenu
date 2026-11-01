@@ -687,18 +687,38 @@
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 24px;
-    padding: 14px 0;
-    border-top: 1px solid var(--line);
+    padding: 14px 16px;
+    background: var(--bg-elev);
+    border: 1px solid var(--line);
+    border-top-width: 0;
   }
 
-  .settings-body :global(.setting-row:last-of-type) { border-bottom: 1px solid var(--line); }
+  /* Consecutive rows read as one rounded card: the first row opens it and the last closes it. */
+  .settings-body :global(*:not(.setting-row) + .setting-row),
+  .settings-body :global(.setting-row:first-child) {
+    border-top-width: 1px;
+    border-top-left-radius: var(--r-lg, 14px);
+    border-top-right-radius: var(--r-lg, 14px);
+  }
+
+  /* Rows split by other content or a wrapper become separate cards, so keep them apart. */
+  .settings-body :global(*:has(.setting-row):not(.setting-row) + .setting-row),
+  .settings-body :global(.setting-row + *:has(.setting-row):not(.setting-row)),
+  .settings-body :global(.setting-row + *:not(.setting-row) + .setting-row) {
+    margin-top: 12px;
+  }
+
+  .settings-body :global(.setting-row:not(:has(+ .setting-row))) {
+    border-bottom-left-radius: var(--r-lg, 14px);
+    border-bottom-right-radius: var(--r-lg, 14px);
+  }
 
   @container settings-panel (max-width: 440px) {
     .settings-body :global(.setting-row) {
       grid-template-columns: minmax(0, 1fr);
       align-items: stretch;
       gap: 10px;
-      padding: 16px 0;
+      padding: 16px;
     }
 
     .settings-body :global(.setting-row) > :global(*:last-child) {
@@ -710,7 +730,7 @@
       grid-template-columns: minmax(0, 1fr) auto;
       align-items: center;
       gap: 16px;
-      padding: 14px 0;
+      padding: 14px 16px;
     }
 
     .settings-body :global(.setting-row:has(> .toggle:last-child)) > :global(.toggle) {
