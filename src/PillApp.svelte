@@ -448,8 +448,8 @@
     return { destroy: () => observer.disconnect() };
   }
 
-  function alignPillBars(node: HTMLElement, initialScale: number) {
-    let scale = initialScale;
+  function alignPillBars(node: HTMLElement, initial: { scale: number; sharedGrid: boolean }) {
+    let { scale, sharedGrid } = initial;
     let y = 0;
     const offsets = new WeakMap<HTMLElement, number>();
     let frame = 0;
@@ -461,9 +461,11 @@
       const box = boxes[0];
       const center = box.top + box.height / 2 - y;
       y = (Math.round(center * scale) - center * scale) / scale;
+      const firstLeft = box.left - (offsets.get(bars[0]) ?? 0);
+      const sharedX = (Math.round(firstLeft * scale) - firstLeft * scale) / scale;
       bars.forEach((bar, i) => {
         const left = boxes[i].left - (offsets.get(bar) ?? 0);
-        const x = (Math.round(left * scale) - left * scale) / scale;
+        const x = sharedGrid ? sharedX : (Math.round(left * scale) - left * scale) / scale;
         offsets.set(bar, x);
         bar.style.setProperty('--bar-align-x', `${x}px`);
       });
@@ -480,7 +482,11 @@
     window.addEventListener('resize', schedule);
     schedule();
     return {
-      update(nextScale: number) { scale = nextScale; schedule(); },
+      update(next: { scale: number; sharedGrid: boolean }) {
+        scale = next.scale;
+        sharedGrid = next.sharedGrid;
+        schedule();
+      },
       destroy() {
         observer.disconnect();
         capsule?.removeEventListener('animationend', schedule);
@@ -493,7 +499,7 @@
 
   let dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
   let monitorScale: number | null = null;
-  $: barSizing = pillBarSizing(monitorScale ?? dpr);
+  $: barSizing = pillBarSizing(monitorScale ?? dpr, dpr);
   $: barScale = monitorScale ?? dpr;
   $: barW = barSizing.width;
   $: barGap = barSizing.gap;
@@ -939,7 +945,7 @@
 
 </script>
 
-<div class="wrap" style="--bar-w:{barW}px; --bar-gap:{barGap}px; --stage-w:{stageW}px; --processing-steady-w:{processingSteadyW}px; --hf-expanded-w:{hfExpandedW}px">
+<div class="wrap" style="--bar-w:{barW}px; --bar-gap:{barGap}px; --bar-pitch:{barW + barGap}px; --stage-w:{stageW}px; --processing-steady-w:{processingSteadyW}px; --hf-expanded-w:{hfExpandedW}px">
   <div class="pill-cluster"
        class:steady-width={state === 'processing'}
        class:steady-width-hf={state === 'handsfree'}
@@ -995,7 +1001,7 @@
     {/if}
 
   {#if state === 'recording'}
-    <div class="pill recording" use:alignPillBars={barScale} class:dying={dying}>
+    <div class="pill recording" use:alignPillBars={{ scale: barScale, sharedGrid: barSizing.sharedGrid }} class:bar-grid={barSizing.sharedGrid} class:dying={dying}>
       {#each barHeights as h, i (i)}
         <div class="bar" style:height="{pillBarHeight(h, barScale, barW)}px"></div>
       {/each}
@@ -1130,7 +1136,7 @@
           </svg>
         </button>
       {/if}
-      <div class="bars-hf" use:alignPillBars={barScale}>
+      <div class="bars-hf" use:alignPillBars={{ scale: barScale, sharedGrid: barSizing.sharedGrid }} class:bar-grid={barSizing.sharedGrid}>
         {#each barHeights as h, i (i)}
           <div class="bar" style:height="{pillBarHeight(h, barScale, barW)}px"></div>
         {/each}
@@ -1330,6 +1336,14 @@
     padding: 0 7px;
     width: calc(12 * var(--bar-w, 3px) + 11 * var(--bar-gap, 2px) + 14px);
     animation: pillIn 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) 0.25s both;
+  }
+
+  .pill.recording.bar-grid,
+  .bars-hf.bar-grid {
+    display: grid;
+    grid-template-columns: repeat(11, var(--bar-pitch)) var(--bar-w);
+    gap: 0;
+    justify-content: center;
   }
 
   .bar {
