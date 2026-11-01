@@ -13,7 +13,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const PROTOCOL: u32 = 6;
+const PROTOCOL: u32 = 7;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
@@ -228,12 +228,10 @@ impl Child {
         match self.channel.receive()? {
             Message::Begin {
                 key_availability,
-                parent_unique_name,
                 callback_queue_path,
             } => Ok(ChildStartup {
                 channel: self.channel,
                 key_availability,
-                parent_unique_name,
                 callback_queue_path,
             }),
             _ => Err("Replacement received an invalid startup request".into()),
@@ -244,7 +242,6 @@ impl Child {
 pub(crate) struct ChildStartup {
     channel: Channel,
     key_availability: KeyAvailability,
-    parent_unique_name: Option<String>,
     callback_queue_path: Option<PathBuf>,
 }
 
@@ -260,10 +257,6 @@ impl ChildStartup {
 
     pub(crate) fn key_availability(&self) -> &KeyAvailability {
         &self.key_availability
-    }
-
-    pub(crate) fn parent_unique_name(&self) -> Option<&str> {
-        self.parent_unique_name.as_deref()
     }
 
     pub(crate) fn callback_queue_path(&self) -> Option<&Path> {
@@ -367,7 +360,6 @@ enum Message {
     },
     Begin {
         key_availability: KeyAvailability,
-        parent_unique_name: Option<String>,
         callback_queue_path: Option<PathBuf>,
     },
     BackendReady,
@@ -463,7 +455,6 @@ struct Parent {
     child_pid: u32,
     schema: i64,
     key_availability: KeyAvailability,
-    parent_unique_name: Option<String>,
     callback_queue_path: Option<PathBuf>,
 }
 
@@ -587,7 +578,6 @@ impl Replacement {
             child_pid: process.0.id(),
             schema,
             key_availability,
-            parent_unique_name: None,
             callback_queue_path: None,
         };
         Ok(Self { process, parent })
@@ -599,11 +589,6 @@ impl Replacement {
             process: self.process,
             probation,
         })
-    }
-
-    fn with_parent_unique_name(mut self, name: String) -> Self {
-        self.parent.parent_unique_name = Some(name);
-        self
     }
 
     fn with_callback_queue(mut self, path: PathBuf) -> Self {
@@ -679,7 +664,6 @@ pub(crate) async fn stage_replacement(
         let owner = app.try_state::<crate::linux_single_instance::InstanceOwner>()
             .ok_or("Single-instance ownership is unavailable")?;
         let replacement = Replacement::spawn(command, schema, key_availability, timeout)?
-            .with_parent_unique_name(owner.unique_name()?)
             .with_callback_queue(preparation.callback_queue_path().to_path_buf());
         let ready = replacement.prepare()?;
         let group = ready.process.0.id();
@@ -715,7 +699,6 @@ impl Parent {
         }
         self.channel.send(&Message::Begin {
             key_availability: self.key_availability,
-            parent_unique_name: self.parent_unique_name,
             callback_queue_path: self.callback_queue_path,
         })?;
         self.channel.expect(Message::BackendReady)?;
@@ -807,7 +790,6 @@ mod tests {
     fn begin() -> Message {
         Message::Begin {
             key_availability: KeyAvailability::new(),
-            parent_unique_name: None,
             callback_queue_path: None,
         }
     }
@@ -821,7 +803,6 @@ mod tests {
                 child_pid: 42,
                 schema: 39,
                 key_availability: KeyAvailability::new(),
-                parent_unique_name: None,
                 callback_queue_path: None,
             },
             Channel::new(child, timeout).unwrap(),
@@ -1143,7 +1124,6 @@ mod tests {
             child_pid: process.id(),
             schema: 39,
             key_availability: KeyAvailability::new(),
-            parent_unique_name: None,
             callback_queue_path: None,
         };
         assert!(parent.prepare().is_err());
@@ -1293,7 +1273,7 @@ mod tests {
             crate::data::db::HANDOFF_SCHEMA_VERSION,
             KeyAvailability::new(),
             Duration::from_secs(25),
-        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap());
+        ).unwrap();
         assert!(matches!(replacement.prepare(), Err(error) if error.contains("callback queue is missing")));
         assert!(owner.owns_name().unwrap());
         let mut command = Command::new(&binary);
@@ -1312,7 +1292,6 @@ mod tests {
             Duration::from_secs(25),
         )
         .unwrap()
-        .with_parent_unique_name(owner.unique_name().unwrap())
         .with_callback_queue(callback_path.clone());
         let child_pid = replacement.process.0.id();
         let ready = replacement
@@ -1443,7 +1422,6 @@ mod tests {
             Duration::from_secs(25),
         )
         .unwrap()
-        .with_parent_unique_name(owner.unique_name().unwrap())
         .with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
@@ -1493,7 +1471,6 @@ mod tests {
             Duration::from_secs(25),
         )
         .unwrap()
-        .with_parent_unique_name(owner.unique_name().unwrap())
         .with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let updated_settings = b"{\"setup_complete\":true,\"analytics_enabled\":false,\"test_changed\":true}";
@@ -1544,7 +1521,6 @@ mod tests {
             Duration::from_secs(25),
         )
         .unwrap()
-        .with_parent_unique_name(owner.unique_name().unwrap())
         .with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         parent_db
@@ -1593,7 +1569,7 @@ mod tests {
             crate::data::db::HANDOFF_SCHEMA_VERSION,
             KeyAvailability::new(),
             Duration::from_secs(25),
-        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
+        ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
@@ -1628,7 +1604,7 @@ mod tests {
             crate::data::db::HANDOFF_SCHEMA_VERSION,
             KeyAvailability::new(),
             Duration::from_secs(25),
-        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
+        ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let child_pid = ready.process.0.id();
         let pause = gate.begin_pause_with(|| owner.install_callback_queue(callback_queue.clone())).unwrap();
@@ -1676,7 +1652,7 @@ mod tests {
             .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
         let replacement = Replacement::spawn(
             command, crate::data::db::HANDOFF_SCHEMA_VERSION, KeyAvailability::new(), Duration::from_secs(25),
-        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
+        ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
@@ -1708,7 +1684,7 @@ mod tests {
             .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
         let replacement = Replacement::spawn(
             command, crate::data::db::HANDOFF_SCHEMA_VERSION, KeyAvailability::new(), Duration::from_secs(25),
-        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
+        ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
@@ -1742,7 +1718,7 @@ mod tests {
             crate::data::db::HANDOFF_SCHEMA_VERSION,
             KeyAvailability::new(),
             Duration::from_secs(25),
-        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap()).with_callback_queue(callback_path.clone());
+        ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
