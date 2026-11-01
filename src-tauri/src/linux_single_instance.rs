@@ -323,17 +323,15 @@ impl InstanceOwner {
 #[allow(dead_code)]
 pub(crate) fn replacement_plugin(
     parent: String,
-    queue: Option<Arc<crate::linux_handoff_callbacks::CallbackQueue>>,
+    queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
 ) -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("single-instance-replacement")
         .setup(move |app, _api| {
             zbus::names::UniqueName::try_from(parent.as_str())?;
             let (name, path) = address(&app.config().identifier);
             let route = Arc::new(CallbackRoute::new(Some(parent.clone())));
-            if let Some(queue) = queue.clone() {
-                *route.queue.lock().unwrap_or_else(|error| error.into_inner()) =
-                    Some(CallbackQueueSlot { queue, delivered: None });
-            }
+            *route.queue.lock().unwrap_or_else(|error| error.into_inner()) =
+                Some(CallbackQueueSlot { queue: queue.clone(), delivered: None });
             let connection = zbus::blocking::connection::Builder::session()?
                 .name(name.as_str())?
                 .replace_existing_names(true)
