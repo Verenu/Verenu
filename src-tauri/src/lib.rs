@@ -160,6 +160,72 @@ fn start_storage_maintenance(
     });
 }
 
+fn start_runtime_maintenance(
+    app: tauri::AppHandle,
+    capture_state: pipeline::SharedState,
+    local_stt_manager: local_stt::LocalTranscriptionManager,
+    local_llm_manager: local_llm::LocalLlmManager,
+) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(sigterm) => sigterm,
+                Err(err) => {
+                    log::warn!("could not register SIGTERM handler: {err}");
+                    return;
+                }
+            };
+            sigterm.recv().await;
+            log::info!("received SIGTERM; exiting cleanly");
+            app_handle.exit(0);
+        });
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            pipeline::release_expired_capture_audio(&capture_state);
+            if local_stt_manager.shutdown_signal.load(std::sync::atomic::Ordering::Relaxed)
+                && local_llm_manager.shutdown_signal.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                break;
+            }
+            let idle_stt = local_stt_manager.clone();
+            let idle_llm = local_llm_manager.clone();
+            let idle_app = app.clone();
+            if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+                idle_stt.unload_if_idle(&idle_app)?;
+                idle_llm.unload_if_idle(&idle_app)?;
+                Ok::<(), anyhow::Error>(())
+            }).await.unwrap_or_else(|error| Err(anyhow::anyhow!(error))) {
+                log::warn!("local models: idle unload maintenance failed: {error}");
+            }
+            let stt_loaded = local_stt_manager.current_model_id.lock()
+                .map(|guard| guard.is_some()).unwrap_or(false);
+            let llm_loaded = local_llm_manager.current_model_id.lock()
+                .map(|guard| guard.is_some()).unwrap_or(false);
+            if stt_loaded || llm_loaded {
+                let pressure = tauri::async_runtime::spawn_blocking(
+                    crate::system::memory::detect_resource_pressure,
+                ).await.unwrap_or(None);
+                if let Some(reason) = pressure {
+                    log::warn!("local models: system resource pressure detected ({reason}), unloading proactively");
+                    let pressure_stt = local_stt_manager.clone();
+                    let pressure_llm = local_llm_manager.clone();
+                    let pressure_app = app.clone();
+                    let _ = tauri::async_runtime::spawn_blocking(move || {
+                        pressure_stt.unload_for_resource_pressure(&pressure_app);
+                        pressure_llm.unload_for_resource_pressure(&pressure_app);
+                    }).await;
+                }
+            }
+            crate::system::memory::reclaim_idle_memory(&capture_state).await;
+        }
+    });
+}
+
 #[cfg(target_os = "android")]
 fn init_android_audio_context() -> Result<(), Box<dyn std::error::Error>> {
     use jni::objects::JObject;
@@ -864,87 +930,10 @@ pub fn run() {
                 );
             }
             start_frontend_watchdog(app.handle(), frontend_readiness.clone());
-            #[cfg(unix)]
-            {
-                use tokio::signal::unix::{signal, SignalKind};
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut sigterm = match signal(SignalKind::terminate()) {
-                        Ok(sigterm) => sigterm,
-                        Err(err) => {
-                            log::warn!("could not register SIGTERM handler: {err}");
-                            return;
-                        }
-                    };
-                    sigterm.recv().await;
-                    log::info!("received SIGTERM; exiting cleanly");
-                    app_handle.exit(0);
-                });
-            }
-            let local_stt_manager = local_transcription_manager.clone();
-            let local_llm_manager = local_cleanup_manager.clone();
-            let capture_state = shared.clone();
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                    pipeline::release_expired_capture_audio(&capture_state);
-                    if local_stt_manager
-                        .shutdown_signal
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                        && local_llm_manager
-                            .shutdown_signal
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        break;
-                    }
-                    let idle_stt = local_stt_manager.clone();
-                    let idle_llm = local_llm_manager.clone();
-                    let idle_app = app_handle.clone();
-                    if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
-                        idle_stt.unload_if_idle(&idle_app)?;
-                        idle_llm.unload_if_idle(&idle_app)?;
-                        Ok::<(), anyhow::Error>(())
-                    })
-                    .await
-                    .unwrap_or_else(|error| Err(anyhow::anyhow!(error)))
-                    {
-                        log::warn!("local models: idle unload maintenance failed: {error}");
-                    }
-
-                    let stt_loaded = local_stt_manager
-                        .current_model_id
-                        .lock()
-                        .map(|guard| guard.is_some())
-                        .unwrap_or(false);
-                    let llm_loaded = local_llm_manager
-                        .current_model_id
-                        .lock()
-                        .map(|guard| guard.is_some())
-                        .unwrap_or(false);
-                    if stt_loaded || llm_loaded {
-                        let pressure = tauri::async_runtime::spawn_blocking(
-                            crate::system::memory::detect_resource_pressure,
-                        )
-                        .await
-                        .unwrap_or(None);
-                        if let Some(reason) = pressure {
-                            log::warn!(
-                                "local models: system resource pressure detected ({reason}), unloading proactively"
-                            );
-                            let pressure_stt = local_stt_manager.clone();
-                            let pressure_llm = local_llm_manager.clone();
-                            let pressure_app = app_handle.clone();
-                            let _ = tauri::async_runtime::spawn_blocking(move || {
-                                pressure_stt.unload_for_resource_pressure(&pressure_app);
-                                pressure_llm.unload_for_resource_pressure(&pressure_app);
-                            })
-                            .await;
-                        }
-                    }
-                    crate::system::memory::reclaim_idle_memory(&capture_state).await;
-                }
-            });
+            start_runtime_maintenance(
+                app.handle().clone(), shared.clone(), local_transcription_manager.clone(),
+                local_cleanup_manager.clone(),
+            );
 
             Ok(())
         })
