@@ -696,6 +696,9 @@ mod tests {
         use zbus::fdo::{RequestNameFlags, RequestNameReply};
 
         if let Ok(name) = std::env::var("VERENU_TEST_TRANSFER_NAME") {
+            if std::env::var_os("VERENU_TEST_TRANSFER_WAIT").is_some() {
+                std::io::stdin().read_exact(&mut [0]).unwrap();
+            }
             let connection = zbus::blocking::Connection::session().unwrap();
             assert_eq!(
                 connection
