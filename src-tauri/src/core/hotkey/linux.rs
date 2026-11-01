@@ -1260,6 +1260,25 @@ where
     }
     let (control, mut driver) = portal_control::Control::new();
     PORTAL_CONTROL.set(control).map_err(|_| "Shortcut listener is already running")?;
+    #[cfg(all(feature = "native-testing", debug_assertions))]
+    if std::env::var_os("VERENU_HANDOFF_TEST_SHORTCUTS").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        return Ok(std::thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+                return;
+            };
+            runtime.block_on(async move {
+                loop {
+                    let request = *driver.requests.borrow_and_update();
+                    driver.acknowledge(request, if request.active {
+                        portal_control::State::Active
+                    } else {
+                        portal_control::State::Suspended
+                    });
+                    if driver.requests.changed().await.is_err() { break; }
+                }
+            });
+        }));
+    }
     Ok(std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
