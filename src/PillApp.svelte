@@ -997,7 +997,7 @@
   {#if state === 'recording'}
     <div class="pill recording" use:alignPillBars={barScale} class:dying={dying}>
       {#each barHeights as h, i (i)}
-        <div class="bar" style="height: {pillBarHeight(h, barScale, barW)}px"></div>
+        <div class="bar" style:height="{pillBarHeight(h, barScale, barW)}px"></div>
       {/each}
     </div>
 
@@ -1132,7 +1132,7 @@
       {/if}
       <div class="bars-hf" use:alignPillBars={barScale}>
         {#each barHeights as h, i (i)}
-          <div class="bar" style="height: {pillBarHeight(h, barScale, barW)}px"></div>
+          <div class="bar" style:height="{pillBarHeight(h, barScale, barW)}px"></div>
         {/each}
       </div>
       {#if showHfButtons}

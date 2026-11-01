@@ -70,6 +70,12 @@ test(`${mode} aligns resting bars and renders smooth audio-driven heights`, asyn
     const height = node.getBoundingClientRect().height;
     return Math.abs(height - restHeight) > 0.5 && Math.abs(height / 2 - Math.round(height / 2)) > 0.05;
   }), resting[0].height)).toBe(true);
+  await expect.poll(async () => bars.evaluateAll((nodes, factor) => nodes.every(node => {
+    const box = node.getBoundingClientRect();
+    return [box.left, box.right].every(value =>
+      Math.abs(value * factor - Math.round(value * factor)) < 0.06
+    );
+  }), scale)).toBe(true);
 });
 });
 }
