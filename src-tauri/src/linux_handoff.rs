@@ -573,6 +573,12 @@ mod tests {
             assert!(!tauri::async_runtime::spawn_blocking(move || {
                 app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
             }).await.unwrap());
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                app_handle.state::<crate::linux_single_instance::InstanceOwner>()
+                    .callback_barrier().unwrap();
+            }).await.unwrap();
+            assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
             drop(lease);
             tokio::time::sleep(Duration::from_millis(200)).await;
             assert!(gate.try_enter().is_none(), "activity resumed while replacement was alive");
