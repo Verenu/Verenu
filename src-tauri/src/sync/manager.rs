@@ -127,7 +127,7 @@ pub(crate) struct PreparedSync {
 
 #[cfg(target_os = "linux")]
 impl PreparedSync {
-    pub(crate) fn prepare_database(&self, conn: &rusqlite::Connection) -> Result<()> {
+    pub(crate) fn prepare_database(&self, conn: &rusqlite::Connection) -> Result<ChangeStamp> {
         anyhow::ensure!(
             sync_store::self_uuid(conn)?.as_deref() == Some(self.identity.uuid.as_str()),
             "Sync identity changed during restart"
@@ -137,8 +137,7 @@ impl PreparedSync {
             .unwrap_or_else(|| self.identity.name.clone());
         sync_store::ensure_self_identity(conn, &self.identity.uuid, &name)?;
         SyncManager::reconcile_stale_context_targets_with(conn)?;
-        ChangeStamp::read(conn)?;
-        Ok(())
+        ChangeStamp::read(conn)
     }
 
     pub(crate) async fn verify_transport(&self) -> Result<()> {
@@ -176,6 +175,47 @@ impl PreparedSync {
         anyhow::ensure!(transport::peer_fingerprint(server_peer)? == expected, "Sync client identity did not match");
         anyhow::ensure!(transport::peer_fingerprint(client_peer)? == expected, "Sync server identity did not match");
         Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct StagedSync {
+    manager: SyncManager,
+    listener: Option<tauri::async_runtime::JoinHandle<()>>,
+    identity: identity::DeviceIdentity,
+    port: u16,
+}
+
+#[cfg(target_os = "linux")]
+impl StagedSync {
+    pub(crate) async fn verify(&self) -> Result<()> {
+        anyhow::ensure!(self.listener.as_ref().is_some_and(|listener| !listener.inner().is_finished()), "Sync listener stopped during restart");
+        let connector = transport::tls_connector(transport::client_config(
+            self.identity.cert_der().clone(), self.identity.tls_key(),
+        )?);
+        let server_name = transport::server_name_for(&self.identity.uuid);
+        let stream = tokio::time::timeout(Duration::from_secs(8), async {
+            let tcp = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, self.port)).await?;
+            connector.connect(server_name, tcp).await
+        }).await.map_err(|_| anyhow!("Sync listener check timed out"))??;
+        let peer = stream.get_ref().1.peer_certificates().ok_or_else(|| anyhow!("Sync server identity missing"))?;
+        anyhow::ensure!(transport::peer_fingerprint(peer)? == identity::fingerprint_of(self.identity.cert_der().as_ref()), "Sync server identity did not match");
+        Ok(())
+    }
+
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for StagedSync {
+    fn drop(&mut self) {
+        if let Some(listener) = self.listener.take() {
+            listener.abort();
+            self.manager.inner.available.store(false, Ordering::Relaxed);
+            self.manager.inner.listener_port.store(0, Ordering::Relaxed);
+            if let Ok(mut identity) = self.manager.inner.identity.write() { *identity = None; }
+            if let Ok(mut change) = self.manager.inner.last_change.lock() { *change = None; }
+            self.manager.inner.initialization_started.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -394,6 +434,57 @@ pub struct SyncStatusSnapshot {
 #[cfg(all(test, target_os = "linux", feature = "native-testing"))]
 mod handoff_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a private desktop and isolated network namespace"]
+    fn paused_sync_listener_rejects_work_and_stops_on_abort() {
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(gate.clone())
+            .build(tauri::generate_context!()).unwrap();
+        let db = crate::data::db::open(":memory:").unwrap();
+        let identity = identity::generate_for_tests();
+        {
+            let conn = db.lock().unwrap();
+            sync_store::ensure_self_identity(&conn, &identity.uuid, &identity.name).unwrap();
+        }
+        let manager = SyncManager::new_unstarted(app.handle().clone(), db.clone());
+        let prepared = || {
+            let fallback_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            fallback_listener.set_nonblocking(true).unwrap();
+            let server_config = transport::server_config(identity.cert_der().clone(), identity.tls_key()).unwrap();
+            PreparedSync { identity: identity.clone(), fallback_listener, server_config }
+        };
+        tauri::async_runtime::block_on(async {
+            use tokio::io::AsyncReadExt;
+            let pause = gate.pause().await.unwrap();
+            let other = Arc::new(crate::linux_activity::ActivityGate::default());
+            let wrong_pause = other.pause().await.unwrap();
+            let wrong = prepared();
+            let change = wrong.prepare_database(&db.lock().unwrap()).unwrap();
+            assert!(manager.start_while_paused(wrong, &wrong_pause, change).is_err());
+            let prepared = prepared();
+            let change = prepared.prepare_database(&db.lock().unwrap()).unwrap();
+            let staged = manager.start_while_paused(prepared, &pause, change).unwrap();
+            staged.verify().await.unwrap();
+            assert!(!manager.inner.available.load(Ordering::Relaxed));
+            let connector = transport::tls_connector(transport::client_config(identity.cert_der().clone(), identity.tls_key()).unwrap());
+            let tcp = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, staged.port)).await.unwrap();
+            let mut tls = connector.connect(transport::server_name_for(&identity.uuid), tcp).await.unwrap();
+            let mut byte = [0];
+            let result = tokio::time::timeout(Duration::from_secs(5), tls.read(&mut byte)).await.unwrap();
+            assert!(matches!(result, Ok(0)) || result.is_err());
+            let address = (Ipv4Addr::LOCALHOST, staged.port);
+            drop(staged);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while tokio::net::TcpStream::connect(address).await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("aborted sync listener stayed open");
+            assert!(!manager.inner.initialization_started.load(Ordering::Acquire));
+            assert_eq!(sync_store::self_uuid(&db.lock().unwrap()).unwrap().as_deref(), Some(identity.uuid.as_str()));
+            assert!(gate.try_enter().is_none());
+        });
+    }
 
     #[test]
     fn sync_database_preparation_is_rolled_back_with_the_handoff() {
@@ -724,6 +815,31 @@ impl SyncManager {
         Ok(PreparedSync { identity, fallback_listener, server_config })
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn start_while_paused(
+        &self,
+        prepared: PreparedSync,
+        pause: &crate::linux_activity::Pause,
+        change: ChangeStamp,
+    ) -> Result<StagedSync> {
+        let gate = self.inner.app.try_state::<Arc<crate::linux_activity::ActivityGate>>()
+            .ok_or_else(|| anyhow!("Sync restart gate is unavailable"))?;
+        anyhow::ensure!(pause.belongs_to(gate.inner()), "Sync restart gate does not match");
+        let PreparedSync { identity, fallback_listener, server_config } = prepared;
+        let listener = TcpListener::from_std(fallback_listener)?;
+        let port = listener.local_addr()?.port();
+        let mut identity_slot = self.inner.identity.write().map_err(|_| anyhow!("Sync identity is unavailable"))?;
+        let mut change_slot = self.inner.last_change.lock().map_err(|_| anyhow!("Sync state is unavailable"))?;
+        anyhow::ensure!(self.inner.initialization_started.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok(), "Sync has already started");
+        *identity_slot = Some(Arc::new(identity.clone()));
+        *change_slot = Some(change);
+        self.inner.listener_port.store(port, Ordering::Relaxed);
+        drop(change_slot);
+        drop(identity_slot);
+        let worker = self.spawn_accept_loop(listener, server_config);
+        Ok(StagedSync { manager: self.clone(), listener: Some(worker), identity, port })
+    }
+
     pub(crate) fn new_unstarted(app: AppHandle, db: DbHandle) -> SyncManager {
         let data_dir = crate::app_setup::app_data_dir();
         let inner = Arc::new(Inner {
@@ -901,6 +1017,17 @@ impl SyncManager {
         self.inner.available.store(true, Ordering::Relaxed);
         log::info!("sync: listening on port {port}");
 
+        drop(self.spawn_accept_loop(listener, server_cfg));
+
+        self.start_background_services().await;
+        Ok(())
+    }
+
+    fn spawn_accept_loop(
+        &self,
+        listener: TcpListener,
+        server_cfg: Arc<rustls::ServerConfig>,
+    ) -> tauri::async_runtime::JoinHandle<()> {
         let accept_inner = self.inner.clone();
         tauri::async_runtime::spawn(async move {
             loop {
@@ -939,8 +1066,10 @@ impl SyncManager {
                     }
                 }
             }
-        });
+        })
+    }
 
+    async fn start_background_services(&self) {
         let monitor = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {
@@ -972,7 +1101,6 @@ impl SyncManager {
         }
 
         let _ = self.inner.app.emit("verenu:sync-devices-changed", ());
-        Ok(())
     }
 
     async fn start_discovery(&self) -> Result<()> {
@@ -2436,7 +2564,10 @@ async fn handle_connection(
     permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     #[cfg(target_os = "linux")]
-    let _activity = crate::commands::linux_activity(&inner.app).await;
+    let _activity = match crate::commands::linux_try_activity(&inner.app) {
+        Ok(activity) => activity,
+        Err(_) => return,
+    };
     let peer_fp = match tls
         .get_ref()
         .1
