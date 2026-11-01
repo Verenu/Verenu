@@ -80,7 +80,7 @@ impl CallbackQueue {
         )?;
         connection.busy_timeout(Duration::from_secs(3))?;
         connection.execute_batch(
-            "CREATE TABLE callbacks (id INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL CHECK(kind BETWEEN 0 AND 3));",
+            "CREATE TABLE callbacks (id INTEGER PRIMARY KEY AUTOINCREMENT, kind INTEGER NOT NULL CHECK(kind BETWEEN 0 AND 3), source INTEGER NOT NULL DEFAULT 0 CHECK(source BETWEEN 0 AND 1));",
         )?;
         Ok(Self(Mutex::new(connection)))
     }
@@ -89,15 +89,23 @@ impl CallbackQueue {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         connection.busy_timeout(Duration::from_secs(3))?;
         // Reject a missing or incompatible queue before accepting callbacks.
-        connection.prepare("SELECT id, kind FROM callbacks LIMIT 0")?;
+        connection.prepare("SELECT id, kind, source FROM callbacks LIMIT 0")?;
         Ok(Self(Mutex::new(connection)))
     }
 
     pub(crate) fn push(&self, callback: Callback) -> anyhow::Result<()> {
+        self.push_from(callback, 0)
+    }
+
+    pub(crate) fn push_replacement(&self, callback: Callback) -> anyhow::Result<()> {
+        self.push_from(callback, 1)
+    }
+
+    fn push_from(&self, callback: Callback, source: i64) -> anyhow::Result<()> {
         let connection = self.0.lock().map_err(|_| anyhow::anyhow!("Callback queue is unavailable"))?;
         let inserted = connection.execute(
-            "INSERT INTO callbacks (kind) SELECT ?1 WHERE (SELECT COUNT(*) FROM callbacks) < ?2",
-            [callback.code(), MAX_PENDING],
+            "INSERT INTO callbacks (kind, source) SELECT ?1, ?2 WHERE (SELECT COUNT(*) FROM callbacks) < ?3",
+            [callback.code(), source, MAX_PENDING],
         )?;
         anyhow::ensure!(inserted == 1, "Restart callback queue is full");
         Ok(())
@@ -105,8 +113,10 @@ impl CallbackQueue {
 
     pub(crate) fn first(&self) -> rusqlite::Result<Option<(i64, Callback)>> {
         let connection = self.0.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        // The old owner must be drained through its D-Bus barrier before
+        // replay: it can finish an earlier callback after the new owner writes.
         let row: Option<(i64, i64)> = connection
-            .query_row("SELECT id, kind FROM callbacks ORDER BY id LIMIT 1", [], |row| {
+            .query_row("SELECT id, kind FROM callbacks ORDER BY source, id LIMIT 1", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .optional()?;
@@ -116,7 +126,7 @@ impl CallbackQueue {
     pub(crate) fn acknowledge(&self, id: i64) -> rusqlite::Result<bool> {
         let connection = self.0.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
         Ok(connection.execute(
-            "DELETE FROM callbacks WHERE id = ?1 AND id = (SELECT MIN(id) FROM callbacks)",
+            "DELETE FROM callbacks WHERE id = ?1 AND id = (SELECT id FROM callbacks ORDER BY source, id LIMIT 1)",
             [id],
         )? == 1)
     }
@@ -166,5 +176,24 @@ mod tests {
         assert_eq!(Callback::from_args(&["--verenu-hotkey-handsfree".into(), "--verenu-hotkey-release".into()]), Callback::Release);
         assert_eq!(Callback::from_args(&["--verenu-capture-sub-app".into()]), Callback::CaptureSubApp);
         assert_eq!(Callback::from_args(&["unrelated".into()]), Callback::Show);
+    }
+
+    #[test]
+    fn parent_callbacks_precede_replacement_callbacks_even_if_written_later() {
+        let (parent, path) = CallbackQueue::create_private().unwrap();
+        let replacement = CallbackQueue::open(&path).unwrap();
+        replacement.push_replacement(Callback::Handsfree).unwrap();
+        let (replacement_id, _) = replacement.first().unwrap().unwrap();
+        parent.push(Callback::Release).unwrap();
+        let (parent_id, callback) = parent.first().unwrap().unwrap();
+        assert_eq!(callback, Callback::Release);
+        assert!(!parent.acknowledge(replacement_id).unwrap());
+        assert!(parent.acknowledge(parent_id).unwrap());
+        let (id, callback) = parent.first().unwrap().unwrap();
+        assert_eq!((id, callback), (replacement_id, Callback::Handsfree));
+        assert!(parent.acknowledge(id).unwrap());
+        drop(replacement);
+        drop(parent);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
