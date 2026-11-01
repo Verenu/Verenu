@@ -166,6 +166,8 @@ fn start_runtime_maintenance(
     local_stt_manager: local_stt::LocalTranscriptionManager,
     local_llm_manager: local_llm::LocalLlmManager,
 ) {
+    #[cfg(target_os = "linux")]
+    let gate = app.state::<Arc<linux_activity::ActivityGate>>().inner().clone();
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -186,6 +188,10 @@ fn start_runtime_maintenance(
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            #[cfg(target_os = "linux")]
+            let Some(_activity) = gate.try_enter() else {
+                continue;
+            };
             pipeline::release_expired_capture_audio(&capture_state);
             if local_stt_manager.shutdown_signal.load(std::sync::atomic::Ordering::Relaxed)
                 && local_llm_manager.shutdown_signal.load(std::sync::atomic::Ordering::Relaxed)
@@ -982,6 +988,42 @@ mod linux_webkit_renderer_tests {
         assert!(!should_force_hyprland_webkit_shm(true, true, true, false));
         assert!(!should_force_hyprland_webkit_shm(true, true, false, true));
         assert!(!should_force_hyprland_webkit_shm(true, true, true, true));
+    }
+}
+
+#[cfg(all(test, target_os = "linux", feature = "native-testing"))]
+mod linux_runtime_maintenance_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    #[ignore = "requires an isolated graphical session and two maintenance intervals"]
+    fn maintenance_waits_for_restart_pause_before_releasing_expired_audio() {
+        let gate = Arc::new(linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(gate.clone())
+            .build(tauri::generate_context!()).unwrap();
+        let state = new_shared_state();
+        state.lock().unwrap().cancelled_capture = Some(pipeline::CancelledCapture {
+            audio: pipeline::CapturedAudio::from_samples(vec![0.25], 16_000, 1),
+            captured_at: Instant::now() - Duration::from_secs(3600),
+            id: "synthetic-maintenance-test".into(),
+            origin: pipeline::CaptureOrigin::UserCancelled,
+            created_at_rfc3339: String::new(),
+            started_at_unix: 0,
+            target: core::window_geometry::WindowTarget::default(),
+            context: core::context::ResolvedContextIdentity::everywhere(),
+        });
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        start_runtime_maintenance(app.handle().clone(), state.clone(),
+            local_stt::LocalTranscriptionManager::new(), local_llm::LocalLlmManager::new());
+        std::thread::sleep(Duration::from_secs(32));
+        assert_eq!(state.lock().unwrap().cancelled_capture.as_ref().unwrap().audio.samples_16k.len(), 1);
+        drop(pause);
+        let deadline = Instant::now() + Duration::from_secs(35);
+        while !state.lock().unwrap().cancelled_capture.as_ref().unwrap().audio.samples_16k.is_empty() {
+            assert!(Instant::now() < deadline, "maintenance did not resume after the pause");
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }
 #[cfg(target_os = "windows")]
