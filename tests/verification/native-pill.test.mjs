@@ -16,6 +16,25 @@ test('native pill diagnostics preserve exceptions with read-only messages', asyn
     error => error === original);
 });
 
+for (const failure of ['window', 'idle']) {
+  test(`native pill diagnostics preserve the original error when ${failure} cleanup fails`, async () => {
+    const original = new DOMException('Native timeout', 'TimeoutError');
+    const cleanup = new Error('Cleanup failed');
+    let first = true;
+    const browser = {
+      command: async () => {
+        if (first) { first = false; throw original; }
+        if (failure === 'window') throw cleanup;
+      },
+      execute: async () => null,
+    };
+    await assert.rejects(verifyNativePill({
+      browser, invoke: async () => { if (failure === 'idle') throw cleanup; },
+      directory: '.', screenshot: async () => {},
+    }), error => error === original);
+  });
+}
+
 for (const [missing, message] of [
   ['pill', 'Visible native pill is missing'],
   ['cluster', 'Native pill cluster is missing'],

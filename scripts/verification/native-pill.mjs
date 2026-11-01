@@ -45,6 +45,7 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
       }
     }
   };
+  let verificationFailed = false;
   try {
     await show('handsfree', null, 'Everywhere');
     const handsfree = await layout(); assertFit(handsfree); await assertInput('handsfree', true);
@@ -79,6 +80,7 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
     await screenshot(`${directory}/pill-recording.png`);
     return ['pill-handsfree.png', 'pill-passive-loading.png', 'pill-error.png', 'pill-recording.png'].map(name => `${directory}/${name}`);
   } catch (error) {
+    verificationFailed = true;
     await screenshot(`${directory}/pill-failure.png`).catch(() => {});
     const state = await browser.execute(`return {
       readyState: document.readyState,
@@ -89,7 +91,12 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
     if (state) console.error(`Native pill document: ${JSON.stringify(state)}`);
     throw error;
   } finally {
-    await browser.command('POST', '/window', { handle: 'main' });
-    await invoke('native_test_pill', { state: 'idle' });
+    try {
+      await browser.command('POST', '/window', { handle: 'main' });
+      await invoke('native_test_pill', { state: 'idle' });
+    } catch (error) {
+      if (!verificationFailed) throw error;
+      console.error('Native pill cleanup failed:', error);
+    }
   }
 }
