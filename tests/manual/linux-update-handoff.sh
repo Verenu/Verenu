@@ -14,6 +14,7 @@ mkdir -p "$root"/{data,config,state,runtime}
 chmod 700 "$root/runtime"
 export XDG_RUNTIME_DIR="$root/runtime" XDG_CONFIG_HOME="$root/config" XDG_STATE_HOME="$root/state"
 export VERENU_APP_DATA_DIR_OVERRIDE="$root/data" VERENU_HANDOFF_TEST_TRIGGER="$root/trigger"
+export VERENU_HANDOFF_TEST_WAIT_AT_COMMIT=1
 export VERENU_HANDOFF_TEST_SHORTCUTS=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 NO_AT_BRIDGE=1 GSETTINGS_BACKEND=memory
 if [[ "$mode" = fail ]]; then export VERENU_HANDOFF_TEST_FAIL_AFTER_COMMIT=1; fi
 printf synthetic-test-password | gnome-keyring-daemon --unlock >/dev/null
@@ -61,13 +62,28 @@ cleanup() {
   wait "$parent" 2>/dev/null || true
 }
 trap cleanup EXIT
+capture_rendered() {
+  local image="$1"
+  for _ in $(seq 1 100); do
+    scrot -o "$image"
+    if /usr/bin/python3 - "$image" <<'PY'
+from PIL import Image
+import sys
+image = Image.open(sys.argv[1]).convert('RGB').crop((220, 100, 1100, 850))
+sys.exit(0 if image.getcolors(maxcolors=512) is None else 1)
+PY
+    then return 0; fi
+    sleep .2
+  done
+  echo "Verenu's window did not render" >&2
+  return 1
+}
 for _ in $(seq 1 300); do
   if gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.GetNameOwner com.verenu.app.SingleInstance > "$root/owner-before" 2>/dev/null; then break; fi
   if ! kill -0 "$parent" 2>/dev/null; then cat "$root/app.log"; exit 1; fi
   sleep .1
 done
-sleep 8
-scrot "$root/before.png" || true
+capture_rendered "$root/before.png"
 /usr/bin/python3 - "$root/data/verenu.db" <<'PY'
 import sqlite3, sys
 with sqlite3.connect(sys.argv[1]) as db:
@@ -76,17 +92,17 @@ with sqlite3.connect(sys.argv[1]) as db:
 PY
 sha256sum "$root/data/sync-identity.key" > "$root/identity.before"
 touch "$root/trigger"
-if [[ "$mode" = fail ]]; then
-  for _ in $(seq 1 450); do
-    if [[ -e "$root/trigger.committing" || -e "$root/trigger.error" ]]; then break; fi
-    sleep .1
-  done
-  test -s "$root/trigger.committing"
-  window=$(xdotool search --onlyvisible --name Verenu | head -1)
-  xdotool windowunmap "$window"
-  gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback '[]' ''
-  touch "$root/trigger.continue"
-fi
+for _ in $(seq 1 450); do
+  if [[ -e "$root/trigger.committing" || -e "$root/trigger.error" ]]; then break; fi
+  sleep .1
+done
+test -s "$root/trigger.committing"
+owner_during=$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.GetNameOwner com.verenu.app.SingleInstance)
+test "$owner_during" = "$(cat "$root/owner-before")"
+window=$(xdotool search --onlyvisible --name Verenu | head -1)
+xdotool windowunmap "$window"
+gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback '[]' ''
+touch "$root/trigger.continue"
 for _ in $(seq 1 900); do
   if [[ -e "$root/trigger.error" || -e "$root/trigger.activated" ]]; then break; fi
   sleep .1
@@ -104,6 +120,7 @@ if [[ "$mode" = fail ]]; then
     sleep .1
   done
   xdotool search --onlyvisible --name Verenu | grep -qx "$window"
+  capture_rendered "$root/after-failure.png"
 else
   if [[ -e "$root/trigger.error" ]]; then cat "$root/trigger.error"; exit 1; fi
   test -s "$root/trigger.activated"
@@ -124,7 +141,7 @@ else
     sleep .1
   done
   xdotool search --onlyvisible --name Verenu | grep -qx "$window"
-  scrot "$root/after.png" || true
+  capture_rendered "$root/after.png"
   echo "replacement=$child"
 fi
 sha256sum -c "$root/identity.before"
