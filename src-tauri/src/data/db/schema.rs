@@ -420,8 +420,9 @@ impl LockedHandoffDb<'_> {
 impl ReadyHandoffDb {
     #[allow(dead_code)]
     pub(crate) fn activate(self, _parent_exited: &crate::linux_handoff_transport::ParentExited) -> Result<()> {
+        let mut connection = lock_conn(&self.db)?;
         self.reserved.execute_batch("ROLLBACK; PRAGMA query_only = OFF;")?;
-        *lock_conn(&self.db)? = self.reserved;
+        *connection = self.reserved;
         Ok(())
     }
 }
@@ -580,7 +581,17 @@ fn handoff_prepares_a_readonly_connection_only_when_no_data_changed() {
     let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child).unwrap();
     let ready = locked.prepare_readonly(&pause, &gate).unwrap();
     let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-    ready.activate(&parent_exited).unwrap();
+    let held = child.lock().unwrap();
+    let (started, wait_started) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        ready.activate(&parent_exited)
+    });
+    wait_started.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(parent.execute("INSERT INTO fixture VALUES (3)", []).is_err());
+    drop(held);
+    worker.join().unwrap().unwrap();
     drop(pause);
     child.lock().unwrap().execute("INSERT INTO fixture VALUES (4)", []).unwrap();
     assert_eq!(parent.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
