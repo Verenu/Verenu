@@ -244,6 +244,11 @@ mod tests {
 
     #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
     impl TestWatcher {
+        #[zbus(property)]
+        fn is_status_notifier_host_registered(&self) -> bool {
+            true
+        }
+
         fn register_status_notifier_item(&self, _service: &str) {
             self.entered
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -315,6 +320,7 @@ mod tests {
                 serde_json::json!("dark"),
             )
             .unwrap();
+        settings.set(crate::data::store::SETUP_COMPLETE, serde_json::json!(true)).unwrap();
         settings.save().unwrap();
         app.manage(settings);
         crate::app_tray::setup_tray(app.handle()).unwrap();
@@ -626,6 +632,59 @@ mod tests {
             assert!(tauri::async_runtime::spawn_blocking(move || {
                 app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
             }).await.unwrap());
+
+            let marker = dir.join("replacement-started");
+            let mut hanging = Command::new(std::env::current_exe().unwrap());
+            hanging.args([
+                "--exact", "linux_handoff_transport::tests::replacement_process_fixture",
+            ]).env("VERENU_HANDOFF_TEST_CHILD", "hang")
+              .env("VERENU_HANDOFF_TEST_MARKER", &marker);
+            let handle = app.handle().clone();
+            let attempt = tokio::spawn(async move {
+                crate::linux_handoff_transport::stage_replacement(
+                    &handle, hanging, 39, Default::default(), Duration::from_secs(10),
+                ).await
+            });
+            tokio::time::timeout(Duration::from_secs(8), async {
+                while !marker.exists() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }).await.expect("replacement did not start");
+            let pid: i32 = std::fs::read_to_string(&marker).unwrap().parse().unwrap();
+            attempt.abort();
+            let _ = attempt.await;
+            assert!(gate.try_enter().is_none());
+            drop(tokio::time::timeout(Duration::from_secs(20), gate.enter()).await
+                .expect("canceled restart did not restore the parent"));
+            assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "canceled replacement is still alive");
+
+            if let Some(binary) = std::env::var_os("VERENU_HANDOFF_TEST_BINARY") {
+                let disk_db = crate::data::db::open(dir.join("verenu.db")).unwrap();
+                let settings_before = std::fs::read(dir.join("settings.json")).unwrap();
+                let mut real = Command::new(binary);
+                real.env("VERENU_APP_DATA_DIR_OVERRIDE", &dir)
+                    .env("XDG_CONFIG_HOME", dir.join("config"))
+                    .env("XDG_STATE_HOME", dir.join("state"))
+                    .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1")
+                    .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+                    .env_remove("VERENU_AGENT_TOKEN")
+                    .env_remove("VERENU_AGENT_PORT");
+                let outcome = crate::linux_handoff_transport::stage_replacement(
+                    app.handle(), real, crate::data::db::HANDOFF_SCHEMA_VERSION,
+                    Default::default(), Duration::from_secs(25),
+                ).await;
+                match outcome {
+                    Err(reason) => assert!(reason.contains("Replacement sync could not prepare"), "unexpected restart failure: {reason}"),
+                    Ok(_) => panic!("restart unexpectedly reached commit readiness"),
+                }
+                drop(tokio::time::timeout(Duration::from_secs(15), gate.enter()).await.unwrap());
+                let app_handle = app.handle().clone();
+                assert!(tauri::async_runtime::spawn_blocking(move || {
+                    app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
+                }).await.unwrap());
+                assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), settings_before);
+                drop(disk_db);
+            }
 
             let lease = prepare(app.handle()).await.unwrap();
             entered.store(false, std::sync::atomic::Ordering::SeqCst);
