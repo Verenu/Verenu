@@ -5,7 +5,9 @@ afterEach(() => vi.unstubAllGlobals());
 
 it('reports NVIDIA RE-USE as unavailable in the browser preview', async () => {
   expect(await devInvoke('nvidia_reuse_status')).toEqual({ state: 'unavailable', message: 'NVIDIA RE-USE is available in the desktop app.', has_files: false });
+  expect(await devInvoke('nvidia_reuse_realtime_ready')).toBe(false);
   await expect(devInvoke('nvidia_reuse_install')).rejects.toThrow('requires the desktop app');
+  await expect(devInvoke('nvidia_reuse_realtime_install')).rejects.toThrow('requires the desktop app');
 });
 
 function browserStorage() {

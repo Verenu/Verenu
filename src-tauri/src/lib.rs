@@ -238,6 +238,19 @@ fn start_runtime_maintenance(
             }).await.unwrap_or_else(|error| Err(anyhow::anyhow!(error))) {
                 log::warn!("local models: idle unload maintenance failed: {error}");
             }
+            if crate::media::realtime_reuse::is_loaded() {
+                let reuse_app = app.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    let policy = crate::data::store::settings_snapshot(&reuse_app).ok()
+                        .map(|settings| crate::data::store::load_pipeline_config(&settings).local_model_memory_policy)
+                        .unwrap_or_else(|| "unload_after_5m".into());
+                    let pressure = crate::system::memory::gpu_vram_statuses().iter().any(|gpu| {
+                        gpu.index == 0 && gpu.total_mb > 0 &&
+                            (gpu.total_mb.saturating_sub(gpu.used_mb) < 512 || gpu.used_mb.saturating_mul(100) / gpu.total_mb >= 92)
+                    });
+                    crate::media::realtime_reuse::evict_if_idle(&policy, pressure);
+                }).await;
+            }
             let stt_loaded = local_stt_manager.current_model_id.lock()
                 .map(|guard| guard.is_some()).unwrap_or(false);
             let llm_loaded = local_llm_manager.current_model_id.lock()
@@ -360,6 +373,8 @@ fn app_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
             media::nvidia_reuse::nvidia_reuse_check,
             media::nvidia_reuse::nvidia_reuse_install,
             media::nvidia_reuse::nvidia_reuse_remove,
+            media::nvidia_reuse::nvidia_reuse_realtime_ready,
+            media::nvidia_reuse::nvidia_reuse_realtime_install,
             commands::get_effective_transcription_model,
             commands::list_local_stt_models,
             commands::list_local_llm_models,
@@ -608,6 +623,7 @@ fn handle_run_event(_app: &tauri::AppHandle, _event: tauri::RunEvent) {
     if let tauri::RunEvent::Exit = _event {
         crate::media::sound::release_all_mutes_on_exit();
         log::info!("app exiting; unloading local models");
+        crate::media::realtime_reuse::evict_if_idle("unload_immediately", true);
         crate::pipeline::failover::flush_on_exit(_app);
         crate::system::shutdown_local_models(_app);
         #[cfg(target_os = "windows")]
@@ -792,6 +808,10 @@ pub fn run() {
             if !is_dev_session() {
                 crate::data::credentials::migrate_from_store(app.handle(), &settings);
             }
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                crate::system::linux_webview::configure_window(&window);
+            }
             #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
             if is_dev_session() {
                 app.manage(settings.clone());
@@ -960,7 +980,6 @@ pub fn run() {
             app_tray::setup_tray(app)?;
             #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
-                crate::system::linux_webview::configure_window(&window);
                 crate::system::linux_titlebar::enable(&window).map_err(|error| {
                     let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
                     tauri::Error::Setup(source.into())

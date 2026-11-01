@@ -101,6 +101,7 @@ export type SettingsValueMap = {
   app_mappings: AppMapping[];
   noise_reduction: boolean;
   nvidia_reuse_enabled: boolean;
+  nvidia_reuse_realtime_enabled: boolean;
   echo_cancellation: boolean;
   duck_audio: boolean;
   duck_target: number;

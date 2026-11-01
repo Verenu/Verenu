@@ -559,6 +559,7 @@ pub struct AudioConfig {
     pub device: Option<String>,
     pub noise_reduction: bool,
     pub nvidia_reuse_enabled: bool,
+    pub nvidia_reuse_realtime_enabled: bool,
     pub echo_cancellation: bool,
     #[cfg(target_os = "linux")]
     pub duck_audio: bool,
@@ -583,6 +584,7 @@ impl Default for AudioConfig {
             device: None,
             noise_reduction: true,
             nvidia_reuse_enabled: false,
+            nvidia_reuse_realtime_enabled: false,
             echo_cancellation: false,
             #[cfg(target_os = "linux")]
             duck_audio: false,
@@ -657,6 +659,7 @@ pub fn load_audio_config(store: &SettingsSnapshot) -> AudioConfig {
         device,
         noise_reduction,
         nvidia_reuse_enabled: store.get(NVIDIA_REUSE_ENABLED).and_then(|v| v.as_bool()).unwrap_or(false),
+        nvidia_reuse_realtime_enabled: store.get(NVIDIA_REUSE_REALTIME_ENABLED).and_then(|v| v.as_bool()).unwrap_or(false),
         echo_cancellation,
         #[cfg(target_os = "linux")]
         duck_audio,
