@@ -1342,6 +1342,11 @@ mod tests {
         original_files.sort();
         let (callback_queue, callback_path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
         let callback_queue = std::sync::Arc::new(callback_queue);
+        let spawn_with_queue = |command| {
+            Replacement::spawn(command, crate::data::db::HANDOFF_SCHEMA_VERSION,
+                KeyAvailability::new(), Duration::from_secs(25))
+                .unwrap().with_callback_queue(callback_path.clone())
+        };
         let missing_queue = replacement_command();
         let replacement = Replacement::spawn(
             missing_queue,
@@ -1352,14 +1357,7 @@ mod tests {
         assert!(matches!(replacement.prepare(), Err(error) if error.contains("callback queue is missing")));
         assert!(owner.owns_name().unwrap());
         let command = replacement_command();
-        let replacement = Replacement::spawn(
-            command,
-            crate::data::db::HANDOFF_SCHEMA_VERSION,
-            KeyAvailability::new(),
-            Duration::from_secs(25),
-        )
-        .unwrap()
-        .with_callback_queue(callback_path.clone());
+        let replacement = spawn_with_queue(command);
         let child_pid = replacement.process.child.id();
         let ready = replacement
             .prepare()
@@ -1461,14 +1459,7 @@ mod tests {
         let writer = parent_db.lock().unwrap();
         writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
         let command = replacement_command();
-        let replacement = Replacement::spawn(
-            command,
-            crate::data::db::HANDOFF_SCHEMA_VERSION,
-            KeyAvailability::new(),
-            Duration::from_secs(25),
-        )
-        .unwrap()
-        .with_callback_queue(callback_path.clone());
+        let replacement = spawn_with_queue(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let outcome = ready.queue_ownership().unwrap().stage_services();
@@ -1489,14 +1480,7 @@ mod tests {
         );
 
         let command = replacement_command();
-        let replacement = Replacement::spawn(
-            command,
-            crate::data::db::HANDOFF_SCHEMA_VERSION,
-            KeyAvailability::new(),
-            Duration::from_secs(25),
-        )
-        .unwrap()
-        .with_callback_queue(callback_path.clone());
+        let replacement = spawn_with_queue(command);
         let ready = replacement.prepare().unwrap();
         let updated_settings = b"{\"setup_complete\":true,\"analytics_enabled\":false,\"test_changed\":true}";
         std::fs::write(data.join("settings.json"), updated_settings).unwrap();
@@ -1518,14 +1502,7 @@ mod tests {
 
         std::fs::write(data.join("settings.json"), &original_settings).unwrap();
         let command = replacement_command();
-        let replacement = Replacement::spawn(
-            command,
-            crate::data::db::HANDOFF_SCHEMA_VERSION,
-            KeyAvailability::new(),
-            Duration::from_secs(25),
-        )
-        .unwrap()
-        .with_callback_queue(callback_path.clone());
+        let replacement = spawn_with_queue(command);
         let ready = replacement.prepare().unwrap();
         parent_db
             .lock()
@@ -1549,12 +1526,7 @@ mod tests {
         let mut command = replacement_command();
         command.env("VERENU_AGENT_TOKEN", "a".repeat(64))
             .env("VERENU_AGENT_PORT", occupied_port.to_string());
-        let replacement = Replacement::spawn(
-            command,
-            crate::data::db::HANDOFF_SCHEMA_VERSION,
-            KeyAvailability::new(),
-            Duration::from_secs(25),
-        ).unwrap().with_callback_queue(callback_path.clone());
+        let replacement = spawn_with_queue(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let outcome = ready.queue_ownership().unwrap().stage_services();
@@ -1571,12 +1543,7 @@ mod tests {
         // without claiming that a real Hyprland portal has been verified.
         let mut command = replacement_command();
         command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
-        let replacement = Replacement::spawn(
-            command,
-            crate::data::db::HANDOFF_SCHEMA_VERSION,
-            KeyAvailability::new(),
-            Duration::from_secs(25),
-        ).unwrap().with_callback_queue(callback_path.clone());
+        let replacement = spawn_with_queue(command);
         let ready = replacement.prepare().unwrap();
         let child_pid = ready.process.child.id();
         let pause = gate.begin_pause_with(|| owner.install_callback_queue(callback_queue.clone())).unwrap();
@@ -1610,9 +1577,7 @@ mod tests {
         std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true,\"analytics_enabled\":false,\"cleanup_cache_enabled\":false}").unwrap();
         let mut command = replacement_command();
         command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
-        let replacement = Replacement::spawn(
-            command, crate::data::db::HANDOFF_SCHEMA_VERSION, KeyAvailability::new(), Duration::from_secs(25),
-        ).unwrap().with_callback_queue(callback_path.clone());
+        let replacement = spawn_with_queue(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let outcome = ready.queue_ownership().unwrap().stage_services();
@@ -1630,9 +1595,7 @@ mod tests {
         std::fs::write(data.join("analytics_usage_milestones"), "5\ndictations_5").unwrap();
         let mut command = replacement_command();
         command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
-        let replacement = Replacement::spawn(
-            command, crate::data::db::HANDOFF_SCHEMA_VERSION, KeyAvailability::new(), Duration::from_secs(25),
-        ).unwrap().with_callback_queue(callback_path.clone());
+        let replacement = spawn_with_queue(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let staged = ready.queue_ownership().unwrap().stage_services().expect("analytics-enabled replacement did not prepare");
@@ -1648,12 +1611,7 @@ mod tests {
         std::fs::remove_file(data.join("sync-identity.key")).unwrap();
         let mut command = replacement_command();
         command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
-        let replacement = Replacement::spawn(
-            command,
-            crate::data::db::HANDOFF_SCHEMA_VERSION,
-            KeyAvailability::new(),
-            Duration::from_secs(25),
-        ).unwrap().with_callback_queue(callback_path.clone());
+        let replacement = spawn_with_queue(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let outcome = ready.queue_ownership().unwrap().stage_services();
