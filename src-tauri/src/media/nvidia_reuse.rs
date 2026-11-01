@@ -271,6 +271,32 @@ fn decode_samples(data: &[u8], expected_samples: usize) -> anyhow::Result<Vec<f3
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn runtime_operations_refuse_to_start_during_restart() {
+        use std::sync::Arc;
+        use tauri::Manager;
+
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(gate.clone())
+            .build(tauri::generate_context!())
+            .unwrap();
+        tauri::async_runtime::block_on(async {
+            let pause = gate.pause().await.unwrap();
+            for result in [
+                super::nvidia_reuse_check(app.handle().clone()).await,
+                super::nvidia_reuse_install(app.handle().clone()).await,
+                super::nvidia_reuse_remove(app.handle().clone()).await,
+            ] {
+                assert!(result.unwrap_err().contains("preparing to restart"));
+            }
+            drop(pause);
+        });
+    }
+
     use super::decode_samples;
 
     #[test]
