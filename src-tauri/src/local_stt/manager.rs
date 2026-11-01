@@ -19,6 +19,7 @@ pub struct LocalTranscriptionManager {
     pub shutdown_signal: Arc<AtomicBool>,
     pub recording_active: Arc<AtomicBool>,
     pub transcription_active: Arc<AtomicBool>,
+    pub(crate) preload_gate: Arc<tokio::sync::RwLock<()>>,
     download_task: Arc<Mutex<Option<DownloadTaskState>>>,
 }
 
@@ -71,6 +72,7 @@ impl LocalTranscriptionManager {
             shutdown_signal: Arc::new(AtomicBool::new(false)),
             recording_active: Arc::new(AtomicBool::new(false)),
             transcription_active: Arc::new(AtomicBool::new(false)),
+            preload_gate: Arc::new(tokio::sync::RwLock::new(())),
             download_task: Arc::new(Mutex::new(None)),
         }
     }
@@ -351,6 +353,7 @@ impl LocalTranscriptionManager {
                 notified.await;
             }
         }
+        let _gate = self.preload_gate.write().await;
         if self
             .current_model_id
             .lock()
@@ -395,6 +398,7 @@ impl LocalTranscriptionManager {
         vocabulary: &super::vocabulary::Vocabulary,
         cancellation: &std::sync::atomic::AtomicBool,
     ) -> anyhow::Result<String> {
+        let _use_guard = self.preload_gate.blocking_read();
         self.ensure_loaded(app, model_id)?;
         self.touch_activity();
         let mut guard = self
@@ -417,9 +421,9 @@ impl LocalTranscriptionManager {
         result
     }
 
-    pub fn unload_if_idle(&self, app: &AppHandle) -> anyhow::Result<()> {
+    pub(crate) fn take_if_idle(&self, app: &AppHandle) -> anyhow::Result<Option<LoadedLocalSttEngine>> {
         if self.recording_active.load(Ordering::Relaxed) {
-            return Ok(());
+            return Ok(None);
         }
         let is_loaded = self
             .current_model_id
@@ -427,12 +431,12 @@ impl LocalTranscriptionManager {
             .map(|guard| guard.is_some())
             .unwrap_or(false);
         if !is_loaded {
-            return Ok(());
+            return Ok(None);
         }
         let settings = crate::data::store::settings_snapshot(app).map_err(anyhow::Error::msg)?;
         let cfg = crate::data::store::load_pipeline_config(&settings);
         let idle_limit = match cfg.local_model_memory_policy.as_str() {
-            "keep_loaded" => return Ok(()),
+            "keep_loaded" => return Ok(None),
             "unload_after_15m" => Duration::from_secs(15 * 60),
             "unload_immediately" => Duration::from_secs(0),
             _ => Duration::from_secs(5 * 60),
@@ -445,9 +449,14 @@ impl LocalTranscriptionManager {
                 cfg.local_model_memory_policy,
                 idle_for.as_millis()
             );
-            self.unload(app);
+            let engine = self.engine.lock().map_err(|_| anyhow::anyhow!("local engine lock poisoned"))?.take();
+            if let Ok(mut id) = self.current_model_id.lock() {
+                *id = None;
+            }
+            let _ = app.emit("local-stt-model-state", serde_json::json!({ "status": "unloaded" }));
+            return Ok(engine);
         }
-        Ok(())
+        Ok(None)
     }
 
     pub fn unload(&self, app: &AppHandle) {
@@ -480,6 +489,20 @@ impl LocalTranscriptionManager {
         if was_loaded {
             self.unload(app);
         }
+    }
+
+    pub(crate) fn preload_if_idle(&self, app: &AppHandle, model_id: &str, still_recording: impl FnOnce() -> bool) -> anyhow::Result<bool> {
+        self.try_preload_with(still_recording, || self.ensure_loaded(app, model_id))
+    }
+
+    fn try_preload_with(&self, still_recording: impl FnOnce() -> bool, load: impl FnOnce() -> anyhow::Result<()>) -> anyhow::Result<bool> {
+        let Ok(_guard) = self.preload_gate.try_write() else {
+            return Ok(false);
+        };
+        if still_recording() {
+            load()?;
+        }
+        Ok(true)
     }
 
     fn ensure_loaded(&self, app: &AppHandle, model_id: &str) -> anyhow::Result<()> {
@@ -608,6 +631,20 @@ fn should_unload_if_idle(idle_for: Duration, idle_limit: Duration) -> bool {
 mod tests {
     use super::{should_unload_if_idle, LocalTranscriptionManager};
     use std::time::Duration;
+
+    #[test]
+    fn preload_waits_for_inference_and_rechecks_recording_before_loading() {
+        use std::cell::Cell;
+        let manager = LocalTranscriptionManager::new();
+        let inference = manager.preload_gate.try_read().unwrap();
+        let loaded = Cell::new(false);
+        assert!(!manager.try_preload_with(|| true, || { loaded.set(true); Ok(()) }).unwrap());
+        drop(inference);
+        assert!(manager.try_preload_with(|| false, || { loaded.set(true); Ok(()) }).unwrap());
+        assert!(!loaded.get());
+        assert!(manager.try_preload_with(|| true, || { loaded.set(true); Ok(()) }).unwrap());
+        assert!(loaded.get());
+    }
 
     #[test]
     fn local_transcription_is_single_flight_until_worker_releases_it() {
