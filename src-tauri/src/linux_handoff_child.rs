@@ -409,6 +409,10 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener could not verify: {error}"));
                         }
+                        let _ready_db = match locked_db.prepare_readonly(child_pause.guard(), &gate) {
+                            Ok(db) => db,
+                            Err(error) => fail_paused_probation(services, format!("Replacement database could not prepare safely: {error}")),
+                        };
                         let tray_check = tauri::async_runtime::block_on(async {
                             tokio::time::timeout(Duration::from_secs(5), crate::app_tray::verify_probation_tray(&handle)).await
                         });

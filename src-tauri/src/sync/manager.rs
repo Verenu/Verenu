@@ -132,10 +132,13 @@ impl PreparedSync {
             sync_store::self_uuid(conn)?.as_deref() == Some(self.identity.uuid.as_str()),
             "Sync identity changed during restart"
         );
-        let name = stored_device_name(conn)?
+        let stored_name = stored_device_name(conn)?;
+        let name = stored_name.clone()
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| self.identity.name.clone());
-        sync_store::ensure_self_identity(conn, &self.identity.uuid, &name)?;
+        if stored_name.as_deref() != Some(name.as_str()) {
+            sync_store::ensure_self_identity(conn, &self.identity.uuid, &name)?;
+        }
         SyncManager::reconcile_stale_context_targets_with(conn)?;
         ChangeStamp::read(conn)
     }
@@ -603,7 +606,21 @@ mod handoff_tests {
     }
 
     #[test]
-    fn sync_database_preparation_is_rolled_back_with_the_handoff() {
+    fn unchanged_sync_identity_needs_no_database_write_during_handoff() {
+        let db = crate::data::db::open(":memory:").unwrap();
+        let identity = crate::sync::identity::generate_for_tests();
+        let conn = db.lock().unwrap();
+        sync_store::ensure_self_identity(&conn, &identity.uuid, &identity.name).unwrap();
+        let server_config = transport::server_config(identity.cert_der().clone(), identity.tls_key()).unwrap();
+        let fallback_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let prepared = PreparedSync { identity, fallback_listener, server_config };
+        let before = conn.total_changes();
+        prepared.prepare_database(&conn).unwrap();
+        assert_eq!(conn.total_changes(), before);
+    }
+
+    #[test]
+    fn sync_database_reconciliation_requires_manual_restart() {
         let path = std::env::temp_dir().join(format!("verenu-sync-transaction-{}.db", uuid::Uuid::new_v4()));
         let parent = crate::data::db::open(&path).unwrap();
         let identity = crate::sync::identity::generate_for_tests();
@@ -617,8 +634,8 @@ mod handoff_tests {
         let replacement = crate::data::db::open_for_handoff(&path).unwrap();
         let locked = crate::data::db::probe_writable_for_handoff(&path).unwrap()
             .lock_for_activation(&replacement).unwrap();
-        prepared.prepare_database(locked.connection()).unwrap();
-        assert_eq!(stored_device_name(locked.connection()).unwrap().as_deref(), Some(prepared.identity.name.as_str()));
+        assert!(prepared.prepare_database(locked.connection()).is_err());
+        assert_eq!(stored_device_name(locked.connection()).unwrap().as_deref(), Some(""));
         assert_eq!(stored_device_name(&parent.lock().unwrap()).unwrap().as_deref(), Some(""));
         drop(locked);
         assert_eq!(stored_device_name(&parent.lock().unwrap()).unwrap().as_deref(), Some(""));
