@@ -699,6 +699,23 @@ mod tests {
                 crate::sync::secrets::store_identity_key(&dir, key.secret_pkcs8_der()).unwrap();
                 std::fs::write(dir.join("sync-identity.der"), identity.cert_der().as_ref()).unwrap();
                 crate::sync::store::ensure_self_identity(&disk_db.lock().unwrap(), &identity.uuid, &identity.name).unwrap();
+                let mut broken = Command::new(std::env::var_os("VERENU_HANDOFF_TEST_BINARY").unwrap());
+                broken.env("VERENU_APP_DATA_DIR_OVERRIDE", &dir)
+                    .env("XDG_CONFIG_HOME", dir.join("config"))
+                    .env("XDG_STATE_HOME", dir.join("state"))
+                    .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1")
+                    .env("VERENU_HANDOFF_TEST_STOP_MAINTENANCE", "1")
+                    .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+                    .env_remove("VERENU_AGENT_TOKEN")
+                    .env_remove("VERENU_AGENT_PORT");
+                let failed = crate::linux_handoff_transport::stage_replacement(
+                    app.handle(), broken, crate::data::db::HANDOFF_SCHEMA_VERSION,
+                    Default::default(), Duration::from_secs(25),
+                ).await;
+                assert!(matches!(failed, Err(ref reason) if reason.contains("maintenance stopped")));
+                drop(tokio::time::timeout(Duration::from_secs(20), gate.enter()).await
+                    .expect("maintenance failure did not restore the parent"));
+                assert_eq!(std::fs::read(dir.join("agent-session.json")).unwrap(), agent_descriptor);
                 let mut real = Command::new(std::env::var_os("VERENU_HANDOFF_TEST_BINARY").unwrap());
                 real.env("VERENU_APP_DATA_DIR_OVERRIDE", &dir)
                     .env("XDG_CONFIG_HOME", dir.join("config"))

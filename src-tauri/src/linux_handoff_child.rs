@@ -347,6 +347,23 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             Ok(microphone) => microphone,
                             Err(error) => fail_paused_probation(services, format!("Replacement microphone watcher could not start: {error}")),
                         };
+                        let storage_maintenance = crate::start_storage_maintenance(
+                            handle.clone(), handle.state::<crate::DbHandle>().inner().clone(),
+                            handle.state::<crate::data::store::SettingsHandle>().inner().clone(),
+                        );
+                        let runtime_maintenance = crate::start_runtime_maintenance(
+                            handle.clone(), handle.state::<crate::pipeline::SharedState>().inner().clone(),
+                            handle.state::<crate::local_stt::LocalTranscriptionManager>().inner().clone(),
+                            handle.state::<crate::local_llm::LocalLlmManager>().inner().clone(),
+                        );
+                        #[cfg(all(feature = "native-testing", debug_assertions))]
+                        if std::env::var_os("VERENU_HANDOFF_TEST_STOP_MAINTENANCE").is_some() {
+                            runtime_maintenance.abort();
+                            let deadline = Instant::now() + Duration::from_secs(5);
+                            while !runtime_maintenance.inner().is_finished() && Instant::now() < deadline {
+                                std::thread::sleep(Duration::from_millis(10));
+                            }
+                        }
                         let db = handle.state::<crate::DbHandle>();
                         let locked_db = match prepared_db.lock_for_activation(db.inner()) {
                             Ok(db) => db,
@@ -389,6 +406,9 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener became unavailable: {error}"));
                         }
+                        if storage_maintenance.inner().is_finished() || runtime_maintenance.inner().is_finished() {
+                            fail_paused_probation(services, "Replacement maintenance stopped during preparation".into());
+                        }
                         let published_agent = match staged_agent.publish_while_paused(&handle, child_pause.guard()) {
                             Ok(agent) => agent,
                             Err(error) => fail_paused_probation(services, format!("Replacement agent discovery could not be prepared: {error}")),
@@ -418,6 +438,9 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         }
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener became unavailable before activation: {error}"));
+                        }
+                        if storage_maintenance.inner().is_finished() || runtime_maintenance.inner().is_finished() {
+                            fail_paused_probation(services, "Replacement maintenance stopped before activation".into());
                         }
                         let tray_check = tauri::async_runtime::block_on(async {
                             tokio::time::timeout(Duration::from_secs(5), crate::app_tray::verify_probation_tray(&handle)).await

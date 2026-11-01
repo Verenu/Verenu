@@ -98,7 +98,7 @@ fn start_storage_maintenance(
     app: tauri::AppHandle,
     db: DbHandle,
     settings: crate::data::store::SettingsHandle,
-) {
+) -> tauri::async_runtime::JoinHandle<()> {
     #[cfg(target_os = "linux")]
     let gate = app.state::<Arc<linux_activity::ActivityGate>>().inner().clone();
     tauri::async_runtime::spawn(async move {
@@ -157,7 +157,7 @@ fn start_storage_maintenance(
             })
             .await;
         }
-    });
+    })
 }
 
 fn start_runtime_maintenance(
@@ -165,7 +165,7 @@ fn start_runtime_maintenance(
     capture_state: pipeline::SharedState,
     local_stt_manager: local_stt::LocalTranscriptionManager,
     local_llm_manager: local_llm::LocalLlmManager,
-) {
+) -> tauri::async_runtime::JoinHandle<()> {
     #[cfg(target_os = "linux")]
     let gate = app.state::<Arc<linux_activity::ActivityGate>>().inner().clone();
     #[cfg(unix)]
@@ -229,7 +229,7 @@ fn start_runtime_maintenance(
             }
             crate::system::memory::reclaim_idle_memory(&capture_state).await;
         }
-    });
+    })
 }
 
 #[cfg(target_os = "android")]
@@ -899,11 +899,11 @@ pub fn run() {
                     Err(error) => log::warn!("android bridge failed to start: {error}"),
                 }
             }
-            start_storage_maintenance(
+            drop(start_storage_maintenance(
                 app.handle().clone(),
                 app.state::<DbHandle>().inner().clone(),
                 settings.clone(),
-            );
+            ));
 
             #[cfg(all(desktop, target_os = "linux"))]
             app_tray::setup_tray(app.handle())?;
@@ -936,10 +936,10 @@ pub fn run() {
                 );
             }
             start_frontend_watchdog(app.handle(), frontend_readiness.clone());
-            start_runtime_maintenance(
+            drop(start_runtime_maintenance(
                 app.handle().clone(), shared.clone(), local_transcription_manager.clone(),
                 local_cleanup_manager.clone(),
-            );
+            ));
 
             Ok(())
         })
@@ -1014,8 +1014,8 @@ mod linux_runtime_maintenance_tests {
             context: core::context::ResolvedContextIdentity::everywhere(),
         });
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        start_runtime_maintenance(app.handle().clone(), state.clone(),
-            local_stt::LocalTranscriptionManager::new(), local_llm::LocalLlmManager::new());
+        drop(start_runtime_maintenance(app.handle().clone(), state.clone(),
+            local_stt::LocalTranscriptionManager::new(), local_llm::LocalLlmManager::new()));
         std::thread::sleep(Duration::from_secs(32));
         assert_eq!(state.lock().unwrap().cancelled_capture.as_ref().unwrap().audio.samples_16k.len(), 1);
         drop(pause);
