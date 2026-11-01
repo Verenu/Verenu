@@ -40,6 +40,8 @@ export function motionPx(px: number): number {
 
 export interface MotionTransitionParams {
   duration?: number;
+  /** Already scaled for reduced motion. */
+  delay?: number;
   distance?: number;
   axis?: 'x' | 'y';
   scaleFrom?: number;
@@ -111,6 +113,7 @@ export function pageSwap(node: HTMLElement, params: MotionTransitionParams = {},
 
   return {
     duration,
+    delay: params.delay ?? 0,
     easing: isOutro ? cubicIn : cubicOut,
     css: (t: number) => {
       const u = 1 - t;

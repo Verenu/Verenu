@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Settings polish. NVIDIA RE-USE setup now shows a percentage and the current step inside its card while it downloads. Settings pages fade out before the next one fades in. Settings cards use a surface closer to the page color. Integrations are now cards. Audio values (microphone gain, volume, fade times) roll their digits instead of jumping. "Advanced volume fades" and "What you can say" share one animated disclosure, and the voice command help is shorter and sits inside its card.
 - The Linux dictation volume setting now targets the selected system volume instead of a percentage of the current volume. It never increases audio that is already quieter than the target.
 - Fixed restored Linux clipboard items becoming unavailable after Omarchy's clipboard watcher stops reading them.
 - Settings rows now sit in rounded cards, one card per group under each heading. In General, each shortcut's help text and Linux shortcut status moved inside its row, so Shortcuts is one card instead of rows split by loose paragraphs.

@@ -93,6 +93,8 @@
 
   const SETTINGS_SWAP_PX = 26;
   const SETTINGS_SWAP_MS = 320;
+  /** The old section fades out first, then the new one fades in, so the two never overlap. */
+  const SECTION_OUT_MS = 100;
 
   onMount(() => {
     const onAgentSettingsChanged = () => {
@@ -416,8 +418,8 @@
             bind:this={settingsPanelEl}
             class="panel scroll-styled"
             use:scrollEdges={setFades}
-            in:pageSwap={{ axis: 'y', distance: animDir * motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel) }}
-            out:pageSwap={{ axis: 'y', distance: -animDir * motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.base) }}
+            in:pageSwap={{ axis: 'y', distance: animDir * motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), delay: motionMs(SECTION_OUT_MS) }}
+            out:pageSwap={{ axis: 'y', distance: 0, duration: motionMs(SECTION_OUT_MS) }}
           >
             {#if externalSettingsChange && section !== 'models'}
               <div class="panel-note" role="alert">
@@ -543,10 +545,16 @@
   }
 
   .settings-body {
+    --settings-card-bg: var(--bg-elev);
     flex: 1;
     position: relative;
     overflow: hidden;
     display: grid;
+  }
+
+  /* On dark themes the elevated card is much lighter than the page, so pull it toward the page. */
+  :global(:root[data-theme='dark']) .settings-body {
+    --settings-card-bg: color-mix(in srgb, var(--bg-elev) 55%, var(--paper));
   }
 
   .fade-edge {
@@ -601,7 +609,10 @@
 
   :global(.app[data-android='true']) .panel-inner { width: 100%; }
 
+  .panel-inner[aria-busy='true'] { opacity: 0.55; }
+
   .panel-inner {
+    transition: opacity var(--ui-duration-fast) var(--ui-ease-out);
     width: min(100%, 680px);
     margin-inline: auto;
     container-type: inline-size;
@@ -688,7 +699,7 @@
     align-items: center;
     gap: 24px;
     padding: 14px 16px;
-    background: var(--bg-elev);
+    background: var(--settings-card-bg);
     border: 1px solid var(--line);
     border-top-width: 0;
   }
