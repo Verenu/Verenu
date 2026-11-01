@@ -24,6 +24,7 @@ pub struct LocalLlmManager {
     runtime_download: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     active_requests: Arc<AtomicU32>,
     request_start_gate: Arc<Mutex<()>>,
+    pub(crate) preload_gate: Arc<tokio::sync::RwLock<()>>,
 }
 
 #[derive(Clone)]
@@ -77,6 +78,7 @@ impl LocalLlmManager {
             runtime_download: Arc::new(Mutex::new(None)),
             active_requests: Arc::new(AtomicU32::new(0)),
             request_start_gate: Arc::new(Mutex::new(())),
+            preload_gate: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 
@@ -342,8 +344,9 @@ impl LocalLlmManager {
         Ok(())
     }
 
-    pub fn delete_runtime(&self, app: &AppHandle) -> anyhow::Result<()> {
+    pub async fn delete_runtime(&self, app: &AppHandle) -> anyhow::Result<()> {
         self.cancel_runtime_download()?;
+        let _gate = self.preload_gate.write().await;
         self.unload(app);
         super::binary::delete_runtime(&super::binary::runtime_root())?;
         let _ = app.emit(
@@ -372,6 +375,7 @@ impl LocalLlmManager {
             .ok_or_else(|| anyhow::anyhow!("unknown local cleanup model: {model_id}"))?;
         let root = self.prepare_models_dir()?;
         self.cancel_download(Some(model_id))?;
+        let _gate = self.preload_gate.write().await;
         if self
             .current_model_id
             .lock()
@@ -419,6 +423,7 @@ impl LocalLlmManager {
         alternate_text: Option<&str>,
         max_tokens: u32,
     ) -> anyhow::Result<String> {
+        let _use_guard = self.preload_gate.read().await;
         let start_gate = self
             .request_start_gate
             .lock()
@@ -453,14 +458,30 @@ impl LocalLlmManager {
         output
     }
 
-    pub fn unload_if_idle(&self, app: &AppHandle) -> anyhow::Result<()> {
+    pub(crate) async fn preload_if_idle(&self, app: &AppHandle, model_id: &str, still_recording: impl FnOnce() -> bool) -> anyhow::Result<bool> {
+        let Ok(_guard) = self.preload_gate.try_write() else {
+            return Ok(false);
+        };
+        if !still_recording() {
+            return Ok(true);
+        }
+        let start_gate = self.request_start_gate.lock()
+            .map_err(|_| anyhow::anyhow!("local cleanup request gate poisoned"))?;
+        self.active_requests.fetch_add(1, Ordering::SeqCst);
+        drop(start_gate);
+        let _busy = ActiveRequestGuard(&self.active_requests);
+        self.ensure_loaded(app, model_id).await?;
+        Ok(true)
+    }
+
+    pub(crate) fn take_if_idle(&self, app: &AppHandle) -> anyhow::Result<Option<ManagedLocalLlmServer>> {
         let _request_gate = self
             .request_start_gate
             .lock()
             .map_err(|_| anyhow::anyhow!("local cleanup request gate poisoned"))?;
         let active_requests = self.active_requests.load(Ordering::SeqCst);
         if active_requests > 0 {
-            return Ok(());
+            return Ok(None);
         }
         let is_loaded = self
             .current_model_id
@@ -468,12 +489,12 @@ impl LocalLlmManager {
             .map(|guard| guard.is_some())
             .unwrap_or(false);
         if !is_loaded {
-            return Ok(());
+            return Ok(None);
         }
         let settings = crate::data::store::settings_snapshot(app).map_err(anyhow::Error::msg)?;
         let cfg = crate::data::store::load_pipeline_config(&settings);
         let idle_limit = match cfg.local_model_memory_policy.as_str() {
-            "keep_loaded" => return Ok(()),
+            "keep_loaded" => return Ok(None),
             "unload_after_15m" => Duration::from_secs(15 * 60),
             "unload_immediately" => Duration::from_secs(0),
             _ => Duration::from_secs(5 * 60),
@@ -481,9 +502,14 @@ impl LocalLlmManager {
         let last_ms = self.last_activity_ms.load(Ordering::Relaxed);
         let idle_for = Duration::from_millis(now_ms().saturating_sub(last_ms));
         if should_unload_if_idle(active_requests, idle_for, idle_limit) {
-            self.unload(app);
+            let server = self.server.lock().map_err(|_| anyhow::anyhow!("local cleanup server lock poisoned"))?.take();
+            if let Ok(mut id) = self.current_model_id.lock() {
+                *id = None;
+            }
+            let _ = app.emit("local-llm-model-state", serde_json::json!({ "status": "unloaded" }));
+            return Ok(server);
         }
-        Ok(())
+        Ok(None)
     }
 
     pub fn unload(&self, app: &AppHandle) {
@@ -662,5 +688,17 @@ mod tests {
             Duration::from_secs(60),
             Duration::ZERO
         ));
+    }
+
+    #[tokio::test]
+    async fn preload_gate_excludes_active_and_new_requests() {
+        let manager = LocalLlmManager::new();
+        let request = manager.preload_gate.read().await;
+        assert!(manager.preload_gate.try_write().is_err());
+        drop(request);
+        let guard = manager.preload_gate.try_write().unwrap();
+        assert!(manager.preload_gate.try_read().is_err());
+        drop(guard);
+        assert!(manager.preload_gate.try_read().is_ok());
     }
 }
