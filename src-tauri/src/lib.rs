@@ -703,12 +703,12 @@ pub fn run() {
                 log::warn!("failed to seed default dictionary entries: {e}");
             }
             #[cfg(target_os = "linux")]
-            crate::system::diagnostic_journal::start(
+            drop(crate::system::diagnostic_journal::start(
                 db_handle.clone(),
                 app.state::<Arc<linux_activity::ActivityGate>>().inner().clone(),
-            );
+            ));
             #[cfg(not(target_os = "linux"))]
-            crate::system::diagnostic_journal::start(db_handle.clone());
+            drop(crate::system::diagnostic_journal::start(db_handle.clone()));
             app.manage(db_handle);
             crate::system::logger::attach_app(app.handle());
             #[cfg(target_os = "linux")]
