@@ -5,7 +5,6 @@ use zbus::{blocking::Connection, interface};
 
 struct CallbackRoute {
     parent: Option<String>,
-    local: tokio::sync::watch::Sender<bool>,
     order: Arc<CallbackOrder>,
     queue: Mutex<Option<CallbackQueueSlot>>,
 }
@@ -73,8 +72,7 @@ impl Drop for CallbackTicket {
 
 impl CallbackRoute {
     fn new(parent: Option<String>) -> Self {
-        let (local, _) = tokio::sync::watch::channel(parent.is_none());
-        Self { parent, local, order: Arc::new(CallbackOrder::default()), queue: Mutex::new(None) }
+        Self { parent, order: Arc::new(CallbackOrder::default()), queue: Mutex::new(None) }
     }
 
     fn enqueue_if_active(&self, args: &[String]) -> Option<zbus::fdo::Result<()>> {
@@ -94,19 +92,6 @@ impl CallbackRoute {
         })
     }
 
-    fn activate(&self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
-        self.local.send_replace(true);
-    }
-
-    async fn wait_for_local(&self) -> Result<(), zbus::fdo::Error> {
-        let mut local = self.local.subscribe();
-        while !*local.borrow_and_update() {
-            local.changed().await.map_err(|_| {
-                zbus::fdo::Error::Failed("Restart callback routing stopped".into())
-            })?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(all(test, feature = "native-testing"))]
@@ -114,8 +99,6 @@ static TEST_CALLBACK_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::
 
 #[cfg(all(test, feature = "native-testing"))]
 static TEST_CALLBACK_STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-#[cfg(all(test, feature = "native-testing"))]
-static TEST_FORWARD_FAILED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(all(test, feature = "native-testing"))]
 pub(crate) fn test_callback_count() -> usize {
@@ -143,25 +126,18 @@ impl SingleInstance {
         }
     }
 
-    async fn execute_callback(&self, argv: Vec<String>, cwd: String) -> zbus::fdo::Result<()> {
+    async fn execute_callback(&self, argv: Vec<String>, _cwd: String) -> zbus::fdo::Result<()> {
         if self.route.parent.is_some() {
             if let Some(result) = self.route.enqueue_if_active(&argv) {
                 return result;
             }
-            // A disconnected caller must not release its ticket while the
-            // forwarded D-Bus method can still be running in the parent.
             let ticket = self.route.order.ticket();
-            let instance = SingleInstance {
-                app: self.app.clone(),
-                route: self.route.clone(),
-            };
+            let instance = SingleInstance { app: self.app.clone(), route: self.route.clone() };
             return tauri::async_runtime::spawn(async move {
-                instance.dispatch_callback(argv, cwd, Some(ticket)).await
-            })
-            .await
-            .map_err(|_| zbus::fdo::Error::Failed("Restart callback stopped".into()))?;
+                instance.dispatch_callback(argv, Some(ticket)).await
+            }).await.map_err(|_| zbus::fdo::Error::Failed("Restart callback stopped".into()))?;
         }
-        self.dispatch_callback(argv, cwd, None).await
+        self.dispatch_callback(argv, None).await
     }
 }
 
@@ -169,37 +145,10 @@ impl SingleInstance {
     async fn dispatch_callback(
         &self,
         argv: Vec<String>,
-        cwd: String,
         ticket: Option<CallbackTicket>,
     ) -> zbus::fdo::Result<()> {
         if let Some(ticket) = ticket.as_ref() {
             ticket.wait_turn().await;
-        }
-        let local = *self.route.local.borrow();
-        if let Some(parent) = self.route.parent.as_ref().filter(|_| !local) {
-            let forwarded = async {
-                let connection = zbus::Connection::session().await?;
-                let (_, path) = address(&self.app.config().identifier);
-                connection
-                    .call_method(
-                        Some(parent.as_str()),
-                        path.as_str(),
-                        Some("org.SingleInstance.DBus"),
-                        "ExecuteCallback",
-                        &(argv.clone(), cwd),
-                    )
-                    .await?;
-                Ok::<(), zbus::Error>(())
-            }
-            .await;
-            if forwarded.is_ok() {
-                return Ok(());
-            }
-            #[cfg(all(test, feature = "native-testing"))]
-            TEST_FORWARD_FAILED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            // During probation the parent is paused. A disconnected forward
-            // can run here only after its authenticated exit is confirmed.
-            self.route.wait_for_local().await?;
         }
         // The hotkey callbacks change gesture state before dispatching work.
         // Keep them out of a paused parent so a failed handoff can resume
@@ -302,9 +251,7 @@ impl InstanceOwner {
                 active.delivered = None;
             }
         }
-        if let Some(parent_exited) = parent_exited {
-            self.route.activate(parent_exited);
-        }
+        let _ = parent_exited;
         *slot = None;
         Ok(())
     }
@@ -501,74 +448,10 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "native-testing")]
-    struct BlockingForward {
-        arrived: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        first_arrived: std::sync::Arc<tokio::sync::Notify>,
-        release: std::sync::Arc<tokio::sync::Semaphore>,
-    }
-
-    #[cfg(feature = "native-testing")]
-    #[zbus::interface(name = "org.SingleInstance.DBus")]
-    impl BlockingForward {
-        async fn execute_callback(&self, _argv: Vec<String>, _cwd: String) {
-            if self.arrived.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                self.first_arrived.notify_one();
-                self.release.acquire().await.unwrap().forget();
-            }
-        }
-    }
-
-    #[cfg(feature = "native-testing")]
-    #[test]
-    #[ignore = "requires an isolated graphical and D-Bus session"]
-    fn cancelled_forward_keeps_the_next_callback_waiting() {
-        use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
-        use std::time::Duration;
-
-        let app = tauri::Builder::default()
-            .any_thread()
-            .build(tauri::generate_context!())
-            .unwrap();
-        tauri::async_runtime::block_on(async {
-            let arrived = Arc::new(AtomicUsize::new(0));
-            let first_arrived = Arc::new(tokio::sync::Notify::new());
-            let release = Arc::new(tokio::sync::Semaphore::new(0));
-            let (_, path) = super::address(&app.config().identifier);
-            let parent = zbus::connection::Builder::session().unwrap()
-                .serve_at(path.as_str(), BlockingForward {
-                    arrived: arrived.clone(),
-                    first_arrived: first_arrived.clone(),
-                    release: release.clone(),
-                }).unwrap()
-                .build().await.unwrap();
-            let instance = Arc::new(super::SingleInstance {
-                app: app.handle().clone(),
-                route: Arc::new(super::CallbackRoute::new(Some(parent.unique_name().unwrap().to_string()))),
-            });
-            let first_instance = instance.clone();
-            let first = tokio::spawn(async move {
-                first_instance.execute_callback(vec!["first".into()], String::new()).await
-            });
-            tokio::time::timeout(Duration::from_secs(5), first_arrived.notified()).await.unwrap();
-            first.abort();
-            let _ = first.await;
-            let second = tokio::spawn(async move {
-                instance.execute_callback(vec!["second".into()], String::new()).await
-            });
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            assert_eq!(arrived.load(Ordering::SeqCst), 1);
-            release.add_permits(1);
-            tokio::time::timeout(Duration::from_secs(5), second).await.unwrap().unwrap().unwrap();
-            assert_eq!(arrived.load(Ordering::SeqCst), 2);
-        });
-    }
-
     #[tokio::test]
     async fn callback_replay_keeps_order_and_skips_cancelled_calls() {
         use std::sync::Arc;
         use std::time::Duration;
-
         let order = Arc::new(super::CallbackOrder::default());
         let first = order.ticket();
         let cancelled = order.ticket();
@@ -581,62 +464,6 @@ mod tests {
         assert!(!waiting.is_finished());
         drop(first);
         tokio::time::timeout(Duration::from_secs(2), waiting).await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn disconnected_forward_waits_for_confirmed_parent_exit() {
-        use std::sync::Arc;
-        use std::time::Duration;
-
-        let route = Arc::new(super::CallbackRoute::new(Some(":1.42".into())));
-        let waiting_route = route.clone();
-        let waiter = tokio::spawn(async move { waiting_route.wait_for_local().await });
-        tokio::task::yield_now().await;
-        assert!(!waiter.is_finished());
-        let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-        route.activate(&parent_exited);
-        tokio::time::timeout(Duration::from_secs(2), waiter)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        route.wait_for_local().await.unwrap();
-    }
-
-    #[cfg(feature = "native-testing")]
-    #[test]
-    #[ignore = "requires an isolated graphical and D-Bus session"]
-    fn disconnected_dbus_forward_dispatches_after_confirmed_parent_exit() {
-        use std::sync::Arc;
-        use std::time::Duration;
-
-        let app = tauri::Builder::default()
-            .any_thread()
-            .build(tauri::generate_context!())
-            .unwrap();
-        let route = Arc::new(super::CallbackRoute::new(Some(":1.999999".into())));
-        let instance = super::SingleInstance {
-            app: app.handle().clone(),
-            route: route.clone(),
-        };
-        let before = super::test_callback_count();
-        let failures = super::TEST_FORWARD_FAILED.load(std::sync::atomic::Ordering::SeqCst);
-        tauri::async_runtime::block_on(async {
-            let call = tokio::spawn(async move {
-                instance.execute_callback(vec!["--verenu-hotkey-release".into()], String::new()).await
-            });
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-            while super::TEST_FORWARD_FAILED.load(std::sync::atomic::Ordering::SeqCst) == failures {
-                assert!(tokio::time::Instant::now() < deadline, "forward did not fail");
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            assert!(!call.is_finished());
-            assert_eq!(super::test_callback_count(), before);
-            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-            route.activate(&parent_exited);
-            tokio::time::timeout(Duration::from_secs(5), call).await.unwrap().unwrap().unwrap();
-            assert_eq!(super::test_callback_count(), before + 1);
-        });
     }
 
     #[cfg(feature = "native-testing")]
