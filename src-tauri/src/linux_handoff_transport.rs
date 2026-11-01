@@ -5,10 +5,9 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const PROTOCOL: u32 = 10;
+const PROTOCOL: u32 = 11;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
@@ -17,7 +16,7 @@ pub(crate) type KeyAvailability = BTreeMap<String, bool>;
 // way the original cannot safely resume, or when callback handoff formats
 // change. Schema changes are checked separately. Matching versions promise
 // that probation remains read-only and that rollback can resume the parent.
-const STATE_COMPATIBILITY: &str = "2";
+const STATE_COMPATIBILITY: &str = "3";
 
 fn descends_from(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     for _ in 0..32 {
@@ -191,13 +190,9 @@ impl Child {
             database_code: STATE_COMPATIBILITY.into(),
         })?;
         match self.channel.receive()? {
-            Message::Begin {
-                key_availability,
-                callback_queue_path,
-            } => Ok(ChildStartup {
+            Message::Begin { key_availability } => Ok(ChildStartup {
                 channel: self.channel,
                 key_availability,
-                callback_queue_path,
             }),
             _ => Err("Replacement received an invalid startup request".into()),
         }
@@ -207,7 +202,6 @@ impl Child {
 pub(crate) struct ChildStartup {
     channel: Channel,
     key_availability: KeyAvailability,
-    callback_queue_path: Option<PathBuf>,
 }
 
 impl ChildStartup {
@@ -224,9 +218,6 @@ impl ChildStartup {
         &self.key_availability
     }
 
-    pub(crate) fn callback_queue_path(&self) -> Option<&Path> {
-        self.callback_queue_path.as_deref()
-    }
 }
 
 pub(crate) struct ChildFrontends(Channel);
@@ -338,7 +329,6 @@ enum Message {
     },
     Begin {
         key_availability: KeyAvailability,
-        callback_queue_path: Option<PathBuf>,
     },
     BackendReady,
     FrontendsReady,
@@ -434,7 +424,6 @@ struct Parent {
     child_pid: u32,
     schema: i64,
     key_availability: KeyAvailability,
-    callback_queue_path: Option<PathBuf>,
 }
 
 struct ProcessGuard {
@@ -560,7 +549,6 @@ impl Replacement {
             child_pid: process.child.id(),
             schema,
             key_availability,
-            callback_queue_path: None,
         };
         Ok(Self { process, parent })
     }
@@ -573,10 +561,6 @@ impl Replacement {
         })
     }
 
-    fn with_callback_queue(mut self, path: PathBuf) -> Self {
-        self.parent.callback_queue_path = Some(path);
-        self
-    }
 }
 
 struct ReadyReplacement {
@@ -619,12 +603,12 @@ pub(crate) struct StagedRestart {
 }
 
 #[derive(Default)]
-pub(crate) struct PendingRestart(std::sync::Mutex<Option<(ProcessGuard, crate::linux_handoff::PreparedHandoff, std::fs::File)>>);
+pub(crate) struct PendingRestart(std::sync::Mutex<Option<(ProcessGuard, crate::linux_handoff::PreparedHandoff)>>);
 
 impl PendingRestart {
     pub(crate) fn check_exit(&self) -> Result<(), String> {
         let mut pending = self.0.lock().map_err(|_| "Restart state is unavailable")?;
-        if let Some((process, _, _)) = pending.as_mut() {
+        if let Some((process, _)) = pending.as_mut() {
             if !matches!(process.child.try_wait(), Ok(None)) {
                 let failed = pending.take();
                 drop(pending);
@@ -652,21 +636,17 @@ impl StagedRestart {
         let Self { replacement, preparation } = self;
         let PreparedReplacement { process, prepared } = replacement;
         let activated = prepared.activate()?;
-        // Wait for acknowledged launchers, then keep new ones blocked until
-        // the old D-Bus connection closes at process exit.
-        let callback_lock = crate::linux_single_instance::callback_lock(Duration::from_secs(10))?;
         let owner = app.try_state::<crate::linux_single_instance::InstanceOwner>()
             .ok_or("Single-instance ownership is unavailable")?;
         let group = process.child.id();
         owner.verify_queued_replacement(group)?;
-        owner.callback_barrier()?;
         activated.commit()?;
         let state = app.state::<PendingRestart>();
         let mut pending = state.0.lock().map_err(|_| "Restart state is unavailable")?;
         if pending.is_some() {
             return Err("A restart is already in progress.".into());
         }
-        *pending = Some((process, preparation, callback_lock));
+        *pending = Some((process, preparation));
         Ok(())
     }
 }
@@ -698,17 +678,14 @@ pub(crate) async fn stage_replacement(
         let mut preparation = preparation;
         let owner = app.try_state::<crate::linux_single_instance::InstanceOwner>()
             .ok_or("Single-instance ownership is unavailable")?;
-        let replacement = Replacement::spawn(command, schema, key_availability, timeout)?
-            .with_callback_queue(preparation.callback_queue_path().to_path_buf());
+        let replacement = Replacement::spawn(command, schema, key_availability, timeout)?;
         let ready = replacement.prepare()?;
         let group = ready.process.child.id();
         preparation.register_replacement(group)?;
         let owned = ready.queue_ownership()?;
         owner.verify_queued_replacement(group)?;
-        owner.callback_barrier()?;
         let replacement = owned.stage_services()?;
         owner.verify_queued_replacement(group)?;
-        owner.callback_barrier()?;
         Ok(StagedRestart { replacement, preparation })
     }).await.map_err(|error| format!("Restart preparation stopped: {error}"))?
 }
@@ -732,7 +709,6 @@ impl Parent {
         }
         self.channel.send(&Message::Begin {
             key_availability: self.key_availability,
-            callback_queue_path: self.callback_queue_path,
         })?;
         self.channel.expect(Message::BackendReady)?;
         self.channel.expect(Message::FrontendsReady)?;
@@ -824,7 +800,6 @@ mod tests {
     fn begin() -> Message {
         Message::Begin {
             key_availability: KeyAvailability::new(),
-            callback_queue_path: None,
         }
     }
 
@@ -844,7 +819,6 @@ mod tests {
                 child_pid: 42,
                 schema: 39,
                 key_availability: KeyAvailability::new(),
-                callback_queue_path: None,
             },
             Channel::new(child, timeout).unwrap(),
         )
@@ -1157,7 +1131,6 @@ mod tests {
             child_pid: process.id(),
             schema: 39,
             key_availability: KeyAvailability::new(),
-            callback_queue_path: None,
         };
         assert!(parent.prepare().is_err());
         assert!(process.wait().unwrap().success());
@@ -1312,33 +1285,21 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         original_files.sort();
-        let (callback_queue, callback_path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
-        let callback_queue = std::sync::Arc::new(callback_queue);
-        let spawn_with_queue = |command| {
+        let spawn_replacement = |command| {
             Replacement::spawn(command, crate::data::db::HANDOFF_SCHEMA_VERSION,
                 KeyAvailability::new(), Duration::from_secs(25))
-                .unwrap().with_callback_queue(callback_path.clone())
+                .unwrap()
         };
-        let missing_queue = replacement_command();
-        let replacement = Replacement::spawn(
-            missing_queue,
-            crate::data::db::HANDOFF_SCHEMA_VERSION,
-            KeyAvailability::new(),
-            Duration::from_secs(25),
-        ).unwrap();
-        assert!(matches!(replacement.prepare(), Err(error) if error.contains("callback queue is missing")));
-        assert!(owner.owns_name().unwrap());
         let command = replacement_command();
-        let replacement = spawn_with_queue(command);
+        let replacement = spawn_replacement(command);
         let child_pid = replacement.process.child.id();
         let ready = replacement
             .prepare()
             .expect("replacement did not complete frontend readiness");
-        let pause = gate.begin_pause_with(|| owner.install_callback_queue(callback_queue.clone())).unwrap();
+        let lock = crate::linux_single_instance::callback_lock(Duration::from_secs(5)).unwrap();
+        let pause = gate.begin_pause().unwrap();
         tauri::async_runtime::block_on(pause.wait_drained());
         let connection = zbus::blocking::Connection::session().unwrap();
-        crate::linux_single_instance::test_callback(&connection, "com.verenu.app.SingleInstance",
-            "/com/verenu/app/SingleInstance", vec!["--verenu-hotkey-release".into()]).unwrap();
         let owned = ready
             .queue_ownership()
             .expect("replacement did not queue for ownership");
@@ -1351,9 +1312,7 @@ mod tests {
                 vec!["--verenu-hotkey-handsfree".into()]);
             let _ = sent.send(result.is_ok());
         });
-        assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
-        assert_eq!(callback_queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
-        owner.callback_barrier().unwrap();
+        assert!(received.recv_timeout(Duration::from_millis(200)).is_err());
         owner.verify_queued_replacement(child_pid).unwrap();
         assert_eq!(
             crate::linux_single_instance::test_callback_count(),
@@ -1379,15 +1338,16 @@ mod tests {
         assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, -1);
         assert!(!group_has_live_members(child_pid).unwrap());
         restore_owner("replacement shutdown");
-        owner.drain_callback_queue(app.handle()).unwrap();
+        drop(lock);
         drop(pause);
+        assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
         callback.join().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while crate::linux_single_instance::test_callback_count() == callbacks_before {
             assert!(Instant::now() < deadline, "parent did not handle the deferred callback");
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks_before + 2);
+        assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks_before + 1);
         crate::linux_single_instance::test_callback(&connection, "com.verenu.app.SingleInstance",
             "/com/verenu/app/SingleInstance", vec!["--verenu-hotkey-release".into()]).unwrap();
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), original_db);
@@ -1415,7 +1375,7 @@ mod tests {
         let writer = parent_db.lock().unwrap();
         writer.execute_batch("BEGIN IMMEDIATE;").unwrap();
         let command = replacement_command();
-        let replacement = spawn_with_queue(command);
+        let replacement = spawn_replacement(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let outcome = ready.queue_ownership().unwrap().stage_services();
@@ -1436,7 +1396,7 @@ mod tests {
         );
 
         let command = replacement_command();
-        let replacement = spawn_with_queue(command);
+        let replacement = spawn_replacement(command);
         let ready = replacement.prepare().unwrap();
         let updated_settings = b"{\"setup_complete\":true,\"analytics_enabled\":false,\"test_changed\":true}";
         std::fs::write(data.join("settings.json"), updated_settings).unwrap();
@@ -1458,7 +1418,7 @@ mod tests {
 
         std::fs::write(data.join("settings.json"), &original_settings).unwrap();
         let command = replacement_command();
-        let replacement = spawn_with_queue(command);
+        let replacement = spawn_replacement(command);
         let ready = replacement.prepare().unwrap();
         parent_db
             .lock()
@@ -1482,7 +1442,7 @@ mod tests {
         let mut command = replacement_command();
         command.env("VERENU_AGENT_TOKEN", "a".repeat(64))
             .env("VERENU_AGENT_PORT", occupied_port.to_string());
-        let replacement = spawn_with_queue(command);
+        let replacement = spawn_replacement(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let outcome = ready.queue_ownership().unwrap().stage_services();
@@ -1499,10 +1459,11 @@ mod tests {
         // without claiming that a real Hyprland portal has been verified.
         let mut command = replacement_command();
         command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
-        let replacement = spawn_with_queue(command);
+        let replacement = spawn_replacement(command);
         let ready = replacement.prepare().unwrap();
         let child_pid = ready.process.child.id();
-        let pause = gate.begin_pause_with(|| owner.install_callback_queue(callback_queue.clone())).unwrap();
+        let lock = crate::linux_single_instance::callback_lock(Duration::from_secs(5)).unwrap();
+        let pause = gate.begin_pause().unwrap();
         tauri::async_runtime::block_on(pause.wait_drained());
         let staged = ready.queue_ownership().unwrap().stage_services().expect("replacement services did not prepare");
         assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, 0);
@@ -1511,15 +1472,17 @@ mod tests {
         let descriptor = data.join("agent-session.json");
         assert!(descriptor.exists(), "replacement did not publish its paused agent");
         let callbacks = crate::linux_single_instance::test_callback_count();
-        crate::linux_single_instance::test_callback(&connection, "com.verenu.app.SingleInstance",
-            "/com/verenu/app/SingleInstance", vec!["--verenu-hotkey-handsfree".into()]).unwrap();
+        let callback_connection = connection.clone();
+        let callback = std::thread::spawn(move || crate::linux_single_instance::test_callback(
+            &callback_connection, "com.verenu.app.SingleInstance", "/com/verenu/app/SingleInstance",
+            vec!["--verenu-hotkey-handsfree".into()]));
         assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
-        assert_eq!(callback_queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Handsfree);
         drop(staged);
         std::fs::remove_file(descriptor).unwrap();
         restore_owner("shortcut probe");
-        owner.drain_callback_queue(app.handle()).unwrap();
+        drop(lock);
         drop(pause);
+        callback.join().unwrap().unwrap();
         assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
@@ -1530,7 +1493,7 @@ mod tests {
         std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true,\"analytics_enabled\":false,\"cleanup_cache_enabled\":false}").unwrap();
         let mut command = replacement_command();
         command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
-        let replacement = spawn_with_queue(command);
+        let replacement = spawn_replacement(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let outcome = ready.queue_ownership().unwrap().stage_services();
@@ -1548,7 +1511,7 @@ mod tests {
         std::fs::write(data.join("analytics_usage_milestones"), "5\ndictations_5").unwrap();
         let mut command = replacement_command();
         command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
-        let replacement = spawn_with_queue(command);
+        let replacement = spawn_replacement(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let staged = ready.queue_ownership().unwrap().stage_services().expect("analytics-enabled replacement did not prepare");
@@ -1564,7 +1527,7 @@ mod tests {
         std::fs::remove_file(data.join("sync-identity.key")).unwrap();
         let mut command = replacement_command();
         command.env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
-        let replacement = spawn_with_queue(command);
+        let replacement = spawn_replacement(command);
         let ready = replacement.prepare().unwrap();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         let outcome = ready.queue_ownership().unwrap().stage_services();
@@ -1575,8 +1538,6 @@ mod tests {
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
         assert_eq!(registrations.lock().unwrap().len(), 6);
-        drop(callback_queue);
-        std::fs::remove_dir_all(callback_path.parent().unwrap()).unwrap();
         drop(parent_db);
         std::fs::remove_dir_all(root).unwrap();
     }

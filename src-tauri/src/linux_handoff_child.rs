@@ -104,17 +104,6 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
         }
     };
     let key_availability = startup.key_availability().clone();
-    let Some(callback_path) = startup.callback_queue_path().map(std::path::Path::to_path_buf) else {
-        let _ = startup.fail("Restart callback queue is missing".into());
-        return;
-    };
-    let callback_reader = match crate::linux_handoff_callbacks::CallbackReader::open(&callback_path) {
-        Ok(reader) => reader,
-        Err(error) => {
-            let _ = startup.fail(format!("Could not open restart callback queue: {error}"));
-            return;
-        }
-    };
     let db = match crate::data::db::open_for_handoff(crate::app_db_path()) {
         Ok(db) => db,
         Err(error) => {
@@ -260,6 +249,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                     && readiness.current_pill_ready()
                     && readiness.main_and_home_ready();
                 if acquired && ready {
+                    let callback_activation = handle.state::<crate::linux_single_instance::InstanceOwner>().callback_activation();
                     if let Ok(services) = activation.ownership_queued() {
                         let current_version = crate::data::db::handoff_data_version(
                             handle.state::<crate::DbHandle>().inner(),
@@ -512,10 +502,6 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             fail_committing(committing, format!("Replacement agent service became unavailable: {error}"));
                         }
                         let owner = handle.state::<crate::linux_single_instance::InstanceOwner>();
-                        let callbacks = match owner.prepare_callbacks(callback_reader, child_pause.guard(), &gate) {
-                            Ok(callbacks) => callbacks,
-                            Err(error) => fail_committing(committing, format!("Shortcut routing failed: {error}")),
-                        };
                         #[cfg(all(feature = "native-testing", debug_assertions))]
                         if std::env::var_os("VERENU_HANDOFF_TEST_FAIL_AFTER_COMMIT").is_some() {
                             fail_committing(committing, "Synthetic late activation failure".into());
@@ -546,15 +532,10 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         handle.state::<crate::sync::SyncManager>().start_discovery_after_handoff(&parent_exited);
                         handle.state::<Arc<AtomicBool>>().store(true, Ordering::Release);
                         ready_agent.activate(&parent_exited);
-                        callbacks.activate(&handle, &parent_exited);
                         drop(child_pause.0.take());
+                        callback_activation.ready(&parent_exited);
                         #[cfg(target_arch = "x86_64")]
                         crate::start_nvidia_check(&handle);
-                        if let Some(directory) = callback_path.parent() {
-                            if let Err(error) = std::fs::remove_dir_all(directory) {
-                                log::warn!("Could not remove restart callback storage: {error}");
-                            }
-                        }
                         let window_handle = handle.clone();
                         let _ = handle.run_on_main_thread(move || {
                             for label in ["main", "pill"] {

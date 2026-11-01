@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub(crate) struct PreparedHandoff {
@@ -7,15 +7,11 @@ pub(crate) struct PreparedHandoff {
     agent: Option<tokio::sync::OwnedSemaphorePermit>,
     shortcuts: Option<crate::core::hotkey::ShortcutPause>,
     replacement_group: Option<u32>,
-    callback_path: Option<PathBuf>,
+    callback_lock: Option<std::fs::File>,
     tray_touched: bool,
 }
 
 impl PreparedHandoff {
-    pub(crate) fn callback_queue_path(&self) -> &std::path::Path {
-        self.callback_path.as_deref().expect("restart callback queue is active")
-    }
-
     pub(crate) fn register_replacement(&mut self, replacement_group: u32) -> Result<(), String> {
         if self.replacement_group.is_some()
             || !crate::linux_handoff_transport::is_replacement_group(replacement_group)
@@ -35,7 +31,9 @@ impl Drop for PreparedHandoff {
         let app = self.app.clone();
         let shortcuts = self.shortcuts.take();
         let replacement_group = self.replacement_group.take();
-        let callback_path = self.callback_path.take();
+        // A waiting launcher may enter the paused gate while restoration runs.
+        // Restoration must not wait for that launcher or acquire this lock.
+        drop(self.callback_lock.take());
         let tray_touched = self.tray_touched;
         tauri::async_runtime::spawn(async move {
             if tokio::time::timeout(Duration::from_secs(5), pause.wait_drained()).await.is_err() {
@@ -102,32 +100,6 @@ impl Drop for PreparedHandoff {
                     let _ = app.emit("verenu:error", "Verenu is still running, but its tray could not be restored. Quit and reopen the app when convenient.");
                 }
             }
-            if let Some(path) = callback_path {
-                let mut warned = false;
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-                loop {
-                    let owner_app = app.clone();
-                    let drained = tauri::async_runtime::spawn_blocking(move || {
-                        let owner = owner_app.try_state::<crate::linux_single_instance::InstanceOwner>()
-                            .ok_or("Single-instance ownership is unavailable")?;
-                        owner.drain_callback_queue(&owner_app)
-                    }).await;
-                    if matches!(drained, Ok(Ok(()))) {
-                        break;
-                    }
-                    if !warned && tokio::time::Instant::now() >= deadline {
-                        warned = true;
-                        log::error!("Could not restore queued restart callbacks: {drained:?}");
-                        let _ = app.emit("verenu:error", "Verenu is waiting to restore queued shortcuts before resuming.");
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                if let Some(directory) = path.parent() {
-                    if let Err(error) = std::fs::remove_dir_all(directory) {
-                        log::warn!("Could not remove restart callback storage: {error}");
-                    }
-                }
-            }
             drop(agent);
             drop(pause);
         });
@@ -146,6 +118,7 @@ async fn prepare_inner(app: &AppHandle) -> Result<PreparedHandoff, String> {
     if crate::is_dev_session() {
         return Err("Automatic restart is unavailable in development sessions.".into());
     }
+    let callback_lock = crate::linux_single_instance::prepare_callback_lock().await?;
     let agent = app
         .try_state::<crate::agent_api::AgentDrain>()
         .ok_or("The agent service is unavailable; quit and reopen Verenu to finish updating.")?;
@@ -156,29 +129,16 @@ async fn prepare_inner(app: &AppHandle) -> Result<PreparedHandoff, String> {
         .ok_or("Restart preparation is unavailable.")?
         .inner()
         .clone();
-    let owner = app.try_state::<crate::linux_single_instance::InstanceOwner>()
+    app.try_state::<crate::linux_single_instance::InstanceOwner>()
         .ok_or("Single-instance ownership is unavailable.")?;
-    let (queue, callback_path) = crate::linux_handoff_callbacks::CallbackQueue::create_private()
-        .map_err(|error| format!("Could not prepare restart callbacks: {error}"))?;
-    let queue = Arc::new(queue);
-    let pause = match gate.begin_pause_with(|| owner.install_callback_queue(queue.clone())) {
-        Ok(pause) => pause,
-        Err(error) => {
-            drop(queue);
-            if let Some(directory) = callback_path.parent() {
-                let _ = std::fs::remove_dir_all(directory);
-            }
-            return Err(error.into());
-        }
-    };
-    drop(queue);
+    let pause = gate.begin_pause()?;
     let mut prepared = PreparedHandoff {
         app: app.clone(),
         pause: Some(pause),
         agent: Some(agent_permit),
         shortcuts: None,
         replacement_group: None,
-        callback_path: Some(callback_path),
+        callback_lock: Some(callback_lock),
         tray_touched: false,
     };
     prepared.pause.as_ref().expect("pause was just installed").wait_drained().await;
@@ -517,7 +477,6 @@ mod tests {
                 ])
                 .env("VERENU_TEST_TRANSFER_NAME", format!("{}.SingleInstance", app.config().identifier))
                 .env("VERENU_TEST_TRANSFER_WAIT", "1")
-                .env("VERENU_TEST_TRANSFER_QUEUE", lease.callback_queue_path())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
@@ -535,6 +494,7 @@ mod tests {
                 }
             });
             let callbacks = crate::linux_single_instance::test_callback_count();
+            let registered = crate::linux_single_instance::test_launcher_registered();
             let started = crate::linux_single_instance::test_callback_started();
             let name = format!("{}.SingleInstance", app.config().identifier);
             let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
@@ -543,7 +503,18 @@ mod tests {
                     &name, &path, vec!["--verenu-hotkey-release".into()]).unwrap();
             });
             tokio::time::timeout(Duration::from_secs(5), async {
-                while crate::linux_single_instance::test_callback_started() == started {
+                while crate::linux_single_instance::test_launcher_registered() == registered {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            let name = format!("{}.SingleInstance", app.config().identifier);
+            let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
+            let second_callback = tauri::async_runtime::spawn_blocking(move || {
+                crate::linux_single_instance::test_callback(&zbus::blocking::Connection::session().unwrap(),
+                    &name, &path, vec!["--verenu-hotkey-handsfree".into()]).unwrap();
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while crate::linux_single_instance::test_launcher_registered() < registered + 2 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }).await.unwrap();
@@ -569,11 +540,14 @@ mod tests {
             tauri::async_runtime::spawn_blocking(move || {
                 let owner = app_handle.state::<crate::linux_single_instance::InstanceOwner>();
                 owner.verify_queued_replacement(replacement_group).unwrap();
-                owner.callback_barrier().unwrap();
             }).await.unwrap();
             assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
             drop(lease);
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while crate::linux_single_instance::test_callback_started() == started {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
             assert!(gate.try_enter().is_none(), "activity resumed while replacement was alive");
             assert!(!crate::core::hotkey::test_shortcuts_active());
             replacement.0.kill().unwrap();
@@ -584,7 +558,11 @@ mod tests {
             drop(activity);
             assert!(crate::core::hotkey::test_shortcuts_active());
             tokio::time::timeout(Duration::from_secs(5), pending_callback).await.unwrap().unwrap();
-            assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 2);
+            tokio::time::timeout(Duration::from_secs(5), second_callback).await.unwrap().unwrap();
+            assert_eq!(crate::linux_single_instance::test_callbacks_since(callbacks), [
+                crate::linux_handoff_callbacks::Callback::Release,
+                crate::linux_handoff_callbacks::Callback::Handsfree,
+            ]);
             let callbacks = crate::linux_single_instance::test_callback_count();
             let name = format!("{}.SingleInstance", app.config().identifier);
             let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
