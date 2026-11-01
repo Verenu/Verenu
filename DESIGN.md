@@ -56,6 +56,8 @@ For a plain single-choice select, use [`CompactSelect.svelte`](src/lib/component
 />
 ```
 
+`CompactSelect` also accepts a per-option `description`, a fixed trigger `width` (use it where the label changes with the value, so neighboring text never moves), `menuMinWidth`, and a `menuId`.
+
 When a dropdown needs more than a label per option (icons, search, descriptions), compose it from the structural classes with the same anatomy: `ui-dropdown-trigger ui-dropdown-trigger--compact` on the trigger, `ui-dropdown-menu ui-dropdown-menu--padded` on the menu, and the same fly transition. This centralizes visual treatment while allowing each feature to retain typed values, option descriptions, width constraints, and keyboard behavior.
 
 ```svelte
@@ -93,6 +95,8 @@ When a dropdown needs more than a label per option (icons, search, descriptions)
 | `ui-dropdown-menu` | Popover surface, stacking, border, shadow, and scroll behavior. |
 | `ui-dropdown-option` | Option row, selected state, hover, focus, and text overflow. |
 | `ui-dropdown-menu--padded` | Use for compact choice lists that need separated rounded options rather than row dividers. |
+
+Radius comes from three tokens in `src/ui.css` so every trigger, menu, and option agrees: `--ui-dropdown-radius` (trigger), `--ui-dropdown-menu-radius` (popover), and `--ui-dropdown-option-radius`, which is derived from the menu radius minus its padding so rounded options sit concentric with the menu. Never set `border-radius` on a dropdown trigger, menu, or option inside a component. Native `<select class="ui-dropdown-trigger">` gets the same trigger look. Hover, open (accent border), and focus-visible (ring on triggers, inset outline on options) are defined once in `ui.css`.
 
 `Dropdown.svelte` closes on outside click and Escape. Keep feature-local keyboard logic only when it has a real job, such as arrow-key listbox navigation or restoring focus to a particular trigger.
 
