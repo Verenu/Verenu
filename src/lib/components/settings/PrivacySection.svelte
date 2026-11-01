@@ -32,7 +32,6 @@
   let historyRetention = $state('30 days');
   let historyDropdownOpen = $state(false);
   let historyMenuOpensUp = $state(false);
-  let autoLearn = $state(false);
   let serviceChecksEnabled = $state(true);
   let analyticsEnabled = $state(true);
   let cleanupCacheEntries = $state(0);
@@ -42,31 +41,14 @@
   let cleanupCacheError = $state('');
   let cleanupCacheMessage = $state('');
   let clearingCleanupCache = $state(false);
-  let autoLearnSummary = $state({
-    monitors_started: 0,
-    anchor_misses: 0,
-    low_confidence_rejections: 0,
-    promotions: 0,
-    duplicate_monitor_skips: 0,
-    timeout_finishes: 0,
-  });
-  let recentAutoLearn = $state<Array<{ id: number; event_type: string; reason_code: string; created_at: string }>>([]);
-
   async function loadSettings() {
     try {
-      const [settings, summary, recent] = await Promise.all([
-        loadSettingsSnapshot(),
-        invoke<typeof autoLearnSummary>('get_auto_learn_status_summary'),
-        invoke<typeof recentAutoLearn>('get_recent_auto_learn_activity', { limit: 5 }),
-      ]);
+      const settings = await loadSettingsSnapshot();
       if (settings.history_retention) historyRetention = settings.history_retention;
-      autoLearn = settings.auto_learn_enabled ?? false;
       serviceChecksEnabled = settings.verenu_service_checks_enabled ?? true;
       analyticsEnabled = settings.analytics_enabled ?? true;
       setServiceChecksEnabled(serviceChecksEnabled);
       cleanupCacheEnabled = settings.cleanup_cache_enabled ?? true;
-      autoLearnSummary = summary ?? autoLearnSummary;
-      recentAutoLearn = recent ?? [];
     } catch (err) {
       console.error('PrivacySection load failed:', err);
     }
@@ -106,19 +88,6 @@
 
   function handleRetentionModalKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape' && confirmRetention) confirmRetention = null;
-  }
-
-  let autoLearnError = $state(false);
-
-  async function handleAutoLearn(value: boolean) {
-    autoLearn = value;
-    try {
-      await saveSetting('auto_learn_enabled', value);
-    } catch (err) {
-      autoLearn = !value;
-      autoLearnError = true;
-      console.error('save auto_learn_enabled failed:', err);
-    }
   }
 
   let serviceChecksError = $state(false);
@@ -363,7 +332,7 @@
   </div>
 {/if}
 
-<h3 class="settings-subhead first">Verenu services</h3>
+<h3 class="settings-subhead">Network</h3>
 <div class="setting-row" data-setting-target="privacy-service-checks">
   <div>
     <div class="label">Allow Verenu service checks</div>
@@ -380,38 +349,7 @@
         <Toggle checked={analyticsEnabled} onchange={handleAnalytics} label="Share pseudonymous product analytics" bind:error={analyticsError} />
 </div>
 
-<h3 class="settings-subhead">On-device learning</h3>
-<div class="setting-row" data-setting-target="privacy-learning">
-  <div>
-    <div class="label" style="display:flex;align-items:center;gap:7px;">
-      Auto-learn corrections
-      <span class="privacy-eye-wrap">
-        <svg class="privacy-eye" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-          <circle cx="12" cy="12" r="3"/>
-        </svg>
-        <span class="privacy-tooltip">Entirely on-device — no text is sent to any API.</span>
-      </span>
-    </div>
-    <div class="desc">Add confirmed corrections to dictionary automatically</div>
-  </div>
-  <Toggle checked={autoLearn} onchange={handleAutoLearn} label="Auto-learn corrections" bind:error={autoLearnError} />
-</div>
-<div class="setting-row" data-setting-target="privacy-learning-activity">
-  <div>
-    <div class="label">Auto-learn activity</div>
-    <div class="desc">
-      Promoted: {autoLearnSummary.promotions} | Low-confidence blocked: {autoLearnSummary.low_confidence_rejections} | Anchor misses: {autoLearnSummary.anchor_misses}
-    </div>
-    {#if recentAutoLearn.length > 0}
-      <div class="desc" style="margin-top:4px;">
-        Latest: {recentAutoLearn[0].event_type} ({recentAutoLearn[0].reason_code})
-      </div>
-    {/if}
-  </div>
-</div>
-
-<h3 class="settings-subhead">History & storage</h3>
+<h3 class="settings-subhead">Stored on this device</h3>
 <div class="setting-row" data-setting-target="privacy-history">
   <div><div class="label">Transcription history</div><div class="desc">How long to keep past dictations</div></div>
   <Dropdown bind:open={historyDropdownOpen} closeSelector=".history-dropdown">
@@ -468,12 +406,7 @@
       Save cleaned text on this device to speed up repeated dictation.
       Results expire after 2 idle days or 7 days total. Turning this off clears stored results.
     </div>
-  </div>
-  <Toggle checked={cleanupCacheEnabled} onchange={handleCleanupCache} label="Cleanup cache" disabled={savingCleanupCache || clearingCleanupCache} />
-</div>
-<div class="setting-row" data-setting-target="privacy-cache-storage">
-  <div>
-    <div class="desc">
+    <div class="desc cache-status" data-setting-target="privacy-cache-storage">
       {#if cleanupCacheStatus}
         {cleanupCacheEntries} cached result{cleanupCacheEntries === 1 ? '' : 's'} · {cacheSize(cleanupCacheStatus.payload_bytes)} of text.
         {#if cleanupCacheStatus.session.hits + cleanupCacheStatus.session.misses > 0}
@@ -482,51 +415,45 @@
       {:else}
         Cache status unavailable.
       {/if}
+      {#if cleanupCacheError}<span class="cache-note" role="alert">{cleanupCacheError}</span>{/if}
+      {#if cleanupCacheMessage}<span class="cache-note" role="status">{cleanupCacheMessage}</span>{/if}
     </div>
-    {#if cleanupCacheError}<div class="desc" role="alert">{cleanupCacheError}</div>{/if}
-    {#if cleanupCacheMessage}<div class="desc" role="status">{cleanupCacheMessage}</div>{/if}
   </div>
-  <button
-    class="btn-ghost"
-    onclick={clearCleanupCache}
-    disabled={clearingCleanupCache || savingCleanupCache}
-  >
-    {clearingCleanupCache ? 'Clearing…' : 'Clear Cache'}
-  </button>
+  <div class="row-actions">
+    <button
+      class="btn-ghost btn-compact"
+      onclick={clearCleanupCache}
+      disabled={clearingCleanupCache || savingCleanupCache}
+    >
+      {clearingCleanupCache ? 'Clearing…' : 'Clear Cache'}
+    </button>
+    <Toggle checked={cleanupCacheEnabled} onchange={handleCleanupCache} label="Cleanup cache" disabled={savingCleanupCache || clearingCleanupCache} />
+  </div>
 </div>
 
 <h3 class="settings-subhead">Backup</h3>
-<div class="setting-row" data-setting-target="privacy-export">
+<div class="setting-row" data-setting-target="privacy-backup">
   <div>
-    <div class="label">Export Backup</div>
-    <div class="desc">Includes settings, Contexts, Insights and transcription history. The file contains private text; API keys are excluded.</div>
-    {#if exportMsg}
-      <div
-        class="desc data-status"
-        class:data-ok={exportMsgKind === 'ok'}
-        class:data-err={exportMsgKind === 'err'}
-      >{exportMsg}</div>
-    {/if}
+    <div class="label">Back up and restore</div>
+    <div class="desc">Export saves settings, Contexts, Insights and transcription history to a file. The file contains private text; API keys are excluded. Import merges a backup into this device, and History retention can remove old imported entries.</div>
+    {#each [{ msg: exportMsg, kind: exportMsgKind }, { msg: importMsg, kind: importMsgKind }] as status}
+      {#if status.msg}
+        <div
+          class="desc data-status"
+          class:data-ok={status.kind === 'ok'}
+          class:data-err={status.kind === 'err'}
+        >{status.msg}</div>
+      {/if}
+    {/each}
   </div>
-  <button class="btn-ghost" onclick={handleExport} disabled={exporting}>
-    {exporting ? 'Exporting…' : 'Export'}
-  </button>
-</div>
-<div class="setting-row" data-setting-target="privacy-import">
-  <div>
-    <div class="label">Import Backup</div>
-    <div class="desc">Merges data with this device. History retention can remove old imported entries.</div>
-    {#if importMsg}
-      <div
-        class="desc data-status"
-        class:data-ok={importMsgKind === 'ok'}
-        class:data-err={importMsgKind === 'err'}
-      >{importMsg}</div>
-    {/if}
+  <div class="row-actions">
+    <button class="btn-ghost" onclick={() => fileInput?.click()} disabled={importing || exporting}>
+      {importing ? 'Importing…' : 'Import'}
+    </button>
+    <button class="btn-ghost" onclick={handleExport} disabled={exporting || importing}>
+      {exporting ? 'Exporting…' : 'Export'}
+    </button>
   </div>
-  <button class="btn-ghost" onclick={() => fileInput?.click()} disabled={importing}>
-    {importing ? 'Importing…' : 'Import'}
-  </button>
 </div>
 <input
   bind:this={fileInput}
@@ -588,30 +515,9 @@
   @media (max-width: 600px) {
     .history-dropdown .mic-menu { left: 0; right: auto; }
   }
-  .privacy-eye-wrap { position: relative; display: inline-flex; align-items: center; }
-  .privacy-eye { color: var(--ink-mute); cursor: default; flex-shrink: 0; transition: color 0.15s ease, transform 0.15s ease; }
-  .privacy-eye-wrap:hover .privacy-eye { color: var(--ink-soft); transform: scale(1.18); }
-  .privacy-tooltip {
-    position: absolute;
-    left: 50%;
-    bottom: calc(100% + 7px);
-    transform: translateX(-50%) translateY(4px);
-    background: var(--ink);
-    color: var(--paper);
-    font-size: 11px;
-    font-family: var(--sans);
-    font-weight: 400;
-    white-space: nowrap;
-    padding: 4px 9px;
-    border-radius: 6px;
-    pointer-events: none;
-    z-index: 20;
-    box-shadow: var(--shadow-popover);
-    opacity: 0;
-    transition: opacity 0.16s ease, transform 0.16s ease;
-  }
-  .privacy-eye-wrap:hover .privacy-tooltip { opacity: 1; transform: translateX(-50%) translateY(0); }
-
+  .row-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  .cache-status { font-variant-numeric: tabular-nums; }
+  .cache-note { display: block; margin-top: 2px; }
   .modal-backdrop {
     position: fixed;
     inset: 0;
