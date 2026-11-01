@@ -96,3 +96,28 @@ test('cancellation escalates when an owned child ignores termination', { skip: p
     stopOwned(child, 'SIGKILL');
   }
 });
+
+test('renderer runner cancellation stops its separately owned process group', { skip: process.platform !== 'linux' }, async () => {
+  const script = `import importlib.util, signal, subprocess, sys, time
+spec = importlib.util.spec_from_file_location('runner', 'tests/OnePyFone.py')
+runner = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = runner
+spec.loader.exec_module(runner)
+signal.signal(signal.SIGTERM, runner._shutdown)
+child = runner._start_owned([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'], start_new_session=True)
+time.sleep(0.2)
+print(child.pid, flush=True)
+while not runner._STOPPING.is_set():
+    time.sleep(0.01)`;
+  const runner = trackOwned(spawn('python3', ['-c', script], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] }));
+  let child;
+  try {
+    child = Number((await once(runner.stdout, 'data'))[0].toString().trim());
+    assert.ok(child > 0);
+    await stopAllOwned(1000);
+    assert.ok(isDead(child));
+  } finally {
+    if (child) { try { process.kill(-child, 'SIGKILL'); } catch {} }
+    stopOwned(runner, 'SIGKILL');
+  }
+});
