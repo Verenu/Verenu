@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { sourceIdentity } from './verification/identity.mjs';
 import { syncBuildIdentityFile } from './verification/build-identity.mjs';
 import { cargoTargetDirectory } from './verification/session.mjs';
+import { stopOwnedGroups } from './verification/process.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -79,17 +80,17 @@ async function start() {
   let closing = false;
   let cleanupPromise;
   let manifest;
-  const save = async () => fs.writeFile(path.join(directory, 'session.json'), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+  let savePromise = Promise.resolve();
+  const save = () => {
+    const data = JSON.stringify(manifest, null, 2);
+    savePromise = savePromise.then(() => fs.writeFile(path.join(directory, 'session.json'), data, { mode: 0o600 }));
+    return savePromise;
+  };
   const cleanup = () => {
     if (cleanupPromise) return cleanupPromise;
     closing = true;
     cleanupPromise = (async () => {
-      for (const child of children) {
-        if (child.exitCode === null) {
-          if (process.platform === 'win32') child.kill();
-          else { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
-        }
-      }
+      await stopOwnedGroups(children);
       if (sharedPort) {
         try { execFileSync(serveWithSudo ? 'sudo' : 'tailscale', [...(serveWithSudo ? ['-n', 'tailscale'] : []), 'serve', `--https=${sharedPort}`, 'off'], { stdio: 'ignore', timeout: 10_000 }); } catch { console.error(`Could not remove this session's Tailscale listener on ${sharedPort}`); }
       }
@@ -99,7 +100,7 @@ async function start() {
     })();
     return cleanupPromise;
   };
-  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void cleanup(); });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { void cleanup(); });
   function run(component, command, argv, env) {
     const child = spawn(command, argv, { cwd: root, env, stdio: ['ignore', 'inherit', 'inherit'], detached: process.platform !== 'win32' });
     children.push(child);
@@ -128,6 +129,7 @@ async function start() {
   }
   try {
     const [webPort, bridgePort] = await freePorts(2);
+    if (closing) return;
     const localUrl = `http://127.0.0.1:${webPort}`;
     let shareUrl = null;
     if (args.includes('--share')) {
@@ -150,16 +152,22 @@ async function start() {
     }
     const token = randomBytes(32).toString('hex');
     await fs.writeFile(path.join(directory, 'access.json'), JSON.stringify({ token, localAccessUrl: `${localUrl}/#session-token=${token}`, shareAccessUrl: shareUrl ? `${shareUrl}/#session-token=${token}` : null }), { mode: 0o600 });
+    if (closing) return;
     const identity = sourceIdentity();
     const buildIdentityFile = path.join(root, 'src-tauri', '.verenu-build-identity');
     await syncBuildIdentityFile(buildIdentityFile, identity.fingerprint);
+    if (closing) return;
     manifest = { id, directory, ...identity, dirty: git('status', '--porcelain') !== '', localUrl, shareUrl, status: 'starting', startedAt: new Date().toISOString(), launcherPid: process.pid, privateHistory: args.includes('--private-history'), syntheticSeed: args.includes('--synthetic-seed'), nativeTest: args.includes('--native-test') };
     await save();
+    if (closing) return;
     await fs.rm(path.join(directory, 'ready'), { force: true });
+    if (closing) return;
     await fs.mkdir(path.join(directory, 'fixtures'), { recursive: true });
+    if (closing) return;
     const fixtures = option('--fixtures', path.join(os.homedir(), '.cache', 'verenu', 'test-audio'));
     if (fixtures) {
       for (const name of await fs.readdir(path.resolve(fixtures)).catch(() => [])) {
+        if (closing) return;
         if (/^[a-zA-Z0-9_-]+\.wav$/.test(name)) await fs.copyFile(path.join(path.resolve(fixtures), name), path.join(directory, 'fixtures', name));
       }
     }
@@ -172,7 +180,9 @@ async function start() {
     if (syntheticSeed) {
       const seed = path.join(directory, 'synthetic-seed');
       await fs.mkdir(seed, { recursive: true });
+      if (closing) return;
       await fs.writeFile(path.join(seed, 'settings.json'), JSON.stringify({ setup_complete: true, noise_reduction: false, analytics_enabled: false }), { mode: 0o600 });
+      if (closing) return;
       env.VERENU_DEV_SEED_DIR = seed;
     }
     if (args.includes('--native-test')) { delete env.VITE_VERENU_SESSION; env.VITE_VERENU_NATIVE_TEST = '1'; }
@@ -182,6 +192,7 @@ async function start() {
     delete env.VERENU_ALLOW_ENV_CREDENTIALS;
     const config = path.join(directory, 'tauri-session.json');
     await fs.writeFile(config, JSON.stringify({ identifier: `com.verenu.session.${id.toLowerCase()}`, build: { devUrl: localUrl, beforeDevCommand: '' }, app: { withGlobalTauri: args.includes('--native-test'), windows: [{ label: 'main', title: 'Verenu dev worker', url: '/', width: 1320, height: 860, visible: args.includes('--native-test') }], security: { devCsp: null, ...(args.includes('--native-test') ? { capabilities: ['default', 'pill', { identifier: 'native-test', windows: ['main'], local: true, remote: { urls: [`${localUrl}/*`] }, permissions: ['wdio:default', 'wdio-webdriver:default'] }] } : {}) } } }));
+    if (closing) return;
     run('frontend', process.execPath, [path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', String(webPort), '--strictPort'], env);
     run('tauri', process.execPath, [path.join(root, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), 'dev', '--features', args.includes('--native-test') ? 'native-testing' : 'dev-session', '--no-watch', '--config', config], env);
     console.log(`Session ${id}\nLocal: ${localUrl}\nPhone: ${shareUrl || 'Use --share to create a private Tailscale URL'}\nAccess links: ${path.join(directory, 'access.json')}\nManifest: ${path.join(directory, 'session.json')}\nWaiting for this worktree's Rust backend...`);
@@ -189,6 +200,7 @@ async function start() {
     while (!closing) {
       if (Date.now() > deadline) throw new Error('Rust session startup timed out');
       const ready = await fs.readFile(path.join(directory, 'ready'), 'utf8').catch(() => null);
+      if (closing) break;
       if (ready) { manifest.status = 'ready'; await save(); console.log(`Session ${id} ready. Open an access link from access.json.`); break; }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
