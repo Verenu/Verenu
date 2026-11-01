@@ -325,6 +325,9 @@ pub fn start_recording_session_ex_with_context(
                             .to_string(),
                     );
                 }
+                if pause_media {
+                    crate::system::media_control::begin_dictation_media_pause();
+                }
                 st.lifecycle = DictationLifecycle::Recording {
                     session,
                     mute_claim,
@@ -399,9 +402,6 @@ pub fn start_recording_session_ex_with_context(
                     crate::system::volume::hog_mic(session_id)
                 });
             }
-            if pause_media {
-                crate::system::media_control::begin_dictation_media_pause();
-            }
             if let Some(delay_ms) = options
                 .start_cue_delay_ms
                 .filter(|_| !mute_report.gate.is_confirmed())
@@ -434,8 +434,6 @@ pub async fn cancel_recording_with_resume(
     prepend_audio: Option<CapturedAudio>,
     recording_context: ResolvedContextIdentity,
 ) {
-    crate::system::media_control::end_dictation_media_pause();
-
     let Some(stopped_capture) =
         stop_and_capture_audio(app, session, exclusive_mic_session_id).await
     else {
