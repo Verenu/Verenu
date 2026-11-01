@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pillBarSizing, snapBarHeight } from './pillSizing';
+import { pillBarHeight, pillBarSizing } from './pillSizing';
 
 describe('pill bar sizing', () => {
   it.each([1, 1.25, 1.5, 1.75, 2])('uses a whole-pixel width and pitch at scale %s', (scale) => {
@@ -10,19 +10,14 @@ describe('pill bar sizing', () => {
   });
 });
 
-describe('pill bar height snapping', () => {
-  it.each([1, 1.25, 1.5, 2])('uses even whole-pixel heights, never shorter than the width, at scale %s', (scale) => {
+describe('pill bar heights', () => {
+  it.each([1, 1.25, 1.5, 1.75, 2])('keeps the rest aligned and movement continuous at scale %s', (scale) => {
     const { width } = pillBarSizing(scale);
-    for (const h of [3, 3.4, 7.77, 10.5, 16]) {
-      const px = snapBarHeight(h, scale, width) * scale;
-      expect(px).toBeCloseTo(Math.round(px));
-      expect(Math.round(px) % 2).toBe(0);
-      expect(px).toBeGreaterThanOrEqual(width * scale);
-    }
-  });
-  it.each([1, 1.25, 1.5, 2])('keeps resting bars dot-sized at scale %s', (scale) => {
-    const { width } = pillBarSizing(scale);
-    const px = snapBarHeight(3, scale, width) * scale;
-    expect(Math.round(px)).toBe(2 * Math.round((width * scale) / 2));
+    const rest = pillBarHeight(3, scale, width);
+    expect(rest).toBeGreaterThanOrEqual(width);
+    expect(rest * scale / 2).toBeCloseTo(Math.round(rest * scale / 2));
+    expect(pillBarHeight(16, scale, width)).toBeCloseTo(16);
+    expect(pillBarHeight(8.1, scale, width)).toBeGreaterThan(pillBarHeight(8, scale, width));
+    expect(pillBarHeight(8.1, scale, width) - pillBarHeight(8, scale, width)).toBeLessThan(0.2);
   });
 });
