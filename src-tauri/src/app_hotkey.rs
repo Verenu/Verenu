@@ -357,7 +357,7 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                             state_hk.clone(),
                         ));
                     } else {
-                        let taken = pipeline::take_recording_plain_with_prepend(&state_hk);
+                        let taken = pipeline::take_recording_for_cancel(&state_hk);
                         if let Some((
                             session,
                             exclusive_mic_session_id,
@@ -400,7 +400,7 @@ pub(crate) fn setup_hotkey(app: &mut tauri::App, shared: SharedState) {
                         continue;
                     }
 
-                    let taken = pipeline::take_recording_plain_with_prepend(&state_hk);
+                    let taken = pipeline::take_recording_for_cancel(&state_hk);
                     if let Some((
                         session,
                         exclusive_mic_session_id,
