@@ -123,7 +123,7 @@ mod common {
             return;
         }
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MuteTriggerEvent>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<MuteTriggerEvent>();
         if let Ok(mut slot) = event_tx_slot().lock() {
             *slot = Some(tx);
         }
@@ -135,8 +135,17 @@ mod common {
             .spawn(move || watcher_loop(app_handle, state_watch))
             .expect("spawn mic-mute-trigger thread");
 
-        let app_hk = app.clone();
-        let state_hk = shared;
+        start_dispatch(app.clone(), shared, rx);
+
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+        log::info!("mic_mute_trigger: watcher started");
+    }
+
+    fn start_dispatch(
+        app_hk: AppHandle,
+        state_hk: SharedState,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<MuteTriggerEvent>,
+    ) {
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
                 #[cfg(target_os = "linux")]
@@ -154,9 +163,94 @@ mod common {
                 dispatch_event(&app_hk, &state_hk, event);
             }
         });
+    }
 
-        GENERATION.fetch_add(1, Ordering::SeqCst);
-        log::info!("mic_mute_trigger: watcher started");
+    #[cfg(target_os = "linux")]
+    struct PreparedWorker {
+        start: Option<std::sync::mpsc::SyncSender<()>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl PreparedWorker {
+        fn new(action: impl FnOnce() + Send + 'static) -> std::io::Result<Self> {
+            let (start, ready) = std::sync::mpsc::sync_channel(1);
+            let thread = std::thread::Builder::new().name("mic-mute-trigger".into())
+                .spawn(move || {
+                    if ready.recv().is_ok() {
+                        action();
+                    }
+                })?;
+            Ok(Self { start: Some(start), thread: Some(thread) })
+        }
+
+        fn start(&mut self) -> Result<(), String> {
+            self.start.take().ok_or("Microphone watcher was already activated")?
+                .send(()).map_err(|_| "Microphone watcher stopped during activation")?;
+            drop(self.thread.take());
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for PreparedWorker {
+        fn drop(&mut self) {
+            drop(self.start.take());
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) struct PreparedMicMute {
+        worker: PreparedWorker,
+        app: AppHandle,
+        shared: SharedState,
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_for_handoff(app: &AppHandle, shared: SharedState) -> Result<PreparedMicMute, String> {
+        if STARTED.load(Ordering::SeqCst) {
+            return Err("Microphone watcher is already running".into());
+        }
+        let worker_app = app.clone();
+        let worker_shared = shared.clone();
+        let worker = PreparedWorker::new(move || watcher_loop(worker_app, worker_shared))
+            .map_err(|error| format!("Could not prepare microphone watcher: {error}"))?;
+        Ok(PreparedMicMute { worker, app: app.clone(), shared })
+    }
+
+    #[cfg(target_os = "linux")]
+    impl PreparedMicMute {
+        #[allow(dead_code)]
+        pub(crate) fn activate(
+            mut self,
+            _parent_exited: &crate::linux_handoff_transport::ParentExited,
+        ) -> Result<(), String> {
+            if STARTED.swap(true, Ordering::SeqCst) {
+                return Err("Microphone watcher is already running".into());
+            }
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            match event_tx_slot().lock() {
+                Ok(mut slot) => *slot = Some(tx),
+                Err(_) => {
+                    STARTED.store(false, Ordering::SeqCst);
+                    return Err("Microphone watcher is unavailable".into());
+                }
+            }
+            start_dispatch(self.app.clone(), self.shared.clone(), rx);
+            if let Err(error) = self.worker.start() {
+                if let Ok(mut slot) = event_tx_slot().lock() {
+                    *slot = None;
+                }
+                STARTED.store(false, Ordering::SeqCst);
+                return Err(error);
+            }
+            GENERATION.fetch_add(1, Ordering::SeqCst);
+            log::info!("mic_mute_trigger: watcher started");
+            Ok(())
+        }
     }
 
     pub fn reload(app: &AppHandle) {
@@ -361,6 +455,40 @@ mod common {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn prepared_watcher_stays_inactive_until_started_and_stops_on_abort() {
+            let (sent, received) = std::sync::mpsc::channel();
+            let worker = PreparedWorker::new(move || { let _ = sent.send(()); }).unwrap();
+            assert!(received.try_recv().is_err());
+            drop(worker);
+            assert!(received.recv_timeout(Duration::from_secs(2)).is_err());
+
+            let (sent, received) = std::sync::mpsc::channel();
+            let mut worker = PreparedWorker::new(move || { let _ = sent.send(()); }).unwrap();
+            assert!(received.try_recv().is_err());
+            worker.start().unwrap();
+            received.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+
+        #[cfg(all(target_os = "linux", feature = "native-testing"))]
+        #[test]
+        #[ignore = "requires an isolated graphical session"]
+        fn prepared_microphone_starts_after_parent_exit() {
+            let app = tauri::Builder::default().any_thread()
+                .build(tauri::generate_context!()).unwrap();
+            let prepared = prepare_for_handoff(app.handle(), crate::new_shared_state()).unwrap();
+            assert!(!STARTED.load(Ordering::SeqCst));
+            assert!(WATCHER_THREAD.lock().unwrap().is_none());
+            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+            prepared.activate(&parent_exited).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while WATCHER_THREAD.lock().unwrap().is_none() {
+                assert!(Instant::now() < deadline, "microphone watcher did not start");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
 
         #[test]
         fn pulse_duration_keeps_inclusive_bounds_and_rejects_reversed_time() {
@@ -1084,6 +1212,9 @@ mod win {
 
 #[cfg(any(windows, target_os = "linux"))]
 pub use common::{reload, setup};
+
+#[cfg(target_os = "linux")]
+pub(crate) use common::prepare_for_handoff;
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn setup(_app: &tauri::AppHandle, _shared: crate::pipeline::SharedState) {}

@@ -307,6 +307,16 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 return;
                             }
                         };
+                        let _prepared_microphone = match crate::media::mic_mute_trigger::prepare_for_handoff(
+                            &handle, handle.state::<crate::pipeline::SharedState>().inner().clone(),
+                        ) {
+                            Ok(microphone) => microphone,
+                            Err(error) => {
+                                let _ = services.fail(format!("Replacement microphone watcher could not prepare: {error}"));
+                                handle.exit(1);
+                                return;
+                            }
+                        };
                         let db = handle.state::<crate::DbHandle>();
                         let _locked_db = match prepared_db.lock_for_activation(db.inner()) {
                             Ok(db) => db,
