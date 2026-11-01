@@ -84,7 +84,7 @@ try {
       for (const label of ['System', 'Tokyo Night', 'Light', 'Dark']) {
         assert.equal(await browser.execute(`
           const label = ${JSON.stringify(label)};
-          const button = [...document.querySelectorAll('.appearance-option, .theme-select')].find(b => b.textContent.trim() === label);
+          const button = [...document.querySelectorAll('.appearance-option, .theme-select')].find(b => (b.getAttribute('aria-label') || b.textContent).trim() === label);
           button?.click(); return !!button;
         `), true, `Theme selection missing: ${label}`);
         const expected = label === 'Tokyo Night' ? 'custom' : label.toLowerCase();
