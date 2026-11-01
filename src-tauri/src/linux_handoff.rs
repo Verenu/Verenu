@@ -452,30 +452,98 @@ mod tests {
             assert_eq!(restored_tray.len(), 1);
             assert_ne!(original_tray, restored_tray);
 
+            use std::io::{BufRead, BufReader, Write};
             use std::os::unix::process::CommandExt;
-            let mut replacement = std::process::Command::new("/bin/sleep")
-                .arg("30")
+            use std::process::{Command, Stdio};
+            struct Replacement(std::process::Child);
+            impl Drop for Replacement {
+                fn drop(&mut self) {
+                    let _ = self.0.kill();
+                    let _ = self.0.wait();
+                }
+            }
+            let mut replacement = Replacement(Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "linux_single_instance::tests::bus_restores_owner_after_replacement_process_dies",
+                    "--nocapture",
+                ])
+                .env("VERENU_TEST_TRANSFER_NAME", format!("{}.SingleInstance", app.config().identifier))
+                .env("VERENU_TEST_TRANSFER_WAIT", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
                 .process_group(0)
                 .spawn()
-                .unwrap();
+                .unwrap());
+            let stderr = replacement.0.stderr.take().unwrap();
+            let (ready, ready_rx) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    if line == "replacement-acquired" {
+                        let _ = ready.send(());
+                        break;
+                    }
+                }
+            });
             let lease = prepare(app.handle()).await.unwrap();
-            let replacement_group = replacement.id();
+            let callbacks = crate::linux_single_instance::test_callback_count();
+            let started = crate::linux_single_instance::test_callback_started();
+            let name = format!("{}.SingleInstance", app.config().identifier);
+            let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
+            let pending_callback = tauri::async_runtime::spawn_blocking(move || {
+                zbus::blocking::Connection::session().unwrap().call_method(
+                    Some(name.as_str()),
+                    path.as_str(),
+                    Some("org.SingleInstance.DBus"),
+                    "ExecuteCallback",
+                    &(vec!["--verenu-hotkey-release".to_string()], String::new()),
+                ).unwrap();
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while crate::linux_single_instance::test_callback_started() == started {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
+            let replacement_group = replacement.0.id();
             let lease = tauri::async_runtime::spawn_blocking(move || {
                 let mut lease = lease;
                 lease.begin_instance_transfer(replacement_group).unwrap();
                 lease
             }).await.unwrap();
+            replacement.0.stdin.as_mut().unwrap().write_all(&[1]).unwrap();
+            tokio::time::timeout(Duration::from_secs(10), ready_rx).await.unwrap().unwrap();
+            let app_handle = app.handle().clone();
+            assert!(!tauri::async_runtime::spawn_blocking(move || {
+                app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
+            }).await.unwrap());
             drop(lease);
             tokio::time::sleep(Duration::from_millis(200)).await;
             assert!(gate.try_enter().is_none(), "activity resumed while replacement was alive");
             assert!(!crate::core::hotkey::test_shortcuts_active());
-            replacement.kill().unwrap();
-            replacement.wait().unwrap();
+            replacement.0.kill().unwrap();
+            replacement.0.wait().unwrap();
             let activity = tokio::time::timeout(Duration::from_secs(15), gate.enter())
                 .await
                 .expect("activity did not resume after replacement stopped");
             drop(activity);
             assert!(crate::core::hotkey::test_shortcuts_active());
+            tokio::time::timeout(Duration::from_secs(5), pending_callback).await.unwrap().unwrap();
+            assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
+            let callbacks = crate::linux_single_instance::test_callback_count();
+            let name = format!("{}.SingleInstance", app.config().identifier);
+            let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
+            tauri::async_runtime::spawn_blocking(move || {
+                zbus::blocking::Connection::session().unwrap().call_method(
+                    Some(name.as_str()),
+                    path.as_str(),
+                    Some("org.SingleInstance.DBus"),
+                    "ExecuteCallback",
+                    &(vec!["--verenu-hotkey-release".to_string()], String::new()),
+                ).unwrap();
+            }).await.unwrap();
+            assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
 
             let lease = prepare(app.handle()).await.unwrap();
             entered.store(false, std::sync::atomic::Ordering::SeqCst);
