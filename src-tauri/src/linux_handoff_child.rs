@@ -267,10 +267,20 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             handle.exit(1);
                             return;
                         }
-                        let _prepared_agent = match crate::agent_api::prepare_for_handoff() {
+                        let prepared_agent = match crate::agent_api::prepare_for_handoff() {
                             Ok(agent) => agent,
                             Err(error) => {
                                 let _ = services.fail(format!("Replacement agent service could not prepare: {error}"));
+                                handle.exit(1);
+                                return;
+                            }
+                        };
+                        let _staged_agent = match tauri::async_runtime::block_on(
+                            prepared_agent.stage_for_handoff(handle.clone()),
+                        ) {
+                            Ok(agent) => agent,
+                            Err(error) => {
+                                let _ = services.fail(format!("Replacement agent service could not start safely: {error}"));
                                 handle.exit(1);
                                 return;
                             }
