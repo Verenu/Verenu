@@ -145,6 +145,9 @@ must keep probation read-only and allow the old process to resume with its
 settings, credentials, database, and pending work intact. Bump the contract when
 that rollback promise or the callback handoff format changes. Incompatible
 versions require a quit and reopen; ordinary source changes do not.
+Linux shortcuts must launch the installed Verenu executable. The legacy direct
+`org.SingleInstance.DBus.ExecuteCallback` method is rejected; callers should
+not invoke this private D-Bus interface directly.
 
 The release folder should contain:
 

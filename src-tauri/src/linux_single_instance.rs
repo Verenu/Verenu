@@ -5,7 +5,7 @@ use zbus::{blocking::Connection, interface};
 // A launcher holds this lock until its callback is acknowledged. The original
 // holds it exclusively across the final handoff and until process exit, so a
 // call cannot be directed to an owner that is in the middle of exiting.
-pub(crate) fn callback_lock(timeout: std::time::Duration) -> Result<std::fs::File, String> {
+fn open_callback_lock() -> Result<std::fs::File, String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
     use sha2::{Digest, Sha256};
     let uid = unsafe { libc::geteuid() };
@@ -38,6 +38,11 @@ pub(crate) fn callback_lock(timeout: std::time::Duration) -> Result<std::fs::Fil
     if !metadata.is_file() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
         return Err("Shortcut routing lock is not private".into());
     }
+    Ok(file)
+}
+
+pub(crate) fn callback_lock(timeout: std::time::Duration) -> Result<std::fs::File, String> {
+    let file = open_callback_lock()?;
     let deadline = std::time::Instant::now() + timeout;
     loop {
         use std::os::fd::AsRawFd;
@@ -59,10 +64,35 @@ pub(crate) fn callback_lock(timeout: std::time::Duration) -> Result<std::fs::Fil
     }
 }
 
+fn validate_callback_lock(fd: &zbus::zvariant::OwnedFd, expected_file: &std::fs::File) -> zbus::fdo::Result<()> {
+    use std::os::{fd::{AsFd, AsRawFd}, unix::fs::MetadataExt};
+    let received = std::fs::File::from(
+        fd.as_fd().try_clone_to_owned().map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?,
+    );
+    let actual = received.metadata().map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+    let expected = expected_file.metadata().map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+    if actual.dev() != expected.dev() || actual.ino() != expected.ino()
+        || unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
+    {
+        return Err(zbus::fdo::Error::AccessDenied("Shortcut callback requires the session routing lock".into()));
+    }
+    Ok(())
+}
+
+#[cfg(all(test, feature = "native-testing"))]
+pub(crate) fn test_callback(connection: &Connection, destination: &str, path: &str, argv: Vec<String>) -> Result<(), String> {
+    let lock = callback_lock(std::time::Duration::from_secs(10))?;
+    connection.call_method(
+        Some(destination), path, Some("org.SingleInstance.DBus"), "ExecuteCallbackGuarded",
+        &(argv, String::new(), zbus::zvariant::Fd::from(&lock)),
+    ).map(|_| ()).map_err(|error| error.to_string())
+}
+
 struct CallbackRoute {
     replacement: std::sync::atomic::AtomicBool,
     local_ready: std::sync::atomic::AtomicBool,
     queue: Mutex<Option<CallbackQueueSlot>>,
+    lock_file: Option<std::fs::File>,
 }
 
 struct CallbackQueueSlot {
@@ -73,7 +103,14 @@ struct CallbackQueueSlot {
 
 impl CallbackRoute {
     fn new(replacement: bool) -> Self {
-        Self { replacement: std::sync::atomic::AtomicBool::new(replacement), local_ready: std::sync::atomic::AtomicBool::new(!replacement), queue: Mutex::new(None) }
+        let lock_file = match open_callback_lock() {
+            Ok(file) => Some(file),
+            Err(error) => {
+                log::error!("Shortcut routing is unavailable: {error}");
+                None
+            }
+        };
+        Self { replacement: std::sync::atomic::AtomicBool::new(replacement), local_ready: std::sync::atomic::AtomicBool::new(!replacement), queue: Mutex::new(None), lock_file }
     }
 
     fn enqueue_if_active(&self, args: &[String]) -> Option<zbus::fdo::Result<()>> {
@@ -125,7 +162,18 @@ impl SingleInstance {
         }
     }
 
-    async fn execute_callback(&self, argv: Vec<String>, _cwd: String) -> zbus::fdo::Result<()> {
+    fn execute_callback(&self, _argv: Vec<String>, _cwd: String) -> zbus::fdo::Result<()> {
+        Err(zbus::fdo::Error::NotSupported("Legacy shortcut callbacks are unsupported; launch the installed Verenu application instead".into()))
+    }
+
+    async fn execute_callback_guarded(
+        &self,
+        argv: Vec<String>,
+        _cwd: String,
+        lock: zbus::zvariant::OwnedFd,
+    ) -> zbus::fdo::Result<()> {
+        let expected = self.route.lock_file.as_ref().ok_or_else(|| zbus::fdo::Error::Failed("Shortcut routing lock is unavailable".into()))?;
+        validate_callback_lock(&lock, expected)?;
         if self.route.replacement.load(std::sync::atomic::Ordering::Acquire) {
             if let Some(result) = self.route.enqueue_if_active(&argv) {
                 return result;
@@ -376,7 +424,7 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                 }
                 Err(zbus::Error::NameTaken) => {
                     let result = (|| -> Result<(), String> {
-                        let _lock = callback_lock(std::time::Duration::from_secs(45))?;
+                        let lock = callback_lock(std::time::Duration::from_secs(45))?;
                         let connection = Connection::session().map_err(|error| error.to_string())?;
                         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
                         while connection.call_method(
@@ -392,13 +440,14 @@ pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                             Some(name.as_str()),
                             path.as_str(),
                             Some("org.SingleInstance.DBus"),
-                            "ExecuteCallback",
+                            "ExecuteCallbackGuarded",
                             &(
                                 std::env::args().collect::<Vec<_>>(),
                                 std::env::current_dir()
                                     .unwrap_or_default()
                                     .to_string_lossy()
                                     .to_string(),
+                                zbus::zvariant::Fd::from(&lock),
                             ),
                         ).map_err(|error| format!("Could not deliver shortcut: {error}"))?;
                         Ok(())
@@ -432,9 +481,16 @@ mod tests {
     fn shortcut_lock_waits_for_inflight_launchers() {
         use std::time::Duration;
         let inflight = super::callback_lock(Duration::from_secs(1)).unwrap();
+        let direct = zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(
+            super::open_callback_lock().unwrap(),
+        ));
+        assert!(super::validate_callback_lock(&direct, &inflight).is_err());
         let blocked = std::thread::spawn(|| super::callback_lock(Duration::from_millis(100)));
         assert!(blocked.join().unwrap().is_err());
         drop(inflight);
+        let expected = super::open_callback_lock().unwrap();
+        super::validate_callback_lock(&direct, &expected).unwrap();
+        drop(direct);
         let next = super::callback_lock(Duration::from_secs(1)).unwrap();
         drop(next);
     }
@@ -470,20 +526,14 @@ mod tests {
             app: app.handle().clone(),
             route: Arc::new(super::CallbackRoute::new(true)),
         };
-        assert!(tauri::async_runtime::block_on(
-            uninitialized.execute_callback(vec!["--verenu-hotkey-release".into()], String::new())
-        ).is_err());
+        assert!(uninitialized.execute_callback(vec!["--verenu-hotkey-release".into()], String::new()).is_err());
         let owner = app.state::<super::InstanceOwner>();
         assert!(owner.drain_callback_queue(app.handle()).is_err());
         let connection = zbus::blocking::Connection::session().unwrap();
-        assert!(connection.call_method(
-            Some(owner.unique_name().unwrap().as_str()), path_on_bus.as_str(), Some("org.SingleInstance.DBus"),
-            "ExecuteCallback", &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-        ).is_err());
-        let send = |flag: &str| connection.call_method(
-            Some(owner.name.as_str()), path_on_bus.as_str(), Some("org.SingleInstance.DBus"),
-            "ExecuteCallback", &(vec![flag.to_owned()], String::new()),
-        ).unwrap();
+        assert!(super::test_callback(&connection, &owner.unique_name().unwrap(), &path_on_bus,
+            vec!["--verenu-hotkey-release".into()]).is_err());
+        let send = |flag: &str| super::test_callback(&connection, &owner.name, &path_on_bus,
+            vec![flag.to_owned()]).unwrap();
         let before = super::test_callback_count();
         let recorded = super::TEST_CALLBACKS.lock().unwrap().len();
         let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
@@ -492,10 +542,8 @@ mod tests {
         let old_name = original.unique_name().unwrap().to_string();
         let first_path = path_on_bus.clone();
         let first = std::thread::spawn(move || {
-            zbus::blocking::Connection::session().unwrap().call_method(
-                Some(old_name.as_str()), first_path.as_str(), Some("org.SingleInstance.DBus"),
-                "ExecuteCallback", &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-            ).unwrap();
+            super::test_callback(&zbus::blocking::Connection::session().unwrap(), &old_name,
+                &first_path, vec!["--verenu-hotkey-release".into()]).unwrap();
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while super::test_callback_started() == started {
@@ -504,11 +552,9 @@ mod tests {
         }
         let (done, wait_done) = std::sync::mpsc::channel();
         let second = std::thread::spawn(move || {
-            zbus::blocking::Connection::session().unwrap().call_method(
-                Some("com.verenu.app.SingleInstance"), "/com/verenu/app/SingleInstance",
-                Some("org.SingleInstance.DBus"), "ExecuteCallback",
-                &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
-            ).unwrap();
+            super::test_callback(&zbus::blocking::Connection::session().unwrap(),
+                "com.verenu.app.SingleInstance", "/com/verenu/app/SingleInstance",
+                vec!["--verenu-hotkey-handsfree".into()]).unwrap();
             done.send(()).unwrap();
         });
         assert!(wait_done.recv_timeout(std::time::Duration::from_millis(100)).is_err());
@@ -573,13 +619,8 @@ mod tests {
         let (sent, received) = std::sync::mpsc::channel();
         let sender = std::thread::spawn(move || {
             let connection = zbus::blocking::Connection::session().unwrap();
-            let result = connection.call_method(
-                Some("com.verenu.app.SingleInstance"),
-                "/com/verenu/app/SingleInstance",
-                Some("org.SingleInstance.DBus"),
-                "ExecuteCallback",
-                &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-            );
+            let result = super::test_callback(&connection, "com.verenu.app.SingleInstance",
+                "/com/verenu/app/SingleInstance", vec!["--verenu-hotkey-release".into()]);
             sent.send(result.is_ok()).unwrap();
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -630,21 +671,22 @@ mod tests {
         let count = super::test_callback_count();
         let connection = zbus::blocking::Connection::session().unwrap();
         let (_, object_path) = super::address(&app.config().identifier);
-        connection.call_method(
-            Some(owner.name.as_str()),
-            object_path.as_str(),
-            Some("org.SingleInstance.DBus"),
-            "ExecuteCallback",
-            &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-        ).unwrap();
+        let legacy = connection.call_method(Some(owner.name.as_str()), object_path.as_str(),
+            Some("org.SingleInstance.DBus"), "ExecuteCallback", &(Vec::<String>::new(), String::new()));
+        assert!(legacy.unwrap_err().to_string().contains("Legacy shortcut callbacks are unsupported"));
+        let wrong = std::fs::File::open("/dev/null").unwrap();
+        let forged = connection.call_method(Some(owner.name.as_str()), object_path.as_str(),
+            Some("org.SingleInstance.DBus"), "ExecuteCallbackGuarded",
+            &(Vec::<String>::new(), String::new(), zbus::zvariant::Fd::from(&wrong)));
+        assert!(forged.is_err());
+        super::test_callback(&connection, &owner.name, &object_path,
+            vec!["--verenu-hotkey-release".into()]).unwrap();
         assert_eq!(super::test_callback_count(), count);
         assert_eq!(queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
         owner.callback_barrier().unwrap();
         for _ in 0..4095 { queue.push(crate::linux_handoff_callbacks::Callback::Show).unwrap(); }
-        assert!(connection.call_method(
-            Some(owner.name.as_str()), object_path.as_str(), Some("org.SingleInstance.DBus"),
-            "ExecuteCallback", &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-        ).is_err());
+        assert!(super::test_callback(&connection, &owner.name, &object_path,
+            vec!["--verenu-hotkey-release".into()]).is_err());
         assert!(owner.callback_barrier().is_err());
         assert_eq!(queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
         *owner.route.queue.lock().unwrap() = None;
@@ -752,10 +794,8 @@ mod tests {
         );
         if std::env::var_os("VERENU_TEST_TRANSFER_QUEUE").is_some() {
             let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
-            connection.call_method(
-                Some(name.as_str()), path.as_str(), Some("org.SingleInstance.DBus"),
-                "ExecuteCallback", &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
-            ).unwrap();
+            super::test_callback(&connection, &name, &path,
+                vec!["--verenu-hotkey-handsfree".into()]).unwrap();
         }
         eprintln!("replacement-acquired");
         let _ = std::io::stdin().read(&mut [0]);

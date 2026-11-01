@@ -564,13 +564,8 @@ mod tests {
             let name = format!("{}.SingleInstance", app.config().identifier);
             let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
             let pending_callback = tauri::async_runtime::spawn_blocking(move || {
-                zbus::blocking::Connection::session().unwrap().call_method(
-                    Some(name.as_str()),
-                    path.as_str(),
-                    Some("org.SingleInstance.DBus"),
-                    "ExecuteCallback",
-                    &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-                ).unwrap();
+                crate::linux_single_instance::test_callback(&zbus::blocking::Connection::session().unwrap(),
+                    &name, &path, vec!["--verenu-hotkey-release".into()]).unwrap();
             });
             tokio::time::timeout(Duration::from_secs(5), async {
                 while crate::linux_single_instance::test_callback_started() == started {
@@ -619,13 +614,8 @@ mod tests {
             let name = format!("{}.SingleInstance", app.config().identifier);
             let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
             tauri::async_runtime::spawn_blocking(move || {
-                zbus::blocking::Connection::session().unwrap().call_method(
-                    Some(name.as_str()),
-                    path.as_str(),
-                    Some("org.SingleInstance.DBus"),
-                    "ExecuteCallback",
-                    &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-                ).unwrap();
+                crate::linux_single_instance::test_callback(&zbus::blocking::Connection::session().unwrap(),
+                    &name, &path, vec!["--verenu-hotkey-release".into()]).unwrap();
             }).await.unwrap();
             assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
 
@@ -750,11 +740,9 @@ mod tests {
                     app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
                 }).await.unwrap());
                 tauri::async_runtime::spawn_blocking(|| {
-                    zbus::blocking::Connection::session().unwrap().call_method(
-                        Some("com.verenu.app.SingleInstance"), "/com/verenu/app/SingleInstance",
-                        Some("org.SingleInstance.DBus"), "ExecuteCallback",
-                        &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
-                    ).unwrap();
+                    crate::linux_single_instance::test_callback(&zbus::blocking::Connection::session().unwrap(),
+                        "com.verenu.app.SingleInstance", "/com/verenu/app/SingleInstance",
+                        vec!["--verenu-hotkey-handsfree".into()]).unwrap();
                 }).await.unwrap();
                 assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
                 let error = tauri::async_runtime::spawn_blocking(move || staged.activate_for_test())
