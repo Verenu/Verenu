@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod nvidia_reuse;
+pub mod realtime_reuse;
 #[cfg(any(windows, target_os = "linux", test))]
 pub mod device_match;
 #[cfg(any(windows, target_os = "linux", test))]

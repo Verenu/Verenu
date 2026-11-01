@@ -225,6 +225,7 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
     let StoppedCapture {
         audio: mut captured_audio,
         nvidia_reuse,
+        realtime_reuse,
         rms,
         raw_rms,
         stream_error,
@@ -244,6 +245,18 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
         anyhow::bail!("Audio too quiet - check your mic");
     }
 
+    if let Some(realtime) = realtime_reuse {
+        match realtime.finish(captured_audio.samples_16k.len()).await {
+            Ok(samples) => {
+                log::info!("pipeline: real-time RE-USE completed");
+                captured_audio = CapturedAudio::from_samples(samples, 16_000, captured_audio.duration_ms);
+            },
+            Err(_) => {
+                crate::media::nvidia_reuse::mark_realtime_failed();
+                log::warn!("pipeline: real-time RE-USE failed; using the original recording");
+            },
+        }
+    }
     if nvidia_reuse && crate::media::nvidia_reuse::selected_and_ready() {
         if let Ok(wav) = captured_audio.wav_bytes() {
             match crate::media::nvidia_reuse::enhance(wav, captured_audio.samples_16k.len()).await {
@@ -516,9 +529,21 @@ async fn run_pipeline_with_delivery(
     );
     let capture = if let Some(input) = provided {
         let rms = audio::rms_f32(&input.audio.samples_16k);
+        let realtime_reuse = if audio_cfg.noise_reduction && audio_cfg.nvidia_reuse_enabled
+            && audio_cfg.nvidia_reuse_realtime_enabled && crate::media::nvidia_reuse::nvidia_reuse_realtime_ready()
+        {
+            crate::media::nvidia_reuse::RuntimeUse::acquire().ok().map(|runtime_use| {
+                let immediate = store::settings_snapshot(&app).ok().map(|settings| store::load_pipeline_config(&settings))
+                    .is_some_and(|config| config.local_model_memory_policy == "unload_immediately");
+                let recording = crate::media::realtime_reuse::start(crate::media::nvidia_reuse::runtime_dir(), immediate, runtime_use);
+                recording.sender().send(&input.audio.samples_16k);
+                recording
+            })
+        } else { None };
         Some(StoppedCapture {
             audio: input.audio,
-            nvidia_reuse: audio_cfg.noise_reduction && audio_cfg.nvidia_reuse_enabled,
+            nvidia_reuse: audio_cfg.noise_reduction && audio_cfg.nvidia_reuse_enabled && !audio_cfg.nvidia_reuse_realtime_enabled,
+            realtime_reuse,
             rms,
             raw_rms: rms,
             stream_error: false,
@@ -537,6 +562,7 @@ async fn run_pipeline_with_delivery(
     let StoppedCapture {
         audio: mut captured_audio,
         nvidia_reuse,
+        realtime_reuse,
         mut rms,
         mut raw_rms,
         stream_error,
@@ -640,6 +666,29 @@ async fn run_pipeline_with_delivery(
         return;
     }
 
+    if let Some(realtime) = realtime_reuse {
+        if !has_prepend {
+            let result = tokio::select! {
+                result = realtime.finish(captured_audio.samples_16k.len()) => Some(result),
+                _ = wait_for_cancel(&mut cancel_rx) => None,
+            };
+            match result {
+                Some(Ok(samples)) => {
+                    log::info!("pipeline: real-time RE-USE completed");
+                    captured_audio = CapturedAudio::from_samples(samples, 16_000, captured_audio.duration_ms);
+                },
+                Some(Err(_)) => {
+                    crate::media::nvidia_reuse::mark_realtime_failed();
+                    log::warn!("pipeline: real-time RE-USE failed; using the original recording");
+                },
+                None => {
+                    telemetry.cancelled();
+                    state::leave_processing_if_owned(&state, generation);
+                    return;
+                }
+            }
+        }
+    }
     if nvidia_reuse && !has_prepend {
         if crate::media::nvidia_reuse::selected_and_ready() {
             let reuse_started = std::time::Instant::now();
