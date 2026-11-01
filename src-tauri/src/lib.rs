@@ -114,6 +114,12 @@ fn linux_app_builder() -> tauri::Builder<tauri::Wry> {
         })
 }
 
+fn seed_startup_dictionary(db: &DbHandle) {
+    if let Err(error) = db::seed_default_dictionary_entries(db) {
+        log::warn!("failed to seed default dictionary entries: {error}");
+    }
+}
+
 fn start_storage_maintenance(
     app: tauri::AppHandle,
     db: DbHandle,
@@ -744,9 +750,7 @@ pub fn run() {
             };
             let _ = db::cleanup_cache_prune_expired(&db_handle);
             let _ = db::prune_auto_learn_retention(&db_handle);
-            if let Err(e) = db::seed_default_dictionary_entries(&db_handle) {
-                log::warn!("failed to seed default dictionary entries: {e}");
-            }
+            seed_startup_dictionary(&db_handle);
             #[cfg(target_os = "linux")]
             drop(crate::system::diagnostic_journal::start(
                 db_handle.clone(),

@@ -93,6 +93,8 @@ import sqlite3, sys
 with sqlite3.connect(sys.argv[1]) as db:
     db.execute('CREATE TABLE IF NOT EXISTS handoff_fixture (value TEXT NOT NULL)')
     db.execute("INSERT INTO handoff_fixture VALUES ('synthetic')")
+    cursor = db.execute("DELETE FROM dictionary_corrections WHERE mistake = 'Verino'")
+    assert cursor.rowcount == 1, 'synthetic dictionary fixture was not present'
 PY
 sha256sum "$root/data/sync-identity.key" > "$root/identity.before"
 sha256sum "$root/data/analytics_install_id" "$root/data/analytics_first_seen_version" > "$root/analytics.before"
@@ -147,6 +149,11 @@ if [[ "$mode" = fail ]]; then
   done
   xdotool search --onlyvisible --name Verenu | grep -qx "$window"
   capture_rendered "$root/after-failure.png"
+  /usr/bin/python3 - "$root/data/verenu.db" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    assert db.execute("SELECT COUNT(*) FROM dictionary_corrections WHERE mistake = 'Verino'").fetchone()[0] == 0
+PY
 else
   if [[ -e "$root/trigger.error" ]]; then cat "$root/trigger.error"; exit 1; fi
   test -s "$root/trigger.activated"
@@ -168,6 +175,11 @@ else
   done
   xdotool search --onlyvisible --name Verenu | grep -qx "$window"
   capture_rendered "$root/after.png"
+  /usr/bin/python3 - "$root/data/verenu.db" <<'PY'
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    assert db.execute("SELECT COUNT(*) FROM dictionary_corrections WHERE mistake = 'Verino'").fetchone()[0] == 1
+PY
   echo "replacement=$child"
 fi
 sha256sum -c "$root/identity.before"

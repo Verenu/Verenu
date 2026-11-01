@@ -540,6 +540,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             std::thread::sleep(Duration::from_millis(20));
                         }
                         prepared_settings.activate(&parent_exited);
+                        crate::seed_startup_dictionary(handle.state::<crate::DbHandle>().inner());
                         crate::system::logger::activate_handoff_files(&parent_exited);
                         handle.manage(crate::analytics::Analytics::new(analytics_enabled, crate::app_data_dir()));
                         handle.state::<crate::sync::SyncManager>().start_discovery_after_handoff(&parent_exited);
