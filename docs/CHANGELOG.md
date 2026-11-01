@@ -5,6 +5,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Fixed nightly snapshots to update the Rust lockfile and compare changes against published nightlies, so failed attempts do not suppress later releases.
+- The local model loading pill now uses the same shimmering label as Transcribing, Cleaning, and Pasting instead of a spinner.
 - On Linux, verify that playback was unmuted after dictation, retry transient restore failures, and retain failed restores for another attempt.
 - Restore paused media when a shortcut cancels a just-started dictation, including when another recording starts immediately afterward.
 - Added experimental NVIDIA RE-USE noise reduction in Audio settings for Linux x86_64 with a compatible NVIDIA GPU. The optional local runtime downloads separately and verifies the GPU before use.
