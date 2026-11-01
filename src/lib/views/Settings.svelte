@@ -545,11 +545,16 @@
   }
 
   .settings-body {
-    --settings-card-bg: color-mix(in srgb, var(--bg-elev) 55%, var(--paper));
+    --settings-card-bg: var(--bg-elev);
     flex: 1;
     position: relative;
     overflow: hidden;
     display: grid;
+  }
+
+  /* On dark themes the elevated card is much lighter than the page, so pull it toward the page. */
+  :global(:root[data-theme='dark']) .settings-body {
+    --settings-card-bg: color-mix(in srgb, var(--bg-elev) 55%, var(--paper));
   }
 
   .fade-edge {
