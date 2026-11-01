@@ -46,3 +46,19 @@ test('browser session cannot invoke native updater installation', async ({ sessi
   });
   expect(response.status).toBe(403);
 });
+
+test('an installed update shows the restart error and quit fallback', async ({ page }) => {
+  await page.locator('[data-debug-id="nav.settings"]').click();
+  await page.locator('[data-debug-id="settings.about"]:visible, button.settings-tab:visible').filter({ hasText: 'About' }).click();
+  await page.evaluate(async () => {
+    const { appStore } = await import('/src/lib/stores.svelte.ts');
+    appStore.updateInfo = { version: '99.0.0', assetName: 'Verenu_99.0.0_amd64.AppImage', downloadUrl: 'https://example.invalid/synthetic.AppImage', installMode: 'install' };
+    appStore.updateInstalled = true;
+    appStore.updateInstallError = 'Synthetic replacement startup failure';
+    appStore.updateProgress = 'Update installed. Quit and reopen Verenu to finish.';
+  });
+  const row = page.locator('[data-setting-target="about-updates"]');
+  await expect(row.getByText('Synthetic replacement startup failure')).toBeVisible();
+  await expect(row.getByText('Update installed. Quit and reopen Verenu to finish.')).toBeVisible();
+  await expect(row.getByRole('button', { name: 'Restart', exact: true })).toBeVisible();
+});
