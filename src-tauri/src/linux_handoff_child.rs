@@ -576,6 +576,8 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         ready_agent.activate(&parent_exited);
                         callbacks.activate(&handle, &parent_exited);
                         drop(child_pause.0.take());
+                        #[cfg(target_arch = "x86_64")]
+                        crate::start_nvidia_check(&handle);
                         if let Some(directory) = callback_path.parent() {
                             if let Err(error) = std::fs::remove_dir_all(directory) {
                                 log::warn!("Could not remove restart callback storage: {error}");

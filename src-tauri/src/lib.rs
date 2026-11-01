@@ -289,6 +289,14 @@ fn new_shared_state() -> SharedState {
     }))
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn start_nvidia_check(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::media::nvidia_reuse::nvidia_reuse_check(handle).await;
+    });
+}
+
 fn app_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
             #[cfg(desktop)] agent_api::agent_pending_request,
@@ -322,6 +330,10 @@ fn app_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
             commands::set_storage_full_simulation,
             commands::get_storage_full_simulation,
             commands::get_all_settings,
+            media::nvidia_reuse::nvidia_reuse_status,
+            media::nvidia_reuse::nvidia_reuse_check,
+            media::nvidia_reuse::nvidia_reuse_install,
+            media::nvidia_reuse::nvidia_reuse_remove,
             commands::get_effective_transcription_model,
             commands::list_local_stt_models,
             commands::list_local_llm_models,
@@ -691,6 +703,8 @@ pub fn run() {
 
     builder
         .setup(move |app| {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            crate::start_nvidia_check(app.handle());
             #[cfg(target_os = "linux")]
             if std::env::args().any(|arg| {
                 arg == "--verenu-hotkey-release"
