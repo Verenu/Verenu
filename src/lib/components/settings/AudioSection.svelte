@@ -428,7 +428,7 @@
   <div data-setting-target="audio-system-mute">
     {#if duckSettingError}<div class="setting-row"><div class="desc" role="alert">Could not save the volume setting. Try changing it again.</div></div>{/if}
     <div class="setting-row sound-volume-row" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
-      <div class="sound-volume-header"><div><div class="label">Volume of audio while dictating</div><div class="desc">Percentage of your normal volume. 0% mutes immediately; 100% leaves it unchanged. Other levels fade down smoothly. Playback continues unless media pause is enabled. Partial reduction requires PipeWire's PulseAudio service and pactl.</div></div><span class="sound-volume-value">{duckTarget}%</span></div>
+      <div class="sound-volume-header"><div><div class="label">Volume of audio while dictating</div><div class="desc">Maximum system volume while dictating. Audio already below this level stays unchanged. 0% mutes immediately; 100% leaves it unchanged. Other levels fade down smoothly. Playback continues unless media pause is enabled. Partial reduction requires PipeWire's PulseAudio service and pactl.</div></div><span class="sound-volume-value">{duckTarget}%</span></div>
       <div class="sound-volume-slider-wrap">
         <input type="range" class="sound-volume-slider" min="0" max="100" step="1" bind:value={duckTarget} onchange={() => saveDuckSetting('duck_target', duckTarget)} style="--pct: {duckTarget}%" aria-label="Volume of audio while dictating" />
         <div class="sound-volume-ticks"><span>0%</span><span>50%</span><span>100%</span></div>
