@@ -828,6 +828,13 @@ mod tests {
         }
     }
 
+    fn child_hello(child: &mut Channel) {
+        child.send(&Message::Hello {
+            protocol: PROTOCOL, pid: 42, schema: 39, database_code: STATE_COMPATIBILITY.into(),
+        }).unwrap();
+        child.expect(begin()).unwrap();
+    }
+
     fn pair() -> (Parent, Channel) {
         let (parent, child) = UnixStream::pair().unwrap();
         let timeout = Duration::from_secs(2);
@@ -847,15 +854,7 @@ mod tests {
     fn failure_after_backend_readiness_does_not_reach_activation() {
         let (parent, mut child) = pair();
         let worker = std::thread::spawn(move || {
-            child
-                .send(&Message::Hello {
-                    protocol: PROTOCOL,
-                    pid: 42,
-                    schema: 39,
-                    database_code: STATE_COMPATIBILITY.into(),
-                })
-                .unwrap();
-            child.expect(begin()).unwrap();
+            child_hello(&mut child);
             child.send(&Message::BackendReady).unwrap();
             child
                 .send(&Message::Failed {
@@ -871,15 +870,7 @@ mod tests {
     fn disconnect_after_frontends_ready_does_not_commit() {
         let (parent, mut child) = pair();
         let worker = std::thread::spawn(move || {
-            child
-                .send(&Message::Hello {
-                    protocol: PROTOCOL,
-                    pid: 42,
-                    schema: 39,
-                    database_code: STATE_COMPATIBILITY.into(),
-                })
-                .unwrap();
-            child.expect(begin()).unwrap();
+            child_hello(&mut child);
             child.send(&Message::BackendReady).unwrap();
             child.send(&Message::FrontendsReady).unwrap();
         });
@@ -949,15 +940,7 @@ mod tests {
     fn successful_handoff_requires_each_phase_in_order() {
         let (parent, mut child) = pair();
         let worker = std::thread::spawn(move || {
-            child
-                .send(&Message::Hello {
-                    protocol: PROTOCOL,
-                    pid: 42,
-                    schema: 39,
-                    database_code: STATE_COMPATIBILITY.into(),
-                })
-                .unwrap();
-            child.expect(begin()).unwrap();
+            child_hello(&mut child);
             child.send(&Message::BackendReady).unwrap();
             child.send(&Message::FrontendsReady).unwrap();
             child.expect(Message::Activate).unwrap();
@@ -987,10 +970,7 @@ mod tests {
     fn commit_fails_if_replacement_disconnects_before_accepting_it() {
         let (parent, mut child) = pair();
         let worker = std::thread::spawn(move || {
-            child.send(&Message::Hello {
-                protocol: PROTOCOL, pid: 42, schema: 39, database_code: STATE_COMPATIBILITY.into(),
-            }).unwrap();
-            child.expect(begin()).unwrap();
+            child_hello(&mut child);
             child.send(&Message::BackendReady).unwrap();
             child.send(&Message::FrontendsReady).unwrap();
             child.expect(Message::Activate).unwrap();
@@ -1059,15 +1039,7 @@ mod tests {
     fn frontend_readiness_cannot_skip_backend_startup() {
         let (parent, mut child) = pair();
         let worker = std::thread::spawn(move || {
-            child
-                .send(&Message::Hello {
-                    protocol: PROTOCOL,
-                    pid: 42,
-                    schema: 39,
-                    database_code: STATE_COMPATIBILITY.into(),
-                })
-                .unwrap();
-            child.expect(begin()).unwrap();
+            child_hello(&mut child);
             child.send(&Message::FrontendsReady).unwrap();
         });
         assert!(matches!(parent.prepare(), Err(error) if error.contains("out of order")));
