@@ -86,7 +86,7 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot 
       pill: !!document.querySelector('.pill'),
       bridge: !!window.__TAURI_INTERNALS__,
     };`).catch(() => null);
-    if (state) error.message += `; pill document: ${JSON.stringify(state)}`;
+    if (state) console.error(`Native pill document: ${JSON.stringify(state)}`);
     throw error;
   } finally {
     await browser.command('POST', '/window', { handle: 'main' });
