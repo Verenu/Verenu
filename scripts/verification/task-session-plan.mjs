@@ -1,6 +1,6 @@
 export function taskSessionPartitions() {
   return [
-    ...Array.from({ length: 4 }, (_, index) => ({ suite: 'node', index: index + 1, count: 4, project: 'all' })),
+    ...Array.from({ length: 8 }, (_, index) => ({ suite: 'node', index: index + 1, count: 8, project: 'all' })),
     { suite: 'browser', index: 1, count: 1, project: 'desktop' },
     { suite: 'browser', index: 1, count: 1, project: 'phone' },
   ];
