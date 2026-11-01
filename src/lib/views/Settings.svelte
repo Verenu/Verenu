@@ -703,6 +703,7 @@
 
   /* Rows split by other content or a wrapper become separate cards, so keep them apart. */
   .settings-body :global(*:has(.setting-row):not(.setting-row) + .setting-row),
+  .settings-body :global(.setting-row + *:has(.setting-row):not(.setting-row)),
   .settings-body :global(.setting-row + *:not(.setting-row) + .setting-row) {
     margin-top: 12px;
   }
