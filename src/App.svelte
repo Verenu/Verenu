@@ -704,7 +704,7 @@
   {/if}
   {#if !appStore.isOnline}
     <div class="offline-toast" role="status" transition:fly={{ y: 6, duration: motionMs(180), easing: expoOut }}>
-      <span class="offline-dot"></span>
+      <span class="offline-dot" class:offline-dot--static={isLinuxDesktop}></span>
       No internet connection
     </div>
   {/if}
@@ -983,6 +983,10 @@
     background: currentColor;
     flex-shrink: 0;
     animation: dot-pulse 2s ease-in-out infinite;
+  }
+
+  .offline-dot--static {
+    animation: none;
   }
 
   @keyframes dot-pulse {
