@@ -424,6 +424,12 @@ pub(crate) struct PublishedAgent {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) struct ReadyAgent {
+    staged: StagedAgent,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+#[cfg(target_os = "linux")]
 impl PreparedAgent {
     pub(crate) async fn stage_for_handoff(self, app: AppHandle) -> anyhow::Result<StagedAgent> {
         use std::sync::atomic::Ordering;
@@ -502,12 +508,29 @@ impl PublishedAgent {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited, activity: &crate::linux_activity::Activity) -> anyhow::Result<()> {
-        anyhow::ensure!(activity.belongs_to(&self.gate), "Agent activation gate does not match");
+    pub(crate) fn prepare_activation(
+        self,
+        app: &AppHandle,
+        pause: &crate::linux_activity::Pause,
+    ) -> anyhow::Result<ReadyAgent> {
+        anyhow::ensure!(pause.belongs_to(&self.gate), "Agent restart gate does not match");
+        let drain = app.try_state::<AgentDrain>().ok_or_else(|| anyhow::anyhow!("Agent service is unavailable"))?;
+        let permit = drain.0.clone().try_acquire_owned().map_err(|_| anyhow::anyhow!("Agent service is busy"))?;
+        anyhow::ensure!(self.staged.server.as_ref().is_some_and(|server| !server.inner().is_finished()), "Agent service stopped during restart");
+        Ok(ReadyAgent { staged: self.staged, _permit: permit })
+    }
+
+}
+
+#[cfg(target_os = "linux")]
+impl ReadyAgent {
+    pub(crate) async fn verify(&self) -> anyhow::Result<()> {
+        self.staged.verify().await
+    }
+
+    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
         self.staged.active.store(true, std::sync::atomic::Ordering::Release);
         drop(self.staged.server.take());
-        Ok(())
     }
 }
 
@@ -1424,10 +1447,10 @@ mod tests {
             assert_ne!(std::fs::read(&descriptor).unwrap(), b"parent descriptor");
             assert_eq!(client.post(format!("{endpoint}/v1/authorization-status"))
                 .json(&json!({"token": "a".repeat(64)})).send().await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
+            let ready = published.prepare_activation(app.handle(), &pause).unwrap();
             let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+            ready.activate(&parent_exited);
             drop(pause);
-            let activity = gate.try_enter().unwrap();
-            published.activate(&parent_exited, &activity).unwrap();
             let response = client.get(format!("{endpoint}/v1/status")).send().await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             let status: Value = response.json().await.unwrap();
@@ -1460,9 +1483,8 @@ mod tests {
             let pause = gate.pause().await.unwrap();
             let published = staged.publish_while_paused(app.handle(), &pause).unwrap();
             let other = Arc::new(crate::linux_activity::ActivityGate::default());
-            let activity = other.try_enter().unwrap();
-            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-            assert!(published.activate(&parent_exited, &activity).is_err());
+            let wrong_pause = other.pause().await.unwrap();
+            assert!(published.prepare_activation(app.handle(), &wrong_pause).is_err());
             assert!(gate.try_enter().is_none());
         });
         drop(app);

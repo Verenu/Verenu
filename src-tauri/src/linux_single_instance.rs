@@ -80,12 +80,7 @@ impl CallbackRoute {
         let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
         queue.as_mut().map(|slot| {
             let callback = crate::linux_handoff_callbacks::Callback::from_args(args);
-            let result = if self.replacement.load(std::sync::atomic::Ordering::Acquire) {
-                slot.queue.push_replacement(callback)
-            } else {
-                slot.queue.push(callback)
-            };
-            result
+            slot.queue.push(callback)
                 .map_err(|error| {
                     slot.failed = true;
                     zbus::fdo::Error::Failed(format!("Could not queue restart callback: {error}"))
@@ -195,12 +190,48 @@ pub(crate) struct InstanceOwner {
     route: Arc<CallbackRoute>,
 }
 
+pub(crate) struct PreparedCallbacks<'a> {
+    route: &'a CallbackRoute,
+    slot: std::sync::MutexGuard<'a, Option<CallbackQueueSlot>>,
+    _reservation: rusqlite::Connection,
+    callbacks: Vec<crate::linux_handoff_callbacks::Callback>,
+}
+
+impl PreparedCallbacks<'_> {
+    pub(crate) fn activate(mut self, app: &AppHandle, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
+        for callback in self.callbacks.drain(..) {
+            dispatch_callback(app, callback);
+        }
+        self.route.local_ready.store(true, std::sync::atomic::Ordering::Release);
+        self.route.replacement.store(false, std::sync::atomic::Ordering::Release);
+        *self.slot = None;
+    }
+}
+
 pub(crate) enum OwnershipMode {
     Transferable,
     Exclusive,
 }
 
 impl InstanceOwner {
+    pub(crate) fn prepare_callbacks<'a>(
+        &'a self,
+        path: &std::path::Path,
+        pause: &crate::linux_activity::Pause,
+        gate: &Arc<crate::linux_activity::ActivityGate>,
+    ) -> Result<PreparedCallbacks<'a>, String> {
+        if !pause.belongs_to(gate) || !self.route.replacement.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Restart callback gate does not match".into());
+        }
+        let slot = self.route.queue.lock().map_err(|_| "Restart callback queue is unavailable")?;
+        if !matches!(slot.as_ref(), Some(active) if !active.failed) {
+            return Err("Restart callback queue is unavailable".into());
+        }
+        let (reservation, callbacks) = crate::linux_handoff_callbacks::CallbackQueue::freeze(path)
+            .map_err(|error| format!("Could not prepare restart callbacks: {error}"))?;
+        Ok(PreparedCallbacks { route: &self.route, slot, _reservation: reservation, callbacks })
+    }
+
     pub(crate) fn install_callback_queue(
         &self,
         queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
@@ -233,14 +264,6 @@ impl InstanceOwner {
         if self.route.replacement.load(std::sync::atomic::Ordering::Acquire) {
             return Err("Replacement callbacks require confirmed parent exit".into());
         }
-        self.drain_callback_queue_inner(app, None)
-    }
-
-    fn drain_callback_queue_inner(
-        &self,
-        app: &AppHandle,
-        parent_exited: Option<&crate::linux_handoff_transport::ParentExited>,
-    ) -> Result<(), String> {
         let mut slot = self.route.queue.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(active) = slot.as_mut() {
             while let Some((id, callback)) = active.queue.first().map_err(|error| error.to_string())? {
@@ -254,19 +277,8 @@ impl InstanceOwner {
                 active.delivered = None;
             }
         }
-        if parent_exited.is_some() {
-            self.route.local_ready.store(true, std::sync::atomic::Ordering::Release);
-            self.route.replacement.store(false, std::sync::atomic::Ordering::Release);
-        }
         *slot = None;
         Ok(())
-    }
-    pub(crate) fn activate_callbacks(
-        &self,
-        app: &AppHandle,
-        parent_exited: &crate::linux_handoff_transport::ParentExited,
-    ) -> Result<(), String> {
-        self.drain_callback_queue_inner(app, Some(parent_exited))
     }
     pub(crate) fn unique_name(&self) -> Result<String, String> {
         self.connection
@@ -472,8 +484,10 @@ mod tests {
 
         let (queue, path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
         let queue = Arc::new(queue);
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
         let app = tauri::Builder::default()
             .any_thread()
+            .manage(gate.clone())
             .plugin(super::replacement_plugin(queue.clone()))
             .build(tauri::generate_context!())
             .unwrap();
@@ -488,26 +502,49 @@ mod tests {
         assert!(owner.drain_callback_queue(app.handle()).is_err());
         let connection = zbus::blocking::Connection::session().unwrap();
         let (_, path_on_bus) = super::address(&app.config().identifier);
+        let old_route = Arc::new(super::CallbackRoute::new(false));
+        *old_route.queue.lock().unwrap() = Some(super::CallbackQueueSlot {
+            queue: queue.clone(), delivered: None, failed: false,
+        });
+        let old_owner = zbus::blocking::connection::Builder::session().unwrap()
+            .serve_at(path_on_bus.as_str(), super::SingleInstance {
+                app: app.handle().clone(), route: old_route,
+            }).unwrap().build().unwrap();
         let send = |flag: &str| connection.call_method(
             Some(owner.name.as_str()), path_on_bus.as_str(), Some("org.SingleInstance.DBus"),
             "ExecuteCallback", &(vec![flag.to_owned()], String::new()),
         ).unwrap();
         let before = super::test_callback_count();
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
         send("--verenu-hotkey-release");
+        connection.call_method(
+            Some(old_owner.unique_name().unwrap().as_str()), path_on_bus.as_str(),
+            Some("org.SingleInstance.DBus"), "ExecuteCallback",
+            &(vec!["--verenu-hotkey-handsfree".to_owned()], String::new()),
+        ).unwrap();
+        send("--verenu-capture-sub-app");
         assert_eq!(super::test_callback_count(), before);
-        assert!(queue.first().unwrap().is_some());
+        let (reservation, pending) = crate::linux_handoff_callbacks::CallbackQueue::freeze(&path).unwrap();
+        assert_eq!(pending, [
+            crate::linux_handoff_callbacks::Callback::Release,
+            crate::linux_handoff_callbacks::Callback::Handsfree,
+            crate::linux_handoff_callbacks::Callback::CaptureSubApp,
+        ]);
+        drop(reservation);
+        let callbacks = owner.prepare_callbacks(&path, &pause, &gate).unwrap();
         let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-        owner.activate_callbacks(app.handle(), &parent_exited).unwrap();
-        assert_eq!(super::test_callback_count(), before + 1);
-        assert_eq!(queue.first().unwrap(), None);
+        callbacks.activate(app.handle(), &parent_exited);
+        drop(pause);
+        assert_eq!(super::test_callback_count(), before + 3);
+        assert!(queue.first().unwrap().is_some(), "callbacks remain recoverable until cleanup");
         send("--verenu-hotkey-handsfree");
-        assert_eq!(super::test_callback_count(), before + 2);
+        assert_eq!(super::test_callback_count(), before + 4);
         let (next_queue, next_path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
         let next_queue = Arc::new(next_queue);
         owner.install_callback_queue(next_queue.clone()).unwrap();
         next_queue.push(crate::linux_handoff_callbacks::Callback::Release).unwrap();
         owner.drain_callback_queue(app.handle()).unwrap();
-        assert_eq!(super::test_callback_count(), before + 3);
+        assert_eq!(super::test_callback_count(), before + 5);
         drop(next_queue);
         std::fs::remove_dir_all(next_path.parent().unwrap()).unwrap();
         drop(owner);
@@ -804,7 +841,7 @@ mod tests {
             if let Some(path) = std::env::var_os("VERENU_TEST_TRANSFER_QUEUE") {
                 crate::linux_handoff_callbacks::CallbackQueue::open(std::path::Path::new(&path))
                     .unwrap()
-                    .push_replacement(crate::linux_handoff_callbacks::Callback::Handsfree)
+                    .push(crate::linux_handoff_callbacks::Callback::Handsfree)
                     .unwrap();
             }
             eprintln!("replacement-acquired");

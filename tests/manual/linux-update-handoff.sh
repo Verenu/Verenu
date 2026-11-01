@@ -15,7 +15,7 @@ chmod 700 "$root/runtime"
 export XDG_RUNTIME_DIR="$root/runtime" XDG_CONFIG_HOME="$root/config" XDG_STATE_HOME="$root/state"
 export VERENU_APP_DATA_DIR_OVERRIDE="$root/data" VERENU_HANDOFF_TEST_TRIGGER="$root/trigger"
 export VERENU_HANDOFF_TEST_SHORTCUTS=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 NO_AT_BRIDGE=1 GSETTINGS_BACKEND=memory
-if [[ "$mode" = fail ]]; then export VERENU_HANDOFF_TEST_FAIL_ACTIVATION=1; fi
+if [[ "$mode" = fail ]]; then export VERENU_HANDOFF_TEST_FAIL_AFTER_COMMIT=1; fi
 printf synthetic-test-password | gnome-keyring-daemon --unlock >/dev/null
 printf synthetic-key-value | secret-tool store --label=verenu-test service com.verenu.app username api_key_groq
 server=''
@@ -76,18 +76,34 @@ with sqlite3.connect(sys.argv[1]) as db:
 PY
 sha256sum "$root/data/sync-identity.key" > "$root/identity.before"
 touch "$root/trigger"
+if [[ "$mode" = fail ]]; then
+  for _ in $(seq 1 450); do
+    if [[ -e "$root/trigger.committing" || -e "$root/trigger.error" ]]; then break; fi
+    sleep .1
+  done
+  test -s "$root/trigger.committing"
+  window=$(xdotool search --onlyvisible --name Verenu | head -1)
+  xdotool windowunmap "$window"
+  gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback '[]' ''
+  touch "$root/trigger.continue"
+fi
 for _ in $(seq 1 900); do
   if [[ -e "$root/trigger.error" || -e "$root/trigger.activated" ]]; then break; fi
   sleep .1
 done
 if [[ "$mode" = fail ]]; then
   test -s "$root/trigger.error"
-  grep -q 'Synthetic replacement startup failure' "$root/trigger.error"
+  grep -q 'Synthetic late activation failure' "$root/trigger.error"
   cat "$root/trigger.error"
   kill -0 "$parent"
   owner_after=$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.GetNameOwner com.verenu.app.SingleInstance)
   test "$owner_after" = "$(cat "$root/owner-before")"
   gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback "['--verenu-hotkey-release']" ''
+  for _ in $(seq 1 50); do
+    if xdotool search --onlyvisible --name Verenu 2>/dev/null | grep -qx "$window"; then break; fi
+    sleep .1
+  done
+  xdotool search --onlyvisible --name Verenu | grep -qx "$window"
 else
   if [[ -e "$root/trigger.error" ]]; then cat "$root/trigger.error"; exit 1; fi
   test -s "$root/trigger.activated"

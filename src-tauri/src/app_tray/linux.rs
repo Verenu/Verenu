@@ -190,18 +190,30 @@ fn make_tray(app: &AppHandle, icon_revision: Arc<AtomicU64>) -> LinuxTray {
         icon_revision,
         active: app.state::<TrayRuntime>().active.load(Ordering::SeqCst),
         dispatch: Box::new(move |action| {
-            let app = owner.clone();
-            if let Err(error) = owner.run_on_main_thread(move || match action {
-                Action::Open => crate::show_main_window(&app),
-                Action::Settings => {
-                    crate::show_main_window(&app);
-                    let _ = app.emit("open-flow:open-settings-section", "general");
+            let owner = owner.clone();
+            tauri::async_runtime::spawn(async move {
+                let gate = owner.try_state::<Arc<crate::linux_activity::ActivityGate>>()
+                    .map(|gate| gate.inner().clone());
+                let activity = match gate {
+                    Some(gate) => Some(gate.enter().await),
+                    None => None,
+                };
+                let app = owner.clone();
+                if let Err(error) = owner.run_on_main_thread(move || {
+                    let _activity = activity;
+                    match action {
+                        Action::Open => crate::show_main_window(&app),
+                        Action::Settings => {
+                            crate::show_main_window(&app);
+                            let _ = app.emit("open-flow:open-settings-section", "general");
+                        }
+                        Action::Relaunch => super::relaunch_app(&app),
+                        Action::Quit => app.exit(0),
+                    }
+                }) {
+                    log::warn!("Failed to schedule tray action: {error}");
                 }
-                Action::Relaunch => super::relaunch_app(&app),
-                Action::Quit => app.exit(0),
-            }) {
-                log::warn!("Failed to schedule tray action: {error}");
-            }
+            });
         }),
     }
 }
