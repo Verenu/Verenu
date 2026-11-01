@@ -184,11 +184,10 @@ mod common {
             Ok(Self { start: Some(start), thread: Some(thread) })
         }
 
-        fn start(&mut self) -> Result<(), String> {
+        fn start(&mut self) -> Result<std::thread::JoinHandle<()>, String> {
             self.start.take().ok_or("Microphone watcher was already activated")?
                 .send(()).map_err(|_| "Microphone watcher stopped during activation")?;
-            drop(self.thread.take());
-            Ok(())
+            self.thread.take().ok_or_else(|| "Microphone watcher thread is unavailable".into())
         }
     }
 
@@ -210,6 +209,19 @@ mod common {
     }
 
     #[cfg(target_os = "linux")]
+    pub(crate) struct ActiveMicMute(std::thread::JoinHandle<()>);
+
+    #[cfg(target_os = "linux")]
+    impl ActiveMicMute {
+        pub(crate) fn verify(&self) -> Result<(), String> {
+            if self.0.is_finished() {
+                return Err("Microphone watcher stopped during restart".into());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     pub(crate) fn prepare_for_handoff(app: &AppHandle, shared: SharedState) -> Result<PreparedMicMute, String> {
         if STARTED.load(Ordering::SeqCst) {
             return Err("Microphone watcher is already running".into());
@@ -223,11 +235,16 @@ mod common {
 
     #[cfg(target_os = "linux")]
     impl PreparedMicMute {
-        #[allow(dead_code)]
-        pub(crate) fn activate(
+        pub(crate) fn activate_while_paused(
             mut self,
-            _parent_exited: &crate::linux_handoff_transport::ParentExited,
-        ) -> Result<(), String> {
+            pause: &crate::linux_activity::Pause,
+        ) -> Result<ActiveMicMute, String> {
+            use tauri::Manager;
+            let gate = self.app.try_state::<Arc<crate::linux_activity::ActivityGate>>()
+                .ok_or("Microphone watcher restart gate is unavailable")?;
+            if !pause.belongs_to(gate.inner()) {
+                return Err("Microphone watcher restart gate does not match".into());
+            }
             if STARTED.swap(true, Ordering::SeqCst) {
                 return Err("Microphone watcher is already running".into());
             }
@@ -240,16 +257,32 @@ mod common {
                 }
             }
             start_dispatch(self.app.clone(), self.shared.clone(), rx);
-            if let Err(error) = self.worker.start() {
-                if let Ok(mut slot) = event_tx_slot().lock() {
-                    *slot = None;
+            let thread = match self.worker.start() {
+                Ok(thread) => thread,
+                Err(error) => {
+                    if let Ok(mut slot) = event_tx_slot().lock() {
+                        *slot = None;
+                    }
+                    STARTED.store(false, Ordering::SeqCst);
+                    return Err(error);
                 }
-                STARTED.store(false, Ordering::SeqCst);
-                return Err(error);
+            };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if WATCHER_THREAD.lock().map_err(|_| "Microphone watcher state is unavailable")?.is_some() {
+                    break;
+                }
+                if thread.is_finished() {
+                    return Err("Microphone watcher stopped during startup".into());
+                }
+                if Instant::now() >= deadline {
+                    return Err("Microphone watcher did not start".into());
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
             GENERATION.fetch_add(1, Ordering::SeqCst);
             log::info!("mic_mute_trigger: watcher started");
-            Ok(())
+            Ok(ActiveMicMute(thread))
         }
     }
 
@@ -468,26 +501,52 @@ mod common {
             let (sent, received) = std::sync::mpsc::channel();
             let mut worker = PreparedWorker::new(move || { let _ = sent.send(()); }).unwrap();
             assert!(received.try_recv().is_err());
-            worker.start().unwrap();
+            let thread = worker.start().unwrap();
             received.recv_timeout(Duration::from_secs(2)).unwrap();
+            thread.join().unwrap();
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn stopped_microphone_watcher_is_not_ready() {
+            let thread = std::thread::spawn(|| {});
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !thread.is_finished() {
+                assert!(Instant::now() < deadline, "watcher fixture did not stop");
+                std::thread::yield_now();
+            }
+            assert!(ActiveMicMute(thread).verify().is_err());
         }
 
         #[cfg(all(target_os = "linux", feature = "native-testing"))]
         #[test]
         #[ignore = "requires an isolated graphical session"]
-        fn prepared_microphone_starts_after_parent_exit() {
-            let app = tauri::Builder::default().any_thread()
+        fn prepared_microphone_starts_only_with_its_paused_gate() {
+            use tauri::Manager;
+            let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+            let app = tauri::Builder::default().any_thread().manage(gate.clone())
                 .build(tauri::generate_context!()).unwrap();
+            app.manage(crate::data::store::SettingsHandle::empty_for_test(
+                std::env::temp_dir().join(format!("verenu-mic-handoff-{}", uuid::Uuid::new_v4())),
+            ));
             let prepared = prepare_for_handoff(app.handle(), crate::new_shared_state()).unwrap();
             assert!(!STARTED.load(Ordering::SeqCst));
             assert!(WATCHER_THREAD.lock().unwrap().is_none());
-            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-            prepared.activate(&parent_exited).unwrap();
+            let wrong_gate = Arc::new(crate::linux_activity::ActivityGate::default());
+            let wrong_pause = tauri::async_runtime::block_on(wrong_gate.pause()).unwrap();
+            assert!(prepared.activate_while_paused(&wrong_pause).is_err());
+            assert!(!STARTED.load(Ordering::SeqCst));
+            let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+            let prepared = prepare_for_handoff(app.handle(), crate::new_shared_state()).unwrap();
+            let active = prepared.activate_while_paused(&pause).unwrap();
+            active.verify().unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
             while WATCHER_THREAD.lock().unwrap().is_none() {
                 assert!(Instant::now() < deadline, "microphone watcher did not start");
                 std::thread::sleep(Duration::from_millis(10));
             }
+            assert!(gate.try_enter().is_none());
+            drop(pause);
         }
 
         #[test]
