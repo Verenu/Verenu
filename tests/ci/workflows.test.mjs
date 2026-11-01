@@ -104,8 +104,8 @@ test('free GitHub runners execute every owned file once and both full browser pr
   assert.deepEqual(jobs['all-in-one-fast'].needs, ['fast-partitions', 'linux-regressions']);
   const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
   assert.equal(shared.inputs.profile.default, 'all');
-  // Some Node transport files also launch Chromium internally.
-  assert.equal(shared.runs.steps.find(step => step.name === 'Install browser').if, "inputs.profile != 'linux'");
+  // Node transport tests launch Chromium; only these two fast partitions do not.
+  assert.equal(shared.runs.steps.find(step => step.name === 'Install browser').if, "inputs.profile != 'linux' && !(inputs.profile == 'fast' && (inputs.fast-suites == 'preflight,contract' || inputs.fast-suites == 'rust'))");
   assert.deepEqual(workflow('pr-checks.yml').env, { CARGO_PROFILE_DEV_DEBUG: '0', CARGO_PROFILE_TEST_DEBUG: '0' });
   assert.equal(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).if, "inputs.profile == 'all' || inputs.profile == 'owned'");
   assert.equal(shared.runs.steps.find(step => step.run?.includes('npm test -- --strict')).if, "inputs.profile == 'all' || inputs.profile == 'fast'");
@@ -113,6 +113,15 @@ test('free GitHub runners execute every owned file once and both full browser pr
   assert.match(promptCompile.if, /inputs\.fast-suites == ''/);
   assert.match(promptCompile.if, /,contract,/);
   assert.equal(shared.runs.steps.find(step => step.run?.includes('cargo build --manifest-path src-tauri/Cargo.toml --features dev-session')).if, "inputs.profile == 'all' || inputs.profile == 'owned'");
+});
+
+test('PR jobs restore Rust caches without evicting caches seeded by master', () => {
+  const checks = workflow('pr-checks.yml');
+  const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
+  const cacheSteps = [...Object.values(checks.jobs).flatMap(job => job.steps || []), ...shared.runs.steps]
+    .filter(step => step.uses?.startsWith('Swatinem/rust-cache@'));
+  assert.ok(cacheSteps.length >= 4);
+  for (const step of cacheSteps) assert.equal(step.with['save-if'], "${{ github.event_name != 'pull_request' }}");
 });
 
 test('Rust partitions retain every platform check and required status fails closed', () => {

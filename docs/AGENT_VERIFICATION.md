@@ -96,9 +96,11 @@ test files are filtered by changed paths. Release checks use the same partitions
 the default local command still runs the complete suite.
 
 The same workflow runs after merges to `master`, seeding dependency caches that
-future PRs can restore. GitHub isolates PR-created caches to that PR; sibling
-PRs cannot reuse them. Cache warming starts after the first successful `master`
-run. Task-branch pushes do not start a duplicate workflow.
+future PRs can restore. PR jobs restore Rust caches but do not save new ones,
+so branch-specific caches do not crowd out caches usable by other PRs. A cache
+is available only after its corresponding `master` job successfully saves it;
+eviction or changed dependencies can still cause misses. Task-branch pushes do
+not start a duplicate workflow.
 
 PR Rust dev/test builds omit debugger symbols to reduce build, link, and cache
 work. Debug assertions, overflow checks, and the test suite remain enabled;
