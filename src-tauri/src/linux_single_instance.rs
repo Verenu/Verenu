@@ -7,6 +7,12 @@ struct CallbackRoute {
     parent: Option<String>,
     local: tokio::sync::watch::Sender<bool>,
     order: Arc<CallbackOrder>,
+    queue: Mutex<Option<CallbackQueueSlot>>,
+}
+
+struct CallbackQueueSlot {
+    queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
+    delivered: Option<i64>,
 }
 
 #[derive(Default)]
@@ -67,7 +73,15 @@ impl Drop for CallbackTicket {
 impl CallbackRoute {
     fn new(parent: Option<String>) -> Self {
         let (local, _) = tokio::sync::watch::channel(parent.is_none());
-        Self { parent, local, order: Arc::new(CallbackOrder::default()) }
+        Self { parent, local, order: Arc::new(CallbackOrder::default()), queue: Mutex::new(None) }
+    }
+
+    fn enqueue_if_active(&self, args: &[String]) -> Option<zbus::fdo::Result<()>> {
+        let queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
+        queue.as_ref().map(|slot| {
+            slot.queue.push(crate::linux_handoff_callbacks::Callback::from_args(args))
+                .map_err(|error| zbus::fdo::Error::Failed(format!("Could not queue restart callback: {error}")))
+        })
     }
 
     fn activate(&self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
@@ -112,6 +126,9 @@ struct SingleInstance {
 impl SingleInstance {
     async fn execute_callback(&self, argv: Vec<String>, cwd: String) -> zbus::fdo::Result<()> {
         if self.route.parent.is_some() {
+            if let Some(result) = self.route.enqueue_if_active(&argv) {
+                return result;
+            }
             // A disconnected caller must not release its ticket while the
             // forwarded D-Bus method can still be running in the parent.
             let ticket = self.route.order.ticket();
@@ -170,21 +187,33 @@ impl SingleInstance {
         // and handle the original event with its state intact.
         #[cfg(all(test, feature = "native-testing"))]
         TEST_CALLBACK_STARTED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let _activity = crate::commands::linux_activity(&self.app).await;
-        #[cfg(all(test, feature = "native-testing"))]
-        {
-            TEST_CALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-        if argv.iter().any(|arg| arg == "--verenu-hotkey-release") {
-            crate::core::hotkey::notify_release();
-        } else if argv.iter().any(|arg| arg == "--verenu-hotkey-handsfree") {
-            crate::core::hotkey::notify_handless();
-        } else if argv.iter().any(|arg| arg == "--verenu-capture-sub-app") {
-            crate::core::hotkey::notify_capture_sub_app();
+        let gate = self.app.try_state::<Arc<crate::linux_activity::ActivityGate>>();
+        let _activity = if let Some(gate) = gate {
+            match gate.try_enter() {
+                Some(activity) => Some(Arc::new(activity)),
+                None => {
+                    if let Some(result) = self.route.enqueue_if_active(&argv) {
+                        return result;
+                    }
+                    Some(Arc::new(gate.enter().await))
+                }
+            }
         } else {
-            crate::show_main_window(&self.app);
-        }
+            None
+        };
+        dispatch_callback(&self.app, crate::linux_handoff_callbacks::Callback::from_args(&argv));
         Ok(())
+    }
+}
+
+fn dispatch_callback(app: &AppHandle, callback: crate::linux_handoff_callbacks::Callback) {
+    #[cfg(all(test, feature = "native-testing"))]
+    TEST_CALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    match callback {
+        crate::linux_handoff_callbacks::Callback::Release => crate::core::hotkey::notify_release(),
+        crate::linux_handoff_callbacks::Callback::Handsfree => crate::core::hotkey::notify_handless(),
+        crate::linux_handoff_callbacks::Callback::CaptureSubApp => crate::core::hotkey::notify_capture_sub_app(),
+        crate::linux_handoff_callbacks::Callback::Show => crate::show_main_window(app),
     }
 }
 
@@ -201,6 +230,36 @@ pub(crate) enum OwnershipMode {
 }
 
 impl InstanceOwner {
+    #[allow(dead_code)]
+    pub(crate) fn install_callback_queue(
+        &self,
+        queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
+    ) -> Result<(), &'static str> {
+        let mut slot = self.route.queue.lock().unwrap_or_else(|error| error.into_inner());
+        if slot.is_some() {
+            return Err("A restart callback queue is already active");
+        }
+        *slot = Some(CallbackQueueSlot { queue, delivered: None });
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn drain_callback_queue(&self, app: &AppHandle) -> Result<(), String> {
+        let mut slot = self.route.queue.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(active) = slot.as_mut() else { return Ok(()); };
+        while let Some((id, callback)) = active.queue.first().map_err(|error| error.to_string())? {
+            if active.delivered != Some(id) {
+                dispatch_callback(app, callback);
+                active.delivered = Some(id);
+            }
+            if !active.queue.acknowledge(id).map_err(|error| error.to_string())? {
+                return Err("Restart callback queue changed unexpectedly".into());
+            }
+            active.delivered = None;
+        }
+        *slot = None;
+        Ok(())
+    }
     #[allow(dead_code)]
     pub(crate) fn activate_callbacks(
         &self,
@@ -536,6 +595,48 @@ mod tests {
     #[cfg(feature = "native-testing")]
     #[test]
     #[ignore = "requires an isolated graphical and D-Bus session"]
+    fn paused_owner_records_and_drains_callbacks() {
+        use std::sync::Arc;
+        use tauri::Manager;
+
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(gate.clone())
+            .plugin(super::plugin())
+            .build(tauri::generate_context!())
+            .unwrap();
+        let (queue, path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
+        let queue = Arc::new(queue);
+        let owner = app.state::<super::InstanceOwner>();
+        let pause = gate.begin_pause_with(|| owner.install_callback_queue(queue.clone())).unwrap();
+        tauri::async_runtime::block_on(pause.wait_drained());
+        let count = super::test_callback_count();
+        let connection = zbus::blocking::Connection::session().unwrap();
+        let (_, object_path) = super::address(&app.config().identifier);
+        connection.call_method(
+            Some(owner.name.as_str()),
+            object_path.as_str(),
+            Some("org.SingleInstance.DBus"),
+            "ExecuteCallback",
+            &(vec!["--verenu-hotkey-release".to_string()], String::new()),
+        ).unwrap();
+        assert_eq!(super::test_callback_count(), count);
+        assert_eq!(queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Release);
+        owner.drain_callback_queue(app.handle()).unwrap();
+        assert_eq!(super::test_callback_count(), count + 1);
+        assert_eq!(queue.first().unwrap(), None);
+        assert!(gate.try_enter().is_none());
+        drop(pause);
+        drop(owner);
+        drop(app);
+        drop(queue);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires an isolated graphical and D-Bus session"]
     fn tauri_instance_regains_ownership_after_replacement_dies() {
         use std::io::{BufRead, BufReader};
         use std::process::{Command, Stdio};
@@ -709,6 +810,12 @@ mod tests {
                     .unwrap(),
                 RequestNameReply::PrimaryOwner
             );
+            if let Some(path) = std::env::var_os("VERENU_TEST_TRANSFER_QUEUE") {
+                crate::linux_handoff_callbacks::CallbackQueue::open(std::path::Path::new(&path))
+                    .unwrap()
+                    .push(crate::linux_handoff_callbacks::Callback::Handsfree)
+                    .unwrap();
+            }
             eprintln!("replacement-acquired");
             let _ = std::io::stdin().read(&mut [0]);
             return;

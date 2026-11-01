@@ -24,6 +24,16 @@ impl Pause {
     pub(crate) fn belongs_to(&self, gate: &Arc<ActivityGate>) -> bool {
         Arc::ptr_eq(&self.0, gate)
     }
+
+    pub(crate) async fn wait_drained(&self) {
+        loop {
+            let notified = self.0.drained.notified();
+            if self.0.state.lock().expect("activity gate lock").active == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 impl ActivityGate {
@@ -59,22 +69,30 @@ impl ActivityGate {
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn pause(self: &Arc<Self>) -> Result<Pause, &'static str> {
+    pub(crate) fn begin_pause(self: &Arc<Self>) -> Result<Pause, &'static str> {
+        self.begin_pause_with(|| Ok(()))
+    }
+
+    pub(crate) fn begin_pause_with(
+        self: &Arc<Self>,
+        prepare: impl FnOnce() -> Result<(), &'static str>,
+    ) -> Result<Pause, &'static str> {
         {
             let mut state = self.state.lock().expect("activity gate lock");
             if state.paused {
                 return Err("An update restart is already in progress.");
             }
+            prepare()?;
             state.paused = true;
         }
-        let pause = Pause(self.clone());
-        loop {
-            let notified = self.drained.notified();
-            if self.state.lock().expect("activity gate lock").active == 0 {
-                return Ok(pause);
-            }
-            notified.await;
-        }
+        Ok(Pause(self.clone()))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn pause(self: &Arc<Self>) -> Result<Pause, &'static str> {
+        let pause = self.begin_pause()?;
+        pause.wait_drained().await;
+        Ok(pause)
     }
 }
 
@@ -128,6 +146,27 @@ mod tests {
         let _ = waiting.await;
         assert!(gate.try_enter().is_some());
         drop(active);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_drain_wait_does_not_release_its_pause() {
+        let gate = Arc::new(ActivityGate::default());
+        let active = gate.try_enter().unwrap();
+        let pause = gate.begin_pause().unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), pause.wait_drained()).await.is_err());
+        assert!(gate.try_enter().is_none());
+        drop(active);
+        pause.wait_drained().await;
+        assert!(gate.try_enter().is_none());
+        drop(pause);
+        assert!(gate.try_enter().is_some());
+    }
+
+    #[test]
+    fn failed_pause_preparation_leaves_admission_open() {
+        let gate = Arc::new(ActivityGate::default());
+        assert!(gate.begin_pause_with(|| Err("preparation failed")).is_err());
+        assert!(gate.try_enter().is_some());
     }
 
     #[tokio::test]
