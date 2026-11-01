@@ -83,7 +83,7 @@
 
 <h2 class="settings-h">Sub-apps</h2>
 
-<h3 class="settings-subhead first">Capture</h3>
+<h3 class="settings-subhead first">Shortcut</h3>
 
 <div class="setting-row" data-setting-target="sub-apps-shortcut">
   <div>
