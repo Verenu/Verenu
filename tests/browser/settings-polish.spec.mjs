@@ -9,11 +9,13 @@ test('Audio values roll their digits and advanced fades disclose smoothly', asyn
   test.skip(process.platform !== 'linux', 'The volume control is Linux only');
   const previous = await session.invoke('get_setting', { key: 'duck_target' });
   try {
+    await session.invoke('save_setting', { key: 'duck_target', value: 40 });
     await openSettings(page, 'advanced');
     const slider = page.getByRole('slider', { name: 'Volume of audio while dictating' });
-    await slider.fill('40');
     const value = page.locator('.sound-volume-value').first();
     await expect(value.locator('.rolling-sr')).toHaveText('40%');
+    await slider.fill('73');
+    await expect(value.locator('.rolling-sr')).toHaveText('73%');
     await expect(value.locator('.rolling-strip').first()).toHaveCSS('transition-property', 'transform');
 
     const fades = page.getByRole('button', { name: 'Advanced volume fades' });
