@@ -55,8 +55,10 @@ watcher=$!
 parent=$!
 child=''
 launcher=''
+show_launcher=''
 cleanup() {
   if [[ -n "$launcher" ]]; then kill "$launcher" 2>/dev/null || true; fi
+  if [[ -n "$show_launcher" ]]; then kill "$show_launcher" 2>/dev/null || true; fi
   if [[ -n "$child" ]]; then kill "$child" 2>/dev/null || true; fi
   kill "$parent" 2>/dev/null || true
   kill "$watcher" 2>/dev/null || true
@@ -103,16 +105,24 @@ owner_during=$(gdbus call --session --dest org.freedesktop.DBus --object-path /o
 test "$owner_during" = "$(cat "$root/owner-before")"
 window=$(xdotool search --onlyvisible --name Verenu | head -1)
 xdotool windowunmap "$window"
-gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback '[]' ''
+if gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback '[]' '' > "$root/legacy.log" 2>&1; then
+  echo 'Legacy callback unexpectedly succeeded' >&2; exit 1
+fi
+grep -q 'Legacy shortcut callbacks are unsupported' "$root/legacy.log"
 env -u VERENU_HANDOFF_TEST_TRIGGER VERENU_HANDOFF_TEST_LAUNCHER_WAIT="$root/launcher.waiting" \
   "$binary" --verenu-hotkey-release > "$root/launcher.log" 2>&1 &
 launcher=$!
+env -u VERENU_HANDOFF_TEST_TRIGGER VERENU_HANDOFF_TEST_LAUNCHER_WAIT="$root/show.waiting" \
+  "$binary" > "$root/show.log" 2>&1 &
+show_launcher=$!
 for _ in $(seq 1 200); do
-  [[ -e "$root/launcher.waiting" ]] && break
+  [[ -e "$root/launcher.waiting" && -e "$root/show.waiting" ]] && break
   kill -0 "$launcher"
+  kill -0 "$show_launcher"
   sleep .1
 done
 test -s "$root/launcher.waiting"
+test -s "$root/show.waiting"
 touch "$root/trigger.continue"
 for _ in $(seq 1 900); do
   if [[ -e "$root/trigger.error" || -e "$root/trigger.activated" ]]; then break; fi
@@ -120,6 +130,8 @@ for _ in $(seq 1 900); do
 done
 wait "$launcher"
 launcher=''
+wait "$show_launcher"
+show_launcher=''
 if [[ "$mode" = fail ]]; then
   test -s "$root/trigger.error"
   grep -q 'Synthetic late activation failure' "$root/trigger.error"
@@ -127,7 +139,7 @@ if [[ "$mode" = fail ]]; then
   kill -0 "$parent"
   owner_after=$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.GetNameOwner com.verenu.app.SingleInstance)
   test "$owner_after" = "$(cat "$root/owner-before")"
-  gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback "['--verenu-hotkey-release']" ''
+  env -u VERENU_HANDOFF_TEST_TRIGGER "$binary" --verenu-hotkey-release
   for _ in $(seq 1 50); do
     if xdotool search --onlyvisible --name Verenu 2>/dev/null | grep -qx "$window"; then break; fi
     sleep .1
@@ -143,12 +155,12 @@ else
   owner=$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.GetNameOwner com.verenu.app.SingleInstance | cut -d "'" -f 2)
   owner_pid=$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.GetConnectionUnixProcessID "$owner" | sed -E 's/.*uint32 ([0-9]+).*/\1/')
   test "$owner_pid" = "$child"
-  gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback "['--verenu-hotkey-release']" ''
+  env -u VERENU_HANDOFF_TEST_TRIGGER "$binary" --verenu-hotkey-release
   sleep 8
   kill -0 "$child"
   window=$(xdotool search --onlyvisible --name Verenu | head -1)
   xdotool windowunmap "$window"
-  gdbus call --session --dest com.verenu.app.SingleInstance --object-path /com/verenu/app/SingleInstance --method org.SingleInstance.DBus.ExecuteCallback '[]' ''
+  env -u VERENU_HANDOFF_TEST_TRIGGER "$binary"
   for _ in $(seq 1 50); do
     if xdotool search --onlyvisible --name Verenu 2>/dev/null | grep -qx "$window"; then break; fi
     sleep .1

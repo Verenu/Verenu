@@ -17,7 +17,7 @@ pub(crate) type KeyAvailability = BTreeMap<String, bool>;
 // way the original cannot safely resume, or when callback handoff formats
 // change. Schema changes are checked separately. Matching versions promise
 // that probation remains read-only and that rollback can resume the parent.
-const STATE_COMPATIBILITY: &str = "1";
+const STATE_COMPATIBILITY: &str = "2";
 
 fn descends_from(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     for _ in 0..32 {
@@ -1365,13 +1365,8 @@ mod tests {
         let pause = gate.begin_pause_with(|| owner.install_callback_queue(callback_queue.clone())).unwrap();
         tauri::async_runtime::block_on(pause.wait_drained());
         let connection = zbus::blocking::Connection::session().unwrap();
-        connection.call_method(
-            Some("com.verenu.app.SingleInstance"),
-            "/com/verenu/app/SingleInstance",
-            Some("org.SingleInstance.DBus"),
-            "ExecuteCallback",
-            &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-        ).unwrap();
+        crate::linux_single_instance::test_callback(&connection, "com.verenu.app.SingleInstance",
+            "/com/verenu/app/SingleInstance", vec!["--verenu-hotkey-release".into()]).unwrap();
         let owned = ready
             .queue_ownership()
             .expect("replacement did not queue for ownership");
@@ -1379,13 +1374,9 @@ mod tests {
         let (sent, received) = std::sync::mpsc::channel();
         let callback_connection = connection.clone();
         let callback = std::thread::spawn(move || {
-            let result = callback_connection.call_method(
-                Some("com.verenu.app.SingleInstance"),
-                "/com/verenu/app/SingleInstance",
-                Some("org.SingleInstance.DBus"),
-                "ExecuteCallback",
-                &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
-            );
+            let result = crate::linux_single_instance::test_callback(&callback_connection,
+                "com.verenu.app.SingleInstance", "/com/verenu/app/SingleInstance",
+                vec!["--verenu-hotkey-handsfree".into()]);
             let _ = sent.send(result.is_ok());
         });
         assert!(received.recv_timeout(Duration::from_secs(5)).unwrap());
@@ -1425,15 +1416,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks_before + 2);
-        connection
-            .call_method(
-                Some("com.verenu.app.SingleInstance"),
-                "/com/verenu/app/SingleInstance",
-                Some("org.SingleInstance.DBus"),
-                "ExecuteCallback",
-                &(vec!["--verenu-hotkey-release".to_string()], String::new()),
-            )
-            .unwrap();
+        crate::linux_single_instance::test_callback(&connection, "com.verenu.app.SingleInstance",
+            "/com/verenu/app/SingleInstance", vec!["--verenu-hotkey-release".into()]).unwrap();
         assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), original_db);
         assert_eq!(
             std::fs::read(data.join("verenu.db-wal")).unwrap(),
@@ -1555,11 +1539,8 @@ mod tests {
         let descriptor = data.join("agent-session.json");
         assert!(descriptor.exists(), "replacement did not publish its paused agent");
         let callbacks = crate::linux_single_instance::test_callback_count();
-        connection.call_method(
-            Some("com.verenu.app.SingleInstance"), "/com/verenu/app/SingleInstance",
-            Some("org.SingleInstance.DBus"), "ExecuteCallback",
-            &(vec!["--verenu-hotkey-handsfree".to_string()], String::new()),
-        ).unwrap();
+        crate::linux_single_instance::test_callback(&connection, "com.verenu.app.SingleInstance",
+            "/com/verenu/app/SingleInstance", vec!["--verenu-hotkey-handsfree".into()]).unwrap();
         assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
         assert_eq!(callback_queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Handsfree);
         drop(staged);
