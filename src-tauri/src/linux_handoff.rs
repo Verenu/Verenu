@@ -199,6 +199,7 @@ async fn prepare_inner(app: &AppHandle) -> Result<PreparedHandoff, String> {
         }
     }
     crate::pipeline::failover::ensure_no_pending_handoff(&crate::pipeline::failover::failover_dir())?;
+    crate::media::nvidia_reuse::ensure_restart_idle()?;
 
     let sync = app
         .try_state::<crate::sync::SyncManager>()
@@ -390,6 +391,10 @@ mod tests {
             drop(tokio::time::timeout(Duration::from_secs(10), gate.enter()).await.unwrap());
             assert_eq!(std::fs::read(recovery.join("pending")).unwrap(), b"synthetic recovery marker");
             std::fs::remove_dir_all(recovery).unwrap();
+            let worker = crate::media::nvidia_reuse::test_active_worker();
+            assert!(matches!(prepare(app.handle()).await, Err(error) if error.contains("finishing a recording")));
+            drop(worker);
+            drop(tokio::time::timeout(Duration::from_secs(10), gate.enter()).await.unwrap());
             crate::core::hotkey::test_set_gesture_active(true);
             assert!(matches!(
                 prepare(app.handle()).await,

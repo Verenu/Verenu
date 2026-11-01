@@ -14,6 +14,14 @@ pub struct RuntimeStatus {
 static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 static REALTIME_FAILED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "linux")]
+pub(crate) fn ensure_restart_idle() -> Result<(), String> {
+    if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 {
+        return Err("NVIDIA RE-USE is finishing a recording. Try restarting again shortly.".into());
+    }
+    Ok(())
+}
+
 fn status_cell() -> &'static Mutex<RuntimeStatus> {
     static STATUS: OnceLock<Mutex<RuntimeStatus>> = OnceLock::new();
     STATUS.get_or_init(|| Mutex::new(RuntimeStatus { state: "unknown", message: String::new(), has_files: false }))
@@ -166,6 +174,12 @@ impl RuntimeUse {
         ACTIVE_WORKERS.fetch_add(1, Ordering::AcqRel);
         Ok(Self)
     }
+}
+
+#[cfg(all(test, feature = "native-testing", target_os = "linux"))]
+pub(crate) fn test_active_worker() -> RuntimeUse {
+    ACTIVE_WORKERS.fetch_add(1, Ordering::AcqRel);
+    RuntimeUse
 }
 
 #[tauri::command]
@@ -356,6 +370,11 @@ mod tests {
             ] {
                 assert!(result.unwrap_err().contains("preparing to restart"));
             }
+            super::ACTIVE_WORKERS.fetch_add(1, super::Ordering::AcqRel);
+            let worker = super::RuntimeUse;
+            assert!(super::ensure_restart_idle().unwrap_err().contains("finishing a recording"));
+            drop(worker);
+            assert!(super::ensure_restart_idle().is_ok());
             drop(pause);
         });
     }
