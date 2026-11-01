@@ -138,6 +138,12 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                 let _ = startup.fail("Could not create replacement windows".into());
                 return Err(std::io::Error::other("replacement windows unavailable").into());
             }
+            let window = app.get_webview_window("main").expect("main window was checked");
+            crate::system::linux_webview::configure_window(&window);
+            if let Err(error) = crate::system::linux_titlebar::enable(&window) {
+                let _ = startup.fail(format!("Could not configure replacement window: {error}"));
+                return Err(std::io::Error::other("replacement window setup failed").into());
+            }
             let frontends = startup.backend_ready().map_err(std::io::Error::other)?;
             let handle = app.handle().clone();
             std::thread::spawn(move || {
