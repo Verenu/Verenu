@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::sync::{atomic::{AtomicUsize, Ordering}, Mutex, OnceLock};
+use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Mutex, OnceLock};
 
 const MIN_SETUP_SPACE: u64 = 20 * 1024 * 1024 * 1024;
 const STORAGE_ERROR: &str = "Not enough disk space. NVIDIA RE-USE setup needs at least 20 GiB of free space.";
@@ -12,6 +12,7 @@ pub struct RuntimeStatus {
 }
 
 static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static REALTIME_FAILED: AtomicBool = AtomicBool::new(false);
 
 fn status_cell() -> &'static Mutex<RuntimeStatus> {
     static STATUS: OnceLock<Mutex<RuntimeStatus>> = OnceLock::new();
@@ -24,7 +25,7 @@ fn set_status(state: &'static str, message: impl Into<String>) {
     }
 }
 
-fn runtime_dir() -> std::path::PathBuf {
+pub(crate) fn runtime_dir() -> std::path::PathBuf {
     crate::app_data_dir().join("runtimes").join("nvidia-reuse-v1")
 }
 
@@ -43,6 +44,11 @@ pub fn mark_failed() {
             status.message = "NVIDIA RE-USE failed. The original recording was used; check the runtime and GPU.".into();
         }
     }
+}
+
+pub fn mark_realtime_failed() {
+    REALTIME_FAILED.store(true, Ordering::Release);
+    let _ = std::fs::remove_file(runtime_dir().join("realtime-model/ready"));
 }
 
 #[tauri::command]
@@ -124,6 +130,7 @@ pub async fn nvidia_reuse_remove() -> Result<(), String> {
         let mut status = status_cell().lock().map_err(|_| "Runtime status unavailable")?;
         begin_removal(&mut status, ACTIVE_WORKERS.load(Ordering::Acquire))?;
     }
+    crate::media::realtime_reuse::unload().await;
     let result = tokio::fs::remove_dir_all(runtime_dir()).await;
     match result {
         Ok(()) => {},
@@ -142,15 +149,68 @@ pub async fn nvidia_reuse_remove() -> Result<(), String> {
     Ok(())
 }
 
-struct RuntimeUse;
+pub(crate) struct RuntimeUse;
 
 impl RuntimeUse {
-    fn acquire() -> anyhow::Result<Self> {
+    pub(crate) fn acquire() -> anyhow::Result<Self> {
         let status = status_cell().lock().map_err(|_| anyhow::anyhow!("Runtime status unavailable"))?;
         anyhow::ensure!(status.state == "ready", "NVIDIA RE-USE is not ready");
         ACTIVE_WORKERS.fetch_add(1, Ordering::AcqRel);
         Ok(Self)
     }
+}
+
+#[tauri::command]
+pub fn nvidia_reuse_realtime_ready() -> bool {
+    !REALTIME_FAILED.load(Ordering::Acquire) && runtime_dir().join("realtime-model/ready").is_file() && runtime_dir().join("realtime_worker.py").is_file()
+}
+
+#[tauri::command]
+pub async fn nvidia_reuse_realtime_install() -> Result<(), String> {
+    {
+        let mut status = status_cell().lock().map_err(|_| "Runtime status unavailable")?;
+        if status.state != "ready" { return Err("Set up NVIDIA RE-USE first.".into()); }
+        if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 { return Err("Wait for the current recording to finish.".into()); }
+        *status = RuntimeStatus { state: "installing", message: "Downloading the research-only real-time model…".into(), has_files: true };
+    }
+    crate::media::realtime_reuse::unload().await;
+    tauri::async_runtime::spawn(async {
+        let dir = runtime_dir();
+        let result: anyhow::Result<()> = async {
+            tokio::fs::write(dir.join("realtime_worker.py"), include_str!("../../resources/nvidia-reuse/realtime_worker.py")).await?;
+            tokio::fs::write(dir.join("install-realtime-model.sh"), include_str!("../../resources/nvidia-reuse/install-realtime-model.sh")).await?;
+            let model = dir.join("realtime-model");
+            let _ = tokio::fs::remove_file(model.join("ready")).await;
+            let status = tokio::time::timeout(std::time::Duration::from_secs(900),
+                tokio::process::Command::new("sh").arg(dir.join("install-realtime-model.sh")).arg(&model)
+                    .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                    .kill_on_drop(true).status()).await??;
+            anyhow::ensure!(status.success(), "real-time model download failed");
+            set_status("installing", "Testing the real-time model and GPU…");
+            let status = tokio::time::timeout(std::time::Duration::from_secs(120),
+                tokio::process::Command::new(dir.join(".venv/bin/python"))
+                    .arg(dir.join("realtime_worker.py")).arg("--probe")
+                    .env("VERENU_REALTIME_MODEL_DIR", &model).env("HF_HUB_OFFLINE", "1")
+                    .env("HF_HOME", dir.join("hf-cache")).env("TORCH_HOME", dir.join("torch-cache"))
+                    .env("TRITON_CACHE_DIR", dir.join("triton-cache"))
+                    .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                    .kill_on_drop(true).status()).await??;
+            anyhow::ensure!(status.success(), "real-time GPU self-test failed");
+            tokio::fs::write(model.join("ready"), "ready").await?;
+            Ok(())
+        }.await;
+        match result {
+            Ok(()) => {
+                REALTIME_FAILED.store(false, Ordering::Release);
+                set_status("ready", "NVIDIA RE-USE is ready.");
+            },
+            Err(_) => {
+                mark_realtime_failed();
+                set_status("ready", "NVIDIA RE-USE is ready; real-time setup needs attention.");
+            },
+        }
+    });
+    Ok(())
 }
 
 impl Drop for RuntimeUse {
