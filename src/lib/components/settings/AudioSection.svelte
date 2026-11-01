@@ -1,11 +1,124 @@
+<script module lang="ts">
+  let enableReuseAfterSetup = false;
+</script>
+
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import { onDestroy } from 'svelte';
   import Toggle from '../Toggle.svelte';
+  import Callout from '../Callout.svelte';
+  import LocalDownloadProgress from './LocalDownloadProgress.svelte';
   import { isAndroid, isLinux, isMac, isWindows } from '../../platform';
   import { booleanSettingHandler, loadSettingsSnapshot, saveSetting, saveSettingIfUnchanged } from '../../settings';
   import { MOTION_MS, motionMs } from '../../motion';
   import { defaultMicGain, micGainAdvice, shouldPersistMicGain } from './audioGain';
+  import { invoke } from '../../tauri';
+
+  type ReuseStatus = { state: 'unknown' | 'not_installed' | 'unavailable' | 'checking' | 'installing' | 'removing' | 'ready' | 'error'; message: string; has_files?: boolean };
+  let reuseStatus = $state<ReuseStatus>({ state: 'unknown', message: 'Checking availability…' });
+  let reuseEnabled = $state(false);
+  let reuseError = $state(false);
+  let reuseTimer: ReturnType<typeof setTimeout> | null = null;
+  let reuseDisposed = false;
+
+  let reuseResolved = $state(false);
+  let reuseEligible = $state(false);
+  let reuseCleanupOnly = $state(false);
+  let reuseConfirmRemove = $state(false);
+  let reuseRemoveError = $state('');
+
+  function reuseErrorMessage(err: unknown, fallback: string): string {
+    const detail = typeof err === 'string' ? err : err instanceof Error ? err.message : '';
+    return detail.trim() || fallback;
+  }
+
+  async function refreshReuseStatus() {
+    try { reuseStatus = await invoke<ReuseStatus | null>('nvidia_reuse_status') ?? { state: 'unavailable', message: 'NVIDIA RE-USE is available in the desktop app.' }; }
+    catch (err) { reuseStatus = { state: 'error', message: reuseErrorMessage(err, 'Could not check the NVIDIA runtime.') }; }
+    if (enableReuseAfterSetup && reuseStatus.state === 'ready') {
+      enableReuseAfterSetup = false;
+      if (!noiseReduction) await handleNoiseReduction(true);
+      if (noiseReduction) await handleReuse(true);
+    } else if (reuseStatus.state === 'error' || reuseStatus.state === 'unavailable') {
+      enableReuseAfterSetup = false;
+    }
+    if (reuseStatus.state === 'unavailable') {
+      reuseEligible = false;
+      reuseCleanupOnly = !!reuseStatus.has_files;
+    } else if (['not_installed', 'installing', 'ready'].includes(reuseStatus.state)) {
+      reuseEligible = true;
+      reuseCleanupOnly = false;
+    } else if (reuseStatus.state === 'error' && reuseResolved && !reuseCleanupOnly) reuseEligible = true;
+    reuseResolved = true;
+    if (!reuseDisposed) {
+      const delay = ['unknown', 'checking', 'installing', 'removing'].includes(reuseStatus.state) ? 1500 : 10000;
+      reuseTimer = setTimeout(() => void refreshReuseStatus(), delay);
+    }
+  }
+
+  async function installReuse() {
+    if (reuseTimer) clearTimeout(reuseTimer);
+    try { await invoke('nvidia_reuse_install'); await refreshReuseStatus(); }
+    catch (err) {
+      enableReuseAfterSetup = false;
+      reuseStatus = { state: 'error', message: reuseErrorMessage(err, 'Could not start runtime setup.') };
+      if (!reuseDisposed) reuseTimer = setTimeout(() => void refreshReuseStatus(), 10000);
+    }
+  }
+
+  async function checkReuse() {
+    if (reuseTimer) clearTimeout(reuseTimer);
+    reuseStatus = { state: 'checking', message: 'Testing the GPU and model…' };
+    try { await invoke('nvidia_reuse_check'); await refreshReuseStatus(); }
+    catch (err) {
+      reuseStatus = { state: 'error', message: reuseErrorMessage(err, 'Could not check the NVIDIA runtime.') };
+      if (!reuseDisposed) reuseTimer = setTimeout(() => void refreshReuseStatus(), 10000);
+    }
+  }
+
+  const reuseBusy = $derived(['checking', 'installing', 'removing'].includes(reuseStatus.state));
+  const reuseCanRemove = $derived(!!reuseStatus.has_files && !reuseBusy);
+  const reuseDesc = $derived(
+    reuseStatus.state === 'ready' ? 'Ready. Enhances audio on your NVIDIA GPU before transcription.'
+    : reuseStatus.state === 'installing' ? 'Downloading and setting up the runtime…'
+    : reuseStatus.state === 'checking' ? 'Testing the GPU and model…'
+    : reuseStatus.state === 'removing' ? 'Deleting runtime files…'
+    : reuseStatus.has_files ? 'Setup is incomplete. Turn on to finish, or delete the files.'
+    : 'Experimental GPU enhancement. Turning on downloads several GB and needs 20 GiB of free disk space.'
+  );
+  const reuseProgressLabel = $derived(
+    reuseStatus.state === 'removing' ? 'Deleting' : reuseStatus.state === 'checking' ? 'Testing' : 'Setting up'
+  );
+
+  const handleReuse = booleanSettingHandler('nvidia_reuse_enabled', value => reuseEnabled = value, () => reuseError = true);
+
+  async function removeReuse() {
+    reuseConfirmRemove = false;
+    reuseRemoveError = '';
+    enableReuseAfterSetup = false;
+    if (reuseTimer) clearTimeout(reuseTimer);
+    if (reuseEnabled) await handleReuse(false);
+    if (reuseEnabled) {
+      reuseRemoveError = 'Could not turn off NVIDIA RE-USE, so the files were not deleted.';
+      void refreshReuseStatus();
+      return;
+    }
+    reuseStatus = { ...reuseStatus, state: 'removing', message: 'Deleting runtime files…' };
+    try { await invoke('nvidia_reuse_remove'); }
+    catch (err) { reuseRemoveError = reuseErrorMessage(err, 'Could not delete the NVIDIA runtime files.'); }
+    await refreshReuseStatus();
+  }
+
+  async function changeReuse(value: boolean) {
+    reuseRemoveError = '';
+    if (value && reuseStatus.state !== 'ready') {
+      enableReuseAfterSetup = true;
+      await installReuse();
+      return;
+    }
+    if (value && !noiseReduction) await handleNoiseReduction(true);
+    if (!value || noiseReduction) await handleReuse(value);
+  }
 
   let noiseReduction = $state(true);
   let echoCancellation = $state(false);
@@ -30,13 +143,14 @@
 
   async function loadSettings() {
     try {
-      const { noise_reduction: nr, echo_cancellation: echo, mute_audio: mute, exclusive_mic: exclusive,
+      const { noise_reduction: nr, nvidia_reuse_enabled: reuse, echo_cancellation: echo, mute_audio: mute, exclusive_mic: exclusive,
         pause_media_during_dictation: pauseMedia, mic_mute_button_dictation: micMute,
         play_start_stop_sounds: legacySounds, sound_effects_volume: savedVolume,
         mic_gain: savedGain, duck_audio: duck, duck_target: target,
         duck_fade_down_ms: fadeDown, duck_fade_up_ms: fadeUp,
         duck_fade_up_curve: upCurve } = await loadSettingsSnapshot();
       noiseReduction = nr ?? true;
+      reuseEnabled = reuse ?? false;
       echoCancellation = echo ?? false;
       duckTarget = isLinux && !isAndroid && mute ? 0 : duck ? target ?? 25 : 100;
       savedDuckTarget = duckTarget;
@@ -138,11 +252,14 @@
   }
 
   onDestroy(() => {
+    reuseDisposed = true;
+    if (reuseTimer) clearTimeout(reuseTimer);
     if (micGainSaveTimer) clearTimeout(micGainSaveTimer);
     void persistMicGain();
   });
 
   loadSettings();
+  void refreshReuseStatus();
 </script>
 
 <h2 class="settings-h">
@@ -194,9 +311,52 @@
   </div>
 {/if}
 <div class="setting-row" data-setting-target="audio-noise">
-  <div><div class="label">Noise reduction</div><div class="desc">Suppress background noise before transcription (RNNoise)</div></div>
+  <div><div class="label">Noise reduction</div><div class="desc">{reuseEnabled && reuseStatus.state === 'ready' ? 'Enhance audio before transcription with NVIDIA RE-USE' : 'Suppress background noise before transcription (RNNoise)'}</div></div>
   <Toggle checked={noiseReduction} onchange={handleNoiseReduction} label="Noise reduction" bind:error={noiseReductionError} />
 </div>
+
+{#if reuseResolved && ((reuseEligible && reuseStatus.state !== 'unavailable') || reuseCleanupOnly)}
+  <div class="reuse" data-setting-target="audio-nvidia-reuse" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
+    <div class="setting-row">
+      {#if reuseCleanupOnly}
+        <div><div class="label">Downloaded NVIDIA RE-USE files</div><div class="desc">A compatible NVIDIA GPU is unavailable. You can delete the downloaded files.</div></div>
+      {:else}
+        <div>
+          <div class="label">NVIDIA RE-USE <span class="reuse-tag">Experimental</span></div>
+          <div class="desc">{reuseDesc}</div>
+        </div>
+        <Toggle checked={reuseEnabled} onchange={changeReuse} label="Use NVIDIA RE-USE" disabled={reuseBusy} bind:error={reuseError} />
+      {/if}
+    </div>
+    {#if reuseBusy}
+      <div transition:slide={{ duration: motionMs(MOTION_MS.base) }} role="status" aria-live="polite">
+        <LocalDownloadProgress stage="downloading" label={reuseProgressLabel} indeterminate />
+        {#if reuseStatus.message}<div class="desc reuse-note">{reuseStatus.message}</div>{/if}
+      </div>
+    {/if}
+    {#if reuseStatus.state === 'error' && !reuseRemoveError && !reuseCleanupOnly}
+      <div class="reuse-extra" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
+        <Callout severity="error" compact title="NVIDIA RE-USE needs attention" action={{ label: 'Retry setup', onclick: () => changeReuse(true) }} secondaryAction={{ label: 'Check again', onclick: checkReuse }}>{reuseStatus.message}</Callout>
+      </div>
+    {/if}
+    {#if reuseRemoveError}
+      <div class="reuse-extra" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
+        <Callout severity="error" compact title="Could not delete runtime" onDismiss={() => (reuseRemoveError = '')}>{reuseRemoveError}</Callout>
+      </div>
+    {/if}
+    {#if reuseCanRemove}
+      <div class="reuse-actions" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
+        {#if reuseConfirmRemove}
+          <span class="desc">Delete the downloaded runtime{reuseEnabled ? ' and turn off NVIDIA RE-USE' : ''}?</span>
+          <button type="button" class="btn-danger btn-compact" onclick={removeReuse}>Delete files</button>
+          <button type="button" class="btn-ghost btn-compact" onclick={() => (reuseConfirmRemove = false)}>Cancel</button>
+        {:else}
+          <button type="button" class="btn-ghost btn-compact" onclick={() => (reuseConfirmRemove = true)}>Delete downloaded files</button>
+        {/if}
+      </div>
+    {/if}
+  </div>
+{/if}
 
 <h3 class="settings-subhead">While you dictate</h3>
 {#if !isLinux || isAndroid}
@@ -423,6 +583,20 @@
   .sound-volume-ticks span:first-child { left: 0; }
   .sound-volume-ticks span:nth-child(2) { left: 50%; transform: translateX(-50%); }
   .sound-volume-ticks span:last-child { right: 0; }
+
+  .reuse-tag {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-size: 10.5px;
+    font-weight: 500;
+    vertical-align: 1px;
+  }
+  .reuse-note { margin-top: 6px; }
+  .reuse-extra { margin-top: 8px; }
+  .reuse-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 
   .legacy-label {
     position: absolute;

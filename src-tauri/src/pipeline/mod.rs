@@ -223,7 +223,8 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
         return Err(anyhow::anyhow!("Failed to stop recording"));
     };
     let StoppedCapture {
-        audio: captured_audio,
+        audio: mut captured_audio,
+        nvidia_reuse,
         rms,
         raw_rms,
         stream_error,
@@ -241,6 +242,18 @@ pub async fn transcribe_input_only(app: AppHandle, state: SharedState) -> anyhow
             anyhow::bail!("Recording too short");
         }
         anyhow::bail!("Audio too quiet - check your mic");
+    }
+
+    if nvidia_reuse && crate::media::nvidia_reuse::selected_and_ready() {
+        if let Ok(wav) = captured_audio.wav_bytes() {
+            match crate::media::nvidia_reuse::enhance(wav, captured_audio.samples_16k.len()).await {
+                Ok(samples) => captured_audio = CapturedAudio::from_samples(samples, 16_000, captured_audio.duration_ms),
+                Err(_) => {
+                    crate::media::nvidia_reuse::mark_failed();
+                    log::warn!("pipeline: NVIDIA RE-USE failed; using the original recording");
+                },
+            }
+        }
     }
 
     let cfg = store::load_pipeline_config(&settings_store);
@@ -505,6 +518,7 @@ async fn run_pipeline_with_delivery(
         let rms = audio::rms_f32(&input.audio.samples_16k);
         Some(StoppedCapture {
             audio: input.audio,
+            nvidia_reuse: audio_cfg.noise_reduction && audio_cfg.nvidia_reuse_enabled,
             rms,
             raw_rms: rms,
             stream_error: false,
@@ -522,6 +536,7 @@ async fn run_pipeline_with_delivery(
     };
     let StoppedCapture {
         audio: mut captured_audio,
+        nvidia_reuse,
         mut rms,
         mut raw_rms,
         stream_error,
@@ -534,6 +549,7 @@ async fn run_pipeline_with_delivery(
         state::leave_stopping_if_owned(&state, generation);
         return;
     }
+    let has_prepend = prepend_audio.is_some();
     if let Some(prev) = prepend_audio {
         let (merged, merged_rms, merged_raw_rms) =
             match merge_prepend_audio(prev, captured_audio, active_gain) {
@@ -622,6 +638,38 @@ async fn run_pipeline_with_delivery(
     if !state::install_processing(&state, generation, active) {
         telemetry.cancelled();
         return;
+    }
+
+    if nvidia_reuse && !has_prepend {
+        if crate::media::nvidia_reuse::selected_and_ready() {
+            let reuse_started = std::time::Instant::now();
+            let enhanced = match captured_audio.wav_bytes() {
+                Ok(wav) => {
+                    tokio::select! {
+                        result = crate::media::nvidia_reuse::enhance(wav, captured_audio.samples_16k.len()) => Some(result),
+                        _ = wait_for_cancel(&mut cancel_rx) => None,
+                    }
+                }
+                Err(error) => Some(Err(error)),
+            };
+            match enhanced {
+                Some(Ok(samples)) => {
+                    log::info!("pipeline: NVIDIA RE-USE completed elapsed_ms={}", reuse_started.elapsed().as_millis());
+                    captured_audio = CapturedAudio::from_samples(samples, 16_000, captured_audio.duration_ms);
+                }
+                Some(Err(_)) => {
+                    crate::media::nvidia_reuse::mark_failed();
+                    log::warn!("pipeline: NVIDIA RE-USE failed; using the original recording");
+                },
+                None => {
+                    telemetry.cancelled();
+                    state::leave_processing_if_owned(&state, generation);
+                    return;
+                }
+            }
+        } else {
+            log::warn!("pipeline: NVIDIA RE-USE unavailable; using the original recording");
+        }
     }
 
     let stage_config = std::time::Instant::now();
