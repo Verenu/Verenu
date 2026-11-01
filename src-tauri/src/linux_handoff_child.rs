@@ -284,6 +284,14 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             handle.exit(1);
                             return;
                         }
+                        let _prepared_sync = match handle.state::<crate::sync::SyncManager>().prepare_for_handoff() {
+                            Ok(sync) => sync,
+                            Err(error) => {
+                                let _ = services.fail(format!("Replacement sync could not prepare: {error}"));
+                                handle.exit(1);
+                                return;
+                            }
+                        };
                         let _ = services.fail("Replacement services are not yet verified".into());
                     }
                 } else {

@@ -118,6 +118,13 @@ pub struct SyncManager {
     pub(crate) inner: Arc<Inner>,
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) struct PreparedSync {
+    identity: identity::DeviceIdentity,
+    fallback_listener: std::net::TcpListener,
+    server_config: Arc<rustls::ServerConfig>,
+}
+
 pub(crate) struct Inner {
     pub db: DbHandle,
     pub app: AppHandle,
@@ -336,7 +343,121 @@ mod handoff_tests {
 
     #[test]
     #[ignore = "requires a private desktop"]
+    fn sync_preparation_reserves_a_listener_without_changing_identity_or_database() {
+        let directory = std::env::temp_dir().join(format!("verenu-sync-handoff-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let previous = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &directory);
+        let identity = crate::sync::identity::load_or_create(&directory, None).unwrap();
+        let certificate = std::fs::read(directory.join("sync-identity.der")).unwrap();
+        let key = crate::sync::secrets::load_identity_key(&directory).unwrap();
+        let app = tauri::Builder::default().any_thread().build(tauri::generate_context!()).unwrap();
+        let db = crate::data::db::open(":memory:").unwrap();
+        {
+            let conn = db.lock().unwrap();
+            crate::sync::store::ensure_self_identity(&conn, &identity.uuid, &identity.name).unwrap();
+        }
+        let changes = db.lock().unwrap().total_changes();
+        let manager = SyncManager::new_unstarted(app.handle().clone(), db.clone());
+        let prepared = manager.prepare_for_handoff().unwrap();
+        let address = prepared.fallback_listener.local_addr().unwrap();
+        assert!(std::net::TcpListener::bind(address).is_err());
+        assert_eq!(db.lock().unwrap().total_changes(), changes);
+        assert_eq!(std::fs::read(directory.join("sync-identity.der")).unwrap(), certificate);
+        assert!(crate::sync::secrets::load_identity_key(&directory).unwrap() == key);
+        drop(prepared);
+        assert!(std::net::TcpListener::bind(address).is_ok());
+        crate::sync::secrets::delete_identity_key(&directory);
+        assert!(manager.prepare_for_handoff().is_err());
+        assert!(crate::sync::secrets::load_identity_key(&directory).is_none());
+        drop(manager);
+        drop(app);
+        match previous {
+            Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
+            None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a private desktop and isolated network namespace"]
+    fn prepared_sync_uses_reserved_listener_when_preferred_port_is_busy() {
+        let directory = std::env::temp_dir().join(format!("verenu-sync-activation-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let previous = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &directory);
+        let identity = crate::sync::identity::load_or_create(&directory, None).unwrap();
+        let preferred = listener_port_for_uuid(&identity.uuid);
+        let occupied = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, preferred)).unwrap();
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(gate).build(tauri::generate_context!()).unwrap();
+        let db = crate::data::db::open(":memory:").unwrap();
+        {
+            let conn = db.lock().unwrap();
+            crate::sync::store::ensure_self_identity(&conn, &identity.uuid, &identity.name).unwrap();
+        }
+        let manager = SyncManager::new_unstarted(app.handle().clone(), db);
+        let prepared = manager.prepare_for_handoff().unwrap();
+        let fallback_port = prepared.fallback_listener.local_addr().unwrap().port();
+        let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+        tauri::async_runtime::block_on(async {
+            let worker = manager.activate_after_handoff(prepared, &parent_exited).unwrap();
+            tokio::time::timeout(Duration::from_secs(15), worker).await.unwrap().unwrap();
+            assert!(manager.inner.available.load(Ordering::Relaxed));
+            assert_eq!(manager.inner.listener_port.load(Ordering::Relaxed), fallback_port);
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, fallback_port)),
+            ).await.unwrap().unwrap();
+        });
+        drop(occupied);
+        drop(manager);
+        drop(app);
+        match previous {
+            Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
+            None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires a private desktop and isolated network namespace"]
+    fn failed_sync_initialization_does_not_leave_a_listener_active() {
+        let identity = crate::sync::identity::generate_for_tests();
+        let preferred = listener_port_for_uuid(&identity.uuid);
+        let occupied = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, preferred)).unwrap();
+        let fallback_listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        fallback_listener.set_nonblocking(true).unwrap();
+        let fallback_address = fallback_listener.local_addr().unwrap();
+        let server_config = crate::sync::transport::server_config(identity.cert_der().clone(), identity.tls_key()).unwrap();
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(gate).build(tauri::generate_context!()).unwrap();
+        let db = crate::data::db::open(":memory:").unwrap();
+        {
+            let conn = db.lock().unwrap();
+            crate::sync::store::ensure_self_identity(&conn, &identity.uuid, &identity.name).unwrap();
+            conn.execute_batch("DROP TABLE lifetime_stats;").unwrap();
+        }
+        let manager = SyncManager::new_unstarted(app.handle().clone(), db);
+        let prepared = PreparedSync { identity, fallback_listener, server_config };
+        assert!(tauri::async_runtime::block_on(manager.initialize_prepared(prepared)).is_err());
+        assert!(!manager.inner.available.load(Ordering::Relaxed));
+        assert!(std::net::TcpListener::bind(fallback_address).is_ok());
+        drop(occupied);
+    }
+
+    #[test]
+    #[ignore = "requires a private desktop"]
     fn handoff_sync_activation_starts_at_most_one_gated_worker() {
+        fn prepared() -> PreparedSync {
+            let identity = crate::sync::identity::generate_for_tests();
+            let server_config = crate::sync::transport::server_config(
+                identity.cert_der().clone(), identity.tls_key(),
+            ).unwrap();
+            let fallback_listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+            fallback_listener.set_nonblocking(true).unwrap();
+            PreparedSync { identity, fallback_listener, server_config }
+        }
         let app = tauri::Builder::default()
             .any_thread()
             .build(tauri::generate_context!())
@@ -349,8 +470,8 @@ mod handoff_tests {
             let pause = gate.pause().await.unwrap();
             assert!(!manager.inner.initialization_started.load(Ordering::Acquire));
             let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-            let worker = manager.activate_after_handoff(&parent_exited).unwrap();
-            assert!(manager.activate_after_handoff(&parent_exited).is_none());
+            let worker = manager.activate_after_handoff(prepared(), &parent_exited).unwrap();
+            assert!(manager.activate_after_handoff(prepared(), &parent_exited).is_none());
             tokio::task::yield_now().await;
             assert!(!worker.inner().is_finished());
             assert!(!manager.inner.available.load(Ordering::Acquire));
@@ -459,6 +580,26 @@ impl SyncManager {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    pub(crate) fn prepare_for_handoff(&self) -> Result<PreparedSync> {
+        let (uuid, name) = {
+            let conn = self.lock_db()?;
+            let uuid = sync_store::self_uuid(&conn)?
+                .ok_or_else(|| anyhow!("Sync identity is unavailable for restart"))?;
+            ChangeStamp::read(&conn)?;
+            (uuid, stored_device_name(&conn)?)
+        };
+        let mut identity = identity::load_existing(&self.inner.data_dir, uuid)?;
+        if let Some(name) = name.filter(|name| !name.trim().is_empty()) {
+            identity.name = name;
+        }
+        let server_config = transport::server_config(identity.cert_der().clone(), identity.tls_key())?;
+        let fallback_listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))?;
+        fallback_listener.set_nonblocking(true)?;
+        Ok(PreparedSync { identity, fallback_listener, server_config })
+    }
+
     pub(crate) fn new_unstarted(app: AppHandle, db: DbHandle) -> SyncManager {
         let data_dir = crate::app_setup::app_data_dir();
         let inner = Arc::new(Inner {
@@ -512,9 +653,47 @@ impl SyncManager {
     #[allow(dead_code)]
     pub(crate) fn activate_after_handoff(
         &self,
+        prepared: PreparedSync,
         _parent_exited: &crate::linux_handoff_transport::ParentExited,
     ) -> Option<tauri::async_runtime::JoinHandle<()>> {
-        self.start_initialization()
+        if self.inner.initialization_started.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let init = self.clone();
+        Some(tauri::async_runtime::spawn(async move {
+            if let Err(err) = init.initialize_prepared(prepared).await {
+                init.inner.listener_failed.store(true, Ordering::Relaxed);
+                log::error!("sync: disabled - {err:#}");
+            }
+        }))
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn initialize_prepared(&self, prepared: PreparedSync) -> Result<()> {
+        let _activity = crate::commands::linux_activity(&self.inner.app).await;
+        let PreparedSync { mut identity, fallback_listener, server_config } = prepared;
+        {
+            let conn = self.lock_db()?;
+            anyhow::ensure!(
+                sync_store::self_uuid(&conn)?.as_deref() == Some(identity.uuid.as_str()),
+                "Sync identity changed during restart"
+            );
+            if let Some(name) = stored_device_name(&conn)?.filter(|name| !name.trim().is_empty()) {
+                identity.name = name;
+            }
+            sync_store::ensure_self_identity(&conn, &identity.uuid, &identity.name)?;
+        }
+        let preferred_port = listener_port_for_uuid(&identity.uuid);
+        *self.inner.identity.write().expect("identity lock") = Some(Arc::new(identity));
+        let listener = match TcpListener::bind(("0.0.0.0", preferred_port)).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                log::warn!("sync: preferred listener port is unavailable after restart: {error}");
+                TcpListener::from_std(fallback_listener)
+                    .map_err(|error| anyhow!("could not activate reserved sync listener: {error}"))?
+            }
+        };
+        self.finish_initialization(listener, server_config).await
     }
 
     async fn initialize(&self) -> Result<()> {
@@ -569,10 +748,26 @@ impl SyncManager {
             }
             Err(err) => return Err(anyhow!("could not bind sync listener: {err}")),
         };
+        self.finish_initialization(listener, server_cfg).await
+    }
+
+    async fn finish_initialization(
+        &self,
+        listener: TcpListener,
+        server_cfg: Arc<rustls::ServerConfig>,
+    ) -> Result<()> {
         let port = listener
             .local_addr()
             .map_err(|e| anyhow!("sync listener has no address: {e}"))?
             .port();
+        if let Err(err) = self.reconcile_stale_context_targets() {
+            log::warn!("sync: stale context target reconciliation failed: {err:#}");
+        }
+        let initial_change = {
+            let conn = self.lock_db()?;
+            ChangeStamp::read(&conn)?
+        };
+        *self.inner.last_change.lock().expect("change stamp lock") = Some(initial_change);
         self.inner.listener_port.store(port, Ordering::Relaxed);
         self.inner.available.store(true, Ordering::Relaxed);
         log::info!("sync: listening on port {port}");
@@ -617,15 +812,6 @@ impl SyncManager {
             }
         });
 
-        if let Err(err) = self.reconcile_stale_context_targets() {
-            log::warn!("sync: stale context target reconciliation failed: {err:#}");
-        }
-
-        let initial_change = {
-            let conn = self.lock_db()?;
-            ChangeStamp::read(&conn)?
-        };
-        *self.inner.last_change.lock().expect("change stamp lock") = Some(initial_change);
         let monitor = self.clone();
         tauri::async_runtime::spawn(async move {
             loop {

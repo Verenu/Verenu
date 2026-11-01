@@ -1118,6 +1118,15 @@ mod tests {
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true}").unwrap();
         let parent_db = crate::data::db::open(data.join("verenu.db")).unwrap();
+        let mut sync_identity = crate::sync::identity::generate_for_tests();
+        sync_identity.name = "Test device".into();
+        let sync_key = sync_identity.tls_key();
+        crate::sync::secrets::store_identity_key(&data, sync_key.secret_pkcs8_der()).unwrap();
+        std::fs::write(data.join("sync-identity.der"), sync_identity.cert_der().as_ref()).unwrap();
+        {
+            let connection = parent_db.lock().unwrap();
+            crate::sync::store::ensure_self_identity(&connection, &sync_identity.uuid, &sync_identity.name).unwrap();
+        }
         let original_db = std::fs::read(data.join("verenu.db")).unwrap();
         let original_wal = std::fs::read(data.join("verenu.db-wal")).unwrap();
         let original_settings = std::fs::read(data.join("settings.json")).unwrap();
@@ -1474,6 +1483,40 @@ mod tests {
         assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
         assert_eq!(registrations.lock().unwrap().len(), 3);
         assert!(!data.join("agent-session.json").exists());
+        assert!(crate::sync::secrets::load_identity_key(&data).unwrap().as_slice() == sync_key.secret_pkcs8_der());
+
+        std::fs::remove_file(data.join("sync-identity.key")).unwrap();
+        let mut command = Command::new(&binary);
+        command
+            .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
+            .env("XDG_STATE_HOME", &state)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+            .env_remove("VERENU_AGENT_TOKEN")
+            .env_remove("VERENU_AGENT_PORT")
+            .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1");
+        let replacement = Replacement::spawn(
+            command,
+            crate::data::db::HANDOFF_SCHEMA_VERSION,
+            KeyAvailability::new(),
+            Duration::from_secs(25),
+        ).unwrap().with_parent_unique_name(owner.unique_name().unwrap());
+        let ready = replacement.prepare().unwrap();
+        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
+        let outcome = ready.acquire_ownership().unwrap().activate();
+        assert!(matches!(outcome, Err(reason) if reason.contains("Replacement sync could not prepare")));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !owner.owns_name().unwrap_or(false) {
+            assert!(Instant::now() < deadline, "parent did not regain ownership after sync failure");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Exclusive).unwrap();
+        drop(pause);
+        assert!(!data.join("sync-identity.key").exists());
+        assert_eq!(std::fs::read(data.join("verenu.db")).unwrap(), updated_db);
+        assert_eq!(std::fs::read(data.join("verenu.db-wal")).unwrap(), updated_wal);
+        assert_eq!(registrations.lock().unwrap().len(), 4);
         drop(parent_db);
         std::fs::remove_dir_all(root).unwrap();
     }
