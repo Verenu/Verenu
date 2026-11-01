@@ -205,6 +205,7 @@ async fn prepare_inner(app: &AppHandle) -> Result<PreparedHandoff, String> {
             return Err("Finish the current dictation or recovery before restarting.".into());
         }
     }
+    crate::pipeline::failover::ensure_no_pending_handoff(&crate::pipeline::failover::failover_dir())?;
 
     let sync = app
         .try_state::<crate::sync::SyncManager>()
@@ -373,6 +374,13 @@ mod tests {
             let bus = zbus::fdo::DBusProxy::new(&connection).await.unwrap();
             let original_tray = tray_names(&bus).await;
             assert_eq!(original_tray.len(), 1);
+            let recovery = dir.join("dictation-failover");
+            std::fs::create_dir(&recovery).unwrap();
+            std::fs::write(recovery.join("pending"), b"synthetic recovery marker").unwrap();
+            assert!(matches!(prepare(app.handle()).await, Err(error) if error.contains("dictation recovery")));
+            drop(tokio::time::timeout(Duration::from_secs(10), gate.enter()).await.unwrap());
+            assert_eq!(std::fs::read(recovery.join("pending")).unwrap(), b"synthetic recovery marker");
+            std::fs::remove_dir_all(recovery).unwrap();
             crate::core::hotkey::test_set_gesture_active(true);
             assert!(matches!(
                 prepare(app.handle()).await,
