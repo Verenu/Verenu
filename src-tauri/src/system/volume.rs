@@ -766,6 +766,41 @@ mod linux {
             Sink::Pulse(name) => Ok(run("pactl", &["get-sink-mute", name])?.contains("yes")),
         }
     }
+
+    pub fn restore_sink(
+        sink: &Sink,
+        set_mute: impl FnOnce(&Sink) -> Result<(), String>,
+        read_mute: impl FnOnce(&Sink) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        set_mute(sink)?;
+        if read_mute(sink)? {
+            Err("output remains muted after restore".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn restore_sinks(
+        muted_sinks: &mut Vec<Sink>,
+        mut restore: impl FnMut(&Sink) -> Result<(), String>,
+    ) {
+        muted_sinks.retain(|sink| {
+            let mut last_error = String::new();
+            for _ in 0..3 {
+                match restore(sink) {
+                    Ok(()) => {
+                        log::info!("System audio output restored and confirmed unmuted");
+                        return false;
+                    }
+                    Err(err) => last_error = err,
+                }
+            }
+            log::warn!(
+                "Failed to restore system audio; keeping output for a later retry: {last_error}"
+            );
+            true
+        });
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1007,11 +1042,9 @@ pub fn unmute() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    for sink in muted_sinks.drain(..) {
-        if let Err(err) = linux::set_muted(&sink, false) {
-            log::warn!("Failed to unmute system audio: {err}");
-        }
-    }
+    linux::restore_sinks(&mut muted_sinks, |sink| {
+        linux::restore_sink(sink, |sink| linux::set_muted(sink, false), linux::is_muted)
+    });
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -1019,6 +1052,47 @@ mod linux_tests {
     use super::linux::{mute_current_output, Sink};
     use super::MuteOutcome;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn failed_output_restore_is_retained_for_retry() {
+        let sink = Sink::PipeWire("123".into());
+        let mut pending = vec![sink.clone()];
+        super::linux::restore_sinks(&mut pending, |_| Err("temporary failure".into()));
+        assert_eq!(pending, vec![sink]);
+        super::linux::restore_sinks(&mut pending, |_| Ok(()));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn transient_output_restore_failure_is_retried_immediately() {
+        let mut pending = vec![Sink::PipeWire("123".into())];
+        let attempts = Cell::new(0);
+        super::linux::restore_sinks(&mut pending, |_| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                Err("temporary failure".into())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(attempts.get(), 2);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn output_still_muted_after_successful_command_stays_pending() {
+        let mut pending = vec![Sink::PipeWire("123".into())];
+        let muted = Cell::new(true);
+        super::linux::restore_sinks(&mut pending, |sink| {
+            super::linux::restore_sink(sink, |_| Ok(()), |_| Ok(muted.get()))
+        });
+        assert_eq!(pending.len(), 1);
+        muted.set(false);
+        super::linux::restore_sinks(&mut pending, |sink| {
+            super::linux::restore_sink(sink, |_| Ok(()), |_| Ok(muted.get()))
+        });
+        assert!(pending.is_empty());
+    }
 
     #[test]
     fn default_switch_during_confirmation_mutes_the_new_output() {
