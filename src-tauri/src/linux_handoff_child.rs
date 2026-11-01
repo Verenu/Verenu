@@ -135,6 +135,8 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
             crate::commands::get_local_llm_runtime_info,
         ]);
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_shell::init())
         .append_invoke_initialization_script(
             "Object.defineProperty(window, '__VERENU_RESTART_PROBE__', { value: true });",
         )
@@ -387,6 +389,14 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = tauri::async_runtime::block_on(staged_sync.verify()) {
                             fail_paused_probation(services, format!("Replacement sync listener became unavailable: {error}"));
                         }
+                        let prepared = match services.prepared() {
+                            Ok(prepared) => prepared,
+                            Err(_) => std::process::exit(1),
+                        };
+                        let services = match prepared.wait_for_activation() {
+                            Ok(services) => services,
+                            Err(_) => std::process::exit(1),
+                        };
                         fail_paused_probation(services, "Replacement services are not yet verified".into());
                     }
                 } else {
