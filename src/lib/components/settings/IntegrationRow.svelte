@@ -35,7 +35,7 @@
 </section>
 
 <style>
-  .integration { border-top: 1px solid var(--line); min-width: 0; padding: 20px 0; }
+  .integration { background: var(--settings-card-bg, var(--bg-elev)); border: 1px solid var(--line); border-radius: var(--r-lg, 14px); min-width: 0; padding: 16px; }
   .integration-head { align-items: flex-start; display: flex; gap: 14px; }
   .integration-mark { align-items: center; background: var(--paper-2); border: 1px solid var(--line); border-radius: 10px; display: flex; flex: 0 0 auto; height: 40px; justify-content: center; width: 40px; }
   .integration-mark :global(img) { height: 24px; width: 24px; }
