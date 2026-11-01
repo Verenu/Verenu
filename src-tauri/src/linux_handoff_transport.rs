@@ -13,41 +13,11 @@ const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
 
-fn database_code_fingerprint() -> String {
-    use sha2::{Digest, Sha256};
-    let mut hash = Sha256::new();
-    // Recovery resumes the older process against the same database and settings.
-    // Require matching storage and migration code until an explicit compatibility
-    // contract can prove that a particular pair of versions can share that state.
-    for source in [
-        &include_bytes!("data/db/mod.rs")[..],
-        &include_bytes!("data/db/schema.rs")[..],
-        &include_bytes!("data/db/activity.rs")[..],
-        &include_bytes!("data/db/agent_audit.rs")[..],
-        &include_bytes!("data/db/agent_history.rs")[..],
-        &include_bytes!("data/db/agent_library.rs")[..],
-        &include_bytes!("data/db/cleanup_cache.rs")[..],
-        &include_bytes!("data/db/contexts.rs")[..],
-        &include_bytes!("data/db/dictionary.rs")[..],
-        &include_bytes!("data/db/insights.rs")[..],
-        &include_bytes!("data/db/library_usage.rs")[..],
-        &include_bytes!("data/db/pricing.rs")[..],
-        &include_bytes!("data/db/snippets.rs")[..],
-        &include_bytes!("data/db/sub_apps.rs")[..],
-        &include_bytes!("data/db/transcriptions.rs")[..],
-        &include_bytes!("data/db/validation.rs")[..],
-        &include_bytes!("data/store/mod.rs")[..],
-        &include_bytes!("data/store/config.rs")[..],
-        &include_bytes!("commands/settings.rs")[..],
-        &include_bytes!("sync/manager.rs")[..],
-        &include_bytes!("sync/store.rs")[..],
-        &include_bytes!("linux_handoff_callbacks.rs")[..],
-    ] {
-        hash.update((source.len() as u64).to_le_bytes());
-        hash.update(source);
-    }
-    format!("{:x}", hash.finalize())
-}
+// Bump when a replacement can change persistent state during probation in a
+// way the original cannot safely resume, or when callback handoff formats
+// change. Schema changes are checked separately. Matching versions promise
+// that probation remains read-only and that rollback can resume the parent.
+const STATE_COMPATIBILITY: &str = "1";
 
 fn descends_from(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     for _ in 0..32 {
@@ -218,7 +188,7 @@ impl Child {
             protocol: PROTOCOL,
             pid: std::process::id(),
             schema,
-            database_code: database_code_fingerprint(),
+            database_code: STATE_COMPATIBILITY.into(),
         })?;
         match self.channel.receive()? {
             Message::Begin {
@@ -649,12 +619,12 @@ pub(crate) struct StagedRestart {
 }
 
 #[derive(Default)]
-pub(crate) struct PendingRestart(std::sync::Mutex<Option<(ProcessGuard, crate::linux_handoff::PreparedHandoff)>>);
+pub(crate) struct PendingRestart(std::sync::Mutex<Option<(ProcessGuard, crate::linux_handoff::PreparedHandoff, std::fs::File)>>);
 
 impl PendingRestart {
     pub(crate) fn check_exit(&self) -> Result<(), String> {
         let mut pending = self.0.lock().map_err(|_| "Restart state is unavailable")?;
-        if let Some((process, _)) = pending.as_mut() {
+        if let Some((process, _, _)) = pending.as_mut() {
             if !matches!(process.child.try_wait(), Ok(None)) {
                 let failed = pending.take();
                 drop(pending);
@@ -682,6 +652,9 @@ impl StagedRestart {
         let Self { replacement, preparation } = self;
         let PreparedReplacement { process, prepared } = replacement;
         let activated = prepared.activate()?;
+        // Wait for acknowledged launchers, then keep new ones blocked until
+        // the old D-Bus connection closes at process exit.
+        let callback_lock = crate::linux_single_instance::callback_lock(Duration::from_secs(10))?;
         let owner = app.try_state::<crate::linux_single_instance::InstanceOwner>()
             .ok_or("Single-instance ownership is unavailable")?;
         let group = process.child.id();
@@ -693,7 +666,7 @@ impl StagedRestart {
         if pending.is_some() {
             return Err("A restart is already in progress.".into());
         }
-        *pending = Some((process, preparation));
+        *pending = Some((process, preparation, callback_lock));
         Ok(())
     }
 }
@@ -750,7 +723,7 @@ impl Parent {
                 database_code,
             } if protocol == PROTOCOL
                 && schema == self.schema
-                && database_code == database_code_fingerprint()
+                && database_code == STATE_COMPATIBILITY
                 && (pid == self.child_pid
                     || (pid <= i32::MAX as u32
                         && self.child_pid <= i32::MAX as u32
@@ -879,7 +852,7 @@ mod tests {
                     protocol: PROTOCOL,
                     pid: 42,
                     schema: 39,
-                    database_code: database_code_fingerprint(),
+                    database_code: STATE_COMPATIBILITY.into(),
                 })
                 .unwrap();
             child.expect(begin()).unwrap();
@@ -903,7 +876,7 @@ mod tests {
                     protocol: PROTOCOL,
                     pid: 42,
                     schema: 39,
-                    database_code: database_code_fingerprint(),
+                    database_code: STATE_COMPATIBILITY.into(),
                 })
                 .unwrap();
             child.expect(begin()).unwrap();
@@ -937,13 +910,13 @@ mod tests {
                 protocol: PROTOCOL,
                 pid: 43,
                 schema: 39,
-                database_code: database_code_fingerprint(),
+                database_code: STATE_COMPATIBILITY.into(),
             },
             Message::Hello {
                 protocol: PROTOCOL,
                 pid: 42,
                 schema: 40,
-                database_code: database_code_fingerprint(),
+                database_code: STATE_COMPATIBILITY.into(),
             },
             Message::Hello {
                 protocol: PROTOCOL,
@@ -981,7 +954,7 @@ mod tests {
                     protocol: PROTOCOL,
                     pid: 42,
                     schema: 39,
-                    database_code: database_code_fingerprint(),
+                    database_code: STATE_COMPATIBILITY.into(),
                 })
                 .unwrap();
             child.expect(begin()).unwrap();
@@ -1015,7 +988,7 @@ mod tests {
         let (parent, mut child) = pair();
         let worker = std::thread::spawn(move || {
             child.send(&Message::Hello {
-                protocol: PROTOCOL, pid: 42, schema: 39, database_code: database_code_fingerprint(),
+                protocol: PROTOCOL, pid: 42, schema: 39, database_code: STATE_COMPATIBILITY.into(),
             }).unwrap();
             child.expect(begin()).unwrap();
             child.send(&Message::BackendReady).unwrap();
@@ -1091,7 +1064,7 @@ mod tests {
                     protocol: PROTOCOL,
                     pid: 42,
                     schema: 39,
-                    database_code: database_code_fingerprint(),
+                    database_code: STATE_COMPATIBILITY.into(),
                 })
                 .unwrap();
             child.expect(begin()).unwrap();
