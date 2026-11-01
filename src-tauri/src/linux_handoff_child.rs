@@ -63,6 +63,7 @@ fn fail_paused_probation(services: crate::linux_handoff_transport::ChildServices
 }
 
 pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
+    crate::system::logger::init_for_handoff();
     let startup = match child.begin(crate::data::db::HANDOFF_SCHEMA_VERSION) {
         Ok(startup) => startup,
         Err(error) => {
@@ -175,6 +176,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
             }
         })
         .setup(move |app| {
+            crate::system::logger::attach_app(app.handle());
             app.manage(crate::sync::SyncManager::new_unstarted(
                 app.handle().clone(),
                 app.state::<crate::DbHandle>().inner().clone(),

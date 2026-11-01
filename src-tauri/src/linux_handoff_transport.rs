@@ -1637,6 +1637,7 @@ mod tests {
         let staged = ready.acquire_ownership().unwrap().stage_services().expect("replacement services did not prepare");
         assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, 0);
         assert!(!owner.owns_name().unwrap());
+        assert!(!data.join("logs").exists(), "replacement wrote logs while the parent was active");
         let descriptor = data.join("agent-session.json");
         assert!(descriptor.exists(), "replacement did not publish its paused agent");
         let callbacks = crate::linux_single_instance::test_callback_count();
