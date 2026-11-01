@@ -23,7 +23,6 @@ impl Activity {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct Pause(Arc<ActivityGate>);
 
 impl Pause {
@@ -74,7 +73,6 @@ impl ActivityGate {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn begin_pause(self: &Arc<Self>) -> Result<Pause, &'static str> {
         self.begin_pause_with(|| Ok(()))
     }
@@ -94,7 +92,6 @@ impl ActivityGate {
         Ok(Pause(self.clone()))
     }
 
-    #[allow(dead_code)]
     pub(crate) async fn pause(self: &Arc<Self>) -> Result<Pause, &'static str> {
         let pause = self.begin_pause()?;
         pause.wait_drained().await;

@@ -1,7 +1,6 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter, Manager};
 
-#[allow(dead_code)]
 pub(crate) struct PreparedHandoff {
     app: AppHandle,
     pause: Option<crate::linux_activity::Pause>,
@@ -13,12 +12,10 @@ pub(crate) struct PreparedHandoff {
 }
 
 impl PreparedHandoff {
-    #[allow(dead_code)]
     pub(crate) fn callback_queue_path(&self) -> &std::path::Path {
         self.callback_path.as_deref().expect("restart callback queue is active")
     }
 
-    #[allow(dead_code)]
     pub(crate) fn begin_instance_transfer(&mut self, replacement_group: u32) -> Result<(), String> {
         if self.replacement_group.is_some()
             || !crate::linux_handoff_transport::is_replacement_group(replacement_group)
@@ -140,7 +137,6 @@ impl Drop for PreparedHandoff {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) async fn prepare(app: &AppHandle) -> Result<PreparedHandoff, String> {
     tokio::time::timeout(Duration::from_secs(10), prepare_inner(app))
         .await
@@ -730,6 +726,7 @@ mod tests {
                     .env("XDG_CONFIG_HOME", dir.join("config"))
                     .env("XDG_STATE_HOME", dir.join("state"))
                     .env("VERENU_HANDOFF_TEST_SHORTCUTS", "1")
+                    .env("VERENU_HANDOFF_TEST_FAIL_ACTIVATION", "1")
                     .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
                     .env_remove("VERENU_AGENT_TOKEN")
                     .env_remove("VERENU_AGENT_PORT");
@@ -764,7 +761,7 @@ mod tests {
                 assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
                 let error = tauri::async_runtime::spawn_blocking(move || staged.activate_for_test())
                     .await.unwrap().expect_err("unfinished activation must fail safely");
-                assert!(error.contains("Replacement services are not yet verified"), "unexpected activation failure: {error}");
+                assert!(error.contains("Synthetic replacement startup failure"), "unexpected activation failure: {error}");
                 drop(tokio::time::timeout(Duration::from_secs(20), gate.enter()).await
                     .expect("failed activation did not restore the parent"));
                 assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);

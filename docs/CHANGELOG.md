@@ -5,7 +5,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - Arch package upgrades repair inaccessible runtime directories left by older releases.
-- Linux updates now clearly explain how to finish installation by reopening Verenu.
+- Linux updates restart Verenu after installation when the guarded handoff is available, with a retry if restart preparation fails.
 - Paired devices can share cleanup cache results through sync, reducing repeated cleanup requests when the same configuration is used. The cache privacy setting remains local.
 - Fixed the Dictionary editor moving focus back to the term field while entering a common mistranscription.
 - Redesigned the Providers page. One list shows only the providers you have added, with icons for transcription and cleanup instead of descriptions. The plus button opens a single flyout that adds built-in, preset, local, or custom providers, and adding a built-in or preset provider now needs only an API key. Added missing logos for more presets and fixed the flyout's close button overlapping the window controls.

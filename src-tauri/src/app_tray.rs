@@ -147,9 +147,14 @@ fn relaunch_app(app: &AppHandle) {
     }
 
     #[cfg(target_os = "linux")]
-    if let Err(error) = crate::commands::restart_app(app.clone()) {
-        crate::show_main_window(app);
-        let _ = app.emit("verenu:error", error);
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = crate::commands::restart_app(app.clone()).await {
+                crate::show_main_window(&app);
+                let _ = app.emit("verenu:error", error);
+            }
+        });
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]

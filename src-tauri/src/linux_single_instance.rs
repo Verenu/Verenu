@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager};
 use zbus::{blocking::Connection, interface};
 
 struct CallbackRoute {
-    replacement: bool,
+    replacement: std::sync::atomic::AtomicBool,
     local_ready: std::sync::atomic::AtomicBool,
     order: Arc<CallbackOrder>,
     queue: Mutex<Option<CallbackQueueSlot>>,
@@ -73,14 +73,14 @@ impl Drop for CallbackTicket {
 
 impl CallbackRoute {
     fn new(replacement: bool) -> Self {
-        Self { replacement, local_ready: std::sync::atomic::AtomicBool::new(!replacement), order: Arc::new(CallbackOrder::default()), queue: Mutex::new(None) }
+        Self { replacement: std::sync::atomic::AtomicBool::new(replacement), local_ready: std::sync::atomic::AtomicBool::new(!replacement), order: Arc::new(CallbackOrder::default()), queue: Mutex::new(None) }
     }
 
     fn enqueue_if_active(&self, args: &[String]) -> Option<zbus::fdo::Result<()>> {
         let mut queue = self.queue.lock().unwrap_or_else(|error| error.into_inner());
         queue.as_mut().map(|slot| {
             let callback = crate::linux_handoff_callbacks::Callback::from_args(args);
-            let result = if self.replacement {
+            let result = if self.replacement.load(std::sync::atomic::Ordering::Acquire) {
                 slot.queue.push_replacement(callback)
             } else {
                 slot.queue.push(callback)
@@ -128,7 +128,7 @@ impl SingleInstance {
     }
 
     async fn execute_callback(&self, argv: Vec<String>, _cwd: String) -> zbus::fdo::Result<()> {
-        if self.route.replacement {
+        if self.route.replacement.load(std::sync::atomic::Ordering::Acquire) {
             if let Some(result) = self.route.enqueue_if_active(&argv) {
                 return result;
             }
@@ -195,14 +195,12 @@ pub(crate) struct InstanceOwner {
     route: Arc<CallbackRoute>,
 }
 
-#[allow(dead_code)]
 pub(crate) enum OwnershipMode {
     Transferable,
     Exclusive,
 }
 
 impl InstanceOwner {
-    #[allow(dead_code)]
     pub(crate) fn install_callback_queue(
         &self,
         queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
@@ -215,7 +213,6 @@ impl InstanceOwner {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn callback_barrier(&self) -> Result<(), String> {
         let unique = self.unique_name()?;
         self.callback_barrier_at(&unique)
@@ -232,9 +229,8 @@ impl InstanceOwner {
             .map_err(|error| format!("Could not finish pending restart callbacks: {error}"))
     }
 
-    #[allow(dead_code)]
     pub(crate) fn drain_callback_queue(&self, app: &AppHandle) -> Result<(), String> {
-        if self.route.replacement {
+        if self.route.replacement.load(std::sync::atomic::Ordering::Acquire) {
             return Err("Replacement callbacks require confirmed parent exit".into());
         }
         self.drain_callback_queue_inner(app, None)
@@ -260,11 +256,11 @@ impl InstanceOwner {
         }
         if parent_exited.is_some() {
             self.route.local_ready.store(true, std::sync::atomic::Ordering::Release);
+            self.route.replacement.store(false, std::sync::atomic::Ordering::Release);
         }
         *slot = None;
         Ok(())
     }
-    #[allow(dead_code)]
     pub(crate) fn activate_callbacks(
         &self,
         app: &AppHandle,
@@ -272,14 +268,12 @@ impl InstanceOwner {
     ) -> Result<(), String> {
         self.drain_callback_queue_inner(app, Some(parent_exited))
     }
-    #[allow(dead_code)]
     pub(crate) fn unique_name(&self) -> Result<String, String> {
         self.connection
             .unique_name()
             .map(ToString::to_string)
             .ok_or_else(|| "Single-instance connection has no unique name".into())
     }
-    #[allow(dead_code)]
     pub(crate) fn owns_name(&self) -> Result<bool, String> {
         let current: String = self
             .connection
@@ -298,7 +292,6 @@ impl InstanceOwner {
             .is_some_and(|name| name.as_str() == current))
     }
 
-    #[allow(dead_code)]
     pub(crate) fn verify_replacement_owner(&self, group: u32) -> Result<String, String> {
         let owner: String = self.connection.call_method(
             Some("org.freedesktop.DBus"), "/org/freedesktop/DBus",
@@ -324,7 +317,6 @@ impl InstanceOwner {
         Ok(owner)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn replacement_callback_barrier(&self, group: u32) -> Result<(), String> {
         let owner = self.verify_replacement_owner(group)?;
         self.callback_barrier_at(&owner)?;
@@ -334,7 +326,6 @@ impl InstanceOwner {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_ownership_mode(&self, mode: OwnershipMode) -> Result<(), String> {
         let flags = match mode {
             OwnershipMode::Transferable => zbus::fdo::RequestNameFlags::AllowReplacement as u32,
@@ -358,7 +349,6 @@ impl InstanceOwner {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn replacement_plugin(
     queue: Arc<crate::linux_handoff_callbacks::CallbackQueue>,
 ) -> tauri::plugin::TauriPlugin<tauri::Wry> {
@@ -512,6 +502,14 @@ mod tests {
         assert_eq!(queue.first().unwrap(), None);
         send("--verenu-hotkey-handsfree");
         assert_eq!(super::test_callback_count(), before + 2);
+        let (next_queue, next_path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
+        let next_queue = Arc::new(next_queue);
+        owner.install_callback_queue(next_queue.clone()).unwrap();
+        next_queue.push(crate::linux_handoff_callbacks::Callback::Release).unwrap();
+        owner.drain_callback_queue(app.handle()).unwrap();
+        assert_eq!(super::test_callback_count(), before + 3);
+        drop(next_queue);
+        std::fs::remove_dir_all(next_path.parent().unwrap()).unwrap();
         drop(owner);
         drop(app);
         drop(queue);

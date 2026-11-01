@@ -1,9 +1,4 @@
-//! Private, bounded messages for a future two-process Linux update handoff.
-//!
-//! A readiness message is only meaningful after the caller has completed the
-//! corresponding real startup phase. This transport does not start a process,
-//! transfer D-Bus ownership, or authorize the old process to exit.
-#![allow(dead_code)]
+//! Private, bounded messages and process supervision for Linux update handoff.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -13,7 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const PROTOCOL: u32 = 7;
+const PROTOCOL: u32 = 8;
 const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
@@ -303,6 +298,7 @@ impl ChildServices {
     pub(crate) fn activated(mut self) -> Result<ChildCommit, String> {
         self.0.send(&Message::Activated)?;
         self.0.expect(Message::Commit)?;
+        self.0.send(&Message::CommitAccepted)?;
         Ok(ChildCommit(self.0))
     }
 
@@ -371,6 +367,7 @@ enum Message {
     BeginServiceActivation,
     Activated,
     Commit,
+    CommitAccepted,
     Failed {
         reason: String,
     },
@@ -458,7 +455,10 @@ struct Parent {
     callback_queue_path: Option<PathBuf>,
 }
 
-struct ProcessGuard(std::process::Child, UnixStream);
+struct ProcessGuard {
+    child: std::process::Child,
+    _keepalive: UnixStream,
+}
 
 pub(crate) fn group_has_live_members(group: u32) -> Result<bool, String> {
     let entries = std::fs::read_dir("/proc").map_err(|error| error.to_string())?;
@@ -494,11 +494,11 @@ impl Drop for ProcessGuard {
     fn drop(&mut self) {
         // The child starts a new process group so an AppImage launcher and its
         // application are both stopped before the parent resumes its services.
-        let group = self.0.id();
+        let group = self.child.id();
         if group <= i32::MAX as u32 {
             unsafe { libc::kill(-(group as i32), libc::SIGKILL) };
         }
-        let _ = self.0.kill();
+        let _ = self.child.kill();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match group_has_live_members(group) {
@@ -512,7 +512,7 @@ impl Drop for ProcessGuard {
                 }
             }
         }
-        let _ = self.0.wait();
+        let _ = self.child.wait();
     }
 }
 
@@ -566,16 +566,16 @@ impl Replacement {
                 Ok(())
             });
         }
-        let process = ProcessGuard(
-            command
+        let process = ProcessGuard {
+            child: command
                 .spawn()
                 .map_err(|error| format!("Could not start replacement: {error}"))?,
-            keepalive,
-        );
+            _keepalive: keepalive,
+        };
         drop(child);
         let parent = Parent {
             channel: Channel::new(parent, timeout)?,
-            child_pid: process.0.id(),
+            child_pid: process.child.id(),
             schema,
             key_availability,
             callback_queue_path: None,
@@ -636,6 +636,57 @@ pub(crate) struct StagedRestart {
     preparation: crate::linux_handoff::PreparedHandoff,
 }
 
+#[derive(Default)]
+pub(crate) struct PendingRestart(std::sync::Mutex<Option<(ProcessGuard, crate::linux_handoff::PreparedHandoff)>>);
+
+impl PendingRestart {
+    pub(crate) fn check_exit(&self) -> Result<(), String> {
+        let mut pending = self.0.lock().map_err(|_| "Restart state is unavailable")?;
+        if let Some((process, _)) = pending.as_mut() {
+            if !matches!(process.child.try_wait(), Ok(None)) {
+                let failed = pending.take();
+                drop(pending);
+                drop(failed);
+                return Err("The replacement stopped before restart. Verenu is restoring its services; try again or quit and reopen.".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_exit(&self) {
+        if let Ok(mut pending) = self.0.lock() {
+            if let Some(lease) = pending.take() {
+                // The operating system closes the descriptors at process exit. Dropping
+                // these guards here would kill the replacement and resume the parent.
+                std::mem::forget(lease);
+            }
+        }
+    }
+}
+
+impl StagedRestart {
+    pub(crate) fn commit(self, app: &tauri::AppHandle) -> Result<(), String> {
+        use tauri::Manager;
+        let Self { replacement, preparation } = self;
+        let PreparedReplacement { process, prepared } = replacement;
+        let activated = prepared.activate()?;
+        let owner = app.try_state::<crate::linux_single_instance::InstanceOwner>()
+            .ok_or("Single-instance ownership is unavailable")?;
+        let group = process.child.id();
+        owner.verify_replacement_owner(group)?;
+        owner.callback_barrier()?;
+        owner.replacement_callback_barrier(group)?;
+        activated.commit()?;
+        let state = app.state::<PendingRestart>();
+        let mut pending = state.0.lock().map_err(|_| "Restart state is unavailable")?;
+        if pending.is_some() {
+            return Err("A restart is already in progress.".into());
+        }
+        *pending = Some((process, preparation));
+        Ok(())
+    }
+}
+
 #[cfg(all(test, feature = "native-testing"))]
 impl StagedRestart {
     pub(crate) fn activate_for_test(self) -> Result<(), String> {
@@ -666,7 +717,7 @@ pub(crate) async fn stage_replacement(
         let replacement = Replacement::spawn(command, schema, key_availability, timeout)?
             .with_callback_queue(preparation.callback_queue_path().to_path_buf());
         let ready = replacement.prepare()?;
-        let group = ready.process.0.id();
+        let group = ready.process.child.id();
         preparation.begin_instance_transfer(group)?;
         let owned = ready.acquire_ownership()?;
         owner.verify_replacement_owner(group)?;
@@ -741,7 +792,8 @@ struct Activated(Channel);
 
 impl Activated {
     fn commit(mut self) -> Result<(), String> {
-        self.0.send(&Message::Commit)
+        self.0.send(&Message::Commit)?;
+        self.0.expect(Message::CommitAccepted)
     }
 }
 
@@ -933,6 +985,7 @@ mod tests {
             child.expect(Message::BeginServiceActivation).unwrap();
             child.send(&Message::Activated).unwrap();
             child.expect(Message::Commit).unwrap();
+            child.send(&Message::CommitAccepted).unwrap();
         });
         parent
             .prepare()
@@ -945,6 +998,30 @@ mod tests {
             .unwrap()
             .commit()
             .unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn commit_fails_if_replacement_disconnects_before_accepting_it() {
+        let (parent, mut child) = pair();
+        let worker = std::thread::spawn(move || {
+            child.send(&Message::Hello {
+                protocol: PROTOCOL, pid: 42, schema: 39, database_code: database_code_fingerprint(),
+            }).unwrap();
+            child.expect(begin()).unwrap();
+            child.send(&Message::BackendReady).unwrap();
+            child.send(&Message::FrontendsReady).unwrap();
+            child.expect(Message::Activate).unwrap();
+            child.send(&Message::OwnershipAcquired).unwrap();
+            child.expect(Message::ContinueActivation).unwrap();
+            child.send(&Message::ServicesPrepared).unwrap();
+            child.expect(Message::BeginServiceActivation).unwrap();
+            child.send(&Message::Activated).unwrap();
+            child.expect(Message::Commit).unwrap();
+        });
+        let activated = parent.prepare().unwrap().acquire_ownership().unwrap()
+            .stage_services().unwrap().activate().unwrap();
+        assert!(activated.commit().is_err());
         worker.join().unwrap();
     }
 
@@ -1158,7 +1235,7 @@ mod tests {
         let replacement =
             Replacement::spawn(command, 39, KeyAvailability::new(), Duration::from_secs(5))
                 .unwrap();
-        let pid = replacement.process.0.id();
+        let pid = replacement.process.child.id();
         assert!(replacement.prepare().is_err());
         assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
     }
@@ -1175,7 +1252,7 @@ mod tests {
         let replacement =
             Replacement::spawn(command, 39, KeyAvailability::new(), Duration::from_secs(5))
                 .unwrap();
-        let pid = replacement.process.0.id();
+        let pid = replacement.process.child.id();
         let prepared = replacement
             .prepare()
             .unwrap()
@@ -1293,7 +1370,7 @@ mod tests {
         )
         .unwrap()
         .with_callback_queue(callback_path.clone());
-        let child_pid = replacement.process.0.id();
+        let child_pid = replacement.process.child.id();
         let ready = replacement
             .prepare()
             .expect("replacement did not complete frontend readiness");
@@ -1606,7 +1683,7 @@ mod tests {
             Duration::from_secs(25),
         ).unwrap().with_callback_queue(callback_path.clone());
         let ready = replacement.prepare().unwrap();
-        let child_pid = ready.process.0.id();
+        let child_pid = ready.process.child.id();
         let pause = gate.begin_pause_with(|| owner.install_callback_queue(callback_queue.clone())).unwrap();
         tauri::async_runtime::block_on(pause.wait_drained());
         owner.set_ownership_mode(crate::linux_single_instance::OwnershipMode::Transferable).unwrap();
