@@ -324,8 +324,12 @@ fn load_audio_config_pause_media_default_and_override() {
 #[test]
 fn nvidia_reuse_defaults_off_and_respects_saved_selection() {
     assert!(!load_audio_config(&SettingsSnapshot::from_pairs([])).nvidia_reuse_enabled);
+    assert!(!load_audio_config(&SettingsSnapshot::from_pairs([])).nvidia_reuse_realtime_enabled);
     let enabled = SettingsSnapshot::from_pairs([(NVIDIA_REUSE_ENABLED.to_string(), json!(true))]);
     assert!(load_audio_config(&enabled).nvidia_reuse_enabled);
+    assert!(!load_audio_config(&enabled).nvidia_reuse_realtime_enabled);
+    let realtime = SettingsSnapshot::from_pairs([(NVIDIA_REUSE_REALTIME_ENABLED.to_string(), json!(true))]);
+    assert!(load_audio_config(&realtime).nvidia_reuse_realtime_enabled);
 }
 
 #[test]

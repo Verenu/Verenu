@@ -1,5 +1,6 @@
 <script module lang="ts">
   let enableReuseAfterSetup = false;
+  let enableRealtimeAfterSetup = false;
 </script>
 
 <script lang="ts">
@@ -18,6 +19,9 @@
   let reuseStatus = $state<ReuseStatus>({ state: 'unknown', message: 'Checking availability…' });
   let reuseEnabled = $state(false);
   let reuseError = $state(false);
+  let realtimeEnabled = $state(false);
+  let realtimeReady = $state(false);
+  let realtimeError = $state(false);
   let reuseTimer: ReturnType<typeof setTimeout> | null = null;
   let reuseDisposed = false;
 
@@ -26,6 +30,7 @@
   let reuseCleanupOnly = $state(false);
   let reuseConfirmRemove = $state(false);
   let reuseRemoveError = $state('');
+  let realtimeSetupError = $state(false);
 
   function reuseErrorMessage(err: unknown, fallback: string): string {
     const detail = typeof err === 'string' ? err : err instanceof Error ? err.message : '';
@@ -35,6 +40,18 @@
   async function refreshReuseStatus() {
     try { reuseStatus = await invoke<ReuseStatus | null>('nvidia_reuse_status') ?? { state: 'unavailable', message: 'NVIDIA RE-USE is available in the desktop app.' }; }
     catch (err) { reuseStatus = { state: 'error', message: reuseErrorMessage(err, 'Could not check the NVIDIA runtime.') }; }
+    try { realtimeReady = await invoke<boolean>('nvidia_reuse_realtime_ready') ?? false; }
+    catch { realtimeReady = false; }
+    if (enableRealtimeAfterSetup && reuseStatus.state === 'ready' && realtimeReady) {
+      enableRealtimeAfterSetup = false;
+      realtimeSetupError = false;
+      await handleRealtime(true);
+    } else if (enableRealtimeAfterSetup && reuseStatus.state === 'ready' && !realtimeReady) {
+      enableRealtimeAfterSetup = false;
+      realtimeSetupError = true;
+    } else if (reuseStatus.state === 'error' || reuseStatus.state === 'unavailable') {
+      enableRealtimeAfterSetup = false;
+    }
     if (enableReuseAfterSetup && reuseStatus.state === 'ready') {
       enableReuseAfterSetup = false;
       if (!noiseReduction) await handleNoiseReduction(true);
@@ -91,12 +108,37 @@
   );
 
   const handleReuse = booleanSettingHandler('nvidia_reuse_enabled', value => reuseEnabled = value, () => reuseError = true);
+  const handleRealtime = booleanSettingHandler('nvidia_reuse_realtime_enabled', value => realtimeEnabled = value, () => realtimeError = true);
+
+  async function changeRealtime(value: boolean) {
+    if (!value) realtimeSetupError = false;
+    if (value && !realtimeReady) {
+      realtimeSetupError = false;
+      enableRealtimeAfterSetup = true;
+      if (reuseTimer) clearTimeout(reuseTimer);
+      try { await invoke('nvidia_reuse_realtime_install'); await refreshReuseStatus(); }
+      catch {
+        enableRealtimeAfterSetup = false;
+        realtimeSetupError = true;
+        if (!reuseDisposed) reuseTimer = setTimeout(() => void refreshReuseStatus(), 10000);
+      }
+      return;
+    }
+    await handleRealtime(value);
+  }
+
+  async function retryRealtime() {
+    await changeRealtime(true);
+  }
 
   async function removeReuse() {
     reuseConfirmRemove = false;
     reuseRemoveError = '';
     enableReuseAfterSetup = false;
+    enableRealtimeAfterSetup = false;
     if (reuseTimer) clearTimeout(reuseTimer);
+    if (realtimeEnabled) await handleRealtime(false);
+    if (realtimeEnabled) { reuseRemoveError = 'Could not turn off real-time RE-USE.'; void refreshReuseStatus(); return; }
     if (reuseEnabled) await handleReuse(false);
     if (reuseEnabled) {
       reuseRemoveError = 'Could not turn off NVIDIA RE-USE, so the files were not deleted.';
@@ -111,6 +153,10 @@
 
   async function changeReuse(value: boolean) {
     reuseRemoveError = '';
+    if (!value && realtimeEnabled) {
+      await handleRealtime(false);
+      if (realtimeEnabled) return;
+    }
     if (value && reuseStatus.state !== 'ready') {
       enableReuseAfterSetup = true;
       await installReuse();
@@ -143,7 +189,7 @@
 
   async function loadSettings() {
     try {
-      const { noise_reduction: nr, nvidia_reuse_enabled: reuse, echo_cancellation: echo, mute_audio: mute, exclusive_mic: exclusive,
+      const { noise_reduction: nr, nvidia_reuse_enabled: reuse, nvidia_reuse_realtime_enabled: realtime, echo_cancellation: echo, mute_audio: mute, exclusive_mic: exclusive,
         pause_media_during_dictation: pauseMedia, mic_mute_button_dictation: micMute,
         play_start_stop_sounds: legacySounds, sound_effects_volume: savedVolume,
         mic_gain: savedGain, duck_audio: duck, duck_target: target,
@@ -151,6 +197,7 @@
         duck_fade_up_curve: upCurve } = await loadSettingsSnapshot();
       noiseReduction = nr ?? true;
       reuseEnabled = reuse ?? false;
+      realtimeEnabled = realtime ?? false;
       echoCancellation = echo ?? false;
       duckTarget = isLinux && !isAndroid && mute ? 0 : duck ? target ?? 25 : 100;
       savedDuckTarget = duckTarget;
@@ -311,7 +358,7 @@
   </div>
 {/if}
 <div class="setting-row" data-setting-target="audio-noise">
-  <div><div class="label">Noise reduction</div><div class="desc">{reuseEnabled && reuseStatus.state === 'ready' ? 'Enhance audio before transcription with NVIDIA RE-USE' : 'Suppress background noise before transcription (RNNoise)'}</div></div>
+  <div><div class="label">Noise reduction</div><div class="desc">{reuseEnabled && reuseStatus.state === 'ready' && (!realtimeEnabled || realtimeReady) ? 'Enhance audio before transcription with NVIDIA RE-USE' : 'Suppress background noise before transcription (RNNoise)'}</div></div>
   <Toggle checked={noiseReduction} onchange={handleNoiseReduction} label="Noise reduction" bind:error={noiseReductionError} />
 </div>
 
@@ -328,6 +375,18 @@
         <Toggle checked={reuseEnabled} onchange={changeReuse} label="Use NVIDIA RE-USE" disabled={reuseBusy} bind:error={reuseError} />
       {/if}
     </div>
+    {#if reuseEnabled && reuseStatus.state === 'ready'}
+      <div class="setting-row">
+        <div>
+          <div class="label">Real-time RE-USE <span class="reuse-tag">Research</span></div>
+          <div class="desc">Process audio during recording. NVIDIA permits this model for noncommercial research and development only. Uses the local model memory policy.</div>
+        </div>
+        <Toggle checked={realtimeEnabled} onchange={changeRealtime} label="Use real-time RE-USE for research" disabled={reuseBusy} bind:error={realtimeError} />
+      </div>
+      {#if (realtimeEnabled && !realtimeReady) || realtimeSetupError}
+        <div class="reuse-extra"><Callout severity="warning" compact title="Real-time model unavailable" action={{ label: 'Retry setup', onclick: retryRealtime }}>Noise reduction uses RNNoise until setup succeeds. Turn off real-time RE-USE to use the existing NVIDIA model.</Callout></div>
+      {/if}
+    {/if}
     {#if reuseBusy}
       <div transition:slide={{ duration: motionMs(MOTION_MS.base) }} role="status" aria-live="polite">
         <LocalDownloadProgress stage="downloading" label={reuseProgressLabel} indeterminate />

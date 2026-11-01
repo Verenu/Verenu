@@ -585,6 +585,20 @@ pub fn run() {
                         log::warn!("local models: idle unload maintenance failed: {error}");
                     }
 
+                    if crate::media::realtime_reuse::is_loaded() {
+                        let reuse_app = app_handle.clone();
+                        let _ = tauri::async_runtime::spawn_blocking(move || {
+                            let policy = crate::data::store::settings_snapshot(&reuse_app).ok()
+                                .map(|settings| crate::data::store::load_pipeline_config(&settings).local_model_memory_policy)
+                                .unwrap_or_else(|| "unload_after_5m".into());
+                            let pressure = crate::system::memory::gpu_vram_statuses().iter().any(|gpu| {
+                                gpu.index == 0 && gpu.total_mb > 0 &&
+                                    (gpu.total_mb.saturating_sub(gpu.used_mb) < 512 || gpu.used_mb.saturating_mul(100) / gpu.total_mb >= 92)
+                            });
+                            crate::media::realtime_reuse::evict_if_idle(&policy, pressure);
+                        }).await;
+                    }
+
                     let stt_loaded = local_stt_manager
                         .current_model_id
                         .lock()
@@ -728,6 +742,8 @@ pub fn run() {
             media::nvidia_reuse::nvidia_reuse_check,
             media::nvidia_reuse::nvidia_reuse_install,
             media::nvidia_reuse::nvidia_reuse_remove,
+            media::nvidia_reuse::nvidia_reuse_realtime_ready,
+            media::nvidia_reuse::nvidia_reuse_realtime_install,
             commands::get_effective_transcription_model,
             commands::list_local_stt_models,
             commands::list_local_llm_models,
@@ -912,6 +928,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = _event {
                 crate::media::sound::release_all_mutes_on_exit();
                 log::info!("app exiting; unloading local models");
+                crate::media::realtime_reuse::evict_if_idle("unload_immediately", true);
                 crate::pipeline::failover::flush_on_exit(_app);
                 crate::system::shutdown_local_models(_app);
                 #[cfg(target_os = "windows")]

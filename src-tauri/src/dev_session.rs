@@ -382,6 +382,8 @@ fn allowed(command: &str) -> bool {
             | "nvidia_reuse_check"
             | "nvidia_reuse_install"
             | "nvidia_reuse_remove"
+            | "nvidia_reuse_realtime_ready"
+            | "nvidia_reuse_realtime_install"
             | "get_effective_transcription_model"
             | "get_setting"
             | "check_hotkey"
