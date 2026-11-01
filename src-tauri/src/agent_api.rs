@@ -34,8 +34,8 @@ pub(crate) struct AgentDrain(Arc<tokio::sync::Semaphore>, Option<(u16, String)>)
 #[cfg(target_os = "linux")]
 impl AgentDrain {
     #[cfg(all(test, feature = "native-testing"))]
-    pub(crate) fn for_test(gate: Arc<tokio::sync::Semaphore>) -> Self {
-        Self(gate, None)
+    pub(crate) fn gate_for_test(&self) -> Arc<tokio::sync::Semaphore> {
+        self.0.clone()
     }
     #[allow(dead_code)]
     pub(crate) async fn pause(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
@@ -150,8 +150,9 @@ struct Approvals {
 }
 
 #[cfg(all(test, target_os = "linux", feature = "native-testing"))]
-pub(crate) fn manage_test_approvals(app: &AppHandle) {
-    app.manage(Arc::new(Mutex::new(Approvals::default())));
+pub(crate) fn start_test_agent(app: AppHandle) -> anyhow::Result<Arc<tokio::sync::Semaphore>> {
+    prepare_agent(None, None)?.activate(app.clone())?;
+    Ok(app.state::<AgentDrain>().gate_for_test())
 }
 
 #[cfg(all(test, target_os = "linux", feature = "native-testing"))]
