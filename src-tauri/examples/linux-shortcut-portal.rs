@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let binding_description = format!("Verenu native verification {}", std::process::id());
     for round in 1..=2 {
         let name = format!("verification-{}-{round}", std::process::id());
-        let shortcuts = portal::connect()
+        let (shortcuts, _connection) = portal::connect()
             .await
             .map_err(|error| anyhow::anyhow!(error.note()))?;
         let session = shortcuts.create_session(Default::default()).await?;
