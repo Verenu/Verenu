@@ -119,6 +119,90 @@ test('turning on NVIDIA RE-USE starts setup and enables it when setup succeeds',
   }
 });
 
+test('real-time setup can be retried without disabling the existing NVIDIA model', { skip: !accessPath, timeout: 90_000 }, async () => {
+  const access = JSON.parse(await fs.readFile(accessPath, 'utf8'));
+  const endpoint = `${new URL(access.localAccessUrl).origin}/__verenu_dev/invoke`;
+  const invoke = async (command, args = {}) => {
+    const response = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${access.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args }) });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const original = await invoke('get_all_settings');
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  let ready = false;
+  let retries = 0;
+  try {
+    await invoke('save_setting', { key: 'nvidia_reuse_enabled', value: true });
+    await invoke('save_setting', { key: 'nvidia_reuse_realtime_enabled', value: true });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const { command } = route.request().postDataJSON();
+      if (command === 'nvidia_reuse_status') await route.fulfill({ json: { state: 'ready', message: 'Ready', has_files: true } });
+      else if (command === 'nvidia_reuse_realtime_ready') await route.fulfill({ json: ready });
+      else if (command === 'nvidia_reuse_realtime_install') { retries++; ready = true; await route.fulfill({ json: null }); }
+      else await route.continue();
+    });
+    await page.goto(access.localAccessUrl);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('button', { name: 'Audio', exact: true }).click();
+    const section = page.locator('[data-setting-target="audio-nvidia-reuse"]');
+    await section.getByText('Real-time model unavailable').waitFor();
+    await page.locator('[data-setting-target="audio-noise"]').getByText('Suppress background noise before transcription (RNNoise)').waitFor();
+    assert.equal(await section.getByRole('switch', { name: 'Use NVIDIA RE-USE' }).getAttribute('aria-checked'), 'true');
+    await section.getByRole('button', { name: 'Retry setup' }).click();
+    await section.getByText('Real-time model unavailable').waitFor({ state: 'hidden' });
+    await page.locator('[data-setting-target="audio-noise"]').getByText('Enhance audio before transcription with NVIDIA RE-USE').waitFor();
+    assert.equal(retries, 1);
+  } finally {
+    await browser.close();
+    await invoke('save_setting', { key: 'nvidia_reuse_enabled', value: original.nvidia_reuse_enabled ?? false });
+    await invoke('save_setting', { key: 'nvidia_reuse_realtime_enabled', value: original.nvidia_reuse_realtime_enabled ?? false });
+  }
+});
+
+test('base runtime retry still runs when real-time is enabled', { skip: !accessPath, timeout: 90_000 }, async () => {
+  const access = JSON.parse(await fs.readFile(accessPath, 'utf8'));
+  const endpoint = `${new URL(access.localAccessUrl).origin}/__verenu_dev/invoke`;
+  const invoke = async (command, args = {}) => {
+    const response = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${access.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args }) });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const original = await invoke('get_all_settings');
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  let baseStatus = 'ready';
+  let baseRetries = 0;
+  let realtimeRetries = 0;
+  try {
+    await invoke('save_setting', { key: 'nvidia_reuse_enabled', value: true });
+    await invoke('save_setting', { key: 'nvidia_reuse_realtime_enabled', value: true });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const { command } = route.request().postDataJSON();
+      if (command === 'nvidia_reuse_status') await route.fulfill({ json: { state: baseStatus, message: 'Synthetic runtime failure', has_files: true } });
+      else if (command === 'nvidia_reuse_realtime_ready') await route.fulfill({ json: true });
+      else if (command === 'nvidia_reuse_install') { baseRetries++; baseStatus = 'ready'; await route.fulfill({ json: null }); }
+      else if (command === 'nvidia_reuse_realtime_install') { realtimeRetries++; await route.fulfill({ json: null }); }
+      else await route.continue();
+    });
+    await page.goto(access.localAccessUrl);
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('button', { name: 'Audio', exact: true }).click();
+    const section = page.locator('[data-setting-target="audio-nvidia-reuse"]');
+    await section.getByRole('switch', { name: 'Use real-time RE-USE for research' }).waitFor();
+    baseStatus = 'error';
+    await section.getByText('NVIDIA RE-USE needs attention').waitFor({ timeout: 20000 });
+    await section.getByRole('button', { name: 'Retry setup' }).click();
+    await section.getByText('NVIDIA RE-USE needs attention').waitFor({ state: 'hidden' });
+    assert.equal(baseRetries, 1);
+    assert.equal(realtimeRetries, 0);
+  } finally {
+    await browser.close();
+    await invoke('save_setting', { key: 'nvidia_reuse_enabled', value: original.nvidia_reuse_enabled ?? false });
+    await invoke('save_setting', { key: 'nvidia_reuse_realtime_enabled', value: original.nvidia_reuse_realtime_enabled ?? false });
+  }
+});
+
 test('NVIDIA RE-USE reports availability and preserves audio when the worker fails', { skip: !accessPath, timeout: 300_000 }, async () => {
   const access = JSON.parse(await fs.readFile(accessPath, 'utf8'));
   const base = new URL(access.localAccessUrl).origin;
@@ -140,6 +224,7 @@ test('NVIDIA RE-USE reports availability and preserves audio when the worker fai
     assert.ok(['unavailable', 'not_installed'].includes(status.state));
     return;
   }
+  assert.equal(path.resolve(runtime), path.join(path.dirname(accessPath), 'data', 'runtimes', 'nvidia-reuse-v1'));
   const received = [];
   const server = http.createServer(async (req, res) => {
     const chunks = [];
@@ -157,7 +242,7 @@ test('NVIDIA RE-USE reports availability and preserves audio when the worker fai
     supports_transcription: true, supports_cleanup: false, auth_header: null, extra_headers: {}, body_overrides: null,
     transcription_models: ['synthetic'], cleanup_models: [],
   };
-  const keys = ['custom_providers', 'transcription_default_model', 'transcription_fallback_models', 'dual_transcription_enabled', 'cleanup_enabled', 'noise_reduction', 'nvidia_reuse_enabled'];
+  const keys = ['custom_providers', 'transcription_default_model', 'transcription_fallback_models', 'dual_transcription_enabled', 'cleanup_enabled', 'noise_reduction', 'nvidia_reuse_enabled', 'nvidia_reuse_realtime_enabled', 'local_model_memory_policy'];
   const worker = path.join(runtime, 'worker.py');
   const disabledWorker = `${worker}.test-disabled`;
   let workerDisabled = false;
@@ -190,15 +275,39 @@ test('NVIDIA RE-USE reports availability and preserves audio when the worker fai
     await run();
     assert.equal(received.length, 2);
     assert.notDeepEqual(received[1], received[0], 'The GPU model must change the audio sent to the provider');
+    if (process.env.VERENU_REUSE_REALTIME_TEST === '1') {
+      assert.equal(await invoke('nvidia_reuse_realtime_ready'), true);
+      await invoke('save_setting', { key: 'local_model_memory_policy', value: 'unload_immediately' });
+      await invoke('save_setting', { key: 'nvidia_reuse_realtime_enabled', value: true });
+      await run();
+      assert.notDeepEqual(received[2], received[0], 'The real-time GPU model must change the audio sent to the provider');
+      const realtimeWorker = path.join(runtime, 'realtime_worker.py');
+      const disabledRealtimeWorker = `${realtimeWorker}.test-disabled`;
+      await fs.rename(realtimeWorker, disabledRealtimeWorker);
+      try {
+        await fs.writeFile(realtimeWorker, 'raise RuntimeError("synthetic worker failure")\n');
+        await run();
+        assert.deepEqual(received[3], received[0], 'A failed real-time worker must preserve the original recording');
+        assert.equal((await invoke('nvidia_reuse_status')).state, 'ready', 'A real-time failure must not disable the existing model');
+        assert.equal(await invoke('nvidia_reuse_realtime_ready'), false, 'A failed real-time worker must require setup again');
+      } finally {
+        await fs.rm(realtimeWorker, { force: true });
+        await fs.rename(disabledRealtimeWorker, realtimeWorker);
+      }
+      await invoke('save_setting', { key: 'nvidia_reuse_realtime_enabled', value: false });
+      assert.equal((await invoke('nvidia_reuse_status')).state, 'ready');
+      await run();
+      assert.notDeepEqual(received.at(-1), received[0], 'The existing model must still enhance audio after a real-time failure');
+    }
     await fs.rename(worker, disabledWorker);
     workerDisabled = true;
     await run();
-    assert.deepEqual(received[2], received[0], 'A failed worker must preserve the original recording');
+    assert.deepEqual(received.at(-1), received[0], 'A failed worker must preserve the original recording');
     assert.equal((await invoke('nvidia_reuse_status')).state, 'error');
   } finally {
     if (workerDisabled) await fs.rename(disabledWorker, worker);
     if (original) for (const key of keys) {
-      const defaults = { custom_providers: [], transcription_fallback_models: [], dual_transcription_enabled: false, cleanup_enabled: true, noise_reduction: true, nvidia_reuse_enabled: false };
+      const defaults = { custom_providers: [], transcription_fallback_models: [], dual_transcription_enabled: false, cleanup_enabled: true, noise_reduction: true, nvidia_reuse_enabled: false, nvidia_reuse_realtime_enabled: false, local_model_memory_policy: 'unload_after_5m' };
       await invoke('save_setting', { key, value: original[key] ?? defaults[key] ?? null });
     }
     server.closeAllConnections();

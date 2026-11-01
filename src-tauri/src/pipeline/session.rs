@@ -93,7 +93,7 @@ pub fn start_recording_session_ex_with_context(
     let settings = store::settings_snapshot(app);
     let audio_config = match settings {
         Ok(ref settings) => store::load_audio_config(settings),
-        Err(e) => {
+        Err(ref e) => {
             log::warn!(
                 "Failed to load settings.json store for audio config: {:?}",
                 e
@@ -130,8 +130,8 @@ pub fn start_recording_session_ex_with_context(
     let device = audio_config.device;
     let use_default_input_device = device.is_none();
     let nvidia_reuse = audio_config.noise_reduction && audio_config.nvidia_reuse_enabled
+        && !audio_config.nvidia_reuse_realtime_enabled
         && crate::media::nvidia_reuse::selected_and_ready();
-    let noise_reduction = audio_config.noise_reduction && !nvidia_reuse;
     let echo_cancellation = cfg!(target_os = "linux") && audio_config.echo_cancellation;
     #[cfg(target_os = "linux")]
     let (mute_audio, reduce_audio) = output_volume_policy(
@@ -247,6 +247,17 @@ pub fn start_recording_session_ex_with_context(
         .map(|audio| audio.samples_16k.len());
     let max_output_samples =
         prepend_samples.map(|samples| audio::MAX_RECORDING_SAMPLES.saturating_sub(samples));
+    let realtime = if audio_config.noise_reduction && audio_config.nvidia_reuse_enabled && audio_config.nvidia_reuse_realtime_enabled
+        && prepend_samples.is_none() && crate::media::nvidia_reuse::nvidia_reuse_realtime_ready()
+    {
+        crate::media::nvidia_reuse::RuntimeUse::acquire().ok().map(|runtime_use| {
+            let immediate = settings.as_ref().ok().map(store::load_pipeline_config)
+                .is_some_and(|config| config.local_model_memory_policy == "unload_immediately");
+            crate::media::realtime_reuse::start(crate::media::nvidia_reuse::runtime_dir(), immediate, runtime_use)
+        })
+    } else { None };
+    let realtime_sender = realtime.as_ref().map(|recording| recording.sender());
+    let noise_reduction = audio_config.noise_reduction && !nvidia_reuse && realtime.is_none();
     let (started, mute_report) = crate::media::mute_gate::start_after_mute(
         mute_claim.map(|claim| claim.task()),
         crate::media::mute_gate::MUTE_CONFIRM_TIMEOUT,
@@ -258,6 +269,7 @@ pub fn start_recording_session_ex_with_context(
                 durable_sink,
                 max_output_samples,
                 echo_cancellation,
+                realtime_sender,
             )
         },
     );
@@ -265,6 +277,7 @@ pub fn start_recording_session_ex_with_context(
         #[allow(unused_mut)]
         Ok(mut session) => {
             session.nvidia_reuse = nvidia_reuse;
+            session.realtime_reuse = realtime;
             #[cfg(target_os = "linux")]
             if let Some(settings) = duck_settings {
                 if let Err(error) = session.start_output_duck(settings) {

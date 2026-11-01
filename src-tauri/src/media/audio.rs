@@ -485,6 +485,7 @@ pub trait DurableSink: Send {
 
 pub struct RecordingSession {
     pub nvidia_reuse: bool,
+    pub(crate) realtime_reuse: Option<crate::media::realtime_reuse::Recording>,
     #[cfg(target_os = "linux")]
     output_duck: Option<crate::system::output_duck::DuckGuard>,
     stop_tx: mpsc::SyncSender<()>,
@@ -655,6 +656,7 @@ impl RecordingSession {
         let (_, result_rx) = mpsc::channel();
         Self {
             nvidia_reuse: false,
+            realtime_reuse: None,
             #[cfg(target_os = "linux")]
             output_duck: None,
             stop_tx,
@@ -675,6 +677,7 @@ impl RecordingSession {
         durable: Option<Box<dyn DurableSink>>,
         max_output_samples: Option<usize>,
         echo_cancellation: bool,
+        realtime_sender: Option<crate::media::realtime_reuse::AudioSender>,
     ) -> Result<Self> {
         Self::start_inner(
             device_name,
@@ -683,6 +686,7 @@ impl RecordingSession {
             durable,
             max_output_samples,
             echo_cancellation,
+            realtime_sender,
         )
         .map_err(recording_start_error)
     }
@@ -694,6 +698,7 @@ impl RecordingSession {
         durable: Option<Box<dyn DurableSink>>,
         max_output_samples: Option<usize>,
         echo_cancellation: bool,
+        realtime_sender: Option<crate::media::realtime_reuse::AudioSender>,
     ) -> Result<Self> {
         ensure_configured_capture_profile();
         #[cfg(target_os = "linux")]
@@ -864,6 +869,7 @@ impl RecordingSession {
                             let duration_limit =
                                 resampler.push(processed, &mut samples_16k, max_output_samples);
                             update_live_speech(&samples_16k[before_len..]);
+                            if let Some(sender) = &realtime_sender { sender.send(&samples_16k[before_len..]); }
                             if duration_limit {
                                 termination = RecordingTermination::DurationLimit;
                             }
@@ -927,12 +933,14 @@ impl RecordingSession {
                         termination = RecordingTermination::DurationLimit;
                     }
                     update_live_speech(&samples_16k[before_len..]);
+                    if let Some(sender) = &realtime_sender { sender.send(&samples_16k[before_len..]); }
                     if termination == RecordingTermination::Complete {
                         let before_len = samples_16k.len();
                         if resampler.finish(&mut samples_16k, max_output_samples) {
                             termination = RecordingTermination::DurationLimit;
                         }
                         update_live_speech(&samples_16k[before_len..]);
+                        if let Some(sender) = &realtime_sender { sender.send(&samples_16k[before_len..]); }
                     }
                     if let Some(sink) = durable.as_mut() {
                         if sink.extend(&samples_16k[before_len..]).is_err() {
@@ -1116,6 +1124,7 @@ impl RecordingSession {
 
         Ok(RecordingSession {
             nvidia_reuse: false,
+            realtime_reuse: None,
             #[cfg(target_os = "linux")]
             output_duck: None,
             stop_tx,
@@ -1394,7 +1403,7 @@ mod tests {
     #[test]
     #[ignore = "requires a disposable PipeWire server and microphone"]
     fn private_pipewire_echo_recording_completes() {
-        let session = super::RecordingSession::start(None, false, 1.0, None, None, true)
+        let session = super::RecordingSession::start(None, false, 1.0, None, None, true, None)
             .expect("start echo-cancelled recording");
         std::thread::sleep(std::time::Duration::from_millis(200));
         let result = session.stop().expect("finish echo-cancelled recording");

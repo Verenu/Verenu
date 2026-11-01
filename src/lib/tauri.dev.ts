@@ -164,6 +164,7 @@ const defaultSettings: Record<string, unknown> = {
   app_mappings: [],
   noise_reduction: true,
   nvidia_reuse_enabled: false,
+  nvidia_reuse_realtime_enabled: false,
   echo_cancellation: false,
   duck_audio: false,
   duck_target: 25,
@@ -734,7 +735,10 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       return { state: 'unavailable', message: 'NVIDIA RE-USE is available in the desktop app.', has_files: false } as T;
     case 'nvidia_reuse_check':
       return undefined as T;
+    case 'nvidia_reuse_realtime_ready':
+      return false as T;
     case 'nvidia_reuse_install':
+    case 'nvidia_reuse_realtime_install':
     case 'nvidia_reuse_remove':
       throw new Error('NVIDIA RE-USE setup requires the desktop app.');
     case 'get_all_settings': {
