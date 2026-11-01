@@ -12,6 +12,7 @@
   import { formatIpcError } from '../../errors';
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
   import { customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
+  import Callout from '../Callout.svelte';
   import CompactSelect from '../CompactSelect.svelte';
   import Toggle from '../Toggle.svelte';
   import ModelIdInput from './ModelIdInput.svelte';
@@ -268,7 +269,7 @@
 
 {#snippet destination()}
   {#if editing && editing.base_url.trim() && !isLocalUrl(editing.base_url)}
-    <p class="callout">{editing.supports_transcription && editing.supports_cleanup ? 'Audio and text' : editing.supports_transcription ? 'Audio' : 'Text'} will be sent to <strong>{displayHost(editing.base_url)}</strong>.</p>
+    <Callout severity="info" compact>{editing.supports_transcription && editing.supports_cleanup ? 'Audio and text' : editing.supports_transcription ? 'Audio' : 'Text'} will be sent to <strong>{displayHost(editing.base_url)}</strong>.</Callout>
   {/if}
 {/snippet}
 
@@ -291,7 +292,7 @@
         <label class="full">Base URL<input type="url" bind:value={editing.base_url} placeholder={urlExample} required disabled={busy} /></label>
       {/if}
     </div>
-    {#if editing.base_url.includes('YOUR_')}<p class="callout warn" role="note">Replace the placeholder in the base URL before saving.</p>{/if}
+    {#if editing.base_url.includes('YOUR_')}<Callout severity="warning" compact role="note">Replace the placeholder in the base URL before saving.</Callout>{/if}
 
     <div class="cap-grid" role="group" aria-label="What this provider handles">
       <div class="cap" class:on={editing.supports_transcription} class:off={editing.protocol === 'anthropic'}>
@@ -399,7 +400,7 @@
               <input type="password" bind:value={key} use:focusOnMount autocomplete="off" aria-label={`${builtin.label} API key`} placeholder={keyStatus[builtin.id] ? 'Saved. Enter a new key to replace it' : builtin.placeholder} disabled={busy} aria-invalid={error ? 'true' : 'false'} />
             </label>
             <div class="actions sticky">
-              {#if error}<p class="provider-error" role="alert" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>{error}</p>{/if}
+              {#if error}<div class="provider-error" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}><Callout severity="error" compact>{error}</Callout></div>{/if}
               <button class="btn-primary" type="submit" disabled={busy || !key.trim()}>{busy ? 'Checking…' : keyStatus[builtin.id] ? 'Save key' : 'Add provider'}</button>
               <button type="button" class="btn-ghost" onclick={closeDrawer} disabled={busy}>Cancel</button>
             </div>
@@ -431,7 +432,7 @@
             {/if}
             {@render clearKey()}
             <div class="actions sticky">
-              {#if error}<p class="provider-error" role="alert" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>{error}</p>{/if}
+              {#if error}<div class="provider-error" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}><Callout severity="error" compact>{error}</Callout></div>{/if}
               <button class="btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : savedOriginal ? 'Save provider' : 'Add provider'}</button>
               <button type="button" class="btn-ghost" onclick={savedOriginal ? closeDrawer : goBack} disabled={busy}>Cancel</button>
             </div>
@@ -497,10 +498,6 @@
   input:focus, textarea:focus { outline: none; border-color: var(--line-strong); }
   input[aria-invalid='true'] { border-color: var(--danger); }
 
-  .callout { margin: 0; padding: 9px 12px; border-radius: 10px; font-size: 11.5px; line-height: 1.5; background: var(--paper-2); color: var(--ink-soft); overflow-wrap: anywhere; }
-  .callout.warn { background: var(--warning-bg); color: var(--ink); }
-  .callout strong { color: var(--ink); }
-
   .cap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .cap { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; transition: border-color 120ms ease, background 120ms ease; }
   .cap.on { border-color: var(--line-strong); background: var(--paper-2); }
@@ -514,7 +511,7 @@
   details { border-top: 1px solid var(--line-soft); padding-top: 12px; display: flex; flex-direction: column; gap: 14px; }
   details > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
   .actions.sticky { position: sticky; bottom: -18px; margin: auto -18px -18px; padding: 12px 18px 16px; border-top: 1px solid var(--line-soft); background: linear-gradient(to top, var(--bg-elev) 70%, transparent); }
-  .provider-error { flex-basis: 100%; color: var(--danger); font-size: 12px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+  .provider-error { flex-basis: 100%; }
   @media (max-width: 560px) {
     .models-row, .models-row.no-tx, .models-row.no-cl { grid-template-columns: minmax(0, 1fr); column-gap: 0; row-gap: 14px; transition: none; }
     .mfield > :global(.mid) { min-width: 0; }

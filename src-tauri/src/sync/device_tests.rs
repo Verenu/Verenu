@@ -38,6 +38,8 @@ impl Device {
             device_uuid: self.host.uuid.clone(),
             device_name: "Fixture device".into(),
             cert_der: self.cert.to_vec(),
+            sync_port: None,
+            pairing_id: None,
         }
     }
 

@@ -124,6 +124,22 @@ pub fn remove_peer(conn: &Connection, device_uuid: &str) -> Result<bool> {
     Ok(n > 0)
 }
 
+pub fn set_pairing_id(conn: &Connection, device_uuid: &str, pairing_id: Option<&str>) -> Result<()> {
+    conn.execute(
+        "INSERT INTO sync_pairing_ids (device_uuid, pairing_id) VALUES (?1, ?2) ON CONFLICT(device_uuid) DO UPDATE SET pairing_id = excluded.pairing_id",
+        params![device_uuid, pairing_id],
+    )?;
+    Ok(())
+}
+
+pub fn pairing_id(conn: &Connection, device_uuid: &str) -> Result<Option<Option<String>>> {
+    Ok(conn.query_row(
+        "SELECT pairing_id FROM sync_pairing_ids WHERE device_uuid = ?1",
+        [device_uuid],
+        |row| row.get(0),
+    ).optional()?)
+}
+
 pub fn mark_peer_synced(conn: &Connection, device_uuid: &str, send_cursor: i64) -> Result<()> {
     conn.execute(
         "UPDATE sync_peers

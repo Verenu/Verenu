@@ -153,10 +153,11 @@ export type SettingsValueMap = {
   sync_enabled: boolean;
   sync_muting_enabled: boolean;
   sync_peer_addresses: Record<string, string> | null;
+  sync_discovered_routes: Record<string, string[]> | null;
 };
 
 type SettingKey = keyof SettingsValueMap;
-export type WritableSettingKey = Exclude<SettingKey, 'sync_peer_addresses'>;
+export type WritableSettingKey = Exclude<SettingKey, 'sync_peer_addresses' | 'sync_discovered_routes'>;
 
 export type SettingsSnapshot = {
   [K in Exclude<SettingKey, 'app_mappings' | 'setup_complete'>]?: SettingsValueMap[K] | null;
