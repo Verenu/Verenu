@@ -24,7 +24,7 @@ test('production pipeline uses HTTP fallback and preserves speech when cleanup f
     const body = Buffer.concat(chunks).toString();
     const transcription = req.url === '/v1/audio/transcriptions';
     const primary = transcription && body.includes('synthetic-primary');
-    calls.push({ transcription, primary, contextApplied: !transcription && body.includes('Synthetic HTTP instruction') });
+    calls.push({ transcription, primary, fails: cleanupFails, contextApplied: !transcription && body.includes('Synthetic HTTP instruction'), maxTokens: transcription ? null : JSON.parse(body).max_tokens });
     res.setHeader('Content-Type', 'application/json');
     if (primary || (!transcription && cleanupFails)) {
       res.statusCode = 503;
@@ -44,6 +44,7 @@ test('production pipeline uses HTTP fallback and preserves speech when cleanup f
   let original;
   let context;
   try {
+    assert.equal((await request('/listen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ event: 'verenu:model-notice' }) })).status, 200);
     original = await invoke('get_all_settings');
     const settings = {
       custom_providers: [provider], transcription_default_model: `${provider.id}/synthetic-primary`,
@@ -52,7 +53,7 @@ test('production pipeline uses HTTP fallback and preserves speech when cleanup f
       dual_transcription_enabled: false, cleanup_enabled: true, cleanup_cache_enabled: false,
     };
     for (const [key, value] of Object.entries(settings)) await invoke('save_setting', { key, value });
-    context = await invoke('create_context', { name: `HTTP flow ${Date.now()}`, tone: 'casual', cleanupIntensity: 'medium', customInstructions: 'Synthetic HTTP instruction', contextualFormattingDisabled: true });
+    context = await invoke('create_context', { name: `HTTP flow ${Date.now()}`, tone: 'casual', cleanupIntensity: 'high', customInstructions: 'Synthetic HTTP instruction', contextualFormattingDisabled: true });
     const fixture = await request('/fixtures/plain.wav');
     assert.equal(fixture.status, 200);
     const audio = await fixture.arrayBuffer();
@@ -73,11 +74,16 @@ test('production pipeline uses HTTP fallback and preserves speech when cleanup f
       assert.ok(matches.some(row => row.id === rows[0].id));
       const events = (await (await request(`/events?after=${cursor}`)).json()).events;
       assert.ok(events.some(event => event.event === 'verenu:transcribed' && event.payload === expected));
+      if (fails) {
+        assert.ok(calls.some(row => !row.transcription && row.fails), 'The failing cleanup request must reach HTTP');
+        assert.ok(events.some(event => event.event === 'verenu:model-notice' && event.payload.includes('Cleanup was unavailable')));
+      }
     }
     assert.ok(calls.some(row => row.primary), 'Primary transcription must actually reach HTTP');
     assert.ok(calls.some(row => row.transcription && !row.primary), 'Fallback must actually reach HTTP');
     assert.ok(calls.some(row => !row.transcription), 'Cleanup must actually reach HTTP');
     assert.ok(calls.some(row => row.contextApplied), 'The production cleanup request must include the selected Context instructions');
+    assert.ok(calls.filter(row => !row.transcription).every(row => row.maxTokens >= 2048), 'Strong cleanup requests need room for reasoning and output');
   } finally {
     try {
       for (const key of original ? keys : []) {
