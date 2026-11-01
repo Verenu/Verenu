@@ -92,6 +92,46 @@ static GESTURE: OnceLock<Mutex<PortalGesture>> = OnceLock::new();
 static PORTAL_CONTROL: OnceLock<portal_control::Control> = OnceLock::new();
 type PortalSession = ashpd::desktop::Session<ashpd::desktop::global_shortcuts::GlobalShortcuts>;
 
+async fn wait_for_shortcut_registration(
+    control: &portal_control::Control,
+    timeout: Duration,
+) -> Result<(), String> {
+    match tokio::time::timeout(timeout, control.wait_for(0)).await {
+        Ok(Ok(portal_control::State::Active)) => Ok(()),
+        Ok(Ok(state)) => Err(format!("Global shortcuts did not start: {state:?}")),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err("Global shortcuts did not finish starting".into()),
+    }
+}
+
+pub(crate) async fn wait_for_initial_shortcut_registration() -> Result<(), String> {
+    let control = PORTAL_CONTROL.get().ok_or("Global shortcuts are unavailable")?;
+    wait_for_shortcut_registration(control, Duration::from_secs(20)).await
+}
+
+#[cfg(test)]
+mod registration_readiness_tests {
+    use super::{portal_control, wait_for_shortcut_registration};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn waits_for_active_registration_and_rejects_failure() {
+        let (control, driver) = portal_control::Control::new();
+        let waiting_control = control.clone();
+        let waiting = tokio::spawn(async move {
+            wait_for_shortcut_registration(&waiting_control, Duration::from_secs(2)).await
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        driver.acknowledge(driver.current(), portal_control::State::Active);
+        waiting.await.unwrap().unwrap();
+
+        let (control, driver) = portal_control::Control::new();
+        driver.acknowledge(driver.current(), portal_control::State::Unavailable("denied".into()));
+        assert!(wait_for_shortcut_registration(&control, Duration::from_secs(2)).await.is_err());
+    }
+}
+
 #[derive(Default)]
 struct PortalSessionLifecycle {
     session: Mutex<Option<std::sync::Arc<PortalSession>>>,
