@@ -36,6 +36,11 @@ pub(crate) fn setup_probation_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) async fn verify_probation_tray(app: &AppHandle) -> Result<(), String> {
+    linux::verify_probation(app).await
+}
+
+#[cfg(target_os = "linux")]
 #[allow(dead_code)]
 pub(crate) async fn activate_after_handoff(
     app: &AppHandle,
