@@ -206,6 +206,18 @@ fn make_tray(app: &AppHandle, icon_revision: Arc<AtomicU64>) -> LinuxTray {
     }
 }
 
+pub(super) async fn verify_probation(app: &AppHandle) -> Result<(), String> {
+    let runtime = app.try_state::<TrayRuntime>().ok_or("Linux tray is unavailable")?;
+    let service = runtime.service.lock().await;
+    if !runtime.desired.load(Ordering::SeqCst) || runtime.active.load(Ordering::SeqCst) {
+        return Err("Linux tray is not in restart preparation".into());
+    }
+    match &*service {
+        TrayService::Running(handle) if !handle.is_closed() => Ok(()),
+        _ => Err("Linux tray stopped during restart preparation".into()),
+    }
+}
+
 #[allow(dead_code)]
 pub(super) async fn activate_after_handoff(app: &AppHandle) -> Result<(), String> {
     let runtime = app
@@ -395,7 +407,9 @@ mod tests {
                 })
             };
             assert_eq!(read_status(item.clone()).await.unwrap(), "Passive");
+            super::verify_probation(app.handle()).await.unwrap();
             super::activate_after_handoff(app.handle()).await.unwrap();
+            assert!(super::verify_probation(app.handle()).await.is_err());
             assert_eq!(read_status(item).await.unwrap(), "Active");
             tokio::time::timeout(deadline, super::stop(app.handle()))
                 .await

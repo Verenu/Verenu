@@ -367,6 +367,14 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             handle.exit(1);
                             return;
                         }
+                        let tray_check = tauri::async_runtime::block_on(async {
+                            tokio::time::timeout(Duration::from_secs(5), crate::app_tray::verify_probation_tray(&handle)).await
+                        });
+                        if !matches!(tray_check, Ok(Ok(()))) {
+                            let _ = services.fail("Replacement tray became unavailable during preparation".into());
+                            handle.exit(1);
+                            return;
+                        }
                         let _ = services.fail("Replacement services are not yet verified".into());
                     }
                 } else {
