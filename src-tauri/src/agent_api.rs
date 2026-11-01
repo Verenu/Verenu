@@ -418,6 +418,12 @@ pub(crate) struct StagedAgent {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) struct PublishedAgent {
+    staged: StagedAgent,
+    gate: Arc<crate::linux_activity::ActivityGate>,
+}
+
+#[cfg(target_os = "linux")]
 impl PreparedAgent {
     pub(crate) async fn stage_for_handoff(self, app: AppHandle) -> anyhow::Result<StagedAgent> {
         use std::sync::atomic::Ordering;
@@ -465,18 +471,42 @@ impl StagedAgent {
         let endpoint = format!("http://127.0.0.1:{}", self.port);
         let status: Value = client.get(format!("{endpoint}/v1/status")).send().await?.error_for_status()?.json().await?;
         anyhow::ensure!(status.get("instance").and_then(Value::as_str) == Some(self.instance.as_str()), "Agent service returned the wrong identity");
-        let response = client.post(format!("{endpoint}/v1/authorize")).json(&json!({"token": "a".repeat(64)})).send().await?;
+        let response = client.post(format!("{endpoint}/v1/authorization-status")).json(&json!({"token": "a".repeat(64)})).send().await?;
         anyhow::ensure!(response.status() == StatusCode::SERVICE_UNAVAILABLE, "Agent probation endpoint was not isolated");
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited) -> anyhow::Result<()> {
-        use std::sync::atomic::Ordering;
+    pub(crate) fn publish_while_paused(
+        self,
+        app: &AppHandle,
+        pause: &crate::linux_activity::Pause,
+    ) -> anyhow::Result<PublishedAgent> {
+        let gate = app.try_state::<Arc<crate::linux_activity::ActivityGate>>()
+            .ok_or_else(|| anyhow::anyhow!("Agent restart gate is unavailable"))?;
+        anyhow::ensure!(pause.belongs_to(gate.inner()), "Agent restart gate does not match");
         anyhow::ensure!(self.server.as_ref().is_some_and(|server| !server.inner().is_finished()), "Agent service stopped during restart");
         publish_discovery(self.port, &self.instance)?;
-        self.active.store(true, Ordering::Release);
-        drop(self.server.take());
+        Ok(PublishedAgent { staged: self, gate: gate.inner().clone() })
+    }
+
+}
+
+#[cfg(target_os = "linux")]
+impl PublishedAgent {
+    pub(crate) async fn verify(&self) -> anyhow::Result<()> {
+        self.staged.verify().await?;
+        let descriptor: Value = serde_json::from_slice(&std::fs::read(crate::app_data_dir().join("agent-session.json"))?)?;
+        anyhow::ensure!(descriptor.get("port").and_then(Value::as_u64) == Some(u64::from(self.staged.port))
+            && descriptor.get("instance").and_then(Value::as_str) == Some(self.staged.instance.as_str()),
+            "Agent discovery changed during restart");
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited, activity: &crate::linux_activity::Activity) -> anyhow::Result<()> {
+        anyhow::ensure!(activity.belongs_to(&self.gate), "Agent activation gate does not match");
+        self.staged.active.store(true, std::sync::atomic::Ordering::Release);
+        drop(self.staged.server.take());
         Ok(())
     }
 }
@@ -1374,7 +1404,8 @@ mod tests {
         std::fs::write(&descriptor, b"parent descriptor").unwrap();
         let prepared = prepare_agent(None, None).unwrap();
         let port = prepared.port;
-        let app = tauri::Builder::default().any_thread().build(tauri::generate_context!()).unwrap();
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(gate.clone()).build(tauri::generate_context!()).unwrap();
         tauri::async_runtime::block_on(async {
             let staged = prepared.stage_for_handoff(app.handle().clone()).await.unwrap();
             let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
@@ -1387,13 +1418,52 @@ mod tests {
                     .send().await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
             }
             assert_eq!(std::fs::read(&descriptor).unwrap(), b"parent descriptor");
+            let pause = gate.pause().await.unwrap();
+            let published = staged.publish_while_paused(app.handle(), &pause).unwrap();
+            published.verify().await.unwrap();
+            assert_ne!(std::fs::read(&descriptor).unwrap(), b"parent descriptor");
+            assert_eq!(client.post(format!("{endpoint}/v1/authorization-status"))
+                .json(&json!({"token": "a".repeat(64)})).send().await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
             let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-            staged.activate(&parent_exited).unwrap();
+            drop(pause);
+            let activity = gate.try_enter().unwrap();
+            published.activate(&parent_exited, &activity).unwrap();
             let response = client.get(format!("{endpoint}/v1/status")).send().await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             let status: Value = response.json().await.unwrap();
             let published: Value = serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
             assert_eq!(status["instance"], published["instance"]);
+            assert_eq!(client.post(format!("{endpoint}/v1/authorization-status"))
+                .json(&json!({"token": "a".repeat(64)})).send().await.unwrap().status(), StatusCode::OK);
+        });
+        drop(app);
+        match previous {
+            Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
+            None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn published_agent_rejects_an_unrelated_activity_gate() {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = std::env::temp_dir().join(format!("verenu-agent-gate-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        let previous = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &directory);
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(gate.clone()).build(tauri::generate_context!()).unwrap();
+        tauri::async_runtime::block_on(async {
+            let staged = prepare_agent(None, None).unwrap().stage_for_handoff(app.handle().clone()).await.unwrap();
+            let pause = gate.pause().await.unwrap();
+            let published = staged.publish_while_paused(app.handle(), &pause).unwrap();
+            let other = Arc::new(crate::linux_activity::ActivityGate::default());
+            let activity = other.try_enter().unwrap();
+            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+            assert!(published.activate(&parent_exited, &activity).is_err());
+            assert!(gate.try_enter().is_none());
         });
         drop(app);
         match previous {

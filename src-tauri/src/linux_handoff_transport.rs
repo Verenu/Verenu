@@ -1637,6 +1637,8 @@ mod tests {
         let staged = ready.acquire_ownership().unwrap().stage_services().expect("replacement services did not prepare");
         assert_eq!(unsafe { libc::kill(child_pid as i32, 0) }, 0);
         assert!(!owner.owns_name().unwrap());
+        let descriptor = data.join("agent-session.json");
+        assert!(descriptor.exists(), "replacement did not publish its paused agent");
         let callbacks = crate::linux_single_instance::test_callback_count();
         connection.call_method(
             Some("com.verenu.app.SingleInstance"), "/com/verenu/app/SingleInstance",
@@ -1646,6 +1648,7 @@ mod tests {
         assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
         assert_eq!(callback_queue.first().unwrap().unwrap().1, crate::linux_handoff_callbacks::Callback::Handsfree);
         drop(staged);
+        std::fs::remove_file(descriptor).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while !owner.owns_name().unwrap_or(false) {
             assert!(Instant::now() < deadline, "parent did not regain ownership after shortcut probe");

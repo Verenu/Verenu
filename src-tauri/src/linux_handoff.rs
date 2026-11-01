@@ -713,6 +713,17 @@ mod tests {
                     Default::default(), Duration::from_secs(25),
                 ).await.expect("replacement did not prepare its services");
                 assert!(gate.try_enter().is_none());
+                let replacement_descriptor = std::fs::read(dir.join("agent-session.json")).unwrap();
+                assert_ne!(replacement_descriptor, agent_descriptor);
+                let endpoint: serde_json::Value = serde_json::from_slice(&replacement_descriptor).unwrap();
+                let port = endpoint["port"].as_u64().unwrap();
+                let status: serde_json::Value = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap()
+                    .get(format!("http://127.0.0.1:{port}/v1/status")).send().await.unwrap().json().await.unwrap();
+                assert_eq!(status["instance"], endpoint["instance"]);
+                let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
+                assert_eq!(client.post(format!("http://127.0.0.1:{port}/v1/authorization-status"))
+                    .json(&serde_json::json!({"token": "a".repeat(64)})).send().await.unwrap().status(),
+                    reqwest::StatusCode::SERVICE_UNAVAILABLE);
                 let app_handle = app.handle().clone();
                 assert!(!tauri::async_runtime::spawn_blocking(move || {
                     app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
@@ -731,6 +742,7 @@ mod tests {
                 drop(tokio::time::timeout(Duration::from_secs(20), gate.enter()).await
                     .expect("failed activation did not restore the parent"));
                 assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
+                assert_eq!(std::fs::read(dir.join("agent-session.json")).unwrap(), agent_descriptor);
                 assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), settings_before);
                 drop(disk_db);
             }
