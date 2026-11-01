@@ -671,17 +671,24 @@ mod tests {
                 assert!(tauri::async_runtime::spawn_blocking(move || {
                     app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
                 }).await.unwrap());
-                tauri::async_runtime::spawn_blocking(|| {
+                let registered = crate::linux_single_instance::test_launcher_registered();
+                let pending_callback = tauri::async_runtime::spawn_blocking(|| {
                     crate::linux_single_instance::test_callback(&zbus::blocking::Connection::session().unwrap(),
                         "com.verenu.app.SingleInstance", "/com/verenu/app/SingleInstance",
                         vec!["--verenu-hotkey-handsfree".into()]).unwrap();
-                }).await.unwrap();
+                });
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while crate::linux_single_instance::test_launcher_registered() == registered {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.expect("callback did not enter the shortcut queue");
                 assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
                 let error = tauri::async_runtime::spawn_blocking(move || staged.activate_for_test())
                     .await.unwrap().expect_err("unfinished activation must fail safely");
                 assert!(error.contains("Synthetic replacement startup failure"), "unexpected activation failure: {error}");
                 drop(tokio::time::timeout(Duration::from_secs(20), gate.enter()).await
                     .expect("failed activation did not restore the parent"));
+                tokio::time::timeout(Duration::from_secs(5), pending_callback).await.unwrap().unwrap();
                 assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks + 1);
                 assert_eq!(std::fs::read(dir.join("agent-session.json")).unwrap(), agent_descriptor);
                 assert_eq!(std::fs::read(dir.join("settings.json")).unwrap(), settings_before);
