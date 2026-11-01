@@ -15,6 +15,7 @@ for (const [missing, message] of [
     const browser = {
       command: async () => {},
       execute: async script => {
+        if (script.includes("document.readyState === 'complete'")) return true;
         measurements++;
         const pillMissing = missing === 'pill' || (missing === 'interactive-pill' && measurements > 1);
         return vm.runInNewContext(`(() => { ${script} })()`, {
