@@ -37,6 +37,13 @@ fn verify_cleanup_cache_setting(
     Ok(())
 }
 
+fn fail_paused_probation(services: crate::linux_handoff_transport::ChildServices, reason: String) -> ! {
+    let _ = services.fail(reason);
+    // Keep the child's activity gate paused until every child thread stops.
+    // The parent supervises this process group and resumes only after it exits.
+    std::process::exit(1)
+}
+
 pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
     let startup = match child.begin(crate::data::db::HANDOFF_SCHEMA_VERSION) {
         Ok(startup) => startup,
@@ -201,15 +208,11 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                 };
                 let activation = match frontends.ready() {
                     Ok(activation) => activation,
-                    Err(_) => {
-                        handle.exit(1);
-                        return;
-                    }
+                    Err(_) => std::process::exit(1),
                 };
                 let Some(parent_unique_name) = parent_unique_name else {
                     let _ = activation.fail("Parent single-instance identity is missing".into());
-                    handle.exit(1);
-                    return;
+                    std::process::exit(1);
                 };
                 let (sent, received) = std::sync::mpsc::sync_channel(1);
                 let owner = handle.clone();
@@ -238,28 +241,22 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             }
                         };
                         if let Some(error) = database_error {
-                            let _ = services.fail(error);
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, error);
                         }
                         if let Err(error) = handle
                             .state::<crate::data::store::SettingsHandle>()
                             .validate_handoff_snapshot()
                         {
-                            let _ = services.fail(error);
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, error);
                         }
                         let prepared_db = match crate::data::db::probe_writable_for_handoff(
                             crate::app_db_path(),
                         ) {
                             Ok(db) => db,
                             Err(error) => {
-                                let _ = services.fail(format!(
+                                fail_paused_probation(services, format!(
                                     "Replacement cannot prepare the database: {error}"
                                 ));
-                                handle.exit(1);
-                                return;
                             }
                         };
                         let (sent, received) = std::sync::mpsc::sync_channel(1);
@@ -275,16 +272,12 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             )
                             .is_ok();
                         if !tray_started {
-                            let _ = services.fail("Replacement tray could not start".into());
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, "Replacement tray could not start".into());
                         }
                         let prepared_agent = match crate::agent_api::prepare_for_handoff() {
                             Ok(agent) => agent,
                             Err(error) => {
-                                let _ = services.fail(format!("Replacement agent service could not prepare: {error}"));
-                                handle.exit(1);
-                                return;
+                                fail_paused_probation(services, format!("Replacement agent service could not prepare: {error}"));
                             }
                         };
                         let staged_agent = match tauri::async_runtime::block_on(
@@ -292,15 +285,11 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         ) {
                             Ok(agent) => agent,
                             Err(error) => {
-                                let _ = services.fail(format!("Replacement agent service could not start safely: {error}"));
-                                handle.exit(1);
-                                return;
+                                fail_paused_probation(services, format!("Replacement agent service could not start safely: {error}"));
                             }
                         };
                         if let Err(error) = prepare_saved_shortcut(&handle) {
-                            let _ = services.fail(format!("Replacement shortcut settings are unavailable: {error}"));
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, format!("Replacement shortcut settings are unavailable: {error}"));
                         }
                         let (sent, received) = std::sync::mpsc::sync_channel(1);
                         let hotkey_app = handle.clone();
@@ -310,47 +299,39 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             let _ = sent.send(());
                         });
                         if scheduled.is_err() || received.recv_timeout(Duration::from_secs(10)).is_err() {
-                            let _ = services.fail("Replacement shortcuts could not start".into());
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, "Replacement shortcuts could not start".into());
                         }
                         if let Err(error) = tauri::async_runtime::block_on(
                             crate::core::hotkey::wait_for_initial_shortcut_registration(),
                         ) {
-                            let _ = services.fail(format!("Replacement shortcuts could not start: {error}"));
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, format!("Replacement shortcuts could not start: {error}"));
                         }
                         let prepared_sync = match handle.state::<crate::sync::SyncManager>().prepare_for_handoff() {
                             Ok(sync) => sync,
                             Err(error) => {
-                                let _ = services.fail(format!("Replacement sync could not prepare: {error}"));
-                                handle.exit(1);
-                                return;
+                                fail_paused_probation(services, format!("Replacement sync could not prepare: {error}"));
                             }
                         };
                         if let Err(error) = tauri::async_runtime::block_on(prepared_sync.verify_transport()) {
-                            let _ = services.fail(format!("Replacement sync transport could not prepare: {error}"));
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, format!("Replacement sync transport could not prepare: {error}"));
                         }
-                        let _prepared_microphone = match crate::media::mic_mute_trigger::prepare_for_handoff(
+                        let prepared_microphone = match crate::media::mic_mute_trigger::prepare_for_handoff(
                             &handle, handle.state::<crate::pipeline::SharedState>().inner().clone(),
                         ) {
                             Ok(microphone) => microphone,
                             Err(error) => {
-                                let _ = services.fail(format!("Replacement microphone watcher could not prepare: {error}"));
-                                handle.exit(1);
-                                return;
+                                fail_paused_probation(services, format!("Replacement microphone watcher could not prepare: {error}"));
                             }
+                        };
+                        let active_microphone = match prepared_microphone.activate_while_paused(&_child_pause) {
+                            Ok(microphone) => microphone,
+                            Err(error) => fail_paused_probation(services, format!("Replacement microphone watcher could not start: {error}")),
                         };
                         let db = handle.state::<crate::DbHandle>();
                         let locked_db = match prepared_db.lock_for_activation(db.inner()) {
                             Ok(db) => db,
                             Err(error) => {
-                                let _ = services.fail(format!("Replacement database could not prepare activation: {error}"));
-                                handle.exit(1);
-                                return;
+                                fail_paused_probation(services, format!("Replacement database could not prepare activation: {error}"));
                             }
                         };
                         let cache_enabled = handle.state::<crate::data::store::SettingsHandle>()
@@ -358,29 +339,24 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             .and_then(|value| value.as_bool())
                             .unwrap_or(true);
                         if let Err(error) = verify_cleanup_cache_setting(locked_db.connection(), cache_enabled) {
-                            let _ = services.fail(error);
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, error);
                         }
                         if let Err(error) = prepared_sync.prepare_database(locked_db.connection()) {
-                            let _ = services.fail(format!("Replacement sync database could not prepare: {error}"));
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, format!("Replacement sync database could not prepare: {error}"));
                         }
                         let tray_check = tauri::async_runtime::block_on(async {
                             tokio::time::timeout(Duration::from_secs(5), crate::app_tray::verify_probation_tray(&handle)).await
                         });
                         if !matches!(tray_check, Ok(Ok(()))) {
-                            let _ = services.fail("Replacement tray became unavailable during preparation".into());
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, "Replacement tray became unavailable during preparation".into());
                         }
                         if let Err(error) = tauri::async_runtime::block_on(staged_agent.verify()) {
-                            let _ = services.fail(format!("Replacement agent service became unavailable: {error}"));
-                            handle.exit(1);
-                            return;
+                            fail_paused_probation(services, format!("Replacement agent service became unavailable: {error}"));
                         }
-                        let _ = services.fail("Replacement services are not yet verified".into());
+                        if let Err(error) = active_microphone.verify() {
+                            fail_paused_probation(services, format!("Replacement microphone watcher became unavailable: {error}"));
+                        }
+                        fail_paused_probation(services, "Replacement services are not yet verified".into());
                     }
                 } else {
                     let reason = if acquired {
@@ -390,7 +366,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                     };
                     let _ = activation.fail(reason.into());
                 }
-                handle.exit(1);
+                std::process::exit(1);
             });
             Ok(())
         })
