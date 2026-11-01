@@ -368,7 +368,7 @@
     overflow-y: auto;
     background: var(--bg-elev);
     border: 1px solid var(--line);
-    border-radius: var(--r-sm);
+    border-radius: var(--ui-dropdown-menu-radius);
     box-shadow: var(--shadow-popover);
   }
 

@@ -154,7 +154,8 @@
   .dev-warning { color: var(--error, #a13925); font-size: 13px; line-height: 1.5; }
   .dev-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   label { display: grid; gap: 6px; font-size: 13px; min-width: 0; }
-  input, select, textarea { box-sizing: border-box; width: 100%; min-height: 44px; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-sm, 6px); padding: 8px; font: inherit; }
+  input, textarea { box-sizing: border-box; width: 100%; min-height: 44px; background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-radius: var(--ui-dropdown-radius); padding: 8px; font: inherit; }
+  select { box-sizing: border-box; width: 100%; min-height: 44px; }
   textarea { resize: vertical; line-height: 1.5; }
   .dev-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .dev-actions button { min-height: 44px; }
