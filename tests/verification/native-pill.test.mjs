@@ -5,6 +5,17 @@ import { verifyNativePill } from '../../scripts/verification/native-pill.mjs';
 
 const capsule = { x: 10, y: 10, left: 10, top: 10, right: 82, bottom: 44, width: 72, height: 34 };
 
+test('native pill diagnostics preserve exceptions with read-only messages', async () => {
+  const original = new DOMException('Native timeout', 'TimeoutError');
+  let first = true;
+  const browser = {
+    command: async () => { if (first) { first = false; throw original; } },
+    execute: async () => ({ readyState: 'complete', root: true, pill: true, bridge: true }),
+  };
+  await assert.rejects(verifyNativePill({ browser, invoke: async () => {}, directory: '.', screenshot: async () => {} }),
+    error => error === original);
+});
+
 for (const [missing, message] of [
   ['pill', 'Visible native pill is missing'],
   ['cluster', 'Native pill cluster is missing'],
