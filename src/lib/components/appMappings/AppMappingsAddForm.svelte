@@ -411,7 +411,7 @@
     top: calc(100% + 4px);
     background: var(--bg-elev);
     border: 1px solid var(--line);
-    border-radius: var(--r-sm);
+    border-radius: var(--ui-dropdown-menu-radius);
     box-shadow: var(--shadow-popover);
     width: 100%;
     max-height: 180px;

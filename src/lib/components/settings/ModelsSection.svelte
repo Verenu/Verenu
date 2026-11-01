@@ -1,9 +1,9 @@
 <script lang="ts">
   import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
-  import { fly, slide } from 'svelte/transition';
-  import { cubicOut, expoOut } from 'svelte/easing';
+  import { slide } from 'svelte/transition';
+  import { cubicOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
   import {
     localSttStore,
@@ -26,9 +26,9 @@
     cancelLocalLlmModelDownload,
     deleteLocalLlmModel,
   } from '../../localLlmStore.svelte';
-  import { animateWidth, MOTION_MS, MOTION_PX, motionMs, motionPx } from '../../motion';
+  import { MOTION_MS, motionMs } from '../../motion';
   import Toggle from '../Toggle.svelte';
-  import Dropdown from '../Dropdown.svelte';
+  import CompactSelect from '../CompactSelect.svelte';
   import { appStore, cleanupPromptStore } from '../../stores.svelte';
   import {
     loadSettingsSnapshot,
@@ -98,6 +98,7 @@
   let transcriptionLanguage = $state('en');
   let performance = $state<ModelPerformance[]>([]);
   let testingLocal = $state(false);
+  let activePresetName = $state<string | null>(null);
   let localTestResult = $state('');
 
   function useOfflineFallback(preset: Preset) {
@@ -339,22 +340,17 @@
 
   let advancedModelUi = $state(false);
   let localModelMemoryPolicy = $state<LocalModelMemoryPolicy>('unload_after_5m');
-  let localModelMemoryDropdownOpen = $state(false);
   let localModelsSupported = $state(true);
-  $effect(() => { if (transcriptionModeDropdownOpen) localModelMemoryDropdownOpen = false; });
-  $effect(() => { if (localModelMemoryDropdownOpen) transcriptionModeDropdownOpen = false; });
-  const LOCAL_MEMORY_POLICY_MENU_ID = 'models-local-memory-policy-menu';
   const localMemoryPolicyOptions: { value: LocalModelMemoryPolicy; label: string }[] = [
     { value: 'unload_after_5m', label: 'Unload after 5 minutes' },
     { value: 'unload_after_15m', label: 'Unload after 15 minutes' },
     { value: 'keep_loaded', label: 'Keep loaded' },
     { value: 'unload_immediately', label: 'Unload immediately' },
   ];
-
-  function localMemoryPolicyLabel(policy: LocalModelMemoryPolicy): string {
-    return localMemoryPolicyOptions.find((option) => option.value === policy)?.label
-      ?? localMemoryPolicyOptions[0].label;
-  }
+  const transcriptionStrategyOptions: { value: 'single' | 'dual'; label: string; description: string }[] = [
+    { value: 'single', label: 'Single model', description: 'Fastest. Uses the main model; backups only if it fails.' },
+    { value: 'dual', label: 'Dual model', description: 'Compares two working models before cleanup.' },
+  ];
 
   function taskMap(type: TaskType): ProviderModelMap {
     return type === 'transcription' ? transcriptionModelsByProvider : cleanupModelsByProvider;
@@ -745,19 +741,18 @@
     }
   }
 
+  const ADVANCED_ONLY_TARGETS = ['models-transcription', 'models-cleanup', 'models-strategy'];
+
   $effect(() => {
     const target = settingsSearchNavigation.request?.target;
-    if (target?.startsWith('models-') && !advancedModelUi) {
+    if (target && ADVANCED_ONLY_TARGETS.includes(target) && !advancedModelUi) {
       void handleAdvancedModelUi(true);
     }
   });
 
-  let transcriptionModeDropdownOpen = $state(false);
-
   async function handleDualTranscription(value: boolean) {
     modelSelectionMode = 'manual';
     dualTranscriptionEnabled = value;
-    transcriptionModeDropdownOpen = false;
     try {
       await persistAll();
     } catch (err) {
@@ -768,7 +763,6 @@
 
   async function updateLocalMemoryPolicy(policy: LocalModelMemoryPolicy) {
     localModelMemoryPolicy = policy;
-    localModelMemoryDropdownOpen = false;
     try {
       await saveSetting('local_model_memory_policy', policy);
     } catch (err) {
@@ -829,6 +823,7 @@
 </script>
 
 <h2 class="settings-h">Models</h2>
+<p class="settings-lede">Pick a setup and Verenu chooses the speech model, clean-up model, and backups for you.</p>
 
 {#if modelConflict}
   <div class="panel-note" role="alert">
@@ -856,21 +851,23 @@
     {testingLocal}
     selectionMode={modelSelectionMode}
     pendingPresetId={pendingPreset?.id ?? null}
+    bind:activeLabel={activePresetName}
   />
-  {#if localTestResult}<p class="adv-desc" role="status">{localTestResult}</p>{/if}
+  {#if localTestResult}<p class="models-note" role="status">{localTestResult}</p>{/if}
 </div>
 
-<div class="advanced-toggle-row" data-setting-target="advanced-models">
-  <div class="adv-text">
-    <span class="adv-label">Advanced Models</span>
-    <span class="adv-desc">Choose specific models, edit cleanup prompts, and manage downloads</span>
+<div class="setting-row models-row" data-setting-target="advanced-models">
+  <div>
+    <div class="label">Advanced Models</div>
+    <div class="desc">Choose specific models, edit backups and cleanup prompts, and compare two speech models.</div>
   </div>
   <Toggle checked={advancedModelUi} onchange={handleAdvancedModelUi} label="Advanced Models" bind:error={advancedModelUiError} />
 </div>
 
-{#if advancedModelUi}
-<div class="advanced-block" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
-<h3 class="settings-subhead">Model selection</h3>
+<div class="active-head">
+  <h3 class="settings-subhead">Model selection</h3>
+  <span class="active-state">{activePresetName ? `Setup: ${activePresetName}` : 'Custom selection'}</span>
+</div>
 <ModelTaskTile
   type="transcription"
   {advancedModelUi}
@@ -889,6 +886,7 @@
 
 <ModelTaskTile
   type="cleanup"
+  enabled={cleanupEnabled}
   {advancedModelUi}
   {apiKeyStatus}
   context={pickerContext('cleanup')}
@@ -904,119 +902,43 @@
 />
 
 <h3 class="settings-subhead">Model settings</h3>
-<div class="setting-row transcription-mode-row" data-setting-target="models-strategy">
-  <div>
-    <div class="label">Transcription strategy</div>
-    <div class="desc">Use one model, or compare two working models from the existing transcription fallback chain before cleanup.</div>
-  </div>
-  <Dropdown bind:open={transcriptionModeDropdownOpen} closeSelector=".models-dropdown">
-    <div class="ui-dropdown models-dropdown">
-      <button
-        class="ui-dropdown-trigger ui-dropdown-trigger--compact models-dropdown-btn"
-        type="button"
-        onclick={() => (transcriptionModeDropdownOpen = !transcriptionModeDropdownOpen)}
-        aria-haspopup="listbox"
-        aria-expanded={transcriptionModeDropdownOpen}
-        aria-controls="transcription-mode-menu"
-        aria-label="Transcription strategy"
-      >
-        <span>{dualTranscriptionEnabled ? 'Dual model' : 'Single model'}</span>
-        <svg class:open={transcriptionModeDropdownOpen} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="m6 9 6 6 6-6"/>
-        </svg>
-      </button>
-      {#if transcriptionModeDropdownOpen}
-        <div
-          id="transcription-mode-menu"
-          class="ui-dropdown-menu ui-dropdown-menu--padded models-dropdown-menu scroll-styled scroll-thumb-elev"
-          role="listbox"
-          tabindex="-1"
-          aria-label="Transcription strategy"
-          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast), easing: expoOut }}
-          out:fly={{ y: -3, duration: motionMs(110), easing: expoOut }}
-        >
-          <button
-            class="ui-dropdown-option models-dropdown-item"
-            class:is-active={!dualTranscriptionEnabled}
-            type="button"
-            onclick={() => handleDualTranscription(false)}
-            role="option"
-            aria-selected={!dualTranscriptionEnabled}
-          >
-            <span>Single model</span>
-            <small>Fastest, uses the primary model and fallbacks only on failure.</small>
-          </button>
-          <button
-            class="ui-dropdown-option models-dropdown-item"
-            class:is-active={dualTranscriptionEnabled}
-            type="button"
-            onclick={() => handleDualTranscription(true)}
-            role="option"
-            aria-selected={dualTranscriptionEnabled}
-          >
-            <span>Dual model</span>
-            <small>Compares two successful fallback-chain models before cleanup.</small>
-          </button>
-        </div>
-      {/if}
+{#if advancedModelUi}
+<div class="advanced-block" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
+  <div class="setting-row models-row" data-setting-target="models-strategy">
+    <div>
+      <div class="label">Transcription strategy</div>
+      <div class="desc">Use one model, or compare two working models from the fallback chain before cleanup.</div>
     </div>
-  </Dropdown>
-</div>
+    <CompactSelect
+      value={dualTranscriptionEnabled ? 'dual' : 'single'}
+      options={transcriptionStrategyOptions}
+      label="Transcription strategy"
+      menuId="transcription-mode-menu"
+      width={148}
+      menuMinWidth={240}
+      onchange={(value) => handleDualTranscription(value === 'dual')}
+    />
+  </div>
 </div>
 {/if}
 
-<div class="setting-row" data-setting-target="models-memory">
+<div class="setting-row models-row" data-setting-target="models-memory">
   <div>
     <div class="label">Memory policy</div>
     <div class="desc">Controls when idle local models are unloaded.</div>
   </div>
-  <Dropdown bind:open={localModelMemoryDropdownOpen} closeSelector=".models-dropdown">
-    <div class="ui-dropdown models-dropdown">
-      <button
-        class="ui-dropdown-trigger ui-dropdown-trigger--compact models-dropdown-btn"
-        type="button"
-        use:animateWidth={{ text: localMemoryPolicyLabel(localModelMemoryPolicy), max: 220 }}
-        onclick={() => (localModelMemoryDropdownOpen = !localModelMemoryDropdownOpen)}
-        aria-haspopup="listbox"
-        aria-expanded={localModelMemoryDropdownOpen}
-        aria-controls={LOCAL_MEMORY_POLICY_MENU_ID}
-        aria-label="Local model memory policy"
-      >
-        <span>{localMemoryPolicyLabel(localModelMemoryPolicy)}</span>
-        <svg class:open={localModelMemoryDropdownOpen} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="m6 9 6 6 6-6"/>
-        </svg>
-      </button>
-      {#if localModelMemoryDropdownOpen}
-        <div
-          id={LOCAL_MEMORY_POLICY_MENU_ID}
-          class="ui-dropdown-menu ui-dropdown-menu--padded models-dropdown-menu scroll-styled scroll-thumb-elev"
-          role="listbox"
-          tabindex="-1"
-          aria-label="Local model memory policy options"
-          in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast), easing: expoOut }}
-          out:fly={{ y: -3, duration: motionMs(110), easing: expoOut }}
-        >
-          {#each localMemoryPolicyOptions as option}
-            <button
-              class="ui-dropdown-option models-dropdown-item"
-              class:is-active={localModelMemoryPolicy === option.value}
-              type="button"
-              onclick={() => updateLocalMemoryPolicy(option.value)}
-              role="option"
-              aria-selected={localModelMemoryPolicy === option.value}
-            >
-              {option.label}
-            </button>
-          {/each}
-        </div>
-      {/if}
-    </div>
-  </Dropdown>
+  <CompactSelect
+    value={localModelMemoryPolicy}
+    options={localMemoryPolicyOptions}
+    label="Local model memory policy"
+    menuId="models-local-memory-policy-menu"
+    width={196}
+    onchange={updateLocalMemoryPolicy}
+  />
 </div>
 
 {#if !hardware.isAndroid}
-<div class="setting-row" data-setting-target="models-folder">
+<div class="setting-row models-row" data-setting-target="models-folder">
   <div>
     <div class="label">Models folder</div>
     <div class="desc">Open the shared folder where local transcription and cleanup models are stored.</div>
@@ -1028,114 +950,34 @@
 </div>
 
 <style>
+  .models-note {
+    margin: 8px 0 0;
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--ink-mute);
+  }
 
-  .advanced-toggle-row {
+  .active-head {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     justify-content: space-between;
-    gap: 16px;
-    padding: 13px 0;
-    border-top: 1px solid var(--line);
+    gap: 12px;
+    min-height: 20px;
+    margin: 40px 0 8px;
   }
 
-  .transcription-mode-row {
-    position: relative;
-    padding: 14px 0;
+  .active-head :global(.settings-subhead) {
+    margin: 0;
   }
 
-  .models-dropdown-item {
-    display: grid;
-    gap: 3px;
-    text-align: left;
-  }
-
-  .models-dropdown-item small {
-    color: var(--ink-mute);
-    font-size: 11px;
-    line-height: 1.35;
-  }
-
-  .adv-text {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .adv-label {
-    font-size: 13px;
+  .active-state {
     font-family: var(--sans);
-    font-weight: 500;
-    color: var(--ink-soft);
-  }
-
-  .adv-desc {
-    font-size: 11px;
-    font-family: var(--sans);
+    font-size: 11.5px;
     color: var(--ink-mute);
   }
 
-  .models-dropdown-btn {
-    max-width: 220px;
-  }
-
-  .models-dropdown-btn span:first-child {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .models-dropdown-menu {
-    min-width: 240px;
-    max-height: 260px;
-    right: 0;
-    left: auto;
-  }
-
-  .models-dropdown-item span { font-weight: 550; }
-  .models-dropdown-item.is-active small { color: var(--ink-soft); }
-
-  @container settings-panel (max-width: 700px) {
-    .models-dropdown {
-      width: 100%;
-    }
-
-    .models-dropdown-btn {
-      width: 100% !important;
-      max-width: none;
-      justify-content: space-between;
-    }
-
-    .models-dropdown-menu {
-      width: max-content;
-      min-width: min(240px, 100cqw);
-      max-width: min(320px, 100cqw);
-      left: auto;
-      right: 0;
-    }
-
-    .models-dropdown-item {
-      min-width: 0;
-      white-space: normal;
-    }
-
-    .models-dropdown-item small {
-      overflow-wrap: anywhere;
-      white-space: normal;
-    }
-  }
-
-  @container settings-panel (max-width: 440px) {
-    .models-dropdown-btn { min-height: 44px; }
-    .models-dropdown-item { min-height: 44px; padding-block: 10px; }
-  }
-
-  @container settings-panel (max-width: 400px) {
-    .models-dropdown-menu {
-      width: 100%;
-      min-width: 100%;
-      max-width: 100%;
-      left: 0;
-      right: 0;
-    }
+  .models-row {
+    min-height: 64px;
   }
 </style>
