@@ -351,15 +351,9 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                         if let Err(error) = tauri::async_runtime::block_on(prepared_sync.verify_transport()) {
                             fail_paused_probation(services, format!("Replacement sync transport could not prepare: {error}"));
                         }
-                        let prepared_microphone = match crate::media::mic_mute_trigger::prepare_for_handoff(
-                            &handle, handle.state::<crate::pipeline::SharedState>().inner().clone(),
+                        let active_microphone = match crate::media::mic_mute_trigger::start_for_handoff(
+                            &handle, handle.state::<crate::pipeline::SharedState>().inner().clone(), child_pause.guard(),
                         ) {
-                            Ok(microphone) => microphone,
-                            Err(error) => {
-                                fail_paused_probation(services, format!("Replacement microphone watcher could not prepare: {error}"));
-                            }
-                        };
-                        let active_microphone = match prepared_microphone.activate_while_paused(child_pause.guard()) {
                             Ok(microphone) => microphone,
                             Err(error) => fail_paused_probation(services, format!("Replacement microphone watcher could not start: {error}")),
                         };
