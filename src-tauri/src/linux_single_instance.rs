@@ -281,17 +281,29 @@ impl InstanceOwner {
 
     #[allow(dead_code)]
     pub(crate) fn drain_callback_queue(&self, app: &AppHandle) -> Result<(), String> {
+        self.drain_callback_queue_inner(app, None)
+    }
+
+    fn drain_callback_queue_inner(
+        &self,
+        app: &AppHandle,
+        parent_exited: Option<&crate::linux_handoff_transport::ParentExited>,
+    ) -> Result<(), String> {
         let mut slot = self.route.queue.lock().unwrap_or_else(|error| error.into_inner());
-        let Some(active) = slot.as_mut() else { return Ok(()); };
-        while let Some((id, callback)) = active.queue.first().map_err(|error| error.to_string())? {
-            if active.delivered != Some(id) {
-                dispatch_callback(app, callback);
-                active.delivered = Some(id);
+        if let Some(active) = slot.as_mut() {
+            while let Some((id, callback)) = active.queue.first().map_err(|error| error.to_string())? {
+                if active.delivered != Some(id) {
+                    dispatch_callback(app, callback);
+                    active.delivered = Some(id);
+                }
+                if !active.queue.acknowledge(id).map_err(|error| error.to_string())? {
+                    return Err("Restart callback queue changed unexpectedly".into());
+                }
+                active.delivered = None;
             }
-            if !active.queue.acknowledge(id).map_err(|error| error.to_string())? {
-                return Err("Restart callback queue changed unexpectedly".into());
-            }
-            active.delivered = None;
+        }
+        if let Some(parent_exited) = parent_exited {
+            self.route.activate(parent_exited);
         }
         *slot = None;
         Ok(())
@@ -302,9 +314,7 @@ impl InstanceOwner {
         app: &AppHandle,
         parent_exited: &crate::linux_handoff_transport::ParentExited,
     ) -> Result<(), String> {
-        self.drain_callback_queue(app)?;
-        self.route.activate(parent_exited);
-        Ok(())
+        self.drain_callback_queue_inner(app, Some(parent_exited))
     }
     #[allow(dead_code)]
     pub(crate) fn unique_name(&self) -> Result<String, String> {
@@ -627,6 +637,43 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), call).await.unwrap().unwrap().unwrap();
             assert_eq!(super::test_callback_count(), before + 1);
         });
+    }
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires an isolated graphical and D-Bus session"]
+    fn replacement_routes_callbacks_locally_after_queue_activation() {
+        use std::sync::Arc;
+        use tauri::Manager;
+
+        let (queue, path) = crate::linux_handoff_callbacks::CallbackQueue::create_private().unwrap();
+        let queue = Arc::new(queue);
+        let app = tauri::Builder::default()
+            .any_thread()
+            .plugin(super::replacement_plugin(":1.999999".into(), queue.clone()))
+            .build(tauri::generate_context!())
+            .unwrap();
+        let owner = app.state::<super::InstanceOwner>();
+        let connection = zbus::blocking::Connection::session().unwrap();
+        let (_, path_on_bus) = super::address(&app.config().identifier);
+        let send = |flag: &str| connection.call_method(
+            Some(owner.name.as_str()), path_on_bus.as_str(), Some("org.SingleInstance.DBus"),
+            "ExecuteCallback", &(vec![flag.to_owned()], String::new()),
+        ).unwrap();
+        let before = super::test_callback_count();
+        send("--verenu-hotkey-release");
+        assert_eq!(super::test_callback_count(), before);
+        assert!(queue.first().unwrap().is_some());
+        let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+        owner.activate_callbacks(app.handle(), &parent_exited).unwrap();
+        assert_eq!(super::test_callback_count(), before + 1);
+        assert_eq!(queue.first().unwrap(), None);
+        send("--verenu-hotkey-handsfree");
+        assert_eq!(super::test_callback_count(), before + 2);
+        drop(owner);
+        drop(app);
+        drop(queue);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[cfg(feature = "native-testing")]
