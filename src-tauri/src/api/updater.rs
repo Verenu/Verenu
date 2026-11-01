@@ -870,6 +870,10 @@ mod tests {
             Some("0.20.0-nightly.20261005".into())
         );
         assert_eq!(
+            installer_version("verenu-0.20.0_nightly.20261005.1-1-x86_64.pkg.tar.zst"),
+            Some("0.20.0-nightly.20261005.1".into())
+        );
+        assert_eq!(
             installer_version("verenu-0.20.0-beta.1-2-x86_64.pkg.tar.zst"),
             Some("0.20.0-beta.1".into())
         );
@@ -1298,6 +1302,9 @@ mod tests {
 
     #[test]
     fn dated_nightly_versions_compare_by_date() {
+        assert!(is_newer("0.16.0-nightly.20260814.1", "0.16.0-nightly.20260814"));
+        assert!(is_newer("0.16.0-nightly.20260814.2", "0.16.0-nightly.20260814.1"));
+        assert!(is_newer("0.16.0-nightly.20260815", "0.16.0-nightly.20260814.2"));
         assert!(!is_newer(
             "0.16.0-nightly.20260814",
             "0.16.0-nightly.20260814"

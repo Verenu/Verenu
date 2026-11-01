@@ -35,6 +35,8 @@ jobs:
       - name: Find changes since the previous nightly release
         id: changes
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -45,20 +47,29 @@ jobs:
           last_nightly=""
 
           last_nightly_date=""
-          while IFS= read -r candidate; do
-            if [[ ! "$candidate" =~ ^Verenu-[0-9]+\.[0-9]+\.[0-9]+-nightly\.([0-9]{8})$ ]]; then
+          published_releases="$(gh api --paginate 'repos/${{ github.repository }}/releases?per_page=100' --jq '.[] | select(.draft == false and .prerelease == true) | [.tag_name, ([.assets[] | select(.state == "uploaded" and .size > 0) | .name] | join("|"))] | @tsv')"
+          complete_tags=$'\n'
+          while IFS=$'\t' read -r candidate assets; do
+            if [[ ! "$candidate" =~ ^Verenu-[0-9]+\.[0-9]+\.[0-9]+-nightly\.([0-9]{8})(\.([0-9]+))?$ ]]; then
               continue
             fi
-            candidate_date="${BASH_REMATCH[1]}"
+            candidate_date="${BASH_REMATCH[1]}.${BASH_REMATCH[3]:-0}"
+            candidate_version="${candidate#Verenu-}"
+            complete=true
+            for asset in "Verenu_${candidate_version}_x64-setup.exe" "Verenu_${candidate_version}_x64_en-US.msi" "Verenu_${candidate_version}_Apple_Silicon.dmg" "Verenu_${candidate_version}_Intel.dmg" "Verenu_${candidate_version}_amd64.AppImage" "verenu-${candidate_version//-/_}-1-x86_64.pkg.tar.zst" SHA256SUMS.txt; do
+              [[ "|${assets:-}|" == *"|$asset|"* ]] || complete=false
+            done
+            [[ "$complete" == true ]] || continue
+            complete_tags+="${candidate}"$'\n'
             nightly_commit="$(git rev-parse "${candidate}^{commit}")"
             candidate_sha="$(git rev-parse "${nightly_commit}^")"
-            if git merge-base --is-ancestor "$candidate_sha" "$master_sha" && [[ -z "$last_nightly" || "$candidate_date" > "$last_nightly_date" ]]; then
+            if git merge-base --is-ancestor "$candidate_sha" "$master_sha" && [[ -z "$last_nightly" || "$(printf '%s\n%s\n' "$last_nightly_date" "$candidate_date" | sort -V | tail -n 1)" == "$candidate_date" && "$candidate_date" != "$last_nightly_date" ]]; then
               last_nightly="$candidate"
               last_nightly_date="$candidate_date"
               baseline_sha="$candidate_sha"
               baseline_tag="$candidate"
             fi
-          done < <(git tag --list 'Verenu-*-nightly.*')
+          done <<< "$published_releases"
 
           nightly_base_version="$(node <<'NODE'
           const fs = require('node:fs');
@@ -84,12 +95,11 @@ jobs:
           )"
 
           if [[ -z "$baseline_sha" ]]; then
-            baseline_tag="$(git tag --merged "$master_sha" --list 'Verenu-*' | sort -V | tail -n 1 || true)"
-            if [[ -z "$baseline_tag" ]]; then
-              echo 'No release tag reachable from master; refusing to guess a baseline.' >&2
-              exit 1
-            fi
-            baseline_sha="$(git rev-parse "${baseline_tag}^{commit}")"
+            baseline_tag="(no complete published nightly)"
+            baseline_sha="$(git hash-object -t tree /dev/null)"
+            no_baseline=true
+          else
+            no_baseline=false
           fi
 
           changed_lines="$(git diff --numstat "$baseline_sha..$master_sha" -- . ':(exclude)package-lock.json' | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { total += $1 + $2 } END { print total + 0 }')"
@@ -97,9 +107,20 @@ jobs:
           release_date="$(TZ=America/Vancouver date +%Y%m%d)"
 
           resume_existing=false
-          if [[ -n "$last_nightly" && "$baseline_sha" == "$master_sha" && "$last_nightly" =~ \.nightly\.${release_date}$ ]]; then
-            resume_existing=true
-          fi
+          sequence=0
+          while :; do
+            suffix=""
+            (( sequence == 0 )) || suffix=".${sequence}"
+            today_tag="Verenu-${nightly_base_version}-nightly.${release_date}${suffix}"
+            if ! git show-ref --tags --verify --quiet "refs/tags/$today_tag"; then
+              break
+            fi
+            if [[ "$complete_tags" != *$'\n'"$today_tag"$'\n'* ]] && [[ "$(git rev-parse "${today_tag}^{commit}^")" == "$master_sha" ]] && git show "${today_tag}:src-tauri/Cargo.lock" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const m=s.match(/\[\[package\]\]\r?\nname = "verenu"\r?\nversion = "([^"]+)"/);process.exit(m?.[1]===process.argv[1]?0:1)})' "${today_tag#Verenu-}"; then
+              resume_existing=true
+              break
+            fi
+            sequence=$((sequence + 1))
+          done
 
           echo "Baseline: $baseline_tag ($baseline_sha)"
           echo "Master:   $master_sha"
@@ -107,19 +128,19 @@ jobs:
           echo "Changed lines: $changed_lines"
           git diff --stat "$baseline_sha..$master_sha" -- . ':(exclude)package-lock.json'
 
-          if (( changed_lines <= 10 )) && [[ "$resume_existing" != true ]]; then
+          if (( changed_lines <= 10 )) && [[ "$resume_existing" != true && "$no_baseline" != true ]]; then
             echo 'should_release=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if [[ "$resume_existing" == true ]]; then
-            release_tag="$last_nightly"
+            release_tag="$today_tag"
             release_version="${release_tag#Verenu-}"
             app_version="$release_version"
             release_sha="$(git rev-parse "${release_tag}^{commit}")"
             tag_exists=true
           else
-            release_version="${nightly_base_version}-nightly.${release_date}"
+            release_version="${today_tag#Verenu-}"
             app_version="$release_version"
             release_tag="Verenu-${release_version}"
             tag_exists=false
@@ -130,7 +151,11 @@ jobs:
             exit 1
           fi
 
-          git log --no-merges -n 100 --format='- %h %s' "$baseline_sha..$master_sha" > commit-summary.md
+          if [[ "$no_baseline" == true ]]; then
+            git log --no-merges -n 100 --format='- %h %s' "$master_sha" > commit-summary.md
+          else
+            git log --no-merges -n 100 --format='- %h %s' "$baseline_sha..$master_sha" > commit-summary.md
+          fi
           git diff --stat "$baseline_sha..$master_sha" -- . ':(exclude)package-lock.json' > diff-stat.md
           git diff --unified=0 "$baseline_sha..$master_sha" -- . ':(exclude)package-lock.json' > full-diff.patch
           head -c 60000 full-diff.patch > diff-preview.patch
@@ -287,6 +312,7 @@ jobs:
             package.json
             src-tauri/tauri.conf.json
             src-tauri/Cargo.toml
+            src-tauri/Cargo.lock
           )
           restore_master_versions() {
             git restore --source "$MASTER_SHA" -- "${version_files[@]}"
@@ -308,6 +334,12 @@ jobs:
             fs.writeFileSync(file, after);
           }
 
+          const lockPath = 'src-tauri/Cargo.lock';
+          const lock = fs.readFileSync(lockPath, 'utf8');
+          const packageEntry = /(\[\[package\]\]\r?\nname = "verenu"\r?\nversion = ")[^"]+("\r?\n)/g;
+          if ([...lock.matchAll(packageEntry)].length !== 1) throw new Error('Expected exactly one verenu package in Cargo.lock');
+          fs.writeFileSync(lockPath, lock.replace(packageEntry, `$1${version}$2`));
+
           // tauri.conf.json drives both the app version (frontend display,
           // bundle metadata) and the installer bundlers. The MSI bundler
           // rejects non-numeric prerelease versions such as
@@ -327,7 +359,7 @@ jobs:
           NODE
 
           git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol diff --check
-          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          git add "${version_files[@]}"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m "chore(release): $RELEASE_TAG [skip ci]"
@@ -740,4 +772,12 @@ jobs:
           body_path: release-notes.md
           files: release-assets/*
           prerelease: true
+          draft: true
+          fail_on_unmatched_files: true
           make_latest: false
+
+      - name: Publish completed draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" --draft=false
