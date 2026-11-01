@@ -122,7 +122,7 @@ pub async fn nvidia_reuse_check() -> Result<(), String> {
     set_status("checking", "Testing the GPU and model…");
     match probe().await {
         Ok(()) => set_status("ready", "NVIDIA RE-USE is ready."),
-        Err(_) => set_status("error", "The GPU or model self-test failed. Check the NVIDIA driver or reinstall the runtime."),
+        Err(error) => set_status("error", format!("GPU and model self-test failed: {error}")),
     }
     Ok(())
 }
@@ -330,19 +330,37 @@ async fn install() -> Result<(), String> {
         let stage = nvidia_reuse_status().message;
         return Err(format!("Setup failed at: {stage}. Check the network connection, disk space, and NVIDIA driver, then retry."));
     }
+    probe().await.map_err(|error| format!("GPU and model self-test failed: {error}"))?;
+    tokio::fs::write(dir.join("ready"), "ready").await.map_err(|e| format!("Could not save setup state: {e}"))?;
     set_status("ready", "NVIDIA RE-USE is ready.");
     Ok(())
 }
 
 async fn probe() -> anyhow::Result<()> {
-    let result = tokio::time::timeout(std::time::Duration::from_secs(120), tokio::process::Command::new(runtime_dir().join(".venv/bin/python"))
-        .arg(runtime_dir().join("worker.py")).arg("--probe").env("HF_HUB_OFFLINE", "1")
-        .env("HF_HOME", runtime_dir().join("hf-cache"))
-        .env("TORCH_HOME", runtime_dir().join("torch-cache"))
-        .env("TRITON_CACHE_DIR", runtime_dir().join("triton-cache"))
-        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true).status()).await??;
-    anyhow::ensure!(result.success(), "GPU self-test failed");
+    probe_in(&runtime_dir()).await
+}
+
+async fn probe_in(dir: &std::path::Path) -> anyhow::Result<()> {
+    let result = tokio::time::timeout(std::time::Duration::from_secs(120), tokio::process::Command::new(dir.join(".venv/bin/python"))
+        .arg(dir.join("worker.py")).arg("--probe").env("HF_HUB_OFFLINE", "1")
+        .env("HF_HOME", dir.join("hf-cache"))
+        .env("TORCH_HOME", dir.join("torch-cache"))
+        .env("TRITON_CACHE_DIR", dir.join("triton-cache"))
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).kill_on_drop(true).output()).await
+        .map_err(|_| anyhow::anyhow!("The self-test timed out after 120 seconds."))?
+        .map_err(|_| anyhow::anyhow!("Could not start the GPU self-test. Retry setup to restore the runtime."))?;
+    anyhow::ensure!(result.status.success(), "{}", probe_error(&String::from_utf8_lossy(&result.stderr)));
     Ok(())
+}
+
+fn probe_error(stderr: &str) -> &'static str {
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("out of memory") { "The GPU ran out of memory. Close other GPU applications and retry." }
+    else if lower.contains("cuda is unavailable") || lower.contains("no nvidia driver") { "CUDA could not access the NVIDIA GPU. Check the NVIDIA driver and retry." }
+    else if lower.contains("driver version is insufficient") || lower.contains("driver on your system is too old") { "The NVIDIA driver is too old for the installed CUDA runtime. Update the driver and retry." }
+    else if lower.contains("no kernel image") || lower.contains("not compatible with the current pytorch") { "The installed GPU runtime does not support this GPU architecture." }
+    else if lower.contains("no module named") || lower.contains("importerror") { "A runtime dependency could not be loaded. Retry setup." }
+    else { "The runtime could not complete its self-test. Retry setup; the specific error was not recognized." }
 }
 
 pub async fn enhance(wav: bytes::Bytes, expected_samples: usize) -> anyhow::Result<Vec<f32>> {
@@ -382,6 +400,21 @@ fn decode_samples(data: &[u8], expected_samples: usize) -> anyhow::Result<Vec<f3
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn missing_probe_runtime_recommends_setup_without_exposing_path() {
+        let dir = std::env::temp_dir().join(format!("verenu-missing-probe-{}", uuid::Uuid::new_v4()));
+        let error = super::probe_in(&dir).await.unwrap_err().to_string();
+        assert!(error.contains("Retry setup"));
+        assert!(!error.contains(&dir.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn probe_errors_identify_common_failures_without_exposing_paths() {
+        assert!(super::probe_error("CUDA out of memory /private/path").contains("out of memory"));
+        assert!(super::probe_error("CUDA driver version is insufficient").contains("driver is too old"));
+        assert!(super::probe_error("No module named 'torch'").contains("dependency"));
+        assert!(!super::probe_error("unknown /private/path").contains("/private/path"));
+    }
     use super::decode_samples;
 
     #[test]
