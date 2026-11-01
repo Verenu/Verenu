@@ -309,7 +309,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             handle.exit(1);
                             return;
                         }
-                        let _prepared_sync = match handle.state::<crate::sync::SyncManager>().prepare_for_handoff() {
+                        let prepared_sync = match handle.state::<crate::sync::SyncManager>().prepare_for_handoff() {
                             Ok(sync) => sync,
                             Err(error) => {
                                 let _ = services.fail(format!("Replacement sync could not prepare: {error}"));
@@ -317,6 +317,12 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 return;
                             }
                         };
+                        if let Err(error) = tauri::async_runtime::block_on(prepared_sync.verify_transport()) {
+                            let _ = services.fail(format!("Replacement sync transport could not prepare: {error}"));
+                            handle.exit(1);
+                            return;
+                        }
+                        let _prepared_sync = prepared_sync;
                         let _prepared_microphone = match crate::media::mic_mute_trigger::prepare_for_handoff(
                             &handle, handle.state::<crate::pipeline::SharedState>().inner().clone(),
                         ) {

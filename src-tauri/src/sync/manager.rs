@@ -125,6 +125,46 @@ pub(crate) struct PreparedSync {
     server_config: Arc<rustls::ServerConfig>,
 }
 
+#[cfg(target_os = "linux")]
+impl PreparedSync {
+    pub(crate) async fn verify_transport(&self) -> Result<()> {
+        let listener = TcpListener::from_std(self.fallback_listener.try_clone()?)?;
+        let port = listener.local_addr()?.port();
+        let acceptor = tokio_rustls::TlsAcceptor::from(self.server_config.clone());
+        let client = transport::tls_connector(transport::client_config(
+            self.identity.cert_der().clone(), self.identity.tls_key(),
+        )?);
+        let server_name = transport::server_name_for(&self.identity.uuid);
+        let (address_sent, address_received) = tokio::sync::oneshot::channel();
+        let (server, client) = tokio::time::timeout(Duration::from_secs(8), async {
+            tokio::join!(
+                async {
+                    let expected = address_received.await.map_err(std::io::Error::other)?;
+                    loop {
+                        let (stream, peer) = listener.accept().await?;
+                        if peer == expected {
+                            break acceptor.accept(stream).await;
+                        }
+                    }
+                },
+                async {
+                    let stream = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
+                    address_sent.send(stream.local_addr()?).map_err(|_| std::io::Error::other("Sync probe stopped"))?;
+                    client.connect(server_name, stream).await
+                },
+            )
+        }).await.map_err(|_| anyhow!("Sync transport check timed out"))?;
+        let server = server.map_err(|error| anyhow!("Sync server handshake failed: {error}"))?;
+        let client = client.map_err(|error| anyhow!("Sync client handshake failed: {error}"))?;
+        let expected = identity::fingerprint_of(self.identity.cert_der().as_ref());
+        let server_peer = server.get_ref().1.peer_certificates().ok_or_else(|| anyhow!("Sync client identity missing"))?;
+        let client_peer = client.get_ref().1.peer_certificates().ok_or_else(|| anyhow!("Sync server identity missing"))?;
+        anyhow::ensure!(transport::peer_fingerprint(server_peer)? == expected, "Sync client identity did not match");
+        anyhow::ensure!(transport::peer_fingerprint(client_peer)? == expected, "Sync server identity did not match");
+        Ok(())
+    }
+}
+
 pub(crate) struct Inner {
     pub db: DbHandle,
     pub app: AppHandle,
@@ -342,7 +382,7 @@ mod handoff_tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires a private desktop"]
+    #[ignore = "requires a private desktop and isolated network namespace"]
     fn sync_preparation_reserves_a_listener_without_changing_identity_or_database() {
         let directory = std::env::temp_dir().join(format!("verenu-sync-handoff-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
@@ -360,6 +400,15 @@ mod handoff_tests {
         let changes = db.lock().unwrap().total_changes();
         let manager = SyncManager::new_unstarted(app.handle().clone(), db.clone());
         let prepared = manager.prepare_for_handoff().unwrap();
+        tauri::async_runtime::block_on(async {
+            use tokio::io::AsyncReadExt;
+            let port = prepared.fallback_listener.local_addr().unwrap().port();
+            let mut unrelated = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.unwrap();
+            prepared.verify_transport().await.unwrap();
+            let mut byte = [0];
+            let read = tokio::time::timeout(Duration::from_secs(3), unrelated.read(&mut byte)).await.unwrap();
+            assert!(matches!(read, Ok(0)) || read.is_err_and(|error| error.kind() == std::io::ErrorKind::ConnectionReset));
+        });
         let address = prepared.fallback_listener.local_addr().unwrap();
         assert!(std::net::TcpListener::bind(address).is_err());
         assert_eq!(db.lock().unwrap().total_changes(), changes);
@@ -377,6 +426,19 @@ mod handoff_tests {
             None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated network namespace"]
+    async fn sync_preflight_rejects_a_different_server_identity() {
+        let identity = crate::sync::identity::generate_for_tests();
+        let other = crate::sync::identity::generate_for_tests();
+        let server_config = crate::sync::transport::server_config(other.cert_der().clone(), other.tls_key()).unwrap();
+        let fallback_listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        fallback_listener.set_nonblocking(true).unwrap();
+        let prepared = PreparedSync { identity, fallback_listener, server_config };
+        let error = prepared.verify_transport().await.unwrap_err();
+        assert!(error.to_string().contains("server identity did not match"));
     }
 
     #[test]
@@ -401,6 +463,7 @@ mod handoff_tests {
         let fallback_port = prepared.fallback_listener.local_addr().unwrap().port();
         let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
         tauri::async_runtime::block_on(async {
+            prepared.verify_transport().await.unwrap();
             let worker = manager.activate_after_handoff(prepared, &parent_exited).unwrap();
             tokio::time::timeout(Duration::from_secs(15), worker).await.unwrap().unwrap().unwrap();
             assert!(manager.inner.available.load(Ordering::Relaxed));
@@ -443,7 +506,10 @@ mod handoff_tests {
         let prepared = PreparedSync { identity, fallback_listener, server_config };
         let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
         let worker = manager.activate_after_handoff(prepared, &parent_exited).unwrap();
-        assert!(tauri::async_runtime::block_on(worker).unwrap().is_err());
+        let result = tauri::async_runtime::block_on(async {
+            tokio::time::timeout(Duration::from_secs(15), worker).await.unwrap().unwrap()
+        });
+        assert!(result.is_err());
         assert!(!manager.inner.available.load(Ordering::Relaxed));
         assert!(manager.inner.listener_failed.load(Ordering::Relaxed));
         assert!(std::net::TcpListener::bind(fallback_address).is_ok());
