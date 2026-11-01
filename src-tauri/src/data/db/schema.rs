@@ -342,6 +342,12 @@ pub(crate) fn handoff_data_version(db: &Db) -> Result<i64> {
 pub(crate) struct PreparedHandoffDb(Connection);
 
 #[cfg(target_os = "linux")]
+pub(crate) struct LockedHandoffDb<'a> {
+    connection: std::sync::MutexGuard<'a, Connection>,
+    previous: Option<Connection>,
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn probe_writable_for_handoff(
     path: impl AsRef<std::path::Path>,
 ) -> Result<PreparedHandoffDb> {
@@ -366,15 +372,32 @@ pub(crate) fn probe_writable_for_handoff(
 #[cfg(target_os = "linux")]
 impl PreparedHandoffDb {
     #[allow(dead_code)]
-    pub(crate) fn activate(
+    pub(crate) fn lock_for_activation<'a>(
         self,
-        db: &Db,
-        _parent_exited: &crate::linux_handoff_transport::ParentExited,
-    ) -> Result<()> {
+        db: &'a Db,
+    ) -> Result<LockedHandoffDb<'a>> {
         self.0.execute_batch("PRAGMA query_only = OFF;")?;
         self.0.busy_timeout(std::time::Duration::from_secs(5))?;
-        *lock_conn(db)? = self.0;
-        Ok(())
+        let mut connection = lock_conn(db)?;
+        let previous = std::mem::replace(&mut *connection, self.0);
+        Ok(LockedHandoffDb { connection, previous: Some(previous) })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl LockedHandoffDb<'_> {
+    #[allow(dead_code)]
+    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
+        drop(self.previous.take());
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LockedHandoffDb<'_> {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            *self.connection = previous;
+        }
     }
 }
 
@@ -507,8 +530,26 @@ fn prepared_handoff_connection_stays_read_only_until_activation() {
         .unwrap()
         .execute("INSERT INTO fixture VALUES (1)", [])
         .is_err());
+    let locked = prepared.lock_for_activation(&handoff).unwrap();
+    assert!(clone.try_lock().is_err());
+    let waiting = clone.clone();
+    let (sent, received) = std::sync::mpsc::channel();
+    let (started, started_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let result = waiting.lock().unwrap().execute("INSERT INTO fixture VALUES (1)", []);
+        sent.send(result.is_err()).unwrap();
+    });
+    started_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+    assert!(received.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+    drop(locked);
+    assert!(received.recv_timeout(std::time::Duration::from_secs(2)).unwrap());
+    worker.join().unwrap();
+    assert_eq!(original.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    let prepared = probe_writable_for_handoff(&path).unwrap();
+    let locked = prepared.lock_for_activation(&handoff).unwrap();
     let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-    prepared.activate(&handoff, &parent_exited).unwrap();
+    locked.activate(&parent_exited);
     clone
         .lock()
         .unwrap()

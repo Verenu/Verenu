@@ -223,7 +223,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             handle.exit(1);
                             return;
                         }
-                        let _prepared_db = match crate::data::db::probe_writable_for_handoff(
+                        let prepared_db = match crate::data::db::probe_writable_for_handoff(
                             crate::app_db_path(),
                         ) {
                             Ok(db) => db,
@@ -288,6 +288,15 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             Ok(sync) => sync,
                             Err(error) => {
                                 let _ = services.fail(format!("Replacement sync could not prepare: {error}"));
+                                handle.exit(1);
+                                return;
+                            }
+                        };
+                        let db = handle.state::<crate::DbHandle>();
+                        let _locked_db = match prepared_db.lock_for_activation(db.inner()) {
+                            Ok(db) => db,
+                            Err(error) => {
+                                let _ = services.fail(format!("Replacement database could not prepare activation: {error}"));
                                 handle.exit(1);
                                 return;
                             }
