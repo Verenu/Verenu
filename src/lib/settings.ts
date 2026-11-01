@@ -100,6 +100,7 @@ export type SettingsValueMap = {
   cleanup_intensity: CleanupIntensity;
   app_mappings: AppMapping[];
   noise_reduction: boolean;
+  nvidia_reuse_enabled: boolean;
   echo_cancellation: boolean;
   duck_audio: boolean;
   duck_target: number;

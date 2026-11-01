@@ -129,7 +129,9 @@ pub fn start_recording_session_ex_with_context(
 
     let device = audio_config.device;
     let use_default_input_device = device.is_none();
-    let noise_reduction = audio_config.noise_reduction;
+    let nvidia_reuse = audio_config.noise_reduction && audio_config.nvidia_reuse_enabled
+        && crate::media::nvidia_reuse::selected_and_ready();
+    let noise_reduction = audio_config.noise_reduction && !nvidia_reuse;
     let echo_cancellation = cfg!(target_os = "linux") && audio_config.echo_cancellation;
     #[cfg(target_os = "linux")]
     let (mute_audio, reduce_audio) = output_volume_policy(
@@ -262,6 +264,7 @@ pub fn start_recording_session_ex_with_context(
     match started {
         #[allow(unused_mut)]
         Ok(mut session) => {
+            session.nvidia_reuse = nvidia_reuse;
             #[cfg(target_os = "linux")]
             if let Some(settings) = duck_settings {
                 if let Err(error) = session.start_output_duck(settings) {
