@@ -969,8 +969,10 @@
 
   {:else if state === 'loading_local_model'}
     <div class="pill loading-local" class:from-processing={prevState === 'processing'} class:dying={dying}>
-      <div class="loading-spinner"></div>
-      <span>Loading model</span>
+      <span class="stage-row loading-row">
+        <span class="stage-label">Loading model…</span>
+        <span class="stage-label stage-shine" aria-hidden="true">Loading model…</span>
+      </span>
     </div>
 
   {:else if state === 'error'}
@@ -1286,7 +1288,7 @@
     position: relative;
     transition: width 0.26s cubic-bezier(0.22, 1, 0.36, 1);
   }
-  .pill.loading-local { width: 144px; padding: 0 14px; gap: 9px; }
+  .pill.loading-local { width: 144px; padding: 0 14px; justify-content: center; }
 
   .pill.processing.from-rec {
     animation: processIn 0.28s cubic-bezier(0.22, 1, 0.36, 1) backwards,
@@ -1311,11 +1313,8 @@
     from { width: calc(var(--stage-w, 116px) + 24px); }
     to   { width: 144px; }
   }
-  .pill.loading-local.from-processing .loading-spinner {
-    animation: scanIn 0.16s ease 0.16s both, spin 0.8s linear infinite;
-  }
-  .pill.loading-local.from-processing span {
-    animation: scanIn 0.16s ease 0.16s both, loadingPulse 1.6s ease-in-out 0.4s infinite alternate;
+  .pill.loading-local.from-processing .loading-row {
+    animation: scanIn 0.16s ease 0.16s both;
   }
 
   .pill.processing.from-loading {
@@ -1396,30 +1395,6 @@
   }
   @keyframes scanIn {
     from { opacity: 0; }
-    to   { opacity: 1; }
-  }
-
-  .loading-spinner {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: 2px solid var(--pill-spinner-track);
-    border-top-color: var(--pill-fg);
-    animation: spin 0.8s linear infinite;
-    flex-shrink: 0;
-  }
-
-  .pill.loading-local span {
-    font-size: 11.5px;
-    font-weight: 600;
-    letter-spacing: 0.1px;
-    white-space: nowrap;
-    animation: loadingPulse 1.6s ease-in-out 0.4s infinite alternate;
-  }
-
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes loadingPulse {
-    from { opacity: 0.6; }
     to   { opacity: 1; }
   }
 
