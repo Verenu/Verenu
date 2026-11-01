@@ -701,6 +701,12 @@
     border-top-right-radius: var(--r-lg, 14px);
   }
 
+  /* Rows split by other content or a wrapper become separate cards, so keep them apart. */
+  .settings-body :global(*:has(.setting-row):not(.setting-row) + .setting-row),
+  .settings-body :global(.setting-row + *:not(.setting-row) + .setting-row) {
+    margin-top: 12px;
+  }
+
   .settings-body :global(.setting-row:not(:has(+ .setting-row))) {
     border-bottom-left-radius: var(--r-lg, 14px);
     border-bottom-right-radius: var(--r-lg, 14px);
