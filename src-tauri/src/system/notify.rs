@@ -197,6 +197,15 @@ mod linux_tests {
     }
 }
 
+pub fn notify_cleanup_failed(app: &AppHandle) {
+    let _ = show(
+        app,
+        "Cleanup failed",
+        "Transcription succeeded. Your uncleaned text was preserved.",
+        NotificationDestination::Models,
+    );
+}
+
 pub fn notify_model_download_complete(app: &AppHandle, model_name: &str) {
     let _ = show(
         app,

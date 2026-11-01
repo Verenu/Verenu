@@ -388,14 +388,25 @@ async fn ensure_provider_success(
         return Err(ProviderHttpError::Quota(quota_bail(quota_label)));
     }
 
-    if matches!(status.as_u16(), 401 | 403) {
+    if matches!(status.as_u16(), 400 | 401 | 403) {
         if let Some((provider, model)) = auth {
+            let source = resp.error_for_status_ref().expect_err("error status");
             let body = resp.text().await.unwrap_or_default();
             let preview = sanitize_error_body_preview(&body);
             let category = classify_unauthorized_body(&body);
-            let error = auth_status_error(provider, model, &request_id, status.as_u16(), category);
-            return Err(ProviderHttpError::Auth {
-                error,
+            if status.as_u16() != 400
+                || (provider == "Google" && category == AuthErrorCategory::InvalidOrRevokedKey)
+            {
+                let error = auth_status_error(provider, model, &request_id, status.as_u16(), category);
+                return Err(ProviderHttpError::Auth {
+                    error,
+                    status,
+                    request_id,
+                    preview,
+                });
+            }
+            return Err(ProviderHttpError::NonSuccess {
+                source,
                 status,
                 request_id,
                 preview,
@@ -447,6 +458,7 @@ pub fn classify_unauthorized_body(body: &str) -> AuthErrorCategory {
         "authentication failed",
         "unauthorized",
         "api key is not valid",
+        "api key not valid",
         "bad api key",
         "key has expired",
         "expired key",
@@ -683,6 +695,7 @@ mod tests {
         use std::io::{Read, Write};
         for (status, context) in [
             (200, "unused"),
+            (400, "unused"),
             (401, "unused"),
             (403, "unused"),
             (429, "unused"),
@@ -710,7 +723,11 @@ mod tests {
                     .unwrap();
                 let mut buffer = [0; 4096];
                 assert!(stream.read(&mut buffer).unwrap() > 0);
-                let body = "Invalid API Key";
+                let body = if status == 400 {
+                    "API key not valid. Please pass a valid API key."
+                } else {
+                    "Invalid API Key"
+                };
                 write!(stream, "HTTP/1.1 {status} Test\r\nx-request-id: fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             });
             let resp = super::client::get().get(&url).send().await.unwrap();
@@ -731,7 +748,7 @@ mod tests {
                     error.into_error(None, "", "ignored").to_string(),
                     "QUOTA_EXCEEDED: quota-label quota reached"
                 );
-            } else if status == 401 || status == 403 {
+            } else if status == 400 || status == 401 || status == 403 {
                 assert_eq!(
                     error.into_error(None, "", "ignored").to_string(),
                     super::auth_status_error(
