@@ -110,7 +110,6 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings, closeSettings } = requi
     const historyRetentionButton = page.getByRole('button', { name: 'Transcription history retention' });
     await historyRetentionButton.click();
     await page.locator('.mic-item:has-text("Forever")').click();
-    await page.getByLabel('Auto-learn corrections').click();
     const analyticsToggle = page.getByRole('switch', { name: 'Share pseudonymous product analytics' });
     const analyticsBefore = await analyticsToggle.getAttribute('aria-checked');
     await analyticsToggle.click();
@@ -135,6 +134,8 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings, closeSettings } = requi
     await closeSettings(page);
 
     await openSettings(page);
+    await page.locator('.settings-nav-item:has-text("Text")').click();
+    await page.getByLabel('Auto-learn corrections').click();
     await page.locator('.settings-nav-item:has-text("Privacy")').click();
     const retentionText = (await page.getByRole('button', { name: 'Transcription history retention' }).locator('span').first().textContent()) || '';
     if (!retentionText.includes('Forever')) errors.push('Privacy retention did not persist across reopen');
@@ -144,7 +145,7 @@ const { TARGET_URL, TIMEOUT, seedDevState, openSettings, closeSettings } = requi
     if (persisted.cleanup_intensity !== 'high') errors.push('Style cleanup choice did not persist');
     if (persisted.default_tone !== 'formal') errors.push('Style tone choice did not persist');
     if (persisted.history_retention !== 'Forever') errors.push('Privacy retention did not persist to dev settings');
-    if (persisted.auto_learn_enabled !== true) errors.push('Privacy auto-learn toggle did not persist');
+    if (persisted.auto_learn_enabled !== true) errors.push('Text auto-learn toggle did not persist');
 
     const storedSnippets = await page.evaluate(() => JSON.parse(localStorage.getItem('verenu:dev-snippets') || '[]'));
     if (!storedSnippets.some((entry) => entry.trigger === 'sig')) errors.push('Snippet CRUD did not persist to local storage');

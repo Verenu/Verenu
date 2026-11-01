@@ -1,16 +1,17 @@
 import { test, expect } from './fixtures.mjs';
 import path from 'node:path';
 
-test('Context hints locate the independent voice commands control in Settings General', async ({ page }) => {
+test('Context hints locate the independent voice commands control in Settings Text', async ({ page }) => {
   await page.getByRole('button', { name: 'New context group', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'New context group', exact: true });
-  await expect(dialog.locator('.field-hint').filter({ hasText: 'Voice commands' })).toContainText('Settings > General');
+  await expect(dialog.locator('.field-hint').filter({ hasText: 'Voice commands' })).toContainText('Settings > Text');
   const cleanup = dialog.locator('.field-col').filter({ hasText: 'Cleanup' }).getByRole('button');
   await cleanup.click();
   await expect(page.getByRole('option', { name: 'Basic', exact: true })).toHaveCount(0);
   await page.getByRole('option', { name: 'Light', exact: true }).click();
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.locator('[data-debug-id="nav.settings"]').click();
+  await page.locator('[data-debug-id="settings.text"]').click();
   await expect(page.getByRole('switch', { name: 'Voice commands', exact: true })).toBeVisible();
 });
 
@@ -25,6 +26,7 @@ test('Previous Basic remains active until a replacement is selected; voice comma
     await page.locator('[data-debug-id="nav.style"]').click();
     await expect(page.getByRole('switch', { name: 'Voice commands', exact: true })).toHaveCount(0);
     await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.text"]').click();
     const commands = page.getByRole('switch', { name: 'Voice commands', exact: true });
     await expect(commands).toHaveAttribute('aria-checked', 'false');
     await commands.click();
@@ -41,6 +43,7 @@ test('Previous Basic remains active until a replacement is selected; voice comma
     await expect(page.getByText('Your previous Basic cleanup setting is still active', { exact: false })).toBeVisible();
     await page.reload();
     await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.text"]').click();
     await expect(commands).toHaveAttribute('aria-checked', 'true');
     await page.reload();
     await page.locator('[data-debug-id="nav.style"]').click();
@@ -49,6 +52,7 @@ test('Previous Basic remains active until a replacement is selected; voice comma
     await expect.poll(() => session.invoke('get_setting', { key: 'cleanup_intensity' })).toBe('light');
     await expect(page.getByText('Your previous Basic cleanup setting is still active', { exact: false })).toHaveCount(0);
     await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.text"]').click();
     await commands.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(path.dirname(process.env.VERENU_SESSION_ACCESS_FILE), `basic-cleanup-${testInfo.project.name}.png`) });
   } finally {
@@ -122,6 +126,7 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
       await page.emulateMedia({ reducedMotion });
       await page.reload();
       await page.locator('[data-debug-id="nav.settings"]').click();
+      await page.locator('[data-debug-id="settings.text"]').click();
       const more = page.getByRole('button', { name: 'What you can say' });
       const details = page.locator('#voice-commands-details');
       await expect(more).toHaveAttribute('aria-expanded', 'false');

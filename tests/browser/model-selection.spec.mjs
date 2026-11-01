@@ -86,7 +86,8 @@ test('an older agent cleanup refresh cannot undo a user toggle', async ({ page, 
     await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['cleanup_enabled']));
     await read;
     await page.locator('[data-debug-id="nav.settings"]').click();
-    const toggle = page.locator('[data-setting-target="general-cleanup"] [role="switch"]');
+    await page.locator('[data-debug-id="settings.text"]').click();
+    const toggle = page.locator('[data-setting-target="text-cleanup"] [role="switch"]');
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
     await toggle.click();
     await page.getByRole('button', { name: 'Turn off' }).click();
@@ -102,7 +103,7 @@ test('an older agent cleanup refresh cannot undo a user toggle', async ({ page, 
   }
 });
 
-test('a late General settings load cannot restore old cleanup state', async ({ page, session }) => {
+test('a late Text settings load cannot restore old cleanup state', async ({ page, session }) => {
   const previous = await session.invoke('get_setting', { key: 'cleanup_enabled' });
   let release;
   const held = new Promise(resolve => { release = resolve; });
@@ -119,13 +120,14 @@ test('a late General settings load cannot restore old cleanup state', async ({ p
       await route.fulfill({ response });
     });
     await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.text"]').click();
     await snapshotRead;
     await session.invoke('save_setting', { key: 'cleanup_enabled', value: false });
     const refreshed = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_setting' && response.request().postDataJSON()?.args?.key === 'cleanup_enabled');
     await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['cleanup_enabled']));
     await refreshed;
     release();
-    await expect(page.locator('[data-setting-target="general-cleanup"] [role="switch"]')).toHaveAttribute('aria-checked', 'false');
+    await expect(page.locator('[data-setting-target="text-cleanup"] [role="switch"]')).toHaveAttribute('aria-checked', 'false');
     expect(await session.invoke('get_setting', { key: 'cleanup_enabled' })).toBe(false);
   } finally {
     release();

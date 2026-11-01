@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Redesigned Settings into grouped vertical sections. The sidebar now groups pages under Dictation, AI, Data, System, and Verenu. A new **Text** page holds Cleanup, Smart spacing and capitalization, Automatic caps lock detection, Voice commands, and Auto-learn corrections, which moved out of General and Privacy. General is now Shortcuts, Speech input, Appearance, Startup, and Compatibility; Appearance and Themes use vertical lists instead of card grids. Audio is grouped as Microphone, While you dictate, Hands-free, and Sounds. Privacy merges the cleanup cache status and Clear Cache into the cache row, and merges Export and Import into one Backup row. Auto-learn activity is now a status line under Auto-learn corrections. About merges Version into Updates and drops the duplicate License row (the footer and Source row still state MIT). Settings search follows every move.
 - Nearby devices can use their detected Tailscale addresses when pairing and syncing, even when their advertised LAN addresses are unreachable.
 - Paired devices remember discovered LAN and Tailscale routes and retry them when another route is unavailable.
 - On Linux with glibc, Verenu releases unused database cache while the main window is hidden and dictation is idle. The cache is rebuilt as needed when history is read again.

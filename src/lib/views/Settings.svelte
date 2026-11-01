@@ -17,6 +17,7 @@
 
   const sections = {
     general: lazyComponent(() => import('../components/settings/GeneralSection.svelte')),
+    text: lazyComponent(() => import('../components/settings/TextSection.svelte')),
     apps: lazyComponent(() => import('../components/settings/AppMappingsSection.svelte')),
     keys: lazyComponent(() => import('../components/settings/ApiKeysSection.svelte')),
     models: lazyComponent(() => import('../components/settings/ModelsSection.svelte')),
@@ -617,16 +618,24 @@
     color: var(--ink);
   }
 
-  .settings-body :global(.settings-subhead) {
-    font-family: var(--sans);
+  .settings-body :global(.settings-lede) {
     font-size: 13px;
-    font-weight: 500;
+    line-height: 1.5;
     color: var(--ink-mute);
-    letter-spacing: 0;
-    margin: 28px 0 6px;
+    margin: -8px 0 4px;
+    max-width: 56ch;
   }
 
-  .settings-body :global(.settings-subhead.first) { margin-top: 4px; }
+  .settings-body :global(.settings-subhead) {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    margin: 40px 0 8px;
+  }
+
+  .settings-body :global(.settings-subhead.first) { margin-top: 8px; }
 
   .settings-body :global([data-setting-target]) {
     position: relative;

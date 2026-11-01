@@ -14,7 +14,6 @@
   } from '../../customTheme';
   import { applyPalette, setAppearanceMode, withAppearanceLock } from '../../appearanceActions';
   import { guardThemeEditor, openThemeEditor, themeEditor } from '../../themeEditor.svelte';
-  import ThemePreview from './ThemePreview.svelte';
 
   const modes: { id: AppearanceMode; label: string }[] = $derived([
     { id: 'system', label: 'System' },
@@ -25,13 +24,19 @@
       : []),
   ]);
 
-  const description = isMac
-    ? 'Follow macOS or force a specific theme'
+  const systemDescription = isMac
+    ? 'Follow macOS'
     : isAndroid
-      ? 'Follow Android or force a specific theme'
+      ? 'Follow Android'
       : isLinux
-        ? 'Follow your desktop or force a specific theme'
-        : 'Follow Windows or force a specific theme';
+        ? 'Follow your desktop'
+        : 'Follow Windows';
+
+  const modeDescriptions: Record<string, string> = {
+    light: 'Always use the bright look',
+    dark: 'Always use the dim look',
+    omarchy: 'Match your Omarchy theme',
+  };
 
   let error = $state('');
   const busy = $derived(appStore.appearanceSaving || themeEditor.saving);
@@ -120,78 +125,87 @@
   const tabbableMode = $derived(modes.some((m) => m.id === appStore.appearanceMode) ? appStore.appearanceMode : modes[0].id);
 </script>
 
-<div class="setting-row" data-setting-target="general-appearance">
-  <div><div class="label">Appearance</div><div class="desc">{description}</div></div>
-</div>
-<div class="mode-cards" style:--mode-count={modes.length} role="radiogroup" aria-label="Appearance" bind:this={modeGroup}>
+{#snippet swatch(c: { background: string; foreground: string; sidebar: string; surface: string }, accent: string | null = null)}
+  <span class="swatch" style:background={c.background} aria-hidden="true">
+    <i class="swatch-side" style:background={c.sidebar}></i>
+    <i class="swatch-card" style:background={c.surface}></i>
+    <i class="swatch-dot" style:background={accent ?? c.foreground}></i>
+  </span>
+{/snippet}
+
+<div class="option-list" role="radiogroup" aria-label="Appearance" data-setting-target="general-appearance" bind:this={modeGroup}>
   {#each modes as mode, index}
     {@const checked = appStore.appearanceMode === mode.id}
     <button
-      class="appearance-option card"
+      class="option appearance-option"
       class:active={checked}
       role="radio"
+      aria-label={mode.label}
+      aria-describedby={`appearance-${mode.id}-desc`}
       aria-checked={checked}
       aria-disabled={busy}
       tabindex={tabbableMode === mode.id ? 0 : -1}
       onclick={() => chooseMode(mode.id)}
       onkeydown={(event) => handleModeKeydown(event, index)}
     >
-      {#if mode.id === 'system'}
-        <ThemePreview colors={STOCK_PREVIEWS.light} split={STOCK_PREVIEWS.dark} />
-      {:else if mode.id === 'light'}
-        <ThemePreview colors={STOCK_PREVIEWS.light} />
-      {:else if mode.id === 'dark'}
-        <ThemePreview colors={STOCK_PREVIEWS.dark} />
-      {:else}
-        <ThemePreview colors={omarchyColors()} />
-      {/if}
-      <span class="card-label">
-        {mode.label}
-        {#if checked}<svg class="check" viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.2 2.1 2.1 4.9-4.8"/></svg>{/if}
+      <span class="swatch-wrap" aria-hidden="true">
+        {#if mode.id === 'system'}
+          <span class="swatch-split">
+            {@render swatch(STOCK_PREVIEWS.light)}
+            <span class="swatch-half">{@render swatch(STOCK_PREVIEWS.dark)}</span>
+          </span>
+        {:else if mode.id === 'light'}
+          {@render swatch(STOCK_PREVIEWS.light)}
+        {:else if mode.id === 'dark'}
+          {@render swatch(STOCK_PREVIEWS.dark)}
+        {:else}
+          {@render swatch(omarchyColors())}
+        {/if}
       </span>
+      <span class="option-text">
+        <span class="option-name">{mode.label}</span>
+        <span class="option-desc" id={`appearance-${mode.id}-desc`}>{mode.id === 'system' ? systemDescription : modeDescriptions[mode.id]}</span>
+      </span>
+      <svg class="check" class:shown={checked} viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.2 2.1 2.1 4.9-4.8"/></svg>
     </button>
   {/each}
 </div>
 
 {#if !isAndroid}
-  <div class="setting-row themes-head" data-setting-target="general-themes">
-    <div><div class="label">Themes</div><div class="desc">Pick a palette, or create and save your own. Saved themes stay on this device.</div></div>
+  <div class="list-head" data-setting-target="general-themes">
+    <div>
+      <div class="label">Themes</div>
+      <div class="desc">Pick a palette, or create and save your own. Saved themes stay on this device.</div>
+    </div>
+    <button class="btn-ghost btn-compact" aria-disabled={busy} onclick={createTheme}>Create theme</button>
   </div>
-  <div class="gallery" role="group" aria-label="Themes">
-    {#each CUSTOM_THEME_PRESETS as preset}
-      {@const selected = activePreset(preset.theme)}
-      <div class="theme-card" class:active={selected}>
-        <button class="theme-select card" aria-disabled={busy} aria-pressed={selected} onclick={() => choosePreset(preset.theme)}>
-          <ThemePreview colors={previewColors(preset.theme)} />
-          <span class="card-label">
-            <span class="name">{preset.label}</span>
-            {#if selected}<svg class="check" viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.2 2.1 2.1 4.9-4.8"/></svg>{/if}
-          </span>
-        </button>
-        <button class="theme-edit" aria-disabled={busy} aria-label={`Customize ${preset.label}`} title="Customize" onclick={() => customizePreset(preset.label, preset.theme)}>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10.8 2.7 2.5 2.5M2.5 13.5l.6-2.7 7.7-7.7 2.1 2.1-7.7 7.7-2.7.6Z"/></svg>
-        </button>
-      </div>
-    {/each}
+  <div class="option-list" role="group" aria-label="Themes">
     {#each appStore.savedThemes as theme (theme.id)}
       {@const selected = activeSaved?.id === theme.id}
-      <div class="theme-card" class:active={selected} class:editing={themeEditor.editingId === theme.id}>
-        <button class="theme-select card" aria-disabled={busy} aria-pressed={selected} onclick={() => chooseSaved(theme)}>
-          <ThemePreview colors={previewColors(theme.palette)} accent={theme.accent} />
-          <span class="card-label">
-            <span class="name">{theme.name}</span>
-            {#if selected}<svg class="check" viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.2 2.1 2.1 4.9-4.8"/></svg>{/if}
-          </span>
+      <div class="theme-row" class:active={selected} class:editing={themeEditor.editingId === theme.id}>
+        <button class="option theme-select" aria-disabled={busy} aria-pressed={selected} onclick={() => chooseSaved(theme)}>
+          <span class="swatch-wrap">{@render swatch(previewColors(theme.palette), theme.accent)}</span>
+          <span class="option-text"><span class="option-name">{theme.name}</span></span>
+          <svg class="check" class:shown={selected} viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.2 2.1 2.1 4.9-4.8"/></svg>
         </button>
         <button class="theme-edit" aria-disabled={busy} aria-label={`Edit ${theme.name}`} title="Edit" onclick={() => !busy && guardThemeEditor(() => openThemeEditor({ theme }))}>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10.8 2.7 2.5 2.5M2.5 13.5l.6-2.7 7.7-7.7 2.1 2.1-7.7 7.7-2.7.6Z"/></svg>
         </button>
       </div>
     {/each}
-    <button class="create-card" aria-disabled={busy} onclick={createTheme}>
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
-      Create theme
-    </button>
+    {#each CUSTOM_THEME_PRESETS as preset}
+      {@const selected = activePreset(preset.theme)}
+      <div class="theme-row" class:active={selected}>
+        <button class="option theme-select" aria-disabled={busy} aria-pressed={selected} onclick={() => choosePreset(preset.theme)}>
+          <span class="swatch-wrap">{@render swatch(previewColors(preset.theme))}</span>
+          <span class="option-text"><span class="option-name">{preset.label}</span></span>
+          <svg class="check" class:shown={selected} viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 6.2 2.1 2.1 4.9-4.8"/></svg>
+        </button>
+        <button class="theme-edit" aria-disabled={busy} aria-label={`Customize ${preset.label}`} title="Customize" onclick={() => customizePreset(preset.label, preset.theme)}>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10.8 2.7 2.5 2.5M2.5 13.5l.6-2.7 7.7-7.7 2.1 2.1-7.7 7.7-2.7.6Z"/></svg>
+        </button>
+      </div>
+    {/each}
   </div>
 {/if}
 {#if error}
@@ -199,95 +213,68 @@
 {/if}
 
 <style>
-  .themes-head { margin-top: 4px; }
-  .mode-cards,
-  .gallery {
-    display: grid;
-    gap: 12px;
-    padding: 2px 0 18px;
-  }
-  .mode-cards { grid-template-columns: repeat(var(--mode-count, 3), minmax(0, 1fr)); }
-  .gallery { grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); }
-  .card {
-    background: var(--paper);
+  .option-list {
     border: 1px solid var(--line);
     border-radius: 10px;
+    margin: 4px 0 16px;
+    overflow: hidden;
+  }
+  .option-list > :global(* + *) { border-top: 1px solid var(--line); }
+  .option {
+    align-items: center;
+    background: transparent;
+    border: 0;
     color: var(--ink-soft);
     cursor: pointer;
     display: flex;
-    flex-direction: column;
     font-family: var(--sans);
-    gap: 7px;
-    padding: 8px 8px 10px;
+    gap: 14px;
+    min-height: 52px;
+    padding: 8px 14px;
     text-align: left;
-    transition: border-color var(--ui-duration-fast) var(--ui-ease-out), box-shadow var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
+    transition: background var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
     width: 100%;
   }
-  .card[aria-disabled='true'], .theme-edit[aria-disabled='true'], .create-card[aria-disabled='true'] { cursor: default; opacity: 0.6; }
-  .card:hover { border-color: var(--line-strong); color: var(--ink); }
-  .card:focus-visible,
-  .theme-edit:focus-visible,
-  .create-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .card.active,
-  .theme-card.active .card { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); color: var(--ink); }
-  .theme-card.editing .card { border-style: dashed; border-color: var(--accent); }
-  .card-label {
-    align-items: center;
-    display: flex;
-    font-size: 12.5px;
-    font-weight: 500;
-    gap: 6px;
-    justify-content: space-between;
-    min-width: 0;
-    padding: 0 3px;
-  }
-  .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .check { fill: none; flex: none; height: 12px; stroke: var(--accent); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; width: 12px; }
-  .theme-card { position: relative; }
+  .option[aria-disabled='true'] { cursor: default; opacity: 0.6; }
+  .option:hover { background: var(--control-hover); color: var(--ink); }
+  .option:focus-visible,
+  .theme-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .option.active, .theme-row.active .option { background: color-mix(in srgb, var(--accent) 6%, transparent); color: var(--ink); }
+  .option-text { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
+  .option-name { font-size: 13px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .option-desc { color: var(--ink-mute); font-size: 12px; }
+  .check { fill: none; flex: none; height: 12px; opacity: 0; stroke: var(--accent); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; width: 12px; }
+  .check.shown { opacity: 1; }
+  .swatch-wrap { display: block; flex: none; height: 28px; position: relative; width: 46px; }
+  .swatch, .swatch-split { border-radius: 6px; display: block; height: 100%; overflow: hidden; position: relative; width: 100%; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent); }
+  .swatch-split { box-shadow: none; }
+  .swatch-half { clip-path: inset(0 0 0 50%); inset: 0; position: absolute; }
+  .swatch-side { bottom: 0; left: 0; position: absolute; top: 0; width: 28%; }
+  .swatch-card { border-radius: 2px; height: 9px; left: 38%; position: absolute; right: 8%; top: 7px; }
+  .swatch-dot { border-radius: 50%; bottom: 5px; height: 5px; left: 38%; position: absolute; width: 5px; }
+  .list-head { align-items: center; display: flex; gap: 16px; justify-content: space-between; margin-top: 20px; }
+  .list-head .btn-ghost { flex: none; }
+  .list-head .btn-ghost[aria-disabled='true'] { cursor: default; opacity: 0.6; }
+  .theme-row { align-items: stretch; display: flex; position: relative; }
+  .theme-row .theme-select { flex: 1; min-height: 44px; min-width: 0; }
+  .theme-row.editing { background: var(--control-hover); }
   .theme-edit {
     align-items: center;
-    background: var(--bg-elev);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    color: var(--ink-mute);
-    cursor: pointer;
-    display: flex;
-    height: 24px;
-    justify-content: center;
-    opacity: 0;
-    position: absolute;
-    right: 14px;
-    top: 14px;
-    transition: opacity var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
-    width: 24px;
-  }
-  .theme-card:hover .theme-edit,
-  .theme-edit:focus-visible { opacity: 1; }
-  .theme-edit:hover { color: var(--ink); }
-  @media (hover: none) { .theme-edit { opacity: 1; } }
-  .theme-edit svg,
-  .create-card svg { fill: none; height: 12px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; width: 12px; }
-  .create-card {
-    align-items: center;
     background: transparent;
-    border: 1px dashed var(--line-strong);
-    border-radius: 10px;
+    border: 0;
     color: var(--ink-mute);
     cursor: pointer;
     display: flex;
-    flex-direction: column;
-    font-family: var(--sans);
-    font-size: 12px;
-    font-weight: 500;
-    gap: 6px;
+    flex: none;
     justify-content: center;
-    min-height: 128px;
-    transition: border-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
+    transition: color var(--ui-duration-fast) var(--ui-ease-out), background var(--ui-duration-fast) var(--ui-ease-out);
+    width: 44px;
   }
-  .create-card svg { height: 16px; width: 16px; }
-  .create-card:hover { border-color: var(--ink-mute); color: var(--ink); }
+  .theme-edit:hover { background: var(--control-hover); color: var(--ink); }
+  .theme-edit[aria-disabled='true'] { cursor: default; opacity: 0.6; }
+  .theme-edit svg { fill: none; height: 13px; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; width: 13px; }
   .appearance-error { color: var(--danger); font-size: 12px; line-height: 1.45; margin: -6px 0 12px; }
   @media (prefers-reduced-motion: reduce) {
-    .card, .theme-edit, .create-card { transition-duration: 1ms; }
+    .option, .theme-edit { transition-duration: 1ms; }
   }
 </style>

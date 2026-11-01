@@ -136,8 +136,8 @@
           <div class="sub-app-meta">
             {subApp.app_name ?? subApp.executable} · title {PHRASE[subApp.match_mode]} “{subApp.title_pattern}”
           </div>
+          <div class="sub-app-context" class:is-unassigned={!context}>{context ? `In ${context}` : 'Not in a context group'}</div>
         </div>
-        <span class="sub-app-context" class:is-unassigned={!context}>{context ?? 'Not in a context group'}</span>
         <button
           type="button"
           class="btn-ghost btn-compact"
@@ -219,7 +219,7 @@
     border-bottom: 1px solid var(--line-soft);
     display: grid;
     gap: 12px;
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     padding: 10px 0;
   }
 
@@ -249,8 +249,8 @@
 
   .sub-app-context {
     color: var(--ink-soft);
-    font-size: 12px;
-    white-space: nowrap;
+    font-size: 11.5px;
+    margin-top: 1px;
   }
 
   .sub-app-context.is-unassigned {

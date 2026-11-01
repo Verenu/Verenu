@@ -152,7 +152,7 @@
   {/if}
 </h2>
 
-<h3 class="settings-subhead first">Gain</h3>
+<h3 class="settings-subhead first">Microphone</h3>
 <div class="setting-row gain-row" data-setting-target="audio-gain">
   <div class="gain-header">
     <div>
@@ -187,13 +187,18 @@
   {/if}
 </div>
 
-<h3 class="settings-subhead">Input</h3>
 {#if isLinux && !isAndroid}
   <div class="setting-row" data-setting-target="audio-echo-cancellation">
     <div><div class="label">Echo cancellation</div><div class="desc">Reduce speaker audio picked up by the default microphone. Requires PipeWire echo cancellation and the Default Device microphone. Turn this off if your microphone already cancels echo.</div></div>
     <Toggle checked={echoCancellation} onchange={handleEchoCancellation} label="Echo cancellation" bind:error={echoCancellationError} />
   </div>
 {/if}
+<div class="setting-row" data-setting-target="audio-noise">
+  <div><div class="label">Noise reduction</div><div class="desc">Suppress background noise before transcription (RNNoise)</div></div>
+  <Toggle checked={noiseReduction} onchange={handleNoiseReduction} label="Noise reduction" bind:error={noiseReductionError} />
+</div>
+
+<h3 class="settings-subhead">While you dictate</h3>
 {#if !isLinux || isAndroid}
 <div class="setting-row" data-setting-target="audio-system-mute">
   <div><div class="label">{isMac ? 'Mute System Audio' : isAndroid ? 'Mute device audio' : 'Mute PC Audio'}</div><div class="desc">{isMac ? 'Mutes system volume while dictating to prevent audio interference' : isAndroid ? 'Mutes device audio while dictating to prevent audio interference' : isWindows ? 'Mutes Windows volume while dictating to prevent audio interference' : 'Mutes the default output while dictating to prevent audio interference'}</div></div>
@@ -238,6 +243,7 @@
   </div>
 {/if}
 {#if isWindows || (isLinux && !isAndroid)}
+  <h3 class="settings-subhead">Hands-free</h3>
   <div class="setting-row" data-setting-target="audio-mic-mute-button">
     <div>
       <div class="label">Use microphone mute button for dictation</div>
@@ -251,12 +257,8 @@
     />
   </div>
 {/if}
-<div class="setting-row" data-setting-target="audio-noise">
-  <div><div class="label">Noise reduction</div><div class="desc">Suppress background noise before transcription (RNNoise)</div></div>
-  <Toggle checked={noiseReduction} onchange={handleNoiseReduction} label="Noise reduction" bind:error={noiseReductionError} />
-</div>
 
-<h3 class="settings-subhead">Sound effects</h3>
+<h3 class="settings-subhead">Sounds</h3>
 <div class="setting-row sound-volume-row" data-setting-target="audio-sounds">
   <div class="sound-volume-header">
     <div>
@@ -286,7 +288,7 @@
 <style>
   .volume-fades summary { cursor: pointer; padding: 14px 0; }
 
-  .gain-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+  .setting-row.gain-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
   .gain-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
   .gain-value {
     font-family: var(--mono);
@@ -356,7 +358,7 @@
   }
   .gain-tip svg { flex-shrink: 0; color: var(--warning); }
 
-  .sound-volume-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+  .setting-row.sound-volume-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
   .sound-volume-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
   .sound-volume-value {
     font-family: var(--mono);

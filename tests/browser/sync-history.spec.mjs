@@ -4,12 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { test, expect } from './fixtures.mjs';
 
-test('open General settings reflects a shared setting after sync without changing appearance', async ({ page, session }) => {
+test('open Text settings reflects a shared setting after sync without changing appearance', async ({ page, session }) => {
   const initial = await session.invoke('get_setting', { key: 'contextual_formatting_enabled' });
   const appearance = await session.invoke('get_setting', { key: 'appearance_mode' });
   try {
     await session.invoke('save_setting', { key: 'contextual_formatting_enabled', value: false });
     await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.text"]').click();
     const control = page.getByRole('switch', { name: /Smart spacing/ });
     await expect(control).toHaveAttribute('aria-checked', 'false');
     await session.invoke('save_setting', { key: 'contextual_formatting_enabled', value: true });
@@ -24,12 +25,13 @@ test('open General settings reflects a shared setting after sync without changin
   }
 });
 
-test('open General settings reflects voice commands after sync without remount or appearance change', async ({ page, session }) => {
+test('open Text settings reflects voice commands after sync without remount or appearance change', async ({ page, session }) => {
   const initial = await session.invoke('get_setting', { key: 'voice_commands_enabled' });
   const appearance = await session.invoke('get_setting', { key: 'appearance_mode' });
   try {
     await session.invoke('save_setting', { key: 'voice_commands_enabled', value: false });
     await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.text"]').click();
     const control = page.getByRole('switch', { name: 'Voice commands', exact: true });
     await control.scrollIntoViewIfNeeded();
     await expect(control).toHaveAttribute('aria-checked', 'false');

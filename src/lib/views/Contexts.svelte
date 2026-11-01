@@ -1632,9 +1632,9 @@
         spellcheck="false"
       ></textarea>
       {#if modalCleanupIntensity === 'rules' || inheritsBasicCleanup}
-        <p class="field-hint basic-hint" role="note">{inheritsBasicCleanup ? 'Your default cleanup is Basic. ' : ''}Basic cleanup runs on this device and ignores the tone and custom instructions above. They stay saved for AI cleanup. English rules apply only when English is selected in Settings, and dual transcription uses only the primary transcript. Voice commands are a separate global option in Settings > General.</p>
+        <p class="field-hint basic-hint" role="note">{inheritsBasicCleanup ? 'Your default cleanup is Basic. ' : ''}Basic cleanup runs on this device and ignores the tone and custom instructions above. They stay saved for AI cleanup. English rules apply only when English is selected in Settings, and dual transcription uses only the primary transcript. Voice commands are a separate global option in Settings > Text.</p>
       {:else}
-        <p class="field-hint">{isEditingEverywhere() ? 'Sent to the AI cleanup model for every dictation.' : 'Everywhere instructions run first. Add group-specific instructions here, or leave blank to inherit only.'} Voice commands are a separate global option in Settings > General and stay inactive with Off.</p>
+        <p class="field-hint">{isEditingEverywhere() ? 'Sent to the AI cleanup model for every dictation.' : 'Everywhere instructions run first. Add group-specific instructions here, or leave blank to inherit only.'} Voice commands are a separate global option in Settings > Text and stay inactive with Off.</p>
       {/if}
 
       <div class="advanced-disclosure">
