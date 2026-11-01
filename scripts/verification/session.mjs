@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { root, sourceFileChanges, sourceSnapshot } from './identity.mjs';
-import { stopOwned } from './process.mjs';
+import { assertRunning, stopOwned, trackOwned } from './process.mjs';
 
 export function cargoTargetDirectory(environment = process.env) {
   return environment.CARGO_TARGET_DIR || path.join(root, 'src-tauri', 'target');
@@ -59,7 +59,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   const log = await fs.open(path.join(directory, `startup-${Date.now()}.log`), 'w', 0o600);
   let child;
   try {
-    child = spawn(process.execPath, ['scripts/dev-session.mjs', '--id', id, ...(fixtures ? ['--fixtures', fixtures] : []), ...(synthetic ? ['--synthetic-seed'] : []), ...(native ? ['--native-test'] : [])], { cwd: root, stdio: ['ignore', log.fd, log.fd], detached: process.platform !== 'win32' });
+    assertRunning();
+    child = trackOwned(spawn(process.execPath, ['scripts/dev-session.mjs', '--id', id, ...(fixtures ? ['--fixtures', fixtures] : []), ...(synthetic ? ['--synthetic-seed'] : []), ...(native ? ['--native-test'] : [])], { cwd: root, stdio: ['ignore', log.fd, log.fd], detached: process.platform !== 'win32' }));
   } catch (error) {
     await log.close();
     throw error;
