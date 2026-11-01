@@ -183,24 +183,67 @@ pub(crate) struct StagedSync {
     manager: SyncManager,
     listener: Option<tauri::async_runtime::JoinHandle<()>>,
     identity: identity::DeviceIdentity,
+    server_config: Arc<rustls::ServerConfig>,
     port: u16,
+}
+
+#[cfg(target_os = "linux")]
+struct SyncListenerCandidate(Option<tauri::async_runtime::JoinHandle<()>>);
+
+#[cfg(target_os = "linux")]
+impl Drop for SyncListenerCandidate {
+    fn drop(&mut self) {
+        if let Some(listener) = self.0.take() { listener.abort(); }
+    }
 }
 
 #[cfg(target_os = "linux")]
 impl StagedSync {
     pub(crate) async fn verify(&self) -> Result<()> {
-        anyhow::ensure!(self.listener.as_ref().is_some_and(|listener| !listener.inner().is_finished()), "Sync listener stopped during restart");
+        let listener = self.listener.as_ref().ok_or_else(|| anyhow!("Sync listener is unavailable"))?;
+        Self::verify_listener(listener, &self.identity, self.port).await
+    }
+
+    async fn verify_listener(listener: &tauri::async_runtime::JoinHandle<()>, identity: &identity::DeviceIdentity, port: u16) -> Result<()> {
+        anyhow::ensure!(!listener.inner().is_finished(), "Sync listener stopped during restart");
         let connector = transport::tls_connector(transport::client_config(
-            self.identity.cert_der().clone(), self.identity.tls_key(),
+            identity.cert_der().clone(), identity.tls_key(),
         )?);
-        let server_name = transport::server_name_for(&self.identity.uuid);
+        let server_name = transport::server_name_for(&identity.uuid);
         let stream = tokio::time::timeout(Duration::from_secs(8), async {
-            let tcp = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, self.port)).await?;
+            let tcp = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
             connector.connect(server_name, tcp).await
         }).await.map_err(|_| anyhow!("Sync listener check timed out"))??;
         let peer = stream.get_ref().1.peer_certificates().ok_or_else(|| anyhow!("Sync server identity missing"))?;
-        anyhow::ensure!(transport::peer_fingerprint(peer)? == identity::fingerprint_of(self.identity.cert_der().as_ref()), "Sync server identity did not match");
+        anyhow::ensure!(transport::peer_fingerprint(peer)? == identity::fingerprint_of(identity.cert_der().as_ref()), "Sync server identity did not match");
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited) -> tokio::sync::oneshot::Receiver<Result<()>> {
+        let (finished, result) = tokio::sync::oneshot::channel();
+        tauri::async_runtime::spawn(async move {
+            let outcome = async {
+            self.verify().await?;
+            let preferred = listener_port_for_uuid(&self.identity.uuid);
+            if let Ok(listener) = TcpListener::bind((Ipv4Addr::UNSPECIFIED, preferred)).await {
+                let mut candidate = SyncListenerCandidate(Some(self.manager.spawn_accept_loop(listener, self.server_config.clone())));
+                if Self::verify_listener(candidate.0.as_ref().expect("candidate listener"), &self.identity, preferred).await.is_ok() {
+                    if let Some(previous) = self.listener.replace(candidate.0.take().expect("candidate listener")) { previous.abort(); }
+                    self.port = preferred;
+                    self.manager.inner.listener_port.store(preferred, Ordering::Relaxed);
+                }
+            }
+            self.verify().await?;
+            self.manager.start_background_services().await;
+            drop(self.listener.take());
+            self.manager.inner.available.store(true, Ordering::Release);
+            let _ = self.manager.inner.app.emit("verenu:sync-devices-changed", ());
+            Ok(())
+            }.await;
+            let _ = finished.send(outcome);
+        });
+        result
     }
 
 }
@@ -448,7 +491,7 @@ mod handoff_tests {
             sync_store::ensure_self_identity(&conn, &identity.uuid, &identity.name).unwrap();
         }
         let manager = SyncManager::new_unstarted(app.handle().clone(), db.clone());
-        let prepared = || {
+        let make_prepared = || {
             let fallback_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             fallback_listener.set_nonblocking(true).unwrap();
             let server_config = transport::server_config(identity.cert_der().clone(), identity.tls_key()).unwrap();
@@ -459,10 +502,10 @@ mod handoff_tests {
             let pause = gate.pause().await.unwrap();
             let other = Arc::new(crate::linux_activity::ActivityGate::default());
             let wrong_pause = other.pause().await.unwrap();
-            let wrong = prepared();
+            let wrong = make_prepared();
             let change = wrong.prepare_database(&db.lock().unwrap()).unwrap();
             assert!(manager.start_while_paused(wrong, &wrong_pause, change).is_err());
-            let prepared = prepared();
+            let prepared = make_prepared();
             let change = prepared.prepare_database(&db.lock().unwrap()).unwrap();
             let staged = manager.start_while_paused(prepared, &pause, change).unwrap();
             staged.verify().await.unwrap();
@@ -483,6 +526,63 @@ mod handoff_tests {
             assert!(!manager.inner.initialization_started.load(Ordering::Acquire));
             assert_eq!(sync_store::self_uuid(&db.lock().unwrap()).unwrap().as_deref(), Some(identity.uuid.as_str()));
             assert!(gate.try_enter().is_none());
+            let preferred = listener_port_for_uuid(&identity.uuid);
+            let occupied = std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, preferred)).unwrap();
+            let prepared = make_prepared();
+            let change = prepared.prepare_database(&db.lock().unwrap()).unwrap();
+            let staged = manager.start_while_paused(prepared, &pause, change).unwrap();
+            let fallback_port = staged.port;
+            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+            drop(pause);
+            let activation = staged.activate(&parent_exited);
+            tokio::time::timeout(Duration::from_secs(15), activation).await.unwrap().unwrap().unwrap();
+            assert!(manager.inner.available.load(Ordering::Relaxed));
+            assert_eq!(manager.inner.listener_port.load(Ordering::Relaxed), fallback_port);
+            tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, fallback_port))).await.unwrap().unwrap();
+            drop(occupied);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a private desktop and isolated network namespace"]
+    fn staged_sync_returns_to_preferred_port_after_parent_exits() {
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(gate.clone())
+            .build(tauri::generate_context!()).unwrap();
+        let db = crate::data::db::open(":memory:").unwrap();
+        let identity = identity::generate_for_tests();
+        sync_store::ensure_self_identity(&db.lock().unwrap(), &identity.uuid, &identity.name).unwrap();
+        let manager = SyncManager::new_unstarted(app.handle().clone(), db.clone());
+        let preferred = listener_port_for_uuid(&identity.uuid);
+        let old_listener = std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, preferred)).unwrap();
+        let fallback_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        fallback_listener.set_nonblocking(true).unwrap();
+        let server_config = transport::server_config(identity.cert_der().clone(), identity.tls_key()).unwrap();
+        let prepared = PreparedSync { identity, fallback_listener, server_config };
+        tauri::async_runtime::block_on(async {
+            let pause = gate.pause().await.unwrap();
+            let change = prepared.prepare_database(&db.lock().unwrap()).unwrap();
+            let staged = manager.start_while_paused(prepared, &pause, change).unwrap();
+            staged.verify().await.unwrap();
+            let fallback_port = staged.port;
+            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+            drop(old_listener);
+            drop(pause);
+            let activation = staged.activate(&parent_exited);
+            drop(activation);
+            tokio::time::timeout(Duration::from_secs(15), async {
+                while !manager.inner.available.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("sync activation stopped after its caller disconnected");
+            assert_eq!(manager.inner.listener_port.load(Ordering::Relaxed), preferred);
+            assert!(manager.inner.available.load(Ordering::Relaxed));
+            tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, preferred))).await.unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, fallback_port)).await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("fallback listener stayed open after preferred port activation");
         });
     }
 
@@ -836,8 +936,8 @@ impl SyncManager {
         self.inner.listener_port.store(port, Ordering::Relaxed);
         drop(change_slot);
         drop(identity_slot);
-        let worker = self.spawn_accept_loop(listener, server_config);
-        Ok(StagedSync { manager: self.clone(), listener: Some(worker), identity, port })
+        let worker = self.spawn_accept_loop(listener, server_config.clone());
+        Ok(StagedSync { manager: self.clone(), listener: Some(worker), identity, server_config, port })
     }
 
     pub(crate) fn new_unstarted(app: AppHandle, db: DbHandle) -> SyncManager {
@@ -1020,6 +1120,7 @@ impl SyncManager {
         drop(self.spawn_accept_loop(listener, server_cfg));
 
         self.start_background_services().await;
+        let _ = self.inner.app.emit("verenu:sync-devices-changed", ());
         Ok(())
     }
 
@@ -1100,7 +1201,6 @@ impl SyncManager {
             });
         }
 
-        let _ = self.inner.app.emit("verenu:sync-devices-changed", ());
     }
 
     async fn start_discovery(&self) -> Result<()> {
