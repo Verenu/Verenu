@@ -411,80 +411,34 @@ mod tests {
             let lease = preparation.await.unwrap();
             assert!(gate.try_enter().is_none());
             assert!(!crate::core::hotkey::test_shortcuts_active());
-            assert!(
-                crate::commands::start_input_recording(app.handle().clone(), app.state())
-                    .await
-                    .unwrap_err()
-                    .contains("preparing to restart")
-            );
-            assert!(
-                crate::commands::start_setup_try_recording(app.handle().clone(), app.state())
-                    .await
-                    .unwrap_err()
-                    .contains("preparing to restart")
-            );
-            assert!(
-                crate::commands::resume_cancelled_capture(app.handle().clone(), app.state())
-                    .await
-                    .unwrap_err()
-                    .contains("preparing to restart")
-            );
-            assert!(
-                crate::commands::stop_recording(app.handle().clone(), app.state())
-                    .await
-                    .unwrap_err()
-                    .contains("preparing to restart")
-            );
-            assert!(
-                crate::commands::stop_setup_try_recording(app.handle().clone(), app.state())
-                    .await
-                    .unwrap_err()
-                    .contains("preparing to restart")
-            );
-            assert!(
-                crate::commands::stop_and_transcribe_input(app.handle().clone(), app.state())
-                    .await
-                    .unwrap_err()
-                    .contains("preparing to restart")
-            );
-            assert!(
-                crate::commands::stop_handless_mode(app.handle().clone(), app.state())
-                    .await
-                    .unwrap_err()
-                    .contains("preparing to restart")
-            );
-            assert!(
-                crate::commands::dismiss_cancelled_capture(app.handle().clone(), app.state())
-                    .await
-                    .unwrap_err()
-                    .contains("preparing to restart")
-            );
-            assert!(crate::commands::copy_paste_failure_to_clipboard(
-                app.handle().clone(),
-                app.state()
-            )
-            .await
-            .unwrap_err()
-            .contains("preparing to restart"));
+            macro_rules! assert_paused {
+                ($command:ident $(, $arg:expr)*) => {
+                    assert!(
+                        matches!(
+                            crate::commands::$command(app.handle().clone(), app.state() $(, $arg)*).await,
+                            Err(error) if error.contains("preparing to restart")
+                        ),
+                        "restart did not block {}",
+                        stringify!($command)
+                    );
+                };
+            }
+            assert_paused!(start_input_recording);
+            assert_paused!(start_setup_try_recording);
+            assert_paused!(resume_cancelled_capture);
+            assert_paused!(stop_recording);
+            assert_paused!(stop_setup_try_recording);
+            assert_paused!(stop_and_transcribe_input);
+            assert_paused!(stop_handless_mode);
+            assert_paused!(dismiss_cancelled_capture);
+            assert_paused!(copy_paste_failure_to_clipboard);
             assert!(recording.lock().unwrap().lifecycle.is_idle());
-            assert!(crate::commands::download_local_stt_model(
-                app.handle().clone(), app.state(), "invalid".into(),
-            ).await.unwrap_err().contains("preparing to restart"));
-            assert!(crate::commands::download_local_llm_model(
-                app.handle().clone(), app.state(), "invalid".into(),
-            ).await.unwrap_err().contains("preparing to restart"));
-            assert!(crate::commands::download_local_llm_runtime(
-                app.handle().clone(), app.state(),
-            ).await.unwrap_err().contains("preparing to restart"));
-            assert!(crate::commands::delete_local_stt_model(
-                app.handle().clone(), app.state(), "invalid".into(),
-            ).await.unwrap_err().contains("preparing to restart"));
-            assert!(crate::commands::delete_local_llm_model(
-                app.handle().clone(), app.state(), "invalid".into(),
-            ).await.unwrap_err().contains("preparing to restart"));
-            assert!(crate::commands::delete_local_llm_runtime(
-                app.handle().clone(), app.state(),
-            ).await.unwrap_err().contains("preparing to restart"));
+            assert_paused!(download_local_stt_model, "invalid".into());
+            assert_paused!(download_local_llm_model, "invalid".into());
+            assert_paused!(download_local_llm_runtime);
+            assert_paused!(delete_local_stt_model, "invalid".into());
+            assert_paused!(delete_local_llm_model, "invalid".into());
+            assert_paused!(delete_local_llm_runtime);
             assert!(agent.clone().try_acquire_owned().is_err());
             assert!(tray_names(&bus).await.is_empty());
             entered.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -736,7 +690,7 @@ mod tests {
                     .json(&serde_json::json!({"token": "a".repeat(64)})).send().await.unwrap().status(),
                     reqwest::StatusCode::SERVICE_UNAVAILABLE);
                 let app_handle = app.handle().clone();
-                assert!(!tauri::async_runtime::spawn_blocking(move || {
+                assert!(tauri::async_runtime::spawn_blocking(move || {
                     app_handle.state::<crate::linux_single_instance::InstanceOwner>().owns_name().unwrap()
                 }).await.unwrap());
                 tauri::async_runtime::spawn_blocking(|| {
