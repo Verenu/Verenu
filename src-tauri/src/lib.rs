@@ -856,7 +856,7 @@ pub fn run() {
                 app_tray::apply_runtime_icons(app.handle(), theme);
             }
             app_hotkey::setup_hotkey(app.handle(), shared.clone());
-            media::mic_mute_trigger::setup(app, shared.clone());
+            media::mic_mute_trigger::setup(app.handle(), shared.clone());
             #[cfg(target_os = "macos")]
             {
                 crate::system::mac_app::set_accessory_activation_policy_on_main_thread(
