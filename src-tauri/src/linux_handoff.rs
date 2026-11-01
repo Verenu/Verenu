@@ -562,6 +562,11 @@ mod tests {
             }).await.unwrap();
             assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
             let replacement_group = replacement.0.id();
+            let app_handle = app.handle().clone();
+            assert!(tauri::async_runtime::spawn_blocking(move || {
+                app_handle.state::<crate::linux_single_instance::InstanceOwner>()
+                    .verify_replacement_owner(replacement_group).is_err()
+            }).await.unwrap());
             let lease = tauri::async_runtime::spawn_blocking(move || {
                 let mut lease = lease;
                 lease.begin_instance_transfer(replacement_group).unwrap();
@@ -575,8 +580,9 @@ mod tests {
             }).await.unwrap());
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
-                app_handle.state::<crate::linux_single_instance::InstanceOwner>()
-                    .callback_barrier().unwrap();
+                let owner = app_handle.state::<crate::linux_single_instance::InstanceOwner>();
+                owner.verify_replacement_owner(replacement_group).unwrap();
+                owner.callback_barrier().unwrap();
             }).await.unwrap();
             assert_eq!(crate::linux_single_instance::test_callback_count(), callbacks);
             drop(lease);
