@@ -376,8 +376,8 @@ impl PreparedHandoffDb {
         self,
         db: &'a Db,
     ) -> Result<LockedHandoffDb<'a>> {
-        self.0.execute_batch("PRAGMA query_only = OFF;")?;
         self.0.busy_timeout(std::time::Duration::from_secs(5))?;
+        self.0.execute_batch("PRAGMA query_only = OFF; BEGIN IMMEDIATE;")?;
         let mut connection = lock_conn(db)?;
         let previous = std::mem::replace(&mut *connection, self.0);
         Ok(LockedHandoffDb { connection, previous: Some(previous) })
@@ -386,9 +386,15 @@ impl PreparedHandoffDb {
 
 #[cfg(target_os = "linux")]
 impl LockedHandoffDb<'_> {
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
     #[allow(dead_code)]
-    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
+    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited) -> Result<()> {
+        self.connection.execute_batch("COMMIT;")?;
         drop(self.previous.take());
+        Ok(())
     }
 }
 
@@ -396,6 +402,7 @@ impl LockedHandoffDb<'_> {
 impl Drop for LockedHandoffDb<'_> {
     fn drop(&mut self) {
         if let Some(previous) = self.previous.take() {
+            let _ = self.connection.execute_batch("ROLLBACK;");
             *self.connection = previous;
         }
     }
@@ -532,6 +539,8 @@ fn prepared_handoff_connection_stays_read_only_until_activation() {
         .is_err());
     let locked = prepared.lock_for_activation(&handoff).unwrap();
     assert!(clone.try_lock().is_err());
+    locked.connection().execute("INSERT INTO fixture VALUES (2)", []).unwrap();
+    assert_eq!(original.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     let waiting = clone.clone();
     let (sent, received) = std::sync::mpsc::channel();
     let (started, started_rx) = std::sync::mpsc::channel();
@@ -548,8 +557,10 @@ fn prepared_handoff_connection_stays_read_only_until_activation() {
     assert_eq!(original.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     let prepared = probe_writable_for_handoff(&path).unwrap();
     let locked = prepared.lock_for_activation(&handoff).unwrap();
+    locked.connection().execute("INSERT INTO fixture VALUES (2)", []).unwrap();
+    assert_eq!(original.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-    locked.activate(&parent_exited);
+    locked.activate(&parent_exited).unwrap();
     clone
         .lock()
         .unwrap()
@@ -557,10 +568,36 @@ fn prepared_handoff_connection_stays_read_only_until_activation() {
         .unwrap();
     assert_eq!(
         original.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(),
-        1
+        2
     );
     drop(clone);
     drop(handoff);
+    drop(original);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn handoff_transaction_rolls_back_when_replacement_exits_abruptly() {
+    const CHILD_PATH: &str = "VERENU_TEST_HANDOFF_CRASH_DB";
+    if let Some(path) = std::env::var_os(CHILD_PATH) {
+        let path = std::path::PathBuf::from(path);
+        let db = open_for_handoff(&path).unwrap();
+        let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&db).unwrap();
+        locked.connection().execute("INSERT INTO fixture VALUES (1)", []).unwrap();
+        std::process::exit(17);
+    }
+    let path = std::env::temp_dir().join(format!("verenu-handoff-crash-{}.db", Uuid::new_v4()));
+    let original = Connection::open(&path).unwrap();
+    original.execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE fixture (value INTEGER);").unwrap();
+    original.pragma_update(None, "user_version", HANDOFF_SCHEMA_VERSION).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["handoff_transaction_rolls_back_when_replacement_exits_abruptly", "--nocapture"])
+        .env(CHILD_PATH, &path)
+        .status().unwrap();
+    assert_eq!(status.code(), Some(17));
+    assert_eq!(original.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    original.execute("INSERT INTO fixture VALUES (2)", []).unwrap();
     drop(original);
     std::fs::remove_file(path).unwrap();
 }
