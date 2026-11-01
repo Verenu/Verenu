@@ -9,6 +9,8 @@ pub struct RuntimeStatus {
     pub state: &'static str,
     pub message: String,
     pub has_files: bool,
+    /// Whole-number setup progress while installing, or `None` when it cannot be measured.
+    pub progress: Option<u8>,
 }
 
 static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
@@ -16,13 +18,50 @@ static REALTIME_FAILED: AtomicBool = AtomicBool::new(false);
 
 fn status_cell() -> &'static Mutex<RuntimeStatus> {
     static STATUS: OnceLock<Mutex<RuntimeStatus>> = OnceLock::new();
-    STATUS.get_or_init(|| Mutex::new(RuntimeStatus { state: "unknown", message: String::new(), has_files: false }))
+    STATUS.get_or_init(|| Mutex::new(RuntimeStatus { state: "unknown", message: String::new(), has_files: false, progress: None }))
 }
 
 fn set_status(state: &'static str, message: impl Into<String>) {
     if let Ok(mut status) = status_cell().lock() {
-        *status = RuntimeStatus { state, message: message.into(), has_files: false };
+        *status = RuntimeStatus { state, message: message.into(), has_files: false, progress: None };
     }
+}
+
+fn set_install_progress(message: impl Into<String>, progress: u8) {
+    if let Ok(mut status) = status_cell().lock() {
+        *status = RuntimeStatus { state: "installing", message: message.into(), has_files: false, progress: Some(progress) };
+    }
+}
+
+/// Where setup stands when `install.sh` prints a stage line. Unknown lines keep the current value.
+fn stage_progress(line: &str) -> Option<u8> {
+    Some(match line {
+        "Downloading runtime installer" => 2,
+        "Installing Python runtime" => 6,
+        l if l.starts_with("Downloading and installing GPU dependencies") => DEPENDENCY_START,
+        "Downloading and verifying NVIDIA model" => 85,
+        "Testing GPU and model" => 96,
+        _ => return None,
+    })
+}
+
+const DEPENDENCY_START: u8 = 10;
+const DEPENDENCY_END: u8 = 84;
+/// Rough unpacked size of the GPU wheels in the installer cache. Only the dependency step uses it, and it never reaches the end of its range early.
+const DEPENDENCY_EXPECTED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+fn dependency_progress(cache_bytes: u64) -> u8 {
+    let span = u64::from(DEPENDENCY_END - DEPENDENCY_START);
+    DEPENDENCY_START + (cache_bytes.min(DEPENDENCY_EXPECTED_BYTES) * span / DEPENDENCY_EXPECTED_BYTES) as u8
+}
+
+fn directory_bytes(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries.flatten().map(|entry| match entry.file_type() {
+        Ok(kind) if kind.is_dir() => directory_bytes(&entry.path()),
+        Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |m| m.len()),
+        _ => 0,
+    }).sum()
 }
 
 pub(crate) fn runtime_dir() -> std::path::PathBuf {
@@ -54,9 +93,9 @@ pub fn mark_realtime_failed() {
 #[tauri::command]
 pub fn nvidia_reuse_status() -> RuntimeStatus {
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        return RuntimeStatus { state: "unavailable", message: "Requires Linux x86_64 and a compatible NVIDIA GPU.".into(), has_files: false };
+        return RuntimeStatus { state: "unavailable", message: "Requires Linux x86_64 and a compatible NVIDIA GPU.".into(), has_files: false, progress: None };
     }
-    let mut status = status_cell().lock().map(|s| s.clone()).unwrap_or(RuntimeStatus { state: "error", message: "Runtime status unavailable.".into(), has_files: false });
+    let mut status = status_cell().lock().map(|s| s.clone()).unwrap_or(RuntimeStatus { state: "error", message: "Runtime status unavailable.".into(), has_files: false, progress: None });
     status.has_files = has_runtime_files(&runtime_dir());
     status
 }
@@ -70,7 +109,7 @@ pub async fn nvidia_reuse_check() -> Result<(), String> {
     {
         let mut status = status_cell().lock().map_err(|_| "Runtime status unavailable")?;
         if matches!(status.state, "installing" | "checking" | "removing") { return Ok(()); }
-        *status = RuntimeStatus { state: "checking", message: "Checking NVIDIA GPU availability…".into(), has_files: false };
+        *status = RuntimeStatus { state: "checking", message: "Checking NVIDIA GPU availability…".into(), has_files: false, progress: None };
     }
     if !nvidia_driver_available().await {
         set_status("unavailable", "No compatible NVIDIA GPU with a supported driver was detected.");
@@ -97,7 +136,7 @@ pub async fn nvidia_reuse_install() -> Result<(), String> {
         let mut status = status_cell().lock().map_err(|_| "Runtime status unavailable")?;
         if matches!(status.state, "installing" | "checking" | "removing") { return Err("A setup, check, or removal is already running.".into()); }
         if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 { return Err("NVIDIA RE-USE is processing audio. Try again when it finishes.".into()); }
-        *status = RuntimeStatus { state: "installing", message: "Preparing runtime…".into(), has_files: false };
+        *status = RuntimeStatus { state: "installing", message: "Preparing runtime…".into(), has_files: false, progress: None };
     }
     if !nvidia_driver_available().await {
         set_status("unavailable", "No compatible NVIDIA GPU with a supported driver was detected.");
@@ -171,7 +210,7 @@ pub async fn nvidia_reuse_realtime_install() -> Result<(), String> {
         let mut status = status_cell().lock().map_err(|_| "Runtime status unavailable")?;
         if status.state != "ready" { return Err("Set up NVIDIA RE-USE first.".into()); }
         if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 { return Err("Wait for the current recording to finish.".into()); }
-        *status = RuntimeStatus { state: "installing", message: "Downloading the research-only real-time model…".into(), has_files: true };
+        *status = RuntimeStatus { state: "installing", message: "Downloading the research-only real-time model…".into(), has_files: true, progress: None };
     }
     crate::media::realtime_reuse::unload().await;
     tauri::async_runtime::spawn(async {
@@ -257,13 +296,33 @@ async fn install() -> Result<(), String> {
     let mut child = tokio::process::Command::new("sh").arg(dir.join("install.sh")).arg(&dir)
         .stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn().map_err(|e| format!("Could not start setup: {e}"))?;
     let stdout = child.stdout.take().ok_or("Could not read setup progress")?;
+    let cache = dir.join("cache");
+    let sizer = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let bytes = tokio::task::spawn_blocking({ let cache = cache.clone(); move || directory_bytes(&cache) }).await.unwrap_or(0);
+            if let Ok(mut status) = status_cell().lock() {
+                if status.state != "installing" { return; }
+                let in_dependencies = status.message.starts_with("Downloading and installing GPU dependencies");
+                if in_dependencies && status.progress.is_some_and(|current| dependency_progress(bytes) > current) {
+                    status.progress = Some(dependency_progress(bytes));
+                }
+            }
+        }
+    });
     let result = tokio::time::timeout(std::time::Duration::from_secs(3600), async {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            if !line.is_empty() { set_status("installing", line); }
+            if line.is_empty() { continue; }
+            match stage_progress(&line) {
+                Some(progress) => set_install_progress(line, progress),
+                None => if let Ok(mut status) = status_cell().lock() { status.message = line; },
+            }
         }
         child.wait().await
-    }).await.map_err(|_| "Runtime setup timed out after one hour.".to_string())?.map_err(|e| e.to_string())?;
+    }).await;
+    sizer.abort();
+    let result = result.map_err(|_| "Runtime setup timed out after one hour.".to_string())?.map_err(|e| e.to_string())?;
     if !result.success() {
         if fs2::available_space(&dir).is_ok_and(|free| free < 1024 * 1024 * 1024) {
             return Err(STORAGE_ERROR.into());
@@ -326,8 +385,18 @@ mod tests {
     use super::decode_samples;
 
     #[test]
+    fn setup_progress_follows_installer_stages_and_cache_growth() {
+        assert_eq!(super::stage_progress("Installing Python runtime"), Some(6));
+        assert_eq!(super::stage_progress("Downloading and installing GPU dependencies (several GB)"), Some(super::DEPENDENCY_START));
+        assert_eq!(super::stage_progress("Ready"), None);
+        assert_eq!(super::dependency_progress(0), super::DEPENDENCY_START);
+        assert!(super::dependency_progress(super::DEPENDENCY_EXPECTED_BYTES / 2) > super::DEPENDENCY_START);
+        assert_eq!(super::dependency_progress(u64::MAX), super::DEPENDENCY_END);
+    }
+
+    #[test]
     fn removal_refuses_busy_runtime_and_transitions_to_removing() {
-        let mut status = super::RuntimeStatus { state: "ready", message: String::new(), has_files: true };
+        let mut status = super::RuntimeStatus { state: "ready", message: String::new(), has_files: true, progress: None };
         assert!(super::begin_removal(&mut status, 1).is_err());
         assert_eq!(status.state, "ready");
         super::begin_removal(&mut status, 0).unwrap();
