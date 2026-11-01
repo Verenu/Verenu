@@ -127,6 +127,20 @@ pub(crate) struct PreparedSync {
 
 #[cfg(target_os = "linux")]
 impl PreparedSync {
+    pub(crate) fn prepare_database(&self, conn: &rusqlite::Connection) -> Result<()> {
+        anyhow::ensure!(
+            sync_store::self_uuid(conn)?.as_deref() == Some(self.identity.uuid.as_str()),
+            "Sync identity changed during restart"
+        );
+        let name = stored_device_name(conn)?
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| self.identity.name.clone());
+        sync_store::ensure_self_identity(conn, &self.identity.uuid, &name)?;
+        SyncManager::reconcile_stale_context_targets_with(conn)?;
+        ChangeStamp::read(conn)?;
+        Ok(())
+    }
+
     pub(crate) async fn verify_transport(&self) -> Result<()> {
         let listener = TcpListener::from_std(self.fallback_listener.try_clone()?)?;
         let port = listener.local_addr()?.port();
@@ -380,6 +394,31 @@ pub struct SyncStatusSnapshot {
 #[cfg(all(test, target_os = "linux", feature = "native-testing"))]
 mod handoff_tests {
     use super::*;
+
+    #[test]
+    fn sync_database_preparation_is_rolled_back_with_the_handoff() {
+        let path = std::env::temp_dir().join(format!("verenu-sync-transaction-{}.db", uuid::Uuid::new_v4()));
+        let parent = crate::data::db::open(&path).unwrap();
+        let identity = crate::sync::identity::generate_for_tests();
+        {
+            let conn = parent.lock().unwrap();
+            sync_store::ensure_self_identity(&conn, &identity.uuid, "").unwrap();
+        }
+        let server_config = transport::server_config(identity.cert_der().clone(), identity.tls_key()).unwrap();
+        let fallback_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let prepared = PreparedSync { identity, fallback_listener, server_config };
+        let replacement = crate::data::db::open_for_handoff(&path).unwrap();
+        let locked = crate::data::db::probe_writable_for_handoff(&path).unwrap()
+            .lock_for_activation(&replacement).unwrap();
+        prepared.prepare_database(locked.connection()).unwrap();
+        assert_eq!(stored_device_name(locked.connection()).unwrap().as_deref(), Some(prepared.identity.name.as_str()));
+        assert_eq!(stored_device_name(&parent.lock().unwrap()).unwrap().as_deref(), Some(""));
+        drop(locked);
+        assert_eq!(stored_device_name(&parent.lock().unwrap()).unwrap().as_deref(), Some(""));
+        drop(replacement);
+        drop(parent);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     #[ignore = "requires a private desktop and isolated network namespace"]
@@ -1064,6 +1103,10 @@ impl SyncManager {
 
     fn reconcile_stale_context_targets(&self) -> Result<()> {
         let conn = self.lock_db()?;
+        Self::reconcile_stale_context_targets_with(&conn)
+    }
+
+    fn reconcile_stale_context_targets_with(conn: &rusqlite::Connection) -> Result<()> {
         let rows: Vec<(i64, String)> = {
             let mut stmt =
                 conn.prepare("SELECT id, executable FROM context_targets WHERE platform IS NULL")?;

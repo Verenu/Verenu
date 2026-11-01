@@ -322,7 +322,6 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             handle.exit(1);
                             return;
                         }
-                        let _prepared_sync = prepared_sync;
                         let _prepared_microphone = match crate::media::mic_mute_trigger::prepare_for_handoff(
                             &handle, handle.state::<crate::pipeline::SharedState>().inner().clone(),
                         ) {
@@ -334,7 +333,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             }
                         };
                         let db = handle.state::<crate::DbHandle>();
-                        let _locked_db = match prepared_db.lock_for_activation(db.inner()) {
+                        let locked_db = match prepared_db.lock_for_activation(db.inner()) {
                             Ok(db) => db,
                             Err(error) => {
                                 let _ = services.fail(format!("Replacement database could not prepare activation: {error}"));
@@ -342,6 +341,11 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 return;
                             }
                         };
+                        if let Err(error) = prepared_sync.prepare_database(locked_db.connection()) {
+                            let _ = services.fail(format!("Replacement sync database could not prepare: {error}"));
+                            handle.exit(1);
+                            return;
+                        }
                         let _ = services.fail("Replacement services are not yet verified".into());
                     }
                 } else {
