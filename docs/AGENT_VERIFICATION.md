@@ -94,6 +94,9 @@ desktop and phone project and the deterministic Linux checks. Each browser job a
 restart persistence. `CI required` requires every partition to succeed; no
 test files are filtered by changed paths. Release checks use the same partitions;
 the default local command still runs the complete suite.
+`verify:task` runs those six Node and eight browser partitions sequentially.
+Each retains the usual per-check timeout; all partitions must pass for the
+session category to pass.
 
 The same workflow runs after merges to `master`, seeding dependency caches that
 future PRs can restore. PR jobs restore Rust caches but do not save new ones,

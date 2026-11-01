@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { root, sourceIdentity, changedFiles, artifact } from './verification/identity.mjs';
 import { requirements, nativeRequirements, evaluate, incompleteUnlessFailed } from './verification/policy.mjs';
 import { run } from './verification/process.mjs';
+import { taskSessionPartitions } from './verification/session-partition.mjs';
 
 const args = process.argv.slice(2);
 function option(name, fallback) {
@@ -42,13 +43,21 @@ if (supplied) {
   }
 }
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const sessionPartitions = taskSessionPartitions();
+const ownedSessions = (category, live = false) => sessionPartitions.map((partition, index) => [npm, [
+  'run', 'test:session:owned', '--', ...(live ? ['--live'] : []),
+  '--suite', partition.suite,
+  ...(partition.suite === 'browser' ? ['--project', partition.project] : []),
+  '--shard', `${partition.index}/${partition.count}`,
+  '--report', path.join(directory, `${category}-${index}.json`),
+]]);
 const commands = {
   static: [[npm, ['run', 'check']], [npm, ['run', 'build']]],
   unit: [[npm, ['run', 'test:unit']], [npm, ['run', 'test:verification']]],
   rust: [['cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml']], ['cargo', ['clippy', '--manifest-path', 'src-tauri/Cargo.toml', '--features', 'dev-session,native-testing', '--', '-D', 'warnings']]],
   renderer: [[npm, ['test', '--', '--suite', 'ui,accessibility,state,performance', '--strict', '--json-report', path.join(directory, 'renderer.json')]]],
-  session: [[npm, ['run', 'test:session:owned', '--', '--report', path.join(directory, 'session.json')]]],
-  pipeline: [[npm, ['run', 'test:session:owned', '--', '--live', '--report', path.join(directory, 'pipeline.json')]]],
+  session: ownedSessions('session'),
+  pipeline: ownedSessions('pipeline', true),
   native: [[npm, ['run', 'test:native:webview', '--', '--report', path.join(directory, 'native.json')]]],
   'native-integration': [[npm, ['run', 'test:native:fixtures', '--', '--report', path.join(directory, 'native-integration.json')]]],
   migration: [['cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', 'data::db', '--lib']]],
@@ -66,7 +75,8 @@ if (!args.includes('--inspect-only')) {
       console.log(`Checking ${category} ${index + 1}...`);
       const result = await run(command, argv, { directory, name: `${category}-${index}` });
       let status = result.status;
-      const childReport = path.join(directory, `${category}.json`);
+      const reportIndex = argv.lastIndexOf('--report');
+      const childReport = reportIndex < 0 ? path.join(directory, `${category}.json`) : argv[reportIndex + 1];
       let detail;
       if (['session', 'pipeline', 'native', 'native-integration'].includes(category)) {
         try {
@@ -74,6 +84,10 @@ if (!args.includes('--inspect-only')) {
           if (result.exitCode === 2 && detail.status === 'incomplete') status = 'incomplete';
           if (detail.identity?.fingerprint !== identity.fingerprint || detail.identity?.worktree !== identity.worktree) status = incompleteUnlessFailed(status);
           else if (detail.status !== 'verified') status = detail.status === 'failed' ? 'failed' : incompleteUnlessFailed(status);
+          if (['session', 'pipeline'].includes(category) && JSON.stringify(detail.partition) !== JSON.stringify(sessionPartitions[index])) {
+            status = incompleteUnlessFailed(status);
+            detail.reason = 'Owned session reported an unexpected partition';
+          }
           if (detail.checks?.some((row) => row.status === 'failed')) status = 'failed';
         } catch { status = result.status === 'failed' ? 'failed' : 'incomplete'; }
       }
