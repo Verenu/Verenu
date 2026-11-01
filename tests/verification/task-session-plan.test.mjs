@@ -17,6 +17,7 @@ test('task verification covers every node file and both browser projects in boun
   const files = Array.from({ length: 29 }, (_, index) => `file-${index}.test.mjs`);
   const node = parsed.filter(partition => partition.suite === 'node').flatMap(partition => partitionFiles(files, partition));
   assert.deepEqual(node.sort(), files.sort());
+  assert.ok(parsed.filter(partition => partition.suite === 'node').every(partition => partitionFiles(files, partition).length <= 4));
   assert.deepEqual(parsed.filter(partition => partition.suite === 'browser').map(partition => partition.project).sort(), ['desktop', 'phone']);
   parsed.forEach((partition, index) => assert.ok(matchesTaskSessionPartition(partition, plan[index])));
   assert.equal(matchesTaskSessionPartition(parsed[0], plan[1]), false);
