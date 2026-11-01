@@ -308,6 +308,16 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 fail_paused_probation(services, format!("Replacement agent service could not start safely: {error}"));
                             }
                         };
+                        let analytics_enabled = handle.state::<crate::data::store::SettingsHandle>()
+                            .get(crate::data::store::ANALYTICS_ENABLED)
+                            .and_then(|value| value.as_bool()).unwrap_or(true);
+                        let analytics = match crate::analytics::Analytics::prepare_for_handoff(analytics_enabled, crate::app_data_dir()) {
+                            Ok(analytics) => analytics,
+                            Err(error) => fail_paused_probation(services, format!("Replacement analytics could not prepare: {error}")),
+                        };
+                        if !handle.manage(analytics) {
+                            fail_paused_probation(services, "Replacement analytics was already initialized".into());
+                        }
                         if let Err(error) = prepare_saved_shortcut(&handle) {
                             fail_paused_probation(services, format!("Replacement shortcut settings are unavailable: {error}"));
                         }
