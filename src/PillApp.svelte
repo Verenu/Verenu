@@ -6,7 +6,7 @@
   import { createPillSnapshotReceiver } from './lib/pillSnapshot';
   import { fly } from 'svelte/transition';
   import { BARS, createPillVisualizer } from './lib/pillVisualizer';
-  import { pillBarSizing, snapBarHeight } from './lib/pillSizing';
+  import { pillBarHeight, pillBarSizing } from './lib/pillSizing';
   import AgentAccessibilityDump from './lib/components/AgentAccessibilityDump.svelte';
   import { isAndroid, isLinux } from './lib/platform';
 
@@ -446,6 +446,49 @@
     const observer = new ResizeObserver(() => { void reportHitRect(); });
     observer.observe(node);
     return { destroy: () => observer.disconnect() };
+  }
+
+  function alignPillBars(node: HTMLElement, initialScale: number) {
+    let scale = initialScale;
+    let y = 0;
+    const offsets = new WeakMap<HTMLElement, number>();
+    let frame = 0;
+    const align = () => {
+      frame = 0;
+      const bars = node.querySelectorAll<HTMLElement>('.bar');
+      if (!bars.length) return;
+      const boxes = Array.from(bars, (bar) => bar.getBoundingClientRect());
+      const box = boxes[0];
+      const center = box.top + box.height / 2 - y;
+      y = (Math.round(center * scale) - center * scale) / scale;
+      bars.forEach((bar, i) => {
+        const left = boxes[i].left - (offsets.get(bar) ?? 0);
+        const x = (Math.round(left * scale) - left * scale) / scale;
+        offsets.set(bar, x);
+        bar.style.setProperty('--bar-align-x', `${x}px`);
+      });
+      node.style.setProperty('--bar-align-y', `${y}px`);
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(align);
+    };
+    const capsule = node.closest('.pill');
+    const observer = new ResizeObserver(schedule);
+    if (capsule) observer.observe(capsule);
+    capsule?.addEventListener('animationend', schedule);
+    capsule?.addEventListener('transitionend', schedule);
+    window.addEventListener('resize', schedule);
+    schedule();
+    return {
+      update(nextScale: number) { scale = nextScale; schedule(); },
+      destroy() {
+        observer.disconnect();
+        capsule?.removeEventListener('animationend', schedule);
+        capsule?.removeEventListener('transitionend', schedule);
+        window.removeEventListener('resize', schedule);
+        if (frame) cancelAnimationFrame(frame);
+      },
+    };
   }
 
   let dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
@@ -952,9 +995,9 @@
     {/if}
 
   {#if state === 'recording'}
-    <div class="pill recording" class:dying={dying}>
+    <div class="pill recording" use:alignPillBars={barScale} class:dying={dying}>
       {#each barHeights as h, i (i)}
-        <div class="bar" style="height: {snapBarHeight(h, barScale, barW)}px"></div>
+        <div class="bar" style="height: {pillBarHeight(h, barScale, barW)}px"></div>
       {/each}
     </div>
 
@@ -1087,9 +1130,9 @@
           </svg>
         </button>
       {/if}
-      <div class="bars-hf">
+      <div class="bars-hf" use:alignPillBars={barScale}>
         {#each barHeights as h, i (i)}
-          <div class="bar" style="height: {snapBarHeight(h, barScale, barW)}px"></div>
+          <div class="bar" style="height: {pillBarHeight(h, barScale, barW)}px"></div>
         {/each}
       </div>
       {#if showHfButtons}
@@ -1294,6 +1337,7 @@
     background: var(--pill-bar);
     border-radius: 999px;
     flex-shrink: 0;
+    transform: translate(var(--bar-align-x, 0px), var(--bar-align-y, 0px));
   }
 
   .pill.processing {
