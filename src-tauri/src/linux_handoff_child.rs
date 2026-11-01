@@ -13,6 +13,18 @@ fn get_api_key_status(
     availability.inner().clone()
 }
 
+fn prepare_saved_shortcut(app: &tauri::AppHandle) -> Result<(), String> {
+    let settings = app.state::<crate::data::store::SettingsHandle>();
+    if let Some(value) = settings.get(crate::data::store::HOTKEY) {
+        let codes: Vec<String> = serde_json::from_value(value)
+            .map_err(|_| "The saved shortcut could not be read".to_owned())?;
+        let normalized = crate::core::hotkey::normalize_codes(&codes)?;
+        let mapped = crate::core::hotkey::mapped_codes(&normalized)?;
+        crate::core::hotkey::update_keys(&mapped)?;
+    }
+    crate::commands::apply_linux_control_keys(app)
+}
+
 pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
     let startup = match child.begin(crate::data::db::HANDOFF_SCHEMA_VERSION) {
         Ok(startup) => startup,
@@ -248,6 +260,30 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                                 return;
                             }
                         };
+                        if let Err(error) = prepare_saved_shortcut(&handle) {
+                            let _ = services.fail(format!("Replacement shortcut settings are unavailable: {error}"));
+                            handle.exit(1);
+                            return;
+                        }
+                        let (sent, received) = std::sync::mpsc::sync_channel(1);
+                        let hotkey_app = handle.clone();
+                        let scheduled = handle.run_on_main_thread(move || {
+                            let shared = hotkey_app.state::<crate::pipeline::SharedState>().inner().clone();
+                            crate::app_hotkey::setup_hotkey(&hotkey_app, shared);
+                            let _ = sent.send(());
+                        });
+                        if scheduled.is_err() || received.recv_timeout(Duration::from_secs(10)).is_err() {
+                            let _ = services.fail("Replacement shortcuts could not start".into());
+                            handle.exit(1);
+                            return;
+                        }
+                        if let Err(error) = tauri::async_runtime::block_on(
+                            crate::core::hotkey::wait_for_initial_shortcut_registration(),
+                        ) {
+                            let _ = services.fail(format!("Replacement shortcuts could not start: {error}"));
+                            handle.exit(1);
+                            return;
+                        }
                         let _ = services.fail("Replacement services are not yet verified".into());
                     }
                 } else {

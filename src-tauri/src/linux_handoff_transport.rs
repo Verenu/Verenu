@@ -1113,7 +1113,9 @@ mod tests {
             std::env::temp_dir().join(format!("verenu-replacement-{}", uuid::Uuid::new_v4()));
         let data = root.join("data");
         let state = root.join("state");
+        let config = root.join("config");
         std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
         std::fs::write(data.join("settings.json"), b"{\"setup_complete\":true}").unwrap();
         let parent_db = crate::data::db::open(data.join("verenu.db")).unwrap();
         let original_db = std::fs::read(data.join("verenu.db")).unwrap();
@@ -1130,6 +1132,8 @@ mod tests {
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
             .env("XDG_STATE_HOME", &state)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
             .env_remove("VERENU_AGENT_TOKEN")
             .env_remove("VERENU_AGENT_PORT");
         let replacement = Replacement::spawn(
@@ -1181,7 +1185,7 @@ mod tests {
             callbacks_before
         );
         let outcome = owned.activate();
-        assert!(matches!(outcome, Err(reason) if reason.contains("services are not yet verified")));
+        assert!(matches!(outcome, Err(reason) if reason.contains("Replacement shortcuts could not start")));
         let tray_names = registrations.lock().unwrap().clone();
         assert_eq!(tray_names.len(), 1, "replacement tray did not register");
         let tray_alive: bool = watcher
@@ -1258,6 +1262,8 @@ mod tests {
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
             .env("XDG_STATE_HOME", &state)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
             .env_remove("VERENU_AGENT_TOKEN")
             .env_remove("VERENU_AGENT_PORT");
         let replacement = Replacement::spawn(
@@ -1304,6 +1310,8 @@ mod tests {
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
             .env("XDG_STATE_HOME", &state)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
             .env_remove("VERENU_AGENT_TOKEN")
             .env_remove("VERENU_AGENT_PORT");
         let replacement = Replacement::spawn(
@@ -1351,6 +1359,8 @@ mod tests {
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
             .env("XDG_STATE_HOME", &state)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
             .env_remove("VERENU_AGENT_TOKEN")
             .env_remove("VERENU_AGENT_PORT");
         let replacement = Replacement::spawn(
@@ -1398,6 +1408,8 @@ mod tests {
         command
             .env("VERENU_APP_DATA_DIR_OVERRIDE", &data)
             .env("XDG_STATE_HOME", &state)
+            .env("XDG_CONFIG_HOME", &config)
+            .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
             .env("VERENU_AGENT_TOKEN", "a".repeat(64))
             .env("VERENU_AGENT_PORT", occupied_port.to_string());
         let replacement = Replacement::spawn(
