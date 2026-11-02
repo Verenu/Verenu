@@ -34,5 +34,7 @@ export function customProvider(id: ProviderId) {
 export async function refreshCustomProviders() {
   const apply = beginCustomProviderLoad();
   const all = await invoke<{ custom_providers: CustomProvider[] }>('get_all_settings');
-  apply(all.custom_providers ?? []);
+  const providers = all.custom_providers ?? [];
+  apply(providers);
+  return providers;
 }
