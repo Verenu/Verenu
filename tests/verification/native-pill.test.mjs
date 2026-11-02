@@ -5,6 +5,18 @@ import { verifyNativePill } from '../../scripts/verification/native-pill.mjs';
 
 const capsule = { x: 10, y: 10, left: 10, top: 10, right: 82, bottom: 44, width: 72, height: 34 };
 
+test('native pill waits for its load before the first page execution', async () => {
+  const stop = new Error('stop after load ordering check');
+  const events = [];
+  const browser = {
+    command: async (_method, _path, body) => { events.push(body.handle); },
+    execute: async () => { events.push('execute'); throw stop; },
+  };
+  await assert.rejects(verifyNativePill({ browser, invoke: async () => { events.push('invoke'); },
+    waitForPillLoad: async () => { events.push('load'); }, directory: '.', screenshot: async () => {} }), error => error === stop);
+  assert.deepEqual(events.slice(0, 5), ['main', 'invoke', 'pill', 'load', 'execute']);
+});
+
 test('native pill diagnostics preserve exceptions with read-only messages', async () => {
   const original = new DOMException('Native timeout', 'TimeoutError');
   let first = true;
