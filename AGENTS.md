@@ -81,8 +81,11 @@ npm run test:smoke
   dev session after Rust edits; its backend does not watch source files.
 - Run `npm run verify:task` with task acceptance criteria and observed outcomes
   before handoff. See `docs/AGENT_VERIFICATION.md`. Automatic checks are a minimum.
-- Evidence must match final source and this worktree. Skips, missing capabilities,
-  and successful retries are incomplete verification; never call them a pass.
+- Evidence must match final source and this worktree. Skips and missing
+  capabilities are incomplete. A test failure or timeout followed by a pass
+  remains unresolved unless its cause is established. A diagnosed invocation
+  or setup error before the check exercised its target may be corrected and the
+  check rerun; record both attempts and the evidence for the diagnosis.
 - Native WebView/IPC tests do not prove OS shortcuts, permissions, clipboard
   insertion, or focus restoration. Record separate platform checks.
 
