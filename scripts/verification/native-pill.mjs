@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-export async function verifyNativePill({ browser, invoke, directory, screenshot }) {
+export async function verifyNativePill({ browser, invoke, directory, screenshot, waitForPillLoad }) {
+  let firstShow = true;
   const show = async (state, message, context) => {
     await browser.command('POST', '/window', { handle: 'main' });
     await invoke('native_test_pill', { state, message, context });
     await browser.command('POST', '/window', { handle: 'pill' });
+    if (firstShow && waitForPillLoad) await waitForPillLoad();
+    firstShow = false;
     const deadline = Date.now() + 15_000;
     while (!await browser.execute(`return document.readyState === 'complete' && !!document.querySelector('.pill');`)) {
       assert.ok(Date.now() < deadline, 'Native pill document did not finish loading');

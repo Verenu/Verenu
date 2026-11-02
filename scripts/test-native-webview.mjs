@@ -10,6 +10,7 @@ import { cargoTargetDirectory, startOwnedSession } from './verification/session.
 import { createNativeSession } from './verification/native-session.mjs';
 import { markCurrentNativePage, waitForNativePage } from './verification/native-page.mjs';
 import { verifyNativePill } from './verification/native-pill.mjs';
+import { nativePageIdentity, waitForNativeNavigation } from './verification/native-navigation.mjs';
 
 class NativeDriver {
   constructor(port, id) { this.base = `http://127.0.0.1:${port}/session/${id}`; }
@@ -70,6 +71,24 @@ async function linuxProcessTree(rootPid) {
   return processes;
 }
 
+async function nativeNavigationReader(session) {
+  const logName = (await fs.readdir(session.testDirectory)).find(name => /^startup-\d+\.log$/.test(name));
+  assert.ok(logName, 'Owned session log missing');
+  const file = path.join(session.testDirectory, logName);
+  return async () => ({ log: await fs.readFile(file, 'utf8'), active: await linuxProcessTree(session.child.pid) });
+}
+
+async function refreshAfterNativeNavigation(browser, session) {
+  if (process.platform !== 'linux') return browser.refresh();
+  const read = await nativeNavigationReader(session);
+  const before = await read();
+  const options = { kind: 'main', port: Number(new URL(session.access.localAccessUrl).port) };
+  const expectedPage = nativePageIdentity(before.log, { ...options, active: before.active });
+  assert.ok(expectedPage, 'Main WebKit page identity missing before refresh');
+  await browser.refresh();
+  await waitForNativeNavigation(read, { ...options, after: before.log.length, expectedPage });
+}
+
 async function installLinuxPageProcessProbe(directory) {
   const extensionDirectory = path.join(directory, 'webkit-probe');
   await fs.mkdir(extensionDirectory, { recursive: true, mode: 0o700 });
@@ -107,8 +126,17 @@ static void report(WebKitWebPage *page, GParamSpec *property, gpointer data) {
     (long)getpid(), field, (unsigned long)webkit_web_page_get_id(page), kind, port);
   fflush(stderr);
 }
+static void page_gone(gpointer data, GObject *object) {
+  (void)object;
+  guint64 *page_id = data;
+  fprintf(stderr, "VERENU_NATIVE_PAGE_GONE pid=%ld page=%llu\\n", (long)getpid(), (unsigned long long)*page_id);
+  fflush(stderr);
+  g_free(page_id);
+}
 static void page_created(WebKitWebExtension *extension, WebKitWebPage *page, gpointer data) {
   (void)extension; (void)data;
+  guint64 *page_id = g_new(guint64, 1); *page_id = webkit_web_page_get_id(page);
+  g_object_weak_ref(G_OBJECT(page), page_gone, page_id);
   g_signal_connect(page, "notify::uri", G_CALLBACK(report), NULL);
   report(page, NULL, NULL);
 }
@@ -126,11 +154,19 @@ static unsigned pill_terminations;
 static guint64 observed_page;
 static void load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer data) {
   (void)data;
+  fprintf(stderr, "VERENU_NAV page=%llu event=%d\\n", (unsigned long long)webkit_web_view_get_page_id(view), event);
+  fflush(stderr);
   if (observed_page && webkit_web_view_get_page_id(view) == observed_page) {
     fprintf(stderr, "VERENU_NATIVE_LOAD page=%llu event=%d time=%lld\\n",
       (unsigned long long)observed_page, event, (long long)g_get_monotonic_time());
     fflush(stderr);
   }
+}
+static gboolean load_failed(WebKitWebView *view, WebKitLoadEvent event, const gchar *uri, GError *error, gpointer data) {
+  (void)event; (void)uri; (void)error; (void)data;
+  fprintf(stderr, "VERENU_NAV page=%llu event=failed\\n", (unsigned long long)webkit_web_view_get_page_id(view));
+  fflush(stderr);
+  return FALSE;
 }
 static gboolean observation_finished(gpointer data) {
   (void)data;
@@ -173,6 +209,7 @@ WebKitWebContext *webkit_web_view_get_context(WebKitWebView *view) {
     g_object_set_data(G_OBJECT(view), "verenu-native-reload-probe", GINT_TO_POINTER(1));
     g_signal_connect(view, "web-process-terminated", G_CALLBACK(terminated), NULL);
     g_signal_connect(view, "load-changed", G_CALLBACK(load_changed), NULL);
+    g_signal_connect(view, "load-failed", G_CALLBACK(load_failed), NULL);
   }
   return next(view);
 }
@@ -270,12 +307,12 @@ finally:
     String(renderer.pid), renderer.start, rendererExecutable], { timeout: 5000, stdio: 'pipe' });
 }
 
-async function waitUntil(check, label, timeout = 30000) {
+async function waitUntil(check, label, timeout = 30000, failOnError = false) {
   const deadline = Date.now() + timeout;
   let lastError;
   while (Date.now() < deadline) {
     try { if (await check()) return; }
-    catch (error) { lastError = error.message; }
+    catch (error) { if (failOnError) throw error; lastError = error.message; }
     await new Promise(resolve => setTimeout(resolve, 200));
   }
   throw new Error(`${label} did not recover${lastError ? `: ${lastError}` : ''}`);
@@ -390,8 +427,15 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
     previousRenderer = { pid: renderer.pid, start: renderer.start };
     const rendererExecutable = await fs.readlink(`/proc/${renderer.pid}/exe`);
     assert.equal(path.basename(rendererExecutable), 'WebKitWebProcess', 'Unexpected renderer executable');
+    const recoveryRead = await nativeNavigationReader(session);
+    const recoveryBefore = await recoveryRead();
     terminateOwnedLinuxRenderer({ launcher, app, renderer, appExecutable, rendererExecutable });
     if (attempt === 0) firstTermination = performance.now();
+
+    const navigation = { port: Number(new URL(session.access.localAccessUrl).port), after: recoveryBefore.log.length };
+    if (attempt === 0) await waitForNativeNavigation(recoveryRead, { ...navigation, kind: 'main' }, { deadlineMs: 30000 });
+    if (attempt === 2) await waitUntil(async () => /^VERENU_NATIVE_OBSERVE_END page=\d+ time=\d+$/m.test((await recoveryRead()).log.slice(navigation.after)), 'Native manual-reload observation');
+    await waitForNativeNavigation(recoveryRead, { ...navigation, kind: 'pill' }, { deadlineMs: 30000 });
 
     await waitUntil(async () => {
       await browser.command('POST', '/window', { handle: 'main' });
@@ -402,7 +446,7 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
       const draft = attempt === 0 || await browser.execute(`return document.querySelector('input[aria-label="Search settings"]')?.value === 'Synthetic unsaved query';`);
       return state.ready && state.app && state.bridge && (attempt === 0 ? !state.old : state.old) && draft &&
         await invoke('get_setting', { key: 'setup_complete' }) === true;
-    }, `Main window after termination ${attempt + 1}`);
+    }, `Main window after termination ${attempt + 1}`, 30000, true);
     await waitUntil(async () => {
       await browser.command('POST', '/window', { handle: 'pill' });
       const state = await pillReady();
@@ -412,7 +456,7 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
         : await browser.execute(`return document.querySelector('.pill.paste-failed .paste-failed-text')?.textContent?.trim() === 'Partly pasted';`);
       return state.ready && state.bridge && !old && content &&
         await invoke('get_setting', { key: 'setup_complete' }) === true;
-    }, `Pill window after termination ${attempt + 1}`);
+    }, `Pill window after termination ${attempt + 1}`, 30000, true);
     if (attempt === 0) report.checks.push({ name: 'Shared renderer crash restores main and pill', status: 'passed' });
     if (attempt === 1) report.checks.push({ name: 'Pill-only crash preserves unsaved main input', status: 'passed' });
   }
@@ -488,7 +532,7 @@ try {
     report.checks.push({ name: 'Main WebView reports settings readiness after initialization', status: 'passed' });
     const settingsGeneration = await invoke('frontend_settings_generation');
     const oldPage = await markCurrentNativePage(browser);
-    await browser.refresh();
+    await refreshAfterNativeNavigation(browser, session);
     await browser.waitForApp({ navigationMarker: oldPage });
     const newGeneration = await invoke('frontend_settings_generation');
     assert.notEqual(newGeneration, settingsGeneration, 'Reload did not invalidate the previous settings readiness');
@@ -534,7 +578,14 @@ try {
     }
     assert.equal(await browser.execute('return document.documentElement.dataset.theme;'), 'dark');
     report.checks.push({ name: '32 real theme selections including System to Custom on native Linux WebKitGTK', status: 'passed' });
-    const pillScreenshots = await verifyNativePill({ browser, invoke, directory, screenshot: file => browser.saveScreenshot(file) });
+    const pillRead = process.platform === 'linux' ? await nativeNavigationReader(session) : null;
+    const pillBefore = pillRead ? await pillRead() : null;
+    const pillScreenshots = await verifyNativePill({ browser, invoke, directory, screenshot: file => browser.saveScreenshot(file),
+      waitForPillLoad: pillRead ? () => waitForNativeNavigation(async () => {
+        const current = await pillRead();
+        assert.ok(current.log.startsWith(pillBefore.log), 'Native session log changed while opening pill');
+        return current;
+      }, { kind: 'pill', port: Number(new URL(session.access.localAccessUrl).port) }) : undefined });
     const renderers = (await linuxProcessTree(session.child.pid)).filter(process => process.name === 'WebKitWebProces');
     const origin = new URL(session.access.localAccessUrl).origin;
     const mainRenderer = await rendererForPage(directory, renderers, origin, 'main');
@@ -548,7 +599,7 @@ try {
   report.checks.push({ name: 'Native IPC remains reachable after pill window cycles', status: 'passed' });
   try {
     const previousPage = await markCurrentNativePage(browser);
-    await browser.refresh();
+    await refreshAfterNativeNavigation(browser, session);
     await browser.waitForApp({ navigationMarker: previousPage });
     const contexts = await invoke('get_contexts');
     assert.ok(contexts.some((row) => row.id === created.id && row.name === 'Synthetic native'));
