@@ -1,7 +1,7 @@
 <script lang="ts">
   import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount } from 'svelte';
-  import { customProviderStore } from '../../customProviders.svelte';
+  import { beginCustomProviderLoad, customProviderStore } from '../../customProviders.svelte';
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
@@ -533,6 +533,7 @@
   async function migrateAndLoad(readOnly = false) {
     const version = agentChangeVersion;
     const cleanupVersion = appStore.cleanupChangeVersion;
+    const applyProviders = beginCustomProviderLoad();
     void refreshAppleIntelligence();
     const [all, keyStatus] = await Promise.all([
       loadSettingsSnapshot(),
@@ -546,7 +547,7 @@
     transcriptionLanguage = language ?? 'en';
     modelSelectionMode = selectionMode === 'fastest' || selectionMode === 'balanced' || selectionMode === 'quality' ? selectionMode : 'manual';
     invoke<ModelPerformance[]>('get_model_performance').then(value => { performance = value; }).catch(() => {});
-    customProviderStore.providers = all.custom_providers ?? [];
+    applyProviders(all.custom_providers ?? []);
     hydrateCatalogCache(all.provider_model_cache);
     if (typeof cleanupRaw === 'boolean') {
       cleanupEnabled = cleanupRaw;
