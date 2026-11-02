@@ -19,6 +19,33 @@ test('the About footer is removed when another section is selected', async ({ pa
   expect(state).toEqual({ selected: 'settings.privacy', footers: 0 });
 });
 
+test('the About footer disappears while an unopened section loads', async ({ page }) => {
+  let release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  let markRequested;
+  const requested = new Promise(resolve => { markRequested = resolve; });
+  await page.route('**/PrivacySection.svelte*', async route => {
+    markRequested();
+    await delayed;
+    await route.continue();
+  });
+  try {
+    await openSettings(page, 'about');
+    await expect(page.getByRole('heading', { name: 'About', exact: true })).toBeVisible();
+    await expect(page.locator('.settings-foot')).toBeVisible();
+    await page.locator('[data-debug-id="settings.privacy"]').click();
+    await requested;
+    const state = await page.evaluate(() => ({
+      selected: document.querySelector('.settings-nav-item.active')?.getAttribute('data-debug-id'),
+      footers: document.querySelectorAll('.settings-foot').length,
+    }));
+    expect(state).toEqual({ selected: 'settings.privacy', footers: 0 });
+  } finally {
+    release();
+  }
+  await expect(page.getByRole('heading', { name: 'Privacy', exact: true })).toBeVisible();
+});
+
 test('Audio values roll their digits and advanced fades disclose smoothly', async ({ page, session }) => {
   test.skip(process.platform !== 'linux', 'The volume control is Linux only');
   const previous = await session.invoke('get_setting', { key: 'duck_target' });
