@@ -24,10 +24,15 @@ Read `docs/AGENT_VERIFICATION.md` for report formats and commands.
    Require live checks when configured. Skips prove no provider behavior.
 6. Native WebView tests establish WebView/IPC/window behavior only. Shortcuts,
    external insertion, clipboard/selection restoration, permissions, and mic
-   behavior need affected-platform fixtures. Phone widths do not prove Android.
+   behavior need affected-platform fixtures. For isolated Omarchy audio and
+   shortcut fixtures, see `docs/AGENT_VERIFICATION.md`. Phone widths do not
+   prove Android.
 7. Run the completion gate against final source. Restart Rust workers after
-   edits. Fix failures and inspect traces. Successful retries remain flaky.
-   Rerun affected checks after further edits.
+   edits. Fix failures and inspect traces. A passing retry does not resolve an
+   unexplained test failure or timeout. For a diagnosed invocation or setup
+   error before the check exercised its target, correct it and rerun; record
+   both attempts and the evidence for the diagnosis. Rerun affected checks
+   after further edits.
 
 Only call work verified when the report says `verified` and acceptance outcomes
 have evidence. If a required platform, credential, or fixture is unavailable,
