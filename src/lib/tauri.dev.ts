@@ -125,7 +125,7 @@ let devLlmRuntimeDownloadSession = 0;
 const defaultProviderModels = {
   groq: ['whisper-large-v3-turbo', 'whisper-large-v3'],
   openai: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1'],
-  google: ['gemini-2.5-flash', 'gemini-3.5-transcribe', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash-lite'],
+  google: ['gemini-3.5-transcribe', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash-lite'],
   local: ['parakeet-v3'],
 };
 

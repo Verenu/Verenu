@@ -54,7 +54,7 @@ describe('catalogFor', () => {
   it('keeps cleanup on the policy-compatible Gemini 3.5 Flash family', () => {
     const ids = (task: 'transcription' | 'cleanup') =>
       catalogFor(task, 'google').map((entry) => entry.id);
-    expect(ids('transcription')).toContain('gemini-2.5-flash');
+    expect(ids('transcription')).toContain('gemini-3.5-flash-lite');
     expect(ids('cleanup')).toContain('gemini-3.5-flash-lite');
     expect(ids('cleanup')).toContain('gemini-3.5-flash');
     expect(ids('cleanup')).toContain('gemini-2.5-flash-lite');
@@ -72,6 +72,7 @@ describe('catalogFor', () => {
   it('migrates unsupported Google cleanup models to Flash-Lite', () => {
     expect(migrateDeprecatedGoogleModel('gemini-3.7-flash')).toBe('gemini-3.5-flash-lite');
     expect(migrateDeprecatedGoogleModel('gemini-2.5-pro')).toBe('gemini-3.5-flash-lite');
+    expect(migrateDeprecatedGoogleModel('gemini-2.5-flash')).toBe('gemini-3.5-flash-lite');
     expect(migrateDeprecatedGoogleModel('gemini-3.5-flash')).toBe('gemini-3.5-flash');
   });
 
