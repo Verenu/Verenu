@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { incompleteUnlessFailed } from './verification/policy.mjs';
 import { summarizePlaywrightFailures } from './verification/playwright-report.mjs';
-import { run } from './verification/process.mjs';
+import { beginShutdown, run } from './verification/process.mjs';
 import { playwrightSummaryChecks, readPlaywrightReport, summarizePlaywrightReport } from './verification/playwright-summary.mjs';
 import { startOwnedSession, invokeSession } from './verification/session.mjs';
 import { summarizeNodeFailure, summarizeNodeTests } from './verification/node-reporter.mjs';
@@ -15,6 +15,9 @@ import { runOwnedNodeSuite } from './verification/node-sessions.mjs';
 import { sessionPartition } from './verification/session-partition.mjs';
 
 const args = process.argv.slice(2);
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.on(signal, () => { void beginShutdown().finally(() => process.exit(code)); });
+}
 const partition = sessionPartition(args);
 const started = performance.now();
 const require = createRequire(import.meta.url);
@@ -27,7 +30,7 @@ if (reportIndex >= 0 && (!reportArgument || reportArgument.startsWith('--'))) {
 }
 const reportPath = reportIndex < 0 ? path.join(directory, 'verification.json') : path.resolve(reportArgument);
 const identity = sourceIdentity();
-const report = { schemaVersion: 1, identity, partition, status: 'incomplete', checks: [], artifacts: [], timing: {}, checkedAt: new Date().toISOString() };
+const report = { schemaVersion: 1, identity, partition, live: args.includes('--live'), status: 'incomplete', checks: [], artifacts: [], timing: {}, checkedAt: new Date().toISOString() };
 let session;
 try {
   const fixtures = path.join(directory, 'audio');

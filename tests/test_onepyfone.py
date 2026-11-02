@@ -24,6 +24,60 @@ class RunnerTests(unittest.TestCase):
         self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)
 
+    def test_shutdown_keeps_completed_processes_in_cleanup_registry(self):
+        proc = object()
+        runner._OWNED_PROCESSES.add(proc)
+        try:
+            with patch.object(runner.threading, 'Thread') as thread:
+                runner._shutdown(15, None)
+                cleanup = thread.call_args.kwargs['target']
+            self.assertIn(proc, cleanup.__closure__[0].cell_contents)
+        finally:
+            runner._STOPPING.clear()
+            runner._OWNED_PROCESSES.discard(proc)
+
+    def test_shutdown_during_removal_keeps_process_in_cleanup_registry(self):
+        proc = object()
+
+        class InterruptedSet(set):
+            def discard(self, value):
+                super().discard(value)
+                runner._shutdown(15, None)
+
+        registry = InterruptedSet([proc])
+        try:
+            with patch.object(runner, '_OWNED_PROCESSES', registry), patch.object(runner.threading, 'Thread') as thread:
+                runner._forget_owned(proc)
+                cleanup = thread.call_args.kwargs['target']
+                self.assertIn(proc, cleanup.__closure__[0].cell_contents)
+        finally:
+            runner._STOPPING.clear()
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX process group cleanup')
+    def test_shutdown_during_spawn_includes_new_process(self):
+        class Process:
+            pid = 123456
+
+        proc = Process()
+
+        def spawn(*_args, **_kwargs):
+            runner._shutdown(15, None)
+            return proc
+
+        try:
+            with patch.object(runner.subprocess, 'Popen', side_effect=spawn), \
+                 patch.object(runner.threading, 'Thread') as thread, \
+                 patch.object(runner.os, 'killpg') as killpg, \
+                 patch.object(runner.os, '_exit'), patch.object(runner.time, 'sleep'):
+                self.assertIs(runner._start_owned(['synthetic']), proc)
+                runner._forget_owned(proc)
+                thread.call_args.kwargs['target']()
+                self.assertEqual(killpg.call_args_list[0].args[0], proc.pid)
+        finally:
+            runner._STOPPING.clear()
+            runner._OWNED_PROCESSES.discard(proc)
+            runner._SHUTDOWN_PROCESSES.discard(proc)
+
     def test_rust_live_skip_is_not_passed(self):
         selected = next(entry for entry in runner.ALL_TESTS if entry.id == 'pipeline.prompt-live')
         with patch.object(runner, 'run_process', return_value=(0, 'VERENU_LIVE_SKIP: no credential\ntest result: ok', 0.1, False)):

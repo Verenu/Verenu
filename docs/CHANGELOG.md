@@ -10,6 +10,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Settings rows now sit in rounded cards, one card per group under each heading. In General, each shortcut's help text and Linux shortcut status moved inside its row, so Shortcuts is one card instead of rows split by loose paragraphs.
 - Fixed nightly snapshots to update the Rust lockfile and compare changes against published nightlies, so failed attempts do not suppress later releases.
 - The local model loading pill now uses the same shimmering label as Transcribing, Cleaning, and Pasting instead of a spinner.
+- Local primary speech and cleanup models begin loading in the background after three seconds of continuous dictation.
 - On Linux, verify that playback was unmuted after dictation, retry transient restore failures, and retain failed restores for another attempt.
 - Restore paused media when a shortcut cancels a just-started dictation, including when another recording starts immediately afterward.
 - Added experimental NVIDIA RE-USE noise reduction in Audio settings for Linux x86_64 with a compatible NVIDIA GPU. The optional local runtime downloads separately and verifies the GPU before use.
