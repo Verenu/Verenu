@@ -500,7 +500,7 @@ fn deprecated_qwen_36_migrates_to_qwen_38() {
 
 #[test]
 fn unsupported_google_cleanup_models_migrate_to_flash_lite() {
-    for legacy in ["gemini-3.7-flash", "gemini-2.5-pro"] {
+    for legacy in ["gemini-3.7-flash", "gemini-2.5-pro", "gemini-2.5-flash"] {
         assert_eq!(
             migrate_deprecated_model_id(&format!("google/{legacy}")),
             "google/gemini-3.5-flash-lite"
