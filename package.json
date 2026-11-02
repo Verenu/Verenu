@@ -13,7 +13,7 @@
     "test:native:webview": "node scripts/test-native-webview.mjs",
     "test:native:fixtures": "node scripts/test-native-fixtures.mjs",
     "test:native:prerequisites": "node scripts/run-onepyfone.mjs --profile native-prerequisites",
-    "test:verification": "node --test --test-concurrency=1 tests/verification/*.test.mjs && node scripts/run-onepyfone.mjs --test unit.runner --no-json-report",
+    "test:verification": "node --test tests/verification/*.test.mjs && node scripts/run-onepyfone.mjs --test unit.runner --no-json-report",
     "verify:task": "node scripts/verify-task.mjs",
     "test:agent-evals": "node scripts/agent-evals.mjs",
     "dev:tauri-host": "node scripts/vite-dev-server.mjs",
