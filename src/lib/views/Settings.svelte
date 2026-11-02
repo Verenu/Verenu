@@ -439,7 +439,7 @@
       </div>
 
       <div class="settings-footbar">
-        {#if section === 'about'}
+        {#if section === 'about' && appStore.settingsSection === 'about'}
           <div class="settings-foot" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
             Verenu v{appVersion} · MIT
           </div>
