@@ -93,5 +93,5 @@ pub async fn delete_local_llm_runtime(
     app: AppHandle,
     manager: tauri::State<'_, crate::local_llm::LocalLlmManager>,
 ) -> Result<(), String> {
-    manager.delete_runtime(&app).map_err(|e| e.to_string())
+    manager.delete_runtime(&app).await.map_err(|e| e.to_string())
 }
