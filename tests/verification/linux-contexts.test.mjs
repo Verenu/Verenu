@@ -8,11 +8,20 @@ import { spawnSync } from 'node:child_process';
 async function runBeforeLaunch(overrides) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'verenu-context-cli-'));
   try {
-    await fs.mkdir(path.join(temporary, 'scripts'));
+    await fs.mkdir(path.join(temporary, 'scripts', 'verification'), { recursive: true });
     const source = await fs.readFile(new URL('../../scripts/test-linux-contexts.mjs', import.meta.url), 'utf8');
-    const identity = new URL('../../scripts/verification/identity.mjs', import.meta.url).href;
+    await fs.copyFile(new URL('../../scripts/verification/identity.mjs', import.meta.url), path.join(temporary, 'scripts', 'verification', 'identity.mjs'));
     const executable = path.join(temporary, 'scripts', 'fixture.mjs');
-    await fs.writeFile(executable, source.replace("'./verification/identity.mjs'", JSON.stringify(identity)));
+    await fs.writeFile(executable, source);
+    const hooks = path.join(temporary, 'hooks');
+    await fs.mkdir(hooks);
+    for (const args of [
+      ['init', '--quiet', `--template=${hooks}`],
+      ['-c', 'user.name=Verification Fixture', '-c', 'user.email=verification@example.invalid', '-c', 'commit.gpgsign=false', '-c', `core.hooksPath=${hooks}`, 'commit', '--quiet', '--allow-empty', '-m', 'Initialize fixture'],
+    ]) {
+      const git = spawnSync('git', args, { cwd: temporary, encoding: 'utf8', timeout: 10_000 });
+      assert.equal(git.status, 0, git.stderr);
+    }
     const env = { ...process.env, ...overrides };
     delete env.VERENU_CONTEXT_TEST_ISOLATED;
     const result = spawnSync(process.execPath, [executable], { env, encoding: 'utf8', timeout: 10_000 });
