@@ -582,7 +582,7 @@
         {/if}
       </div>
     {:else}
-      <div class="rail-list rail-list-app">
+      <div class="rail-list rail-list-app" inert={appStore.setupComplete === false}>
         {#each navItems as entry, i (entry.id)}
           <button
             type="button"
@@ -724,6 +724,7 @@
   {#if showDownloadPanel}
     <div
       class="dl-panel"
+      inert={appStore.setupComplete === false}
       in:fly={{ x: -motionPx(14), duration: motionMs(260), easing: cubicOut }}
       out:slide={{ duration: motionMs(200), easing: cubicOut }}
     >

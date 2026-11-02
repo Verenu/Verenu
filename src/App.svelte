@@ -650,7 +650,7 @@
       <DeferredView view={setup} />
     </div>
   {/if}
-  <div class="body" inert={appStore.setupComplete === false}>
+  <div class="body" inert={appStore.setupComplete === false && !appStore.settingsOpen}>
     <div class="rail">
       <Sidebar />
     </div>
