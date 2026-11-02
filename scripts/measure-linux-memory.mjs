@@ -60,9 +60,6 @@ async function snapshot(root, rootStart) {
         readdir(`/proc/${pid}/task`),
       ]);
     } catch (error) {
-      if ((error.code === 'ENOENT' || error.code === 'ESRCH') && await processIdentity(pid) !== start) {
-        throw new Error(`Process ${pid} exited or was replaced during sampling`);
-      }
       throw new Error(`Cannot read process ${pid} memory or tasks (${error.code || 'unknown error'})`);
     }
     const pss = /^Pss:\s+(\d+) kB$/m.exec(rollup);

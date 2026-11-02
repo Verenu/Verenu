@@ -26,12 +26,3 @@ export function partitionFiles(files, { index, count }) {
   if (!selected.length) throw new Error('Owned-session shard contains no files');
   return selected;
 }
-
-// Match the complete Node and browser partition set used by CI.
-export function taskSessionPartitions() {
-  return [
-    ...Array.from({ length: 6 }, (_, index) => sessionPartition(['--suite', 'node', '--shard', `${index + 1}/6`])),
-    ...['desktop', 'phone'].flatMap(project => Array.from({ length: 4 }, (_, index) =>
-      sessionPartition(['--suite', 'browser', '--project', project, '--shard', `${index + 1}/4`]))),
-  ];
-}

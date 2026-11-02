@@ -17,14 +17,6 @@ export type CustomProvider = {
 };
 
 export const customProviderStore = $state<{ providers: CustomProvider[] }>({ providers: [] });
-let latestLoad = 0;
-
-export function beginCustomProviderLoad() {
-  const load = ++latestLoad;
-  return (providers: CustomProvider[]) => {
-    if (load === latestLoad) customProviderStore.providers = providers;
-  };
-}
 export function isCustomProviderId(id: string): id is `custom:${string}` {
   return /^custom:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id);
 }
@@ -32,9 +24,6 @@ export function customProvider(id: ProviderId) {
   return customProviderStore.providers.find(p => p.id === id);
 }
 export async function refreshCustomProviders() {
-  const apply = beginCustomProviderLoad();
   const all = await invoke<{ custom_providers: CustomProvider[] }>('get_all_settings');
-  const providers = all.custom_providers ?? [];
-  apply(providers);
-  return providers;
+  customProviderStore.providers = all.custom_providers ?? [];
 }

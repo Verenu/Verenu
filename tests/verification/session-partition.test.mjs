@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionPartition, partitionFiles, taskSessionPartitions } from '../../scripts/verification/session-partition.mjs';
+import { sessionPartition, partitionFiles } from '../../scripts/verification/session-partition.mjs';
 
 test('default owned verification retains every node file and both browser projects', () => {
   assert.deepEqual(sessionPartition([]), { suite: 'all', index: 1, count: 1, project: 'all' });
@@ -16,19 +16,6 @@ test('partitions are deterministic, disjoint and cover newly added files automat
     selected.forEach((partition, index) => assert.deepEqual(partition, partitionFiles([...files].reverse(), { index: index + 1, count: 6 })));
     assert.ok(Math.max(...selected.map(partition => partition.length)) - Math.min(...selected.map(partition => partition.length)) <= 1);
   }
-});
-
-test('task verification runs all six Node shards and both browser projects', () => {
-  const partitions = taskSessionPartitions();
-  const nodes = partitions.filter(partition => partition.suite === 'node');
-  assert.deepEqual(nodes.map(({ index, count }) => [index, count]), [[1, 6], [2, 6], [3, 6], [4, 6], [5, 6], [6, 6]]);
-  const files = Array.from({ length: 29 }, (_, index) => `file-${index}.test.mjs`);
-  assert.deepEqual(nodes.flatMap(partition => partitionFiles(files, partition)).sort(), files.sort());
-  const browsers = partitions.filter(partition => partition.suite === 'browser');
-  assert.deepEqual(browsers.map(({ project, index, count }) => [project, index, count]), [
-    ['desktop', 1, 4], ['desktop', 2, 4], ['desktop', 3, 4], ['desktop', 4, 4],
-    ['phone', 1, 4], ['phone', 2, 4], ['phone', 3, 4], ['phone', 4, 4],
-  ]);
 });
 
 test('invalid or incompatible selectors fail before any backend is launched', () => {

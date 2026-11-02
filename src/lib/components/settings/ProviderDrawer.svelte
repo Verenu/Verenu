@@ -11,7 +11,7 @@
   import { saveSetting } from '../../settings';
   import { formatIpcError } from '../../errors';
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
-  import { refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
+  import { customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
   import Callout from '../Callout.svelte';
   import CompactSelect from '../CompactSelect.svelte';
   import Toggle from '../Toggle.svelte';
@@ -206,7 +206,8 @@
       if (destinationChanged && keyStatus[provider.id]) {
         if (provider.requires_key && !key.trim()) throw new Error('Enter the API key again for this endpoint. The previous key will be cleared.');
       }
-      const list = (await refreshCustomProviders()).filter(p => p.id !== provider.id);
+      await refreshCustomProviders();
+      const list = customProviderStore.providers.filter(p => p.id !== provider.id);
       await saveSetting('custom_providers', [...list, provider]);
       savedOriginal = provider;
       await refreshCustomProviders();
