@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nativePageIsReady, waitForNativePage } from '../../scripts/verification/native-page.mjs';
+import { nativePageIsReady, waitForNativePage, waitUntil } from '../../scripts/verification/native-page.mjs';
+
+test('strict recovery waits propagate driver errors but poll false conditions', async () => {
+  const failure = new Error('driver timed out');
+  await assert.rejects(waitUntil(async () => { throw failure; }, 'recovery', 1000, true, async () => {}), error => error === failure);
+  let calls = 0;
+  await waitUntil(async () => ++calls === 2, 'recovery', 1000, true, async () => {});
+  assert.equal(calls, 2);
+});
 
 test('native page readiness requires a complete app document and the Tauri IPC bridge', () => {
   assert.equal(nativePageIsReady({ readyState: 'complete', app: true, bridge: false }), false);

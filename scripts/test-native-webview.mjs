@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { cargoTargetDirectory, startOwnedSession } from './verification/session.mjs';
 import { createNativeSession } from './verification/native-session.mjs';
-import { markCurrentNativePage, waitForNativePage } from './verification/native-page.mjs';
+import { markCurrentNativePage, waitForNativePage, waitUntil } from './verification/native-page.mjs';
 import { verifyNativePill } from './verification/native-pill.mjs';
 import { nativePageIdentity, waitForNativeNavigation } from './verification/native-navigation.mjs';
 
@@ -307,17 +307,6 @@ finally:
     String(renderer.pid), renderer.start, rendererExecutable], { timeout: 5000, stdio: 'pipe' });
 }
 
-async function waitUntil(check, label, timeout = 30000, failOnError = false) {
-  const deadline = Date.now() + timeout;
-  let lastError;
-  while (Date.now() < deadline) {
-    try { if (await check()) return; }
-    catch (error) { if (failOnError) throw error; lastError = error.message; }
-    await new Promise(resolve => setTimeout(resolve, 200));
-  }
-  throw new Error(`${label} did not recover${lastError ? `: ${lastError}` : ''}`);
-}
-
 function incomplete(reason) {
   const error = new Error(reason);
   error.verificationIncomplete = true;
@@ -362,7 +351,7 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
   await waitUntil(async () => {
     const state = await pillReady();
     return state.handsfree && state.context === context && state.controls.join(',') === 'Cancel,Confirm';
-  }, 'Pill before renderer termination');
+  }, 'Pill before renderer termination', 30000, true);
   const appExecutable = await fs.realpath(path.resolve(root, cargoTargetDirectory(), 'debug', 'verenu'));
   let previousRenderer, originalApp, firstTermination;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -372,14 +361,14 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
       await browser.command('POST', '/window', { handle: 'pill' });
       await waitUntil(async () => await browser.execute(
         `return document.querySelector('.pill.paste-failed .paste-failed-text')?.textContent?.trim() === 'Partly pasted';`
-      ), 'Partial-paste state before renderer termination');
+      ), 'Partial-paste state before renderer termination', 30000, true);
       await browser.command('POST', '/window', { handle: 'main' });
       await browser.execute(`
         const settings = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Settings');
         if (!document.querySelector('input[aria-label="Search settings"]')) settings?.click();
         return true;
       `);
-      await waitUntil(async () => await browser.execute(`return !!document.querySelector('input[aria-label="Search settings"]');`), 'Settings search');
+      await waitUntil(async () => await browser.execute(`return !!document.querySelector('input[aria-label="Search settings"]');`), 'Settings search', 30000, true);
       assert.equal(await browser.execute(`
         const input = document.querySelector('input[aria-label="Search settings"]');
         input.value = 'Synthetic unsaved query'; input.dispatchEvent(new Event('input', { bubbles: true }));

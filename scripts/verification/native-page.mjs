@@ -1,5 +1,16 @@
 import { randomUUID } from 'node:crypto';
 
+export async function waitUntil(check, label, timeout = 30000, failOnError = false, sleep = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  const deadline = Date.now() + timeout;
+  let lastError;
+  while (Date.now() < deadline) {
+    try { if (await check()) return; }
+    catch (error) { if (failOnError) throw error; lastError = error.message; }
+    await sleep(200);
+  }
+  throw new Error(`${label} did not recover${lastError ? `: ${lastError}` : ''}`);
+}
+
 export async function markCurrentNativePage(browser) {
   const marker = `__verenu_native_page_${randomUUID().replaceAll('-', '')}`;
   const installed = await browser.execute(`window[${JSON.stringify(marker)}] = true; return window[${JSON.stringify(marker)}];`);
