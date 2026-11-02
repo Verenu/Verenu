@@ -231,9 +231,22 @@ fn start_runtime_maintenance(
             let idle_stt = local_stt_manager.clone();
             let idle_llm = local_llm_manager.clone();
             let idle_app = app.clone();
+            let idle_state = capture_state.clone();
             if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
-                idle_stt.unload_if_idle(&idle_app)?;
-                idle_llm.unload_if_idle(&idle_app)?;
+                let stt_guard = idle_stt.preload_gate.try_write().ok();
+                let llm_guard = idle_llm.preload_gate.try_write().ok();
+                let (stt, llm) = {
+                    let state = idle_state.lock().map_err(|_| anyhow::anyhow!("recording state lock poisoned"))?;
+                    if !state.lifecycle.is_recording() {
+                        let stt = if stt_guard.is_some() { idle_stt.take_if_idle(&idle_app) } else { Ok(None) };
+                        let llm = if llm_guard.is_some() { idle_llm.take_if_idle(&idle_app) } else { Ok(None) };
+                        (stt, llm)
+                    } else {
+                        (Ok(None), Ok(None))
+                    }
+                };
+                drop(stt?);
+                drop(llm?);
                 Ok::<(), anyhow::Error>(())
             }).await.unwrap_or_else(|error| Err(anyhow::anyhow!(error))) {
                 log::warn!("local models: idle unload maintenance failed: {error}");
