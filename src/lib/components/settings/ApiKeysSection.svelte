@@ -4,7 +4,7 @@
   import Callout from '../Callout.svelte';
   import { formatIpcError } from '../../errors';
   import { MOTION_MS, motionMs } from '../../motion';
-  import { customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
+  import { applyCommittedCustomProviders, customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
   import { presetForUrl, displayHost } from '../../customProviderPresets';
   import { presetLogoHtml } from '../../customProviderLogos';
   import { invoke } from '../../tauri';
@@ -121,6 +121,7 @@
     busy = true; error = '';
     try {
       await invoke('delete_custom_provider', { provider: provider.id });
+      applyCommittedCustomProviders(customProviderStore.providers.filter(p => p.id !== provider.id));
       await refresh();
       confirming = null;
       flash('Provider removed. Its models were taken out of your fallback chains.');
