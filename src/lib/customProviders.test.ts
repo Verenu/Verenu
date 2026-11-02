@@ -39,6 +39,17 @@ describe('custom provider loads', () => {
     expect(customProviderStore.providers[0]?.name).toBe('Renamed');
   });
 
+  it('returns the fetched list even when a newer load suppresses its display update', async () => {
+    customProviderStore.providers = [provider('Displayed')];
+    let resolveRefresh!: (value: { custom_providers: CustomProvider[] }) => void;
+    invoke.mockImplementation(() => new Promise(resolve => { resolveRefresh = resolve; }));
+    const refresh = refreshCustomProviders();
+    beginCustomProviderLoad();
+    resolveRefresh({ custom_providers: [provider('Fetched')] });
+    expect((await refresh)[0]?.name).toBe('Fetched');
+    expect(customProviderStore.providers[0]?.name).toBe('Displayed');
+  });
+
   it('does not apply an older snapshot after a newer refresh fails', async () => {
     customProviderStore.providers = [provider('Current')];
     const applyModelsSnapshot = beginCustomProviderLoad();
