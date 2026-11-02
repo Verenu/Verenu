@@ -57,6 +57,59 @@ PORT = 1420
 RUN_DIR = ROOT / "test-results" / ("runner-" + str(os.getpid()) + "-" + str(time.time_ns()))
 RESULT_PREFIX = "VERENU_TEST_RESULT="
 _OUTPUT_LOCK = threading.Lock()
+_PROCESS_LOCK = threading.RLock()
+_OWNED_PROCESSES: set[subprocess.Popen[Any]] = set()
+_REMOVING_PROCESSES: set[subprocess.Popen[Any]] = set()
+_SHUTDOWN_PROCESSES: set[subprocess.Popen[Any]] = set()
+_STOPPING = threading.Event()
+
+
+def _start_owned(command: Sequence[str], **kwargs: Any) -> subprocess.Popen[Any]:
+    with _PROCESS_LOCK:
+        if _STOPPING.is_set():
+            raise RuntimeError("Runner is stopping")
+        proc = subprocess.Popen(command, **kwargs)
+        _OWNED_PROCESSES.add(proc)
+        if _STOPPING.is_set():
+            _SHUTDOWN_PROCESSES.add(proc)
+        return proc
+
+
+def _forget_owned(proc: subprocess.Popen[Any]) -> None:
+    with _PROCESS_LOCK:
+        _REMOVING_PROCESSES.add(proc)
+        _OWNED_PROCESSES.discard(proc)
+    _REMOVING_PROCESSES.discard(proc)
+
+
+def _shutdown(signum: int, _frame: Any) -> None:
+    with _PROCESS_LOCK:
+        if _STOPPING.is_set():
+            return
+        _STOPPING.set()
+        processes = list(_OWNED_PROCESSES | _REMOVING_PROCESSES)
+
+    def cleanup() -> None:
+        with _PROCESS_LOCK:
+            processes[:] = list(set(processes) | _OWNED_PROCESSES | _REMOVING_PROCESSES | _SHUTDOWN_PROCESSES)
+        for proc in processes:
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                else:
+                    os.killpg(proc.pid, signal.SIGTERM)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if sys.platform != "win32":
+            time.sleep(0.1)
+            for proc in processes:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        os._exit(128 + signum)
+
+    threading.Thread(target=cleanup).start()
 
 SUITE_ORDER = [
     "preflight",
@@ -428,7 +481,7 @@ def run_process(command: Sequence[str], timeout_s: int, env: Optional[Dict[str, 
     else:
         kwargs["start_new_session"] = True
     try:
-        proc = subprocess.Popen(list(command), **kwargs)
+        proc = _start_owned(list(command), **kwargs)
     except FileNotFoundError:
         return 127, f"Executable not found: {command[0]}", time.monotonic() - started, False
     try:
@@ -446,6 +499,8 @@ def run_process(command: Sequence[str], timeout_s: int, env: Optional[Dict[str, 
         if output:
             message += "\n" + output[-4000:]
         return 124, message, time.monotonic() - started, True
+    finally:
+        _forget_owned(proc)
 
 
 def _parse_protocol(output: str) -> tuple[str, Optional[Dict[str, Any]]]:
@@ -635,7 +690,7 @@ class ServerManager:
         else:
             kwargs["start_new_session"] = True
         try:
-            self.proc = subprocess.Popen(command, **kwargs)
+            self.proc = _start_owned(command, **kwargs)
         except FileNotFoundError:
             return False
         deadline = time.monotonic() + 180
@@ -659,6 +714,7 @@ class ServerManager:
     def stop(self) -> None:
         if self.proc is not None:
             _terminate_process_tree(self.proc)
+            _forget_owned(self.proc)
             self.proc = None
         if self.log is not None:
             self.log.close()
@@ -999,4 +1055,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
     raise SystemExit(main())

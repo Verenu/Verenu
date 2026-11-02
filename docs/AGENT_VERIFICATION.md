@@ -4,6 +4,60 @@ The completion gate selects checks from changes relative to `master` and explici
 task requirements. Exit codes are 0 for `verified`, 1 for `failed`, and 2 for
 `incomplete`. Missing capabilities are gaps, never successful tests.
 
+Before a long run, check the command's required flags, dependencies, and target
+availability. If an attempt fails before exercising the target because of a
+diagnosed invocation or setup error, correct it and run the check again. Record
+both attempts, the cause, and the evidence supporting that diagnosis. Do not
+classify an unexplained failure or timeout as a setup error merely because a
+retry passed. A test that ran and failed remains unresolved until investigated;
+report any remaining gap without waiting for permission to hand it off.
+
+For local experiments, `scripts/verification/container/Dockerfile` extends the
+machine's `verenu-dev:local` image with WebKitWebDriver and PulseAudio. Build it
+with `docker build -t verenu-verification:local scripts/verification/container`.
+This base image is machine-local, not a portable or pinned dependency.
+`virtual-mic.sh COMMAND` starts a private PulseAudio server with only a null sink
+and its monitor as the default source, then runs COMMAND. Run it inside a
+disposable container without host audio devices or sockets and with networking
+disabled. Play synthetic audio to `verenu_fixture` while the app records from
+`verenu_fixture.monitor`. This fixture alone does not establish that Verenu
+captured or transcribed audio; exercise the app and inspect its results.
+Run its loopback self-test with:
+
+```sh
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/scripts/verification/container:/fixture:ro" \
+  verenu-verification:local sh /fixture/test-virtual-mic.sh
+```
+
+On an Omarchy machine, use the isolated agent desktop for real Hyprland
+shortcuts and insertion. Build the worktree's app with `npm run build` and
+`cargo build --manifest-path src-tauri/Cargo.toml --features custom-protocol --bin verenu`.
+Start an agent desktop with the worktree mounted at `/project`. In that desktop,
+run `sh /project/scripts/verification/container/prepare-omarchy.sh` to create
+the private bindings file and load it into the private compositor. Run
+`sh /project/scripts/verification/container/wayland/build-hold.sh` there to
+build the synthetic shortcut driver. Copy the app to `/tmp/verenu-fixture`,
+then launch `sh /project/scripts/verification/container/omarchy-virtual-mic.sh
+/tmp/verenu-fixture` through the desktop launcher. These helpers refuse a
+desktop with physical audio devices.
+
+Before starting the desktop, run `sh scripts/verification/container/stage-parakeet.sh`
+on the host. It downloads the public Parakeet V3 archive into ignored test
+artifacts and checks its pinned checksum. In the desktop, run
+`sh /project/scripts/verification/container/install-parakeet.sh` to verify it
+again and install it into the disposable profile. The helper refuses to overwrite
+an existing model. Select Parakeet V3 in Verenu and disable cloud cleanup for an
+offline test. Start a fresh Verenu session with no earlier recordings. Focus a
+private text field in another application,
+then run `sh /project/scripts/verification/container/omarchy-speak.sh` in the
+desktop. Inspect the target text and the app log, including the insertion result;
+the onboarding success message alone does not prove external insertion. The
+synthetic shortcut driver keeps its virtual keyboard alive until the app reports
+completion, with a 25-second limit. If the limit expires, inspect the result and
+report the test incomplete. Stop the owned desktop after the test. This does not
+establish physical microphone or keyboard behavior.
+
 ```bash
 npm run verify:task -- --task test-results/task.json --evidence test-results/outcomes.json
 npm run verify:task -- --task test-results/task.json --require native,pipeline
