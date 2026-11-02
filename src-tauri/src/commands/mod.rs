@@ -110,14 +110,14 @@ where
     .await
 }
 
-async fn run_app_blocking<T, F>(app: &AppHandle, label: &'static str, f: F) -> Result<T, String>
+async fn run_app_blocking<T, F>(_app: &AppHandle, label: &'static str, f: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
 {
     #[cfg(target_os = "linux")]
     let activity = if let Some(gate) =
-        app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
+        _app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
     {
         Some(gate.inner().clone().enter().await)
     } else {
