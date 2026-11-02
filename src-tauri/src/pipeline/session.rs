@@ -2,6 +2,129 @@ use super::*;
 use crate::core::context::ResolvedContextIdentity;
 use chrono::{SecondsFormat, Utc};
 
+const LOCAL_PRELOAD_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn primary_local_model(id: &str) -> Option<String> {
+    store::parse_model_id(id)
+        .and_then(|(provider, model)| (provider == store::LOCAL).then_some(model))
+}
+
+fn recording_is_current(
+    lifecycle: &DictationLifecycle,
+    active: &Arc<std::sync::atomic::AtomicBool>,
+) -> bool {
+    matches!(lifecycle, DictationLifecycle::Recording { session, .. }
+        if Arc::ptr_eq(&session.active, active) && active.load(Ordering::Acquire))
+}
+
+fn spawn_local_preload(
+    app: AppHandle,
+    state: SharedState,
+    active: Arc<std::sync::atomic::AtomicBool>,
+) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(LOCAL_PRELOAD_DELAY).await;
+        let still_recording = lock_state(&state)
+            .is_ok_and(|st| recording_is_current(&st.lifecycle, &active));
+        if !still_recording {
+            return;
+        }
+        let Ok(settings) = store::settings_snapshot(&app) else {
+            return;
+        };
+        let cfg = store::load_pipeline_config(&settings);
+        if let Some(model) = primary_local_model(&cfg.transcription_default_model) {
+            if let Some(manager) = app.try_state::<crate::local_stt::LocalTranscriptionManager>() {
+                let manager = manager.inner().clone();
+                let app = app.clone();
+                let state = state.clone();
+                let active = active.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        if !lock_state(&state).is_ok_and(|st| recording_is_current(&st.lifecycle, &active)) {
+                            break;
+                        }
+                        let manager = manager.clone();
+                        let app = app.clone();
+                        let model = model.clone();
+                        let preload_state = state.clone();
+                        let preload_active = active.clone();
+                        match tauri::async_runtime::spawn_blocking(move || manager.preload_if_idle(&app, &model, || {
+                            lock_state(&preload_state).is_ok_and(|st| recording_is_current(&st.lifecycle, &preload_active))
+                        })).await {
+                            Ok(Ok(true)) => break,
+                            Ok(Ok(false)) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+                            Ok(Err(error)) => { log::warn!("local-stt: background preload failed: {error}"); break; }
+                            Err(error) => { log::warn!("local-stt: background preload task failed: {error}"); break; }
+                        }
+                    }
+                });
+            }
+        }
+        if let Some(model) = cfg.cleanup_enabled.then(|| primary_local_model(&cfg.cleanup_default_model)).flatten() {
+            if let Some(manager) = app.try_state::<crate::local_llm::LocalLlmManager>() {
+                let manager = manager.inner().clone();
+                let app = app.clone();
+                let state = state.clone();
+                let active = active.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        if !lock_state(&state).is_ok_and(|st| recording_is_current(&st.lifecycle, &active)) {
+                            break;
+                        }
+                        match manager.preload_if_idle(&app, &model, || {
+                            lock_state(&state).is_ok_and(|st| recording_is_current(&st.lifecycle, &active))
+                        }).await {
+                            Ok(true) => break,
+                            Ok(false) => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+                            Err(error) => {
+                                log::warn!("local-llm: background preload failed: {error}");
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod local_preload_tests {
+    use super::*;
+
+    #[test]
+    fn only_selected_local_models_are_preload_candidates() {
+        assert_eq!(
+            primary_local_model("local/whisper-small"),
+            Some("whisper-small".into())
+        );
+        assert_eq!(primary_local_model("openai/example"), None);
+        assert_eq!(primary_local_model("invalid"), None);
+        assert_eq!(LOCAL_PRELOAD_DELAY, std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn stopped_or_replaced_recording_cannot_trigger_preload() {
+        let session = audio::RecordingSession::lifecycle_fixture();
+        let active = session.active.clone();
+        let recording = DictationLifecycle::Recording {
+            session,
+            mute_claim: None,
+            exclusive_mic_session_id: None,
+            handless: false,
+            handless_from_hold: false,
+            prepend_audio: None,
+        };
+        assert!(recording_is_current(&recording, &active));
+        assert!(!recording_is_current(&DictationLifecycle::Idle, &active));
+        let replacement = audio::RecordingSession::lifecycle_fixture();
+        assert!(!recording_is_current(&recording, &replacement.active));
+        active.store(false, Ordering::Release);
+        assert!(!recording_is_current(&recording, &active));
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn output_volume_policy(legacy_mute: bool, enabled: bool, target: u8) -> (bool, bool) {
     let mute = legacy_mute || (enabled && target == 0);
@@ -392,6 +515,7 @@ pub fn start_recording_session_ex_with_context(
             if let Some(manager) = app.try_state::<crate::local_stt::LocalTranscriptionManager>() {
                 manager.set_recording_active(true);
             }
+            spawn_local_preload(app.clone(), state.clone(), active_arc.clone());
             if let Some(manager) = app.try_state::<crate::sync::SyncManager>() {
                 manager.monitor_muting();
             }

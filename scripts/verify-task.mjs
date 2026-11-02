@@ -4,7 +4,12 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { root, sourceIdentity, changedFiles, artifact } from './verification/identity.mjs';
 import { requirements, nativeRequirements, evaluate, incompleteUnlessFailed } from './verification/policy.mjs';
-import { run } from './verification/process.mjs';
+import { beginShutdown, run } from './verification/process.mjs';
+import { matchesTaskSessionMode, matchesTaskSessionPartition, taskSessionArguments, taskSessionCoverage, taskSessionPartitions } from './verification/task-session-plan.mjs';
+
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.on(signal, () => { void beginShutdown(4000).finally(() => process.exit(code)); });
+}
 
 const args = process.argv.slice(2);
 function option(name, fallback) {
@@ -38,6 +43,19 @@ if (supplied) {
       try { if (artifact(item.path).sha256 !== item.sha256) record.status = incompleteUnlessFailed(record.status); }
       catch { record.status = incompleteUnlessFailed(record.status); }
     }
+    if (['session', 'pipeline'].includes(record.category)) {
+      try {
+        const report = record.sessionReport;
+        const detail = JSON.parse(fs.readFileSync(report.path, 'utf8'));
+        if (artifact(report.path).sha256 !== report.sha256 || detail.status !== 'verified'
+          || detail.identity?.fingerprint !== identity.fingerprint || detail.identity?.worktree !== identity.worktree
+          || !matchesTaskSessionPartition(detail.partition, record.partition)
+          || !matchesTaskSessionMode(detail, record.category)) record.status = incompleteUnlessFailed(record.status);
+        for (const item of detail.artifacts || []) {
+          if (artifact(item.path).sha256 !== item.sha256) record.status = incompleteUnlessFailed(record.status);
+        }
+      } catch { record.status = incompleteUnlessFailed(record.status); }
+    }
     records.push(record);
   }
 }
@@ -47,8 +65,8 @@ const commands = {
   unit: [[npm, ['run', 'test:unit']], [npm, ['run', 'test:verification']]],
   rust: [['cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml']], ['cargo', ['clippy', '--manifest-path', 'src-tauri/Cargo.toml', '--features', 'dev-session,native-testing', '--', '-D', 'warnings']]],
   renderer: [[npm, ['test', '--', '--suite', 'ui,accessibility,state,performance', '--strict', '--json-report', path.join(directory, 'renderer.json')]]],
-  session: [[npm, ['run', 'test:session:owned', '--', '--report', path.join(directory, 'session.json')]]],
-  pipeline: [[npm, ['run', 'test:session:owned', '--', '--live', '--report', path.join(directory, 'pipeline.json')]]],
+  session: taskSessionPartitions().map((partition, index) => [process.execPath, ['scripts/test-owned-session.mjs', ...taskSessionArguments(partition), '--report', path.join(directory, `session-${index}.json`)]]),
+  pipeline: taskSessionPartitions().map((partition, index) => [process.execPath, ['scripts/test-owned-session.mjs', '--live', ...taskSessionArguments(partition), '--report', path.join(directory, `pipeline-${index}.json`)]]),
   native: [[npm, ['run', 'test:native:webview', '--', '--report', path.join(directory, 'native.json')]]],
   'native-integration': [[npm, ['run', 'test:native:fixtures', '--', '--report', path.join(directory, 'native-integration.json')]]],
   migration: [['cargo', ['test', '--manifest-path', 'src-tauri/Cargo.toml', 'data::db', '--lib']]],
@@ -66,7 +84,7 @@ if (!args.includes('--inspect-only')) {
       console.log(`Checking ${category} ${index + 1}...`);
       const result = await run(command, argv, { directory, name: `${category}-${index}` });
       let status = result.status;
-      const childReport = path.join(directory, `${category}.json`);
+      const childReport = path.join(directory, ['session', 'pipeline'].includes(category) ? `${category}-${index}.json` : `${category}.json`);
       let detail;
       if (['session', 'pipeline', 'native', 'native-integration'].includes(category)) {
         try {
@@ -74,6 +92,7 @@ if (!args.includes('--inspect-only')) {
           if (result.exitCode === 2 && detail.status === 'incomplete') status = 'incomplete';
           if (detail.identity?.fingerprint !== identity.fingerprint || detail.identity?.worktree !== identity.worktree) status = incompleteUnlessFailed(status);
           else if (detail.status !== 'verified') status = detail.status === 'failed' ? 'failed' : incompleteUnlessFailed(status);
+          if (['session', 'pipeline'].includes(category) && (!matchesTaskSessionPartition(detail.partition, taskSessionPartitions()[index]) || !matchesTaskSessionMode(detail, category))) status = incompleteUnlessFailed(status);
           if (detail.checks?.some((row) => row.status === 'failed')) status = 'failed';
         } catch { status = result.status === 'failed' ? 'failed' : 'incomplete'; }
       }
@@ -84,8 +103,13 @@ if (!args.includes('--inspect-only')) {
           else if (renderer.tests.some((row) => row.status !== 'passed' || row.regression_status === 'flaky')) status = incompleteUnlessFailed(status);
         } catch { status = result.status === 'failed' ? 'failed' : 'incomplete'; }
       }
-      records.push({ ...result, category, status, fingerprint: identity.fingerprint, worktree: identity.worktree, artifacts: [artifact(result.log)], reason: detail?.reason || result.reason, ...(detail?.scope ? { scope: detail.scope, platform: detail.platform } : {}) });
+      records.push({ ...result, category, status, observed: `${category} check ${index + 1} ${status}`, fingerprint: identity.fingerprint, worktree: identity.worktree, artifacts: [artifact(result.log), ...(detail ? [artifact(childReport)] : [])], reason: detail?.reason || result.reason, ...(['session', 'pipeline'].includes(category) ? { partition: detail?.partition, ...(detail ? { sessionReport: artifact(childReport) } : {}) } : {}), ...(detail?.scope ? { scope: detail.scope, platform: detail.platform } : {}) });
     }
+  }
+}
+for (const category of ['session', 'pipeline']) {
+  if (required.includes(category) && !taskSessionCoverage(records.filter(record => record.category === category))) {
+    records.push({ category, status: 'incomplete', fingerprint: identity.fingerprint, worktree: identity.worktree, reason: 'Session partition coverage is missing or duplicated' });
   }
 }
 if (sourceIdentity().fingerprint !== identity.fingerprint) records.push({ category: required[0] || 'static', status: 'incomplete', reason: 'Source changed while checks ran' });
