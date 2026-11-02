@@ -28,6 +28,10 @@ export function beginCustomProviderLoad() {
     customProviderStore.providers = providers;
   };
 }
+
+export function applyCommittedCustomProviders(providers: CustomProvider[]) {
+  beginCustomProviderLoad()(providers);
+}
 export function isCustomProviderId(id: string): id is `custom:${string}` {
   return /^custom:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id);
 }

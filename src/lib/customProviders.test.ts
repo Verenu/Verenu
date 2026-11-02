@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { beginCustomProviderLoad, customProviderStore, refreshCustomProviders, type CustomProvider } from './customProviders.svelte';
+import { applyCommittedCustomProviders, beginCustomProviderLoad, customProviderStore, refreshCustomProviders, type CustomProvider } from './customProviders.svelte';
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('./tauri', () => ({ invoke }));
@@ -46,4 +46,15 @@ describe('custom provider loads', () => {
     applyModelsSnapshot([provider('Original')]);
     expect(customProviderStore.providers[0]?.name).toBe('Original');
   });
+
+  it.each([['rename', [provider('Renamed')]], ['delete', []]] as const)(
+    'keeps a committed %s if refresh fails and an older load completes', async (_action, committed) => {
+      const applyOldSnapshot = beginCustomProviderLoad();
+      applyCommittedCustomProviders([...committed]);
+      invoke.mockRejectedValue(new Error('settings unavailable'));
+      await expect(refreshCustomProviders()).rejects.toThrow('settings unavailable');
+      applyOldSnapshot([provider('Original')]);
+      expect(customProviderStore.providers).toEqual([...committed]);
+    },
+  );
 });

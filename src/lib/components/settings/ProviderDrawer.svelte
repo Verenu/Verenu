@@ -11,7 +11,7 @@
   import { saveSetting } from '../../settings';
   import { formatIpcError } from '../../errors';
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
-  import { customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
+  import { applyCommittedCustomProviders, customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
   import Callout from '../Callout.svelte';
   import CompactSelect from '../CompactSelect.svelte';
   import Toggle from '../Toggle.svelte';
@@ -209,6 +209,7 @@
       await refreshCustomProviders();
       const list = customProviderStore.providers.filter(p => p.id !== provider.id);
       await saveSetting('custom_providers', [...list, provider]);
+      applyCommittedCustomProviders([...list, provider]);
       savedOriginal = provider;
       await refreshCustomProviders();
       if (key.trim()) {
