@@ -15,7 +15,17 @@ const TRAY_ID: &str = "verenu-tray";
 mod linux;
 
 #[cfg(target_os = "linux")]
+static INITIAL_SYSTEM_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
 pub(crate) fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    use gtk::prelude::GtkSettingsExt;
+    if let Some(settings) = gtk::Settings::default() {
+        INITIAL_SYSTEM_DARK.store(
+            settings.is_gtk_application_prefer_dark_theme(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
     linux::setup(app)?;
     apply_runtime_icons(app.handle(), None);
     Ok(())
@@ -1066,6 +1076,15 @@ fn resolve_icon_theme(app: &AppHandle, theme_hint: Option<Theme>) -> IconTheme {
         Some(true) => IconTheme::Dark,
         Some(false) => IconTheme::Light,
         None => match theme_hint.or_else(|| {
+            #[cfg(target_os = "linux")]
+            {
+                Some(if INITIAL_SYSTEM_DARK.load(std::sync::atomic::Ordering::Relaxed) {
+                    Theme::Dark
+                } else {
+                    Theme::Light
+                })
+            }
+            #[cfg(not(target_os = "linux"))]
             app.get_webview_window("main").and_then(|window| window.theme().ok())
         }) {
             Some(Theme::Dark) => IconTheme::Dark,
