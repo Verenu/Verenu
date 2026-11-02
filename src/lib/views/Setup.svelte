@@ -435,7 +435,7 @@
     const map: ProviderModelMap = {
       groq: ['whisper-large-v3-turbo', 'whisper-large-v3'],
       openai: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
-      google: ['gemini-2.5-flash', 'gemini-3.5-transcribe'],
+      google: ['gemini-3.5-flash-lite', 'gemini-3.5-transcribe'],
       assemblyai: [],
       openrouter: [],
       xai: [],

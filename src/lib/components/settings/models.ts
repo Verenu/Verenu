@@ -61,9 +61,8 @@ export const CATALOG: CatalogEntry[] = [
   { provider: 'openai', id: 'gpt-4o-mini', label: 'GPT-4o mini', tasks: ['cleanup'], tags: ['fast', 'cheap'], tier: 'standard' },
   { provider: 'openai', id: 'gpt-4o', label: 'GPT-4o', tasks: ['cleanup'], tags: ['accurate'], tier: 'premium' },
   { provider: 'google', id: 'gemini-3.5-transcribe', label: 'Gemini 3.5 Transcribe', tasks: ['transcription'], tags: ['accurate'], tier: 'premium' },
-  { provider: 'google', id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', tasks: ['transcription'], tags: ['fast', 'cheap'], tier: 'standard' },
   { provider: 'google', id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', tasks: ['cleanup'], tags: ['accurate'], tier: 'premium' },
-  { provider: 'google', id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', tasks: ['cleanup'], tags: ['fast', 'cheap'], tier: 'standard' },
+  { provider: 'google', id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', tasks: ['transcription', 'cleanup'], tags: ['fast', 'cheap'], tier: 'standard' },
   { provider: 'google', id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite', tasks: ['cleanup'], tags: ['fast', 'cheap'] },
   { provider: 'assemblyai', id: 'universal-3-5-pro', label: 'Universal 3.5 Pro', tasks: ['transcription'], tags: ['accurate'], tier: 'premium' },
   { provider: 'assemblyai', id: 'universal-2', label: 'Universal-2', tasks: ['transcription'], tags: ['fast', 'cheap'], tier: 'standard' },
@@ -158,7 +157,7 @@ export function migrateDeprecatedGroqCleanupModel(model: string): string {
 
 export function migrateDeprecatedGoogleModel(model: string): string {
   const normalized = model.trim();
-  return normalized === 'gemini-3.7-flash' || normalized === 'gemini-2.5-pro'
+  return normalized === 'gemini-3.7-flash' || normalized === 'gemini-2.5-pro' || normalized === 'gemini-2.5-flash'
     ? 'gemini-3.5-flash-lite'
     : normalized;
 }

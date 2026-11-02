@@ -256,7 +256,7 @@ pub async fn get_provider_model_catalog(
             continue;
         }
         if !ids.contains(&id) {
-            if provider == store::GOOGLE && id != "gemini-3.5-transcribe" {
+            if provider == store::GOOGLE && !matches!(id.as_str(), "gemini-3.5-transcribe" | "gemini-3.5-flash-lite") {
                 continue;
             }
             ids.push(id.clone());
