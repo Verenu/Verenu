@@ -440,7 +440,7 @@
 
       <div class="settings-footbar">
         {#if section === 'about'}
-          <div class="settings-foot" transition:fade={{ duration: motionMs(MOTION_MS.base) }}>
+          <div class="settings-foot" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
             Verenu v{appVersion} · MIT
           </div>
         {/if}

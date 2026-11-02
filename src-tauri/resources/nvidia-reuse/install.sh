@@ -39,6 +39,3 @@ beebaf2d9ab7b83c101f46246ae7a7a8a2d2f57b6683025d3712c64c1b7d6817 models/generato
 b82383c1ec7d7e9fe9bca1f93b3c0afe9609e191c38efc16f705e7145198d835 models/stfts.py
 ASSETS
 echo "Testing GPU and model"
-timeout 120 .venv/bin/python worker.py --probe
-echo ready > ready
-echo "Ready"

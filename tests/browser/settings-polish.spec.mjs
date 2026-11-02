@@ -5,6 +5,20 @@ async function openSettings(page, section) {
   await page.locator(`[data-debug-id="settings.${section}"]`).click();
 }
 
+test('the About footer is removed when another section is selected', async ({ page }) => {
+  await openSettings(page, 'privacy');
+  await expect(page.getByRole('heading', { name: 'Privacy', exact: true })).toBeVisible();
+  await page.locator('[data-debug-id="settings.about"]').click();
+  await expect(page.getByRole('heading', { name: 'About', exact: true })).toBeVisible();
+  await expect(page.locator('.settings-foot')).toBeVisible();
+  await page.locator('[data-debug-id="settings.privacy"]').click();
+  const state = await page.evaluate(() => ({
+    selected: document.querySelector('.settings-nav-item.active')?.getAttribute('data-debug-id'),
+    footers: document.querySelectorAll('.settings-foot').length,
+  }));
+  expect(state).toEqual({ selected: 'settings.privacy', footers: 0 });
+});
+
 test('Audio values roll their digits and advanced fades disclose smoothly', async ({ page, session }) => {
   test.skip(process.platform !== 'linux', 'The volume control is Linux only');
   const previous = await session.invoke('get_setting', { key: 'duck_target' });
