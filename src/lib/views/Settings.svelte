@@ -176,11 +176,17 @@
 
     if (!appStore.settingsOpen) {
       const target = previousFocusEl;
-      previousFocusEl = null;
-      if (target?.isConnected) {
-        requestAnimationFrame(() => target.focus());
-      }
-      return;
+      if (!target) return;
+      const frame = requestAnimationFrame(() => {
+        if (appStore.settingsOpen) return;
+        previousFocusEl = null;
+        if (target.isConnected) target.focus();
+        if (appStore.setupComplete === false && !document.querySelector('.setup-overlay')?.contains(document.activeElement)) {
+          const controls = document.querySelectorAll<HTMLElement>('.setup-overlay button:not([disabled])');
+          [...controls].find(control => control.getClientRects().length > 0)?.focus();
+        }
+      });
+      return () => cancelAnimationFrame(frame);
     }
 
     if (!previousFocusEl && document.activeElement instanceof HTMLElement) {
