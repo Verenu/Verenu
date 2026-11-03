@@ -371,7 +371,7 @@ pub(crate) fn run(child: crate::linux_handoff_transport::Child) {
                             }
                         }
                         let db = handle.state::<crate::DbHandle>();
-                        let locked_db = match prepared_db.lock_for_activation(db.inner()) {
+                        let locked_db = match prepared_db.lock_for_activation(db.inner(), db_version) {
                             Ok(db) => db,
                             Err(error) => {
                                 fail_paused_probation(services, format!("Replacement database could not prepare activation: {error}"));

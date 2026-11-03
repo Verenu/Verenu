@@ -651,7 +651,7 @@ mod handoff_tests {
         let prepared = PreparedSync { identity, fallback_listener, server_config };
         let replacement = crate::data::db::open_for_handoff(&path).unwrap();
         let locked = crate::data::db::probe_writable_for_handoff(&path).unwrap()
-            .lock_for_activation(&replacement).unwrap();
+            .lock_for_activation(&replacement, crate::data::db::handoff_data_version(&replacement).unwrap()).unwrap();
         assert!(prepared.prepare_database(locked.connection()).is_err());
         assert_eq!(stored_device_name(locked.connection()).unwrap().as_deref(), Some(""));
         assert_eq!(stored_device_name(&parent.lock().unwrap()).unwrap().as_deref(), Some(""));
