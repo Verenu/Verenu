@@ -345,20 +345,24 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
   let previousRenderer, originalApp, firstTermination;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt >= 1) {
-      await browser.command('POST', '/window', { handle: 'main' });
-      await invoke('native_test_pill', { state: 'paste_failed', message: 'Partly pasted' });
+      // Select the pill before starting its ten-second dismissal timer.
       await browser.command('POST', '/window', { handle: 'pill' });
+      const started = performance.now();
+      const initialBackend = await invoke('native_test_pill', { state: 'paste_failed', message: 'Partly pasted' });
+      const observations = [];
       try {
         await waitUntil(async () => {
           const state = await browser.execute(`return {
             className: document.querySelector('.pill')?.className,
             message: document.querySelector('.pill.paste-failed .paste-failed-text')?.textContent?.trim()
           };`);
+          const current = JSON.stringify(state);
+          if (observations.at(-1)?.state !== current) observations.push({ ms: Math.round(performance.now() - started), state: current });
           if (state.message === 'Partly pasted') return true;
           throw new Error(`Observed pill state: ${JSON.stringify(state)}`);
         }, 'Partial-paste state before renderer termination');
       } catch (error) {
-        throw await addBackendDiagnostics(error);
+        throw await addBackendDiagnostics(new Error(`${error.message}; initial backend: ${JSON.stringify(initialBackend)}; observations: ${JSON.stringify(observations)}`, { cause: error }));
       }
       await browser.command('POST', '/window', { handle: 'main' });
       await browser.execute(`
