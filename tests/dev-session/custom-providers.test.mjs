@@ -20,6 +20,8 @@ test('custom provider editor persists, offers task models, renames, and removes 
   const keys = ['custom_providers', 'transcription_default_model', 'cleanup_default_model', 'transcription_fallback_models', 'cleanup_fallback_models', 'transcription_provider', 'cleanup_provider', 'transcription_model', 'cleanup_model', 'transcription_models_by_provider', 'cleanup_models_by_provider', 'advanced_model_ui'];
   let id;
   try {
+    // The tile also warns about fallback models, so isolate the keyless primary.
+    await invoke('save_setting', { key: 'transcription_fallback_models', value: [] });
     const page = await browser.newPage({ viewport: { width: 1320, height: 860 } });
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
