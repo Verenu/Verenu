@@ -9,26 +9,26 @@ export TRITON_CACHE_DIR="$PWD/triton-cache"
 
 echo "Downloading runtime installer"
 curl -fsSL --connect-timeout 20 --max-time 180 -o uv.tar.gz https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-gnu.tar.gz
-echo 'f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645  uv.tar.gz' | sha256sum -c - >/dev/null
+echo 'f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645  uv.tar.gz' | sha256sum -c - >/dev/null || { echo 'VERENU_CHECKSUM_FAILED' >&2; exit 1; }
 tar -xzf uv.tar.gz --strip-components=1 uv-x86_64-unknown-linux-gnu/uv
 rm uv.tar.gz
 
 echo "Installing Python runtime"
 curl -fsSL --connect-timeout 20 --max-time 180 -o python.tar.gz 'https://releases.astral.sh/github/python-build-standalone/releases/download/20261026/cpython-3.12.16%2B20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz'
-echo 'ce4f6d0a6cfdb3bed6e44c2f9affd85943c76a42e25ad3a259002f31d6fb8a20  python.tar.gz' | sha256sum -c - >/dev/null
+echo 'ce4f6d0a6cfdb3bed6e44c2f9affd85943c76a42e25ad3a259002f31d6fb8a20  python.tar.gz' | sha256sum -c - >/dev/null || { echo 'VERENU_CHECKSUM_FAILED' >&2; exit 1; }
 mkdir -p python
 tar -xzf python.tar.gz --strip-components=1 -C python
 rm python.tar.gz
 ./uv venv --clear --python "$PWD/python/bin/python3.12" .venv
 echo "Downloading and installing GPU dependencies (several GB)"
-./uv pip sync --python .venv/bin/python --require-hashes --index-strategy unsafe-best-match --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://wheels.astral.sh/simple/cu128 requirements.lock >/dev/null 2>&1
+./uv pip sync --python .venv/bin/python --require-hashes --index-strategy unsafe-best-match --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://wheels.astral.sh/simple/cu128 requirements.lock >/dev/null
 
 echo "Downloading and verifying NVIDIA model"
 base=https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE/resolve/31f82f2efad1095034492f236e8dac9239ba713b
 while read -r hash path; do
   mkdir -p "model/$(dirname "$path")"
   curl -fsSL --connect-timeout 20 --max-time 300 "$base/$path" -o "model/$path"
-  echo "$hash  model/$path" | sha256sum -c - >/dev/null
+  echo "$hash  model/$path" | sha256sum -c - >/dev/null || { echo 'VERENU_CHECKSUM_FAILED' >&2; exit 1; }
 done <<'ASSETS'
 e69986483774f01893d2727503addc49ef201d19e6e1a266b8d4e971e28c478d config.json
 a3d882953f026d3e2fdd57842d9c522c8320d4c0388af2278bcf4d438d255a2c LICENSE
