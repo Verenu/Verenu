@@ -356,8 +356,8 @@ async fn probe_in(dir: &std::path::Path) -> anyhow::Result<()> {
 fn probe_error(stderr: &str) -> &'static str {
     let lower = stderr.to_ascii_lowercase();
     if lower.contains("out of memory") { "The GPU ran out of memory. Close other GPU applications and retry." }
-    else if lower.contains("cuda is unavailable") || lower.contains("no nvidia driver") { "CUDA could not access the NVIDIA GPU. Check the NVIDIA driver and retry." }
     else if lower.contains("driver version is insufficient") || lower.contains("driver on your system is too old") { "The NVIDIA driver is too old for the installed CUDA runtime. Update the driver and retry." }
+    else if lower.contains("cuda is unavailable") || lower.contains("no nvidia driver") { "CUDA could not access the NVIDIA GPU. Check the NVIDIA driver and retry." }
     else if lower.contains("no kernel image") || lower.contains("not compatible with the current pytorch") { "The installed GPU runtime does not support this GPU architecture." }
     else if lower.contains("no module named") || lower.contains("importerror") { "A runtime dependency could not be loaded. Retry setup." }
     else { "The runtime could not complete its self-test. Retry setup; the specific error was not recognized." }
@@ -412,6 +412,7 @@ mod tests {
     fn probe_errors_identify_common_failures_without_exposing_paths() {
         assert!(super::probe_error("CUDA out of memory /private/path").contains("out of memory"));
         assert!(super::probe_error("CUDA driver version is insufficient").contains("driver is too old"));
+        assert!(super::probe_error("The NVIDIA driver on your system is too old. CUDA is unavailable").contains("driver is too old"));
         assert!(super::probe_error("No module named 'torch'").contains("dependency"));
         assert!(!super::probe_error("unknown /private/path").contains("/private/path"));
     }
