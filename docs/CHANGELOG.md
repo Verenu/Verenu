@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- On Linux, keep the microphone mute-button monitor running until dictation starts receiving audio, avoiding an interruption while switching capture streams.
+
 - Migrate saved Gemini 2.5 Flash selections to Gemini 3.5 Flash Lite ahead of retirement.
 
 - Settings polish. NVIDIA RE-USE setup now shows a percentage and the current step inside its card while it downloads. Settings pages fade out before the next one fades in. Settings cards use a surface closer to the page color. Integrations are now cards. Audio values (microphone gain, volume, fade times) roll their digits instead of jumping. "Advanced volume fades" and "What you can say" share one animated disclosure, and the voice command help is shorter and sits inside its card.
