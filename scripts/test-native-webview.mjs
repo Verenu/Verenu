@@ -312,30 +312,58 @@ function verifyManualReloadObservation(log) {
 
 async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
   const context = 'Synthetic recovery context';
+  const addBackendDiagnostics = async error => {
+    try {
+      await browser.command('POST', '/window', { handle: 'main' });
+      const backend = await invoke('native_test_pill');
+      return new Error(`${error.message}; backend: ${JSON.stringify(backend)}`, { cause: error });
+    } catch {
+      return error;
+    }
+  };
   await browser.command('POST', '/window', { handle: 'main' });
   await invoke('native_test_pill', { state: 'handsfree', context });
   await browser.command('POST', '/window', { handle: 'pill' });
   const pillReady = () => browser.execute(`return {
     ready: document.readyState === 'complete',
     bridge: !!window.__TAURI_INTERNALS__,
+    className: document.querySelector('.pill')?.className,
     handsfree: !!document.querySelector('.pill.handsfree'),
     context: document.querySelector('.pill-context-label')?.textContent?.trim(),
     controls: [...document.querySelectorAll('.pill button')].map(button => button.getAttribute('aria-label'))
   };`);
-  await waitUntil(async () => {
-    const state = await pillReady();
-    return state.handsfree && state.context === context && state.controls.join(',') === 'Cancel,Confirm';
-  }, 'Pill before renderer termination');
+  try {
+    await waitUntil(async () => {
+      const state = await pillReady();
+      if (state.handsfree && state.context === context && state.controls.join(',') === 'Cancel,Confirm') return true;
+      throw new Error(`Observed pill state: ${JSON.stringify(state)}`);
+    }, 'Pill before renderer termination');
+  } catch (error) {
+    throw await addBackendDiagnostics(error);
+  }
   const appExecutable = await fs.realpath(path.resolve(root, cargoTargetDirectory(), 'debug', 'verenu'));
   let previousRenderer, originalApp, firstTermination;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt >= 1) {
-      await browser.command('POST', '/window', { handle: 'main' });
-      await invoke('native_test_pill', { state: 'paste_failed', message: 'Partly pasted' });
+      // Select the pill before starting its ten-second dismissal timer.
       await browser.command('POST', '/window', { handle: 'pill' });
-      await waitUntil(async () => await browser.execute(
-        `return document.querySelector('.pill.paste-failed .paste-failed-text')?.textContent?.trim() === 'Partly pasted';`
-      ), 'Partial-paste state before renderer termination');
+      const started = performance.now();
+      const initialBackend = await invoke('native_test_pill', { state: 'paste_failed', message: 'Partly pasted' });
+      const observations = [];
+      try {
+        await waitUntil(async () => {
+          const state = await browser.execute(`return {
+            className: document.querySelector('.pill')?.className,
+            message: document.querySelector('.pill.paste-failed .paste-failed-text')?.textContent?.trim()
+          };`);
+          const current = JSON.stringify(state);
+          if (observations.at(-1)?.state !== current) observations.push({ ms: Math.round(performance.now() - started), state: current });
+          if (state.message === 'Partly pasted') return true;
+          throw new Error(`Observed pill state: ${JSON.stringify(state)}`);
+        }, 'Partial-paste state before renderer termination');
+      } catch (error) {
+        throw await addBackendDiagnostics(new Error(`${error.message}; initial backend: ${JSON.stringify(initialBackend)}; observations: ${JSON.stringify(observations)}`, { cause: error }));
+      }
       await browser.command('POST', '/window', { handle: 'main' });
       await browser.execute(`
         const settings = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Settings');
