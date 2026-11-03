@@ -312,6 +312,15 @@ function verifyManualReloadObservation(log) {
 
 async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
   const context = 'Synthetic recovery context';
+  const addBackendDiagnostics = async error => {
+    try {
+      await browser.command('POST', '/window', { handle: 'main' });
+      const backend = await invoke('native_test_pill');
+      return new Error(`${error.message}; backend: ${JSON.stringify(backend)}`, { cause: error });
+    } catch {
+      return error;
+    }
+  };
   await browser.command('POST', '/window', { handle: 'main' });
   await invoke('native_test_pill', { state: 'handsfree', context });
   await browser.command('POST', '/window', { handle: 'pill' });
@@ -330,8 +339,7 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
       throw new Error(`Observed pill state: ${JSON.stringify(state)}`);
     }, 'Pill before renderer termination');
   } catch (error) {
-    const backend = await invoke('native_test_pill');
-    throw new Error(`${error.message}; backend: ${JSON.stringify(backend)}`);
+    throw await addBackendDiagnostics(error);
   }
   const appExecutable = await fs.realpath(path.resolve(root, cargoTargetDirectory(), 'debug', 'verenu'));
   let previousRenderer, originalApp, firstTermination;
@@ -350,8 +358,7 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
           throw new Error(`Observed pill state: ${JSON.stringify(state)}`);
         }, 'Partial-paste state before renderer termination');
       } catch (error) {
-        const backend = await invoke('native_test_pill');
-        throw new Error(`${error.message}; backend: ${JSON.stringify(backend)}`);
+        throw await addBackendDiagnostics(error);
       }
       await browser.command('POST', '/window', { handle: 'main' });
       await browser.execute(`
