@@ -383,10 +383,18 @@ impl PreparedHandoffDb {
     pub(crate) fn lock_for_activation<'a>(
         self,
         db: &'a Db,
+        expected_version: i64,
     ) -> Result<LockedHandoffDb<'a>> {
         self.0.busy_timeout(std::time::Duration::from_secs(5))?;
         self.0.execute_batch("PRAGMA query_only = OFF; BEGIN IMMEDIATE; PRAGMA query_only = ON;")?;
         let mut connection = lock_conn(db)?;
+        // data_version is connection-relative. Recheck the probation connection
+        // after reserving writes so a commit cannot slip between the check and reservation.
+        let version: i64 = connection.query_row("PRAGMA data_version", [], |row| row.get(0))?;
+        anyhow::ensure!(
+            version == expected_version,
+            "Database changed while preparing the update. Try again."
+        );
         let previous = std::mem::replace(&mut *connection, self.0);
         let initial_changes = connection.total_changes();
         Ok(LockedHandoffDb { connection, previous: Some(previous), db, initial_changes })
@@ -549,6 +557,33 @@ fn handoff_data_version_detects_another_connections_commit() {
 
 #[cfg(all(test, target_os = "linux"))]
 #[test]
+fn handoff_rejects_a_commit_between_snapshot_check_and_reservation() {
+    let path = std::env::temp_dir().join(format!("verenu-handoff-race-{}.db", Uuid::new_v4()));
+    let writer = Connection::open(&path).unwrap();
+    writer.execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE fixture (value INTEGER); INSERT INTO fixture VALUES (1);").unwrap();
+    writer.pragma_update(None, "user_version", HANDOFF_SCHEMA_VERSION).unwrap();
+    let child = open_for_handoff(&path).unwrap();
+    let version = handoff_data_version(&child).unwrap();
+    assert_eq!(
+        child.lock().unwrap().query_row("SELECT value FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(),
+        1
+    );
+    assert_eq!(handoff_data_version(&child).unwrap(), version);
+    let prepared = probe_writable_for_handoff(&path).unwrap();
+    writer.execute("UPDATE fixture SET value = 2", []).unwrap();
+    assert!(matches!(
+        prepared.lock_for_activation(&child, version),
+        Err(error) if error.to_string().contains("Database changed")
+    ));
+    assert_eq!(writer.query_row("SELECT value FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    writer.execute("UPDATE fixture SET value = 3", []).unwrap();
+    drop(child);
+    drop(writer);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
 fn handoff_prepares_a_readonly_connection_only_when_no_data_changed() {
     let path = std::env::temp_dir().join(format!("verenu-handoff-readonly-{}.db", Uuid::new_v4()));
     let parent = Connection::open(&path).unwrap();
@@ -556,16 +591,17 @@ fn handoff_prepares_a_readonly_connection_only_when_no_data_changed() {
     parent.execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE fixture (value INTEGER);").unwrap();
     parent.pragma_update(None, "user_version", HANDOFF_SCHEMA_VERSION).unwrap();
     let child = open_for_handoff(&path).unwrap();
+    let version = handoff_data_version(&child).unwrap();
     let gate = Arc::new(crate::linux_activity::ActivityGate::default());
     let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
     let other = Arc::new(crate::linux_activity::ActivityGate::default());
     let wrong_pause = tauri::async_runtime::block_on(other.pause()).unwrap();
-    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child).unwrap();
+    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child, version).unwrap();
     assert!(locked.prepare_readonly(&wrong_pause, &gate).is_err());
-    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child).unwrap();
+    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child, version).unwrap();
     locked.connection().execute_batch("PRAGMA query_only = OFF;").unwrap();
     assert!(locked.prepare_readonly(&pause, &gate).is_err());
-    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child).unwrap();
+    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child, version).unwrap();
     assert!(locked.connection().execute("INSERT INTO fixture VALUES (1)", []).is_err());
     assert!(locked.connection().execute_batch("CREATE TABLE unexpected (value INTEGER)").is_err());
     locked.connection().execute_batch("PRAGMA query_only = OFF;").unwrap();
@@ -575,14 +611,14 @@ fn handoff_prepares_a_readonly_connection_only_when_no_data_changed() {
     assert_eq!(parent.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     assert!(child.lock().unwrap().execute("INSERT INTO fixture VALUES (2)", []).is_err());
 
-    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child).unwrap();
+    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child, version).unwrap();
     let ready = locked.prepare_readonly(&pause, &gate).unwrap();
     assert!(child.lock().unwrap().execute("INSERT INTO fixture VALUES (3)", []).is_err());
     assert_eq!(parent.query_row("SELECT COUNT(*) FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
     assert!(parent.execute("INSERT INTO fixture VALUES (3)", []).is_err());
     drop(ready);
     parent.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").unwrap();
-    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child).unwrap();
+    let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&child, version).unwrap();
     let ready = locked.prepare_readonly(&pause, &gate).unwrap();
     let held = child.lock().unwrap();
     let (started, wait_started) = std::sync::mpsc::channel();
@@ -628,7 +664,7 @@ fn prepared_handoff_connection_rolls_back_when_abandoned() {
         .unwrap()
         .execute("INSERT INTO fixture VALUES (1)", [])
         .is_err());
-    let locked = prepared.lock_for_activation(&handoff).unwrap();
+    let locked = prepared.lock_for_activation(&handoff, handoff_data_version(&handoff).unwrap()).unwrap();
     assert!(clone.try_lock().is_err());
     locked.connection().execute_batch("PRAGMA query_only = OFF;").unwrap();
     locked.connection().execute("INSERT INTO fixture VALUES (2)", []).unwrap();
@@ -660,7 +696,7 @@ fn handoff_transaction_rolls_back_when_replacement_exits_abruptly() {
     if let Some(path) = std::env::var_os(CHILD_PATH) {
         let path = std::path::PathBuf::from(path);
         let db = open_for_handoff(&path).unwrap();
-        let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&db).unwrap();
+        let locked = probe_writable_for_handoff(&path).unwrap().lock_for_activation(&db, handoff_data_version(&db).unwrap()).unwrap();
         locked.connection().execute_batch("PRAGMA query_only = OFF;").unwrap();
         locked.connection().execute("INSERT INTO fixture VALUES (1)", []).unwrap();
         std::process::exit(17);
