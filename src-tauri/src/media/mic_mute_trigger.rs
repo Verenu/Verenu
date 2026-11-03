@@ -146,16 +146,10 @@ mod common {
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
                 #[cfg(target_os = "linux")]
-                let activity = crate::commands::linux_activity(&app_hk).await;
+                let _activity = crate::commands::linux_activity(&app_hk).await;
+                #[cfg(windows)]
                 if matches!(event, MuteTriggerEvent::BecameUnmuted { .. }) {
-                    #[cfg(target_os = "linux")]
-                    let worker_activity = activity.clone();
-                    let _ = tauri::async_runtime::spawn_blocking(move || {
-                        #[cfg(target_os = "linux")]
-                        let _activity = worker_activity;
-                        release_active_pcm();
-                    })
-                    .await;
+                    let _ = tauri::async_runtime::spawn_blocking(release_active_pcm).await;
                 }
                 dispatch_event(&app_hk, &state_hk, event);
             }
@@ -384,6 +378,7 @@ mod common {
         }
     }
 
+    #[cfg(windows)]
     pub(super) fn dictation_holds_mic(state: &SharedState) -> bool {
         let Ok(st) = state.lock() else {
             return false;
@@ -1228,6 +1223,24 @@ mod linux {
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum MonitorHandoff {
+        Idle,
+        Starting,
+        Dictating,
+    }
+
+    fn monitor_handoff(lifecycle: &crate::pipeline::DictationLifecycle) -> MonitorHandoff {
+        use crate::pipeline::DictationLifecycle;
+        match lifecycle {
+            DictationLifecycle::Idle => MonitorHandoff::Idle,
+            DictationLifecycle::Starting { .. } => MonitorHandoff::Starting,
+            DictationLifecycle::Recording { session, .. }
+                if !session.capture_started.load(Ordering::Acquire) => MonitorHandoff::Starting,
+            _ => MonitorHandoff::Dictating,
+        }
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct PipeWireSource {
         id: u32,
@@ -1523,8 +1536,12 @@ mod linux {
                 }
             }
 
-            let holding_mic = dictation_holds_mic(state);
-            if holding_mic {
+            let handoff = state.lock().ok().map(|st| monitor_handoff(&st.lifecycle));
+            if handoff == Some(MonitorHandoff::Starting) {
+                std::thread::sleep(POLL_INTERVAL);
+                continue;
+            }
+            if handoff != Some(MonitorHandoff::Idle) {
                 if pcm_is_running() {
                     release_active_pcm();
                     log::info!("mic_mute_trigger: PCM monitor paused (dictation holds the mic)");
@@ -1715,8 +1732,34 @@ mod linux {
     #[cfg(test)]
     mod linux_tests {
         use super::{
-            is_source_event, parse_mute_flag, parse_sources_list, pick_watched_source,
+            is_source_event, monitor_handoff, parse_mute_flag, parse_sources_list,
+            pick_watched_source, MonitorHandoff,
         };
+
+        #[test]
+        fn monitor_stays_open_until_recording_receives_audio() {
+            use crate::pipeline::DictationLifecycle;
+            use std::sync::atomic::Ordering;
+
+            assert_eq!(monitor_handoff(&DictationLifecycle::Idle), MonitorHandoff::Idle);
+            assert_eq!(
+                monitor_handoff(&DictationLifecycle::Starting { prepend_audio: None }),
+                MonitorHandoff::Starting
+            );
+            let session = crate::media::audio::RecordingSession::lifecycle_fixture();
+            let started = session.capture_started.clone();
+            let recording = DictationLifecycle::Recording {
+                session,
+                mute_claim: None,
+                exclusive_mic_session_id: None,
+                handless: false,
+                handless_from_hold: false,
+                prepend_audio: None,
+            };
+            assert_eq!(monitor_handoff(&recording), MonitorHandoff::Starting);
+            started.store(true, Ordering::Release);
+            assert_eq!(monitor_handoff(&recording), MonitorHandoff::Dictating);
+        }
 
         const FIXTURE: &str = "Source #60\n\tState: SUSPENDED\n\tName: alsa_output.usb-ACTIONS_Pebble_V3-00.analog-stereo.monitor\n\tDescription: Monitor of Pebble V3 Analog Stereo\n\tMute: no\nSource #61\n\tState: SUSPENDED\n\tName: alsa_input.usb-Blue_Microphones_Yeti_Nano_2043SG0059H8_888-000154040606-00.analog-stereo\n\tDescription: Yeti Nano Analog Stereo\n\tMute: no\n";
 

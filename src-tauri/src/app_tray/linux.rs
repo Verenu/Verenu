@@ -111,6 +111,8 @@ pub(super) fn setup_with_visibility(app: &AppHandle, active: bool) -> tauri::Res
     tauri::async_runtime::spawn(async move {
         if let Err(error) = reconcile(&app).await {
             log::warn!("Failed to register Linux tray: {error}");
+        } else {
+            super::apply_runtime_icons(&app, None);
         }
     });
     Ok(())
