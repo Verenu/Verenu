@@ -318,14 +318,21 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
   const pillReady = () => browser.execute(`return {
     ready: document.readyState === 'complete',
     bridge: !!window.__TAURI_INTERNALS__,
+    className: document.querySelector('.pill')?.className,
     handsfree: !!document.querySelector('.pill.handsfree'),
     context: document.querySelector('.pill-context-label')?.textContent?.trim(),
     controls: [...document.querySelectorAll('.pill button')].map(button => button.getAttribute('aria-label'))
   };`);
-  await waitUntil(async () => {
-    const state = await pillReady();
-    return state.handsfree && state.context === context && state.controls.join(',') === 'Cancel,Confirm';
-  }, 'Pill before renderer termination');
+  try {
+    await waitUntil(async () => {
+      const state = await pillReady();
+      if (state.handsfree && state.context === context && state.controls.join(',') === 'Cancel,Confirm') return true;
+      throw new Error(`Observed pill state: ${JSON.stringify(state)}`);
+    }, 'Pill before renderer termination');
+  } catch (error) {
+    const backend = await invoke('native_test_pill');
+    throw new Error(`${error.message}; backend: ${JSON.stringify(backend)}`);
+  }
   const appExecutable = await fs.realpath(path.resolve(root, cargoTargetDirectory(), 'debug', 'verenu'));
   let previousRenderer, originalApp, firstTermination;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -333,9 +340,19 @@ async function verifyLinuxRendererRecovery({ browser, invoke, session }) {
       await browser.command('POST', '/window', { handle: 'main' });
       await invoke('native_test_pill', { state: 'paste_failed', message: 'Partly pasted' });
       await browser.command('POST', '/window', { handle: 'pill' });
-      await waitUntil(async () => await browser.execute(
-        `return document.querySelector('.pill.paste-failed .paste-failed-text')?.textContent?.trim() === 'Partly pasted';`
-      ), 'Partial-paste state before renderer termination');
+      try {
+        await waitUntil(async () => {
+          const state = await browser.execute(`return {
+            className: document.querySelector('.pill')?.className,
+            message: document.querySelector('.pill.paste-failed .paste-failed-text')?.textContent?.trim()
+          };`);
+          if (state.message === 'Partly pasted') return true;
+          throw new Error(`Observed pill state: ${JSON.stringify(state)}`);
+        }, 'Partial-paste state before renderer termination');
+      } catch (error) {
+        const backend = await invoke('native_test_pill');
+        throw new Error(`${error.message}; backend: ${JSON.stringify(backend)}`);
+      }
       await browser.command('POST', '/window', { handle: 'main' });
       await browser.execute(`
         const settings = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Settings');
