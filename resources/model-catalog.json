@@ -6,7 +6,8 @@
       "universal-2": { "label": "Universal 2", "tasks": ["transcription"] }
     },
     "google": {
-      "gemini-3.5-transcribe": { "label": "Gemini 3.5 Transcribe", "tasks": ["transcription"] }
+      "gemini-3.5-transcribe": { "label": "Gemini 3.5 Transcribe", "tasks": ["transcription"] },
+      "gemini-3.5-flash-lite": { "label": "Gemini 3.5 Flash Lite", "tasks": ["transcription", "cleanup"] }
     }
   }
 }
