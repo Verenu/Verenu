@@ -112,6 +112,7 @@ pub(super) fn setup(app: &mut tauri::App) -> tauri::Result<()> {
         match tray.assume_sni_available(true).spawn().await {
             Ok(handle) => {
                 tray_owner.manage(handle);
+                super::apply_runtime_icons(&tray_owner, None);
             }
             Err(error) => log::warn!("Failed to register Linux tray: {error}"),
         }
