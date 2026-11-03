@@ -132,7 +132,7 @@ pub async fn nvidia_reuse_check(_app: tauri::AppHandle) -> Result<(), String> {
     set_status("checking", "Testing the GPU and model…");
     match probe().await {
         Ok(()) => set_status("ready", "NVIDIA RE-USE is ready."),
-        Err(_) => set_status("error", "The GPU or model self-test failed. Check the NVIDIA driver or reinstall the runtime."),
+        Err(error) => set_status("error", format!("GPU and model self-test failed: {error}")),
     }
     Ok(())
 }
@@ -306,8 +306,36 @@ fn ensure_setup_space(available: u64) -> Result<(), String> {
     if available < MIN_SETUP_SPACE { Err(STORAGE_ERROR.into()) } else { Ok(()) }
 }
 
+fn setup_error(stage: &str, stderr: &str) -> String {
+    let lower = stderr.to_ascii_lowercase();
+    let reason = if lower.contains("no space left on device") || lower.contains("disk quota exceeded") {
+        "The disk is full or its storage quota was exceeded. Free space and retry."
+    } else if lower.contains("permission denied") || lower.contains("read-only file system") {
+        "The installer was blocked by filesystem permissions or a read-only filesystem. Check the runtime directory and its mount options, then retry."
+    } else if lower.contains("verenu_checksum_failed") || lower.contains("hash mismatch") || lower.contains("hashes do not match") {
+        "A downloaded file failed its integrity check. Retry setup."
+    } else if lower.contains("curl: (22)") || lower.contains("http status server error") || lower.contains("http status client error") {
+        "The download server rejected the request or the file is unavailable. Retry later."
+    } else if lower.contains("curl: (5)") {
+        "The configured proxy's address could not be resolved. Check your proxy settings and retry."
+    } else if lower.contains("curl: (6)") || lower.contains("dns error") || lower.contains("name resolution") {
+        "The download server's address could not be resolved. Check your network and DNS settings."
+    } else if lower.contains("curl: (7)") || lower.contains("connection refused") || lower.contains("connection failed") {
+        "Could not connect to the download server. Check your network connection and retry."
+    } else if lower.contains("curl: (28)") || lower.contains("timed out") {
+        "The download timed out. Check your network connection and retry."
+    } else if lower.contains("certificate") || lower.contains("curl: (60)") || lower.contains("tls error") {
+        "The download's secure connection could not be verified. Check your system certificates and clock."
+    } else if lower.contains("curl: (23)") {
+        "The downloaded file could not be written. Check disk space and permissions, then retry."
+    } else {
+        "The installer did not report a recognized cause. Retry setup."
+    };
+    format!("Setup failed at: {stage}. {reason}")
+}
+
 async fn install() -> Result<(), String> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
     use std::process::Stdio;
     let dir = runtime_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create runtime directory: {e}"))?;
@@ -320,8 +348,19 @@ async fn install() -> Result<(), String> {
         ("requirements.lock", include_str!("../../resources/nvidia-reuse/requirements.lock")),
     ] { std::fs::write(dir.join(name), content).map_err(|e| e.to_string())?; }
     let mut child = tokio::process::Command::new("sh").arg(dir.join("install.sh")).arg(&dir)
-        .stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn().map_err(|e| format!("Could not start setup: {e}"))?;
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn().map_err(|e| format!("Could not start setup: {e}"))?;
     let stdout = child.stdout.take().ok_or("Could not read setup progress")?;
+    let mut stderr = child.stderr.take().ok_or("Could not read setup errors")?;
+    let errors = tokio::spawn(async move {
+        let mut tail = Vec::new();
+        let mut buffer = [0u8; 4096];
+        while let Ok(n) = stderr.read(&mut buffer).await {
+            if n == 0 { break; }
+            tail.extend_from_slice(&buffer[..n]);
+            if tail.len() > 65536 { tail.drain(..tail.len() - 65536); }
+        }
+        tail
+    });
     let cache = dir.join("cache");
     let sizer = tokio::spawn(async move {
         loop {
@@ -340,35 +379,48 @@ async fn install() -> Result<(), String> {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if line.is_empty() { continue; }
-            match stage_progress(&line) {
-                Some(progress) => set_install_progress(line, progress),
-                None => if let Ok(mut status) = status_cell().lock() { status.message = line; },
-            }
+            if let Some(progress) = stage_progress(&line) { set_install_progress(line, progress); }
         }
         child.wait().await
     }).await;
     sizer.abort();
     let result = result.map_err(|_| "Runtime setup timed out after one hour.".to_string())?.map_err(|e| e.to_string())?;
+    let errors = errors.await.unwrap_or_default();
     if !result.success() {
-        if fs2::available_space(&dir).is_ok_and(|free| free < 1024 * 1024 * 1024) {
-            return Err(STORAGE_ERROR.into());
-        }
         let stage = nvidia_reuse_status().message;
-        return Err(format!("Setup failed at: {stage}. Check the network connection, disk space, and NVIDIA driver, then retry."));
+        return Err(setup_error(&stage, &String::from_utf8_lossy(&errors)));
     }
+    probe().await.map_err(|error| format!("GPU and model self-test failed: {error}"))?;
+    tokio::fs::write(dir.join("ready"), "ready").await.map_err(|e| format!("Could not save setup state: {e}"))?;
     set_status("ready", "NVIDIA RE-USE is ready.");
     Ok(())
 }
 
 async fn probe() -> anyhow::Result<()> {
-    let result = tokio::time::timeout(std::time::Duration::from_secs(120), tokio::process::Command::new(runtime_dir().join(".venv/bin/python"))
-        .arg(runtime_dir().join("worker.py")).arg("--probe").env("HF_HUB_OFFLINE", "1")
-        .env("HF_HOME", runtime_dir().join("hf-cache"))
-        .env("TORCH_HOME", runtime_dir().join("torch-cache"))
-        .env("TRITON_CACHE_DIR", runtime_dir().join("triton-cache"))
-        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true).status()).await??;
-    anyhow::ensure!(result.success(), "GPU self-test failed");
+    probe_in(&runtime_dir()).await
+}
+
+async fn probe_in(dir: &std::path::Path) -> anyhow::Result<()> {
+    let result = tokio::time::timeout(std::time::Duration::from_secs(120), tokio::process::Command::new(dir.join(".venv/bin/python"))
+        .arg(dir.join("worker.py")).arg("--probe").env("HF_HUB_OFFLINE", "1")
+        .env("HF_HOME", dir.join("hf-cache"))
+        .env("TORCH_HOME", dir.join("torch-cache"))
+        .env("TRITON_CACHE_DIR", dir.join("triton-cache"))
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).kill_on_drop(true).output()).await
+        .map_err(|_| anyhow::anyhow!("The self-test timed out after 120 seconds."))?
+        .map_err(|_| anyhow::anyhow!("Could not start the GPU self-test. Retry setup to restore the runtime."))?;
+    anyhow::ensure!(result.status.success(), "{}", probe_error(&String::from_utf8_lossy(&result.stderr)));
     Ok(())
+}
+
+fn probe_error(stderr: &str) -> &'static str {
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("out of memory") { "The GPU ran out of memory. Close other GPU applications and retry." }
+    else if lower.contains("driver version is insufficient") || lower.contains("driver on your system is too old") { "The NVIDIA driver is too old for the installed CUDA runtime. Update the driver and retry." }
+    else if lower.contains("cuda is unavailable") || lower.contains("no nvidia driver") { "CUDA could not access the NVIDIA GPU. Check the NVIDIA driver and retry." }
+    else if lower.contains("no kernel image") || lower.contains("not compatible with the current pytorch") { "The installed GPU runtime does not support this GPU architecture." }
+    else if lower.contains("no module named") || lower.contains("importerror") { "A runtime dependency could not be loaded. Retry setup." }
+    else { "The runtime could not complete its self-test. Retry setup; the specific error was not recognized." }
 }
 
 pub async fn enhance(wav: bytes::Bytes, expected_samples: usize) -> anyhow::Result<Vec<f32>> {
@@ -438,6 +490,42 @@ mod tests {
         });
     }
 
+    #[test]
+    fn setup_errors_classify_failures_without_exposing_installer_output() {
+        for (detail, expected) in [
+            ("curl: (23) No space left on device /private/path", "disk is full"),
+            ("curl: (23) Permission denied /private/path", "permissions"),
+            ("./uv: Permission denied /private/path", "mount options"),
+            ("curl: (5) Could not resolve proxy: /private/path", "proxy"),
+            ("curl: (6) Could not resolve host", "resolved"),
+            ("curl: (22) The requested URL returned error: 404", "unavailable"),
+            ("HTTP status server error (503 Service Unavailable) for url (/private/path)", "unavailable"),
+            ("HTTP status client error (403 Forbidden) for url (/private/path)", "unavailable"),
+            ("curl: (28) timeout", "timed out"),
+            ("VERENU_CHECKSUM_FAILED", "integrity check"),
+            ("unknown /private/path", "not report a recognized cause"),
+        ] {
+            let error = super::setup_error("Downloading runtime installer", detail);
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("/private/path"));
+        }
+    }
+    #[tokio::test]
+    async fn missing_probe_runtime_recommends_setup_without_exposing_path() {
+        let dir = std::env::temp_dir().join(format!("verenu-missing-probe-{}", uuid::Uuid::new_v4()));
+        let error = super::probe_in(&dir).await.unwrap_err().to_string();
+        assert!(error.contains("Retry setup"));
+        assert!(!error.contains(&dir.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn probe_errors_identify_common_failures_without_exposing_paths() {
+        assert!(super::probe_error("CUDA out of memory /private/path").contains("out of memory"));
+        assert!(super::probe_error("CUDA driver version is insufficient").contains("driver is too old"));
+        assert!(super::probe_error("The NVIDIA driver on your system is too old. CUDA is unavailable").contains("driver is too old"));
+        assert!(super::probe_error("No module named 'torch'").contains("dependency"));
+        assert!(!super::probe_error("unknown /private/path").contains("/private/path"));
+    }
     use super::decode_samples;
 
     #[test]

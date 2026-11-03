@@ -20,7 +20,7 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot,
   const layout = () => browser.execute(`
     const pill = document.querySelector('.pill');
     const cluster = document.querySelector('.pill-cluster');
-    return { viewport: [innerWidth, innerHeight], capsule: pill ? pill.getBoundingClientRect().toJSON() : null,
+    return { state: pill?.className, viewport: [innerWidth, innerHeight], capsule: pill ? pill.getBoundingClientRect().toJSON() : null,
       cluster: cluster ? [cluster.offsetWidth, cluster.offsetHeight] : null, controls: [...document.querySelectorAll('.pill button')].map(b => b.getAttribute('aria-label')) };
   `);
   const assertFit = box => {
@@ -29,7 +29,7 @@ export async function verifyNativePill({ browser, invoke, directory, screenshot,
     const { left, top, right, bottom } = box.capsule;
     assert.ok(left >= 0 && top >= 0 && right <= box.viewport[0] && bottom <= box.viewport[1], 'Native capsule is clipped');
     assert.ok(box.viewport[0] >= box.cluster[0] && box.viewport[0] <= box.cluster[0] + 28,
-      `Native window keeps excessive horizontal margin: viewport=${box.viewport[0]}, cluster=${box.cluster[0]}`);
+      `Native window keeps excessive horizontal margin: state=${box.state}, viewport=${box.viewport[0]}, cluster=${box.cluster[0]}`);
     assert.ok(Math.abs(box.viewport[1] - box.cluster[1] - 20) <= 1, 'Native window keeps excessive vertical margin');
   };
   const assertInput = async (state, enabled) => {

@@ -13,7 +13,50 @@ const TRAY_ID: &str = "verenu-tray";
 mod linux;
 
 #[cfg(target_os = "linux")]
+static SYSTEM_THEME: Mutex<LinuxSystemTheme> = Mutex::new(LinuxSystemTheme {
+    gtk_dark: false,
+    portal_dark: None,
+});
+
+#[cfg(target_os = "linux")]
+struct LinuxSystemTheme {
+    gtk_dark: bool,
+    portal_dark: Option<bool>,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxSystemTheme {
+    fn is_dark(&self) -> bool {
+        self.portal_dark.unwrap_or(self.gtk_dark)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn setup_system_theme(app: &AppHandle) {
+    use gtk::prelude::{GtkSettingsExt, GtkWindowExt};
+    if let Some((display, settings)) = independent_gtk_settings() {
+        let probe = gtk::Window::new(gtk::WindowType::Toplevel);
+        probe.set_screen(&display.default_screen());
+        update_gtk_system_theme(app, gtk_theme_is_dark(&probe, &settings));
+        let owner = app.clone();
+        let theme_probe = probe.clone();
+        settings.connect_gtk_application_prefer_dark_theme_notify(move |settings| {
+            update_gtk_system_theme(&owner, gtk_theme_is_dark(&theme_probe, settings));
+        });
+        let owner = app.clone();
+        settings.connect_gtk_theme_name_notify(move |settings| {
+            let _keep_display_open = &display;
+            update_gtk_system_theme(&owner, gtk_theme_is_dark(&probe, settings));
+        });
+    } else {
+        log::warn!("Could not open an independent GTK settings display");
+    }
+    watch_system_theme(app.clone());
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    setup_system_theme(app);
     linux::setup(app)?;
     apply_runtime_icons(app, None);
     Ok(())
@@ -32,6 +75,7 @@ pub(crate) async fn resume_after_handoff(app: &AppHandle) -> Result<(), String> 
 
 #[cfg(target_os = "linux")]
 pub(crate) fn setup_probation_tray(app: &AppHandle) -> tauri::Result<()> {
+    setup_system_theme(app);
     linux::setup_with_visibility(app, false)
 }
 
@@ -52,6 +96,25 @@ pub(crate) async fn activate_while_paused(
         return Err("Tray restart gate does not match".into());
     }
     linux::activate_after_handoff(app).await
+}
+
+#[cfg(target_os = "linux")]
+fn gtk_theme_is_dark(probe: &gtk::Window, settings: &gtk::Settings) -> bool {
+    use gtk::prelude::{GtkSettingsExt, StyleContextExt, WidgetExt};
+    let context = probe.style_context();
+    if let Some(color) = context.lookup_color("theme_bg_color") {
+        let luminance = 0.2126 * color.red() + 0.7152 * color.green() + 0.0722 * color.blue();
+        return luminance < 0.5;
+    }
+    settings.is_gtk_application_prefer_dark_theme()
+}
+
+#[cfg(target_os = "linux")]
+fn independent_gtk_settings() -> Option<(gtk::gdk::Display, gtk::Settings)> {
+    let current = gtk::gdk::Display::default()?;
+    let display = gtk::gdk::Display::open(&current.name())?;
+    let settings = gtk::Settings::for_screen(&display.default_screen())?;
+    Some((display, settings))
 }
 
 pub(crate) fn setting_updates_runtime_icons(key: &str) -> bool {
@@ -1099,6 +1162,8 @@ mod windows_icon_tests {
 }
 
 fn resolve_icon_theme(app: &AppHandle, theme_hint: Option<Theme>) -> IconTheme {
+    #[cfg(target_os = "linux")]
+    let theme_hint = Some(cached_system_theme(theme_hint));
     let dark = match appearance_mode(app).as_deref() {
         Some("dark") => Some(true),
         Some("light") => Some(false),
@@ -1110,12 +1175,156 @@ fn resolve_icon_theme(app: &AppHandle, theme_hint: Option<Theme>) -> IconTheme {
         Some(true) => IconTheme::Dark,
         Some(false) => IconTheme::Light,
         None => match theme_hint.or_else(|| {
+            #[cfg(target_os = "linux")]
+            {
+                Some(cached_system_theme(None))
+            }
+            #[cfg(not(target_os = "linux"))]
             app.get_webview_window("main").and_then(|window| window.theme().ok())
         }) {
             Some(Theme::Dark) => IconTheme::Dark,
             _ => IconTheme::Light,
         },
     }
+}
+
+#[cfg(target_os = "linux")]
+fn cached_system_theme(hint: Option<Theme>) -> Theme {
+    SYSTEM_THEME.lock().map(|theme| linux_system_theme(&theme, hint)).unwrap_or(Theme::Light)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_system_theme(theme: &LinuxSystemTheme, hint: Option<Theme>) -> Theme {
+    // Window events can arrive after a newer portal observation.
+    let _ = hint;
+    if theme.is_dark() {
+        Theme::Dark
+    } else {
+        Theme::Light
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn watch_system_theme(app: AppHandle) {
+    use ashpd::desktop::settings::Settings;
+    use futures_util::StreamExt;
+    use std::time::Duration;
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let watch = async {
+                let settings = tokio::time::timeout(Duration::from_secs(2), Settings::new())
+                    .await.map_err(|error| error.to_string())?
+                    .map_err(|error| error.to_string())?;
+                let changes = tokio::time::timeout(Duration::from_secs(2), settings.receive_color_scheme_changed())
+                    .await.map_err(|error| error.to_string())?
+                    .map_err(|error| error.to_string())?;
+                let mut changes = std::pin::pin!(changes);
+                loop {
+                    // Queued signals can predate the initial read, so always read the
+                    // current value instead of applying the signal's older payload.
+                    let scheme = tokio::time::timeout(Duration::from_secs(2), settings.color_scheme())
+                        .await.map_err(|error| error.to_string())?
+                        .map_err(|error| error.to_string())?;
+                    update_system_theme(&app, scheme);
+                    if changes.next().await.is_none() {
+                        return Err::<(), String>("color scheme stream ended".into());
+                    }
+                }
+            };
+            if let Err(error) = watch.await {
+                log::warn!("Could not watch system color scheme: {error}; retrying");
+                set_portal_system_theme(&app, None);
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn portal_theme(scheme: ashpd::desktop::settings::ColorScheme) -> Option<bool> {
+    use ashpd::desktop::settings::ColorScheme;
+    match scheme {
+        ColorScheme::PreferDark => Some(true),
+        ColorScheme::PreferLight => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn update_system_theme(app: &AppHandle, scheme: ashpd::desktop::settings::ColorScheme) {
+    set_portal_system_theme(app, portal_theme(scheme));
+}
+
+#[cfg(target_os = "linux")]
+fn update_gtk_system_theme(app: &AppHandle, dark: bool) {
+    if let Ok(mut theme) = SYSTEM_THEME.lock() {
+        theme.gtk_dark = dark;
+    }
+    refresh_system_icons(app);
+}
+
+#[cfg(target_os = "linux")]
+fn set_portal_system_theme(app: &AppHandle, dark: Option<bool>) {
+    if let Ok(mut theme) = SYSTEM_THEME.lock() {
+        theme.portal_dark = dark;
+    }
+    refresh_system_icons(app);
+}
+
+#[cfg(target_os = "linux")]
+fn refresh_system_icons(app: &AppHandle) {
+    if matches!(appearance_mode(app).as_deref(), None | Some("system" | "omarchy")) {
+        apply_runtime_icons(app, None);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn stale_window_hint_cannot_override_portal_theme() {
+    // Window hints are ignored; portal and GTK observations are the sources.
+    let theme = LinuxSystemTheme { gtk_dark: false, portal_dark: Some(true) };
+    assert!(matches!(linux_system_theme(&theme, Some(Theme::Light)), Theme::Dark));
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn portal_no_preference_retains_gtk_fallback() {
+    use ashpd::desktop::settings::ColorScheme;
+    let mut theme = LinuxSystemTheme { gtk_dark: true, portal_dark: portal_theme(ColorScheme::NoPreference) };
+    assert!(theme.is_dark());
+    theme.gtk_dark = false;
+    assert!(!theme.is_dark());
+    theme.portal_dark = portal_theme(ColorScheme::PreferDark);
+    assert!(theme.is_dark());
+    theme.gtk_dark = false;
+    assert!(theme.is_dark());
+    theme.portal_dark = portal_theme(ColorScheme::PreferLight);
+    theme.gtk_dark = true;
+    assert!(!theme.is_dark());
+    theme.portal_dark = None;
+    assert!(theme.is_dark());
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+#[ignore = "requires a GTK display"]
+fn app_gtk_theme_changes_do_not_change_independent_settings() {
+    use gtk::prelude::{GtkSettingsExt, GtkWindowExt};
+    gtk::init().unwrap();
+    let settings = gtk::Settings::default().unwrap();
+    let (display, independent) = independent_gtk_settings().unwrap();
+    let probe = gtk::Window::new(gtk::WindowType::Toplevel);
+    probe.set_screen(&display.default_screen());
+    let initial = settings.is_gtk_application_prefer_dark_theme();
+    let fallback = independent.is_gtk_application_prefer_dark_theme();
+    settings.set_gtk_application_prefer_dark_theme(!initial);
+    assert_eq!(independent.is_gtk_application_prefer_dark_theme(), fallback);
+    settings.set_gtk_application_prefer_dark_theme(initial);
+    independent.set_gtk_application_prefer_dark_theme(false);
+    independent.set_gtk_theme_name(Some("Adwaita"));
+    assert!(!gtk_theme_is_dark(&probe, &independent));
+    independent.set_gtk_theme_name(Some("Adwaita-dark"));
+    assert!(gtk_theme_is_dark(&probe, &independent));
 }
 
 fn runtime_icon_background(theme: IconTheme) -> [u8; 4] {

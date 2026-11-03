@@ -136,7 +136,7 @@ coreaudio          = { package = "coreaudio-rs", version = "0.11" }
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.3.6"
 notify-rust = "4.18.0"
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts", "settings"] }
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 secret-service = { version = "5.2", default-features = false, features = ["rt-tokio-crypto-rust"] }
 wl-clipboard-rs = "0.9.4"
