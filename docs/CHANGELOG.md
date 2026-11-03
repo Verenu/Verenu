@@ -5,6 +5,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 ## Unreleased
 
 - On Linux, keep the microphone mute-button monitor running until dictation starts receiving audio, avoiding an interruption while switching capture streams.
+- NVIDIA RE-USE setup now reports recognized download, disk, permission, and integrity failures instead of suggesting every possible cause.
 
 - Migrate saved Gemini 2.5 Flash selections to Gemini 3.5 Flash Lite ahead of retirement.
 
