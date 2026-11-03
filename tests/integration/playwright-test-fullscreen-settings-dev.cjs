@@ -226,6 +226,30 @@ async function gotoSection(page, label) {
       `Version footer should sit at the bottom of the page (gap ${footOnAbout.gapFromBottom}px)`);
     note(`version footer centred on About only (off-centre ${footOnAbout.offCentre}px)`);
 
+    for (const reducedMotion of ['no-preference', 'reduce']) {
+      await page.emulateMedia({ reducedMotion });
+      const transition = await page.evaluate(async () => {
+        const button = [...document.querySelectorAll('.settings-nav-item')]
+          .find((item) => item.textContent.trim() === 'Privacy');
+        const started = performance.now();
+        button.click();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return { elapsed: performance.now() - started, footers: document.querySelectorAll('.settings-foot').length };
+      });
+      check(transition.elapsed < 100, `Footer transition sample must arrive within 100ms (${reducedMotion})`);
+      check(transition.footers === 0, `Version footer must leave About immediately (${reducedMotion})`);
+      await page.locator('h2.settings-h:has-text("Privacy")').waitFor({ state: 'visible', timeout: TIMEOUT });
+      await page.waitForFunction(() => document.querySelectorAll('.settings-body .panel').length === 1);
+      check((await page.locator('.settings-foot').count()) === 0,
+        `Version footer must leave About with the outgoing panel (${reducedMotion})`);
+      await page.locator('.settings-nav-item:has-text("About")').click();
+      await page.locator('h2.settings-h:has-text("About")').waitFor({ state: 'visible', timeout: TIMEOUT });
+      check((await page.locator('.settings-foot').count()) === 1,
+        `Returning to About must show one version footer (${reducedMotion})`);
+    }
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    note('version footer leaves About without waiting for a separate outro');
+
     const peaks = await page.evaluate(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const byText = (sel, text) =>
