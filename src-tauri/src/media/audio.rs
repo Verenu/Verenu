@@ -492,6 +492,8 @@ pub struct RecordingSession {
     result_rx: mpsc::Receiver<Result<RecordingResult>>,
     pub level: Arc<AtomicU32>,
     pub raw_level: Arc<AtomicU32>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) capture_started: Arc<AtomicBool>,
     pub envelope: Arc<EnvelopeTap>,
     pub active: Arc<AtomicBool>,
     pub speech_detected: Arc<AtomicBool>,
@@ -663,6 +665,7 @@ impl RecordingSession {
             result_rx,
             level: Arc::new(AtomicU32::new(0)),
             raw_level: Arc::new(AtomicU32::new(0)),
+            capture_started: Arc::new(AtomicBool::new(false)),
             envelope: Arc::new(EnvelopeTap::new()),
             active: Arc::new(AtomicBool::new(true)),
             speech_detected: Arc::new(AtomicBool::new(false)),
@@ -741,6 +744,7 @@ impl RecordingSession {
 
         let level = Arc::new(AtomicU32::new(0f32.to_bits()));
         let raw_level = Arc::new(AtomicU32::new(0f32.to_bits()));
+        let capture_started = Arc::new(AtomicBool::new(false));
         let envelope = Arc::new(EnvelopeTap::new());
         let active = Arc::new(AtomicBool::new(true));
         let speech_detected = Arc::new(AtomicBool::new(false));
@@ -749,6 +753,7 @@ impl RecordingSession {
 
         let level_w = Arc::clone(&level);
         let raw_level_w = Arc::clone(&raw_level);
+        let capture_started_w = Arc::clone(&capture_started);
         let envelope_w = Arc::clone(&envelope);
         let active_w = Arc::clone(&active);
         let speech_detected_w = Arc::clone(&speech_detected);
@@ -972,6 +977,7 @@ impl RecordingSession {
                 let dropped = Arc::clone(&dropped_samples);
                 let level = Arc::clone(&level_w);
                 let raw_level = Arc::clone(&raw_level_w);
+                let capture_started = Arc::clone(&capture_started_w);
                 let wake = Arc::clone(&wake);
                 let stream_error = Arc::clone(&stream_error_w);
                 let active = Arc::clone(&active_w);
@@ -979,6 +985,7 @@ impl RecordingSession {
                     enqueue_f32_buffer(data, 1, CaptureBuffer {
                         queue: &queue, dropped: &dropped, level: &level,
                         raw_level: &raw_level, display_gain, wake: &wake,
+                        capture_started: &capture_started,
                     });
                 }, move || {
                     stream_error.store(true, Ordering::Release);
@@ -996,6 +1003,7 @@ impl RecordingSession {
             let queue_cb = Arc::clone(&queue);
             let dropped_cb = Arc::clone(&dropped_samples);
             let raw_level_cb = Arc::clone(&raw_level_w);
+            let capture_started_cb = Arc::clone(&capture_started_w);
             let stream_error_cb = Arc::clone(&stream_error_w);
             let active_cb = Arc::clone(&active_w);
             let err_fn = move |e| {
@@ -1016,6 +1024,7 @@ impl RecordingSession {
                                 dropped: &dropped_cb,
                                 level: &level_cb,
                                 raw_level: &raw_level_cb,
+                                capture_started: &capture_started_cb,
                                 display_gain,
                                 wake: &wake,
                             },
@@ -1035,6 +1044,7 @@ impl RecordingSession {
                                 dropped: &dropped_cb,
                                 level: &level_cb,
                                 raw_level: &raw_level_cb,
+                                capture_started: &capture_started_cb,
                                 display_gain,
                                 wake: &wake,
                             },
@@ -1131,6 +1141,7 @@ impl RecordingSession {
             result_rx,
             level,
             raw_level,
+            capture_started,
             envelope,
             active,
             speech_detected,
@@ -1157,6 +1168,7 @@ struct CaptureBuffer<'a> {
     dropped: &'a AtomicU64,
     level: &'a AtomicU32,
     raw_level: &'a AtomicU32,
+    capture_started: &'a AtomicBool,
     display_gain: f32,
     wake: &'a WorkerWake,
 }
@@ -1201,6 +1213,7 @@ fn enqueue_mono_buffer(mono: impl Iterator<Item = f32>, capture: CaptureBuffer<'
         (sum / count as f32).sqrt()
     };
     capture.raw_level.store(rms.to_bits(), Ordering::Relaxed);
+    capture.capture_started.store(true, Ordering::Release);
     let display = (rms * capture.display_gain).min(1.0);
     capture.level.store(display.to_bits(), Ordering::Relaxed);
     capture.wake.notify();
@@ -1434,7 +1447,7 @@ mod tests {
         DISPLAY_GAIN,
     };
     use crossbeam_queue::ArrayQueue;
-    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
     #[test]
     fn float_enqueue_preserves_partial_frames_nonfinite_samples_and_empty_levels() {
@@ -1448,13 +1461,16 @@ mod tests {
             let dropped = AtomicU64::new(0);
             let level = AtomicU32::new(1f32.to_bits());
             let raw_level = AtomicU32::new(1f32.to_bits());
+            let capture_started = AtomicBool::new(false);
             let wake = WorkerWake::new();
             super::enqueue_f32_buffer(&data, channels, CaptureBuffer {
                 queue: &queue, dropped: &dropped, level: &level, raw_level: &raw_level,
+                capture_started: &capture_started,
                 display_gain: DISPLAY_GAIN, wake: &wake,
             });
             let actual: Vec<_> = std::iter::from_fn(|| queue.pop()).collect();
             assert_eq!(actual, expected);
+            assert_eq!(capture_started.load(Ordering::Acquire), !data.is_empty());
             if data.is_empty() {
                 assert_eq!(level.load(Ordering::Relaxed), 0f32.to_bits());
                 assert_eq!(raw_level.load(Ordering::Relaxed), 0f32.to_bits());
@@ -1595,6 +1611,7 @@ mod tests {
         let dropped = AtomicU64::new(0);
         let level = AtomicU32::new(0f32.to_bits());
         let raw_level = AtomicU32::new(0f32.to_bits());
+        let capture_started = AtomicBool::new(false);
         let data = [i16::MAX, i16::MAX, 0, 0];
         let wake = WorkerWake::new();
 
@@ -1606,6 +1623,7 @@ mod tests {
                 dropped: &dropped,
                 level: &level,
                 raw_level: &raw_level,
+                capture_started: &capture_started,
                 display_gain: DISPLAY_GAIN,
                 wake: &wake,
             },
@@ -1633,6 +1651,7 @@ mod tests {
         let low_level = AtomicU32::new(0f32.to_bits());
         let high_level = AtomicU32::new(0f32.to_bits());
         let raw_level = AtomicU32::new(0f32.to_bits());
+        let capture_started = AtomicBool::new(false);
         let low_wake = WorkerWake::new();
         let high_wake = WorkerWake::new();
 
@@ -1644,6 +1663,7 @@ mod tests {
                 dropped: &low_dropped,
                 level: &low_level,
                 raw_level: &raw_level,
+                capture_started: &capture_started,
                 display_gain: DISPLAY_GAIN,
                 wake: &low_wake,
             },
@@ -1656,6 +1676,7 @@ mod tests {
                 dropped: &high_dropped,
                 level: &high_level,
                 raw_level: &raw_level,
+                capture_started: &capture_started,
                 display_gain: DISPLAY_GAIN * 8.0,
                 wake: &high_wake,
             },
