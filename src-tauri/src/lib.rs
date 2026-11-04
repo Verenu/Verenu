@@ -788,6 +788,8 @@ pub fn run() {
             commands::frontend_ready,
             commands::reset_macos_core_permissions,
             commands::get_recent,
+            commands::get_dictation_log,
+            commands::delete_history_entry,
             commands::get_history_apps,
             commands::get_stats,
             commands::get_insights,

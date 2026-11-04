@@ -8,6 +8,10 @@ pub(super) struct PipelineTelemetry {
     run_id: Option<String>,
     stage: Mutex<(Stage, Instant)>,
     finished: AtomicBool,
+    started: Instant,
+    log_stages: Mutex<Vec<serde_json::Value>>,
+    log_failures: Mutex<Vec<serde_json::Value>>,
+    usage: crate::api::usage::Collector,
 }
 
 impl PipelineTelemetry {
@@ -17,6 +21,10 @@ impl PipelineTelemetry {
             run_id,
             stage: Mutex::new((Stage::Capture, Instant::now())),
             finished: AtomicBool::new(false),
+            started: Instant::now(),
+            log_stages: Mutex::new(Vec::new()),
+            log_failures: Mutex::new(Vec::new()),
+            usage: Default::default(),
         }
     }
 
@@ -37,6 +45,10 @@ impl PipelineTelemetry {
 
     pub(super) fn complete_stage(&self, provider_model: Option<&str>) {
         if let Ok(current) = self.stage.lock() {
+            if let Ok(mut stages) = self.log_stages.lock() {
+                let name = if matches!(current.0, Stage::Insertion) { "injection" } else { current.0.as_str() };
+                stages.push(serde_json::json!({"stage": name, "duration_ms": current.1.elapsed().as_millis().min(u64::MAX as u128) as u64, "status": "ok"}));
+            }
             self.with_run(|analytics, id| {
                 analytics.pipeline_stage_completed_with_model(
                     id,
@@ -63,7 +75,16 @@ impl PipelineTelemetry {
     }
 
     pub(super) fn fallback(&self, kind: &'static str) {
+        if let Ok(mut failures) = self.log_failures.lock() {
+            failures.push(serde_json::json!({"stage": kind, "message": "A fallback was used."}));
+        }
         self.with_run(|analytics, id| analytics.fallback_used(id, kind));
+    }
+
+    pub(super) fn cleanup_unavailable(&self) {
+        if let Ok(mut failures) = self.log_failures.lock() {
+            failures.push(serde_json::json!({"stage": "cleanup", "message": "Cleanup was unavailable. Your transcript was preserved."}));
+        }
     }
 
     pub(super) fn retry(&self, attempt: u8, reason: &'static str) {
@@ -98,6 +119,11 @@ impl PipelineTelemetry {
             return;
         }
         let stage = self.stage.lock().map(|v| v.0).unwrap_or(Stage::Unknown);
+        if matches!(stage, Stage::Insertion) {
+            if let Ok(mut failures) = self.log_failures.lock() {
+                failures.push(serde_json::json!({"stage": "injection", "message": "Verenu could not insert the text."}));
+            }
+        }
         self.with_run(|analytics, id| {
             analytics.pipeline_failed(id, stage, category);
             analytics.delivery_outcome(
@@ -120,6 +146,47 @@ impl PipelineTelemetry {
             analytics.delivery_outcome(id, "cancelled_user");
         });
     }
+
+    pub(super) fn history_log(&self, entry_id: i64, audio_ms: u64, calls: &[crate::data::db::ApiCall]) -> serde_json::Value {
+        let mut stages = self.log_stages.lock().map(|v| v.clone()).unwrap_or_default();
+        let failures = self.log_failures.lock().map(|v| v.clone()).unwrap_or_default();
+        if failures.iter().any(|failure| failure["message"] == "Cleanup was unavailable. Your transcript was preserved.") {
+            if let Some(stage) = stages.iter_mut().find(|stage| stage["stage"] == "cleanup") {
+                stage["status"] = serde_json::json!("failed");
+            }
+        }
+        for call in calls {
+            if let Some(stage) = stages.iter_mut().find(|s| s["stage"] == call.task && s.get("model").is_none()) {
+                stage["provider"] = serde_json::json!(call.provider);
+                stage["model"] = serde_json::json!(call.model);
+            } else {
+                stages.push(serde_json::json!({"stage": call.task, "provider": call.provider, "model": call.model}));
+            }
+        }
+        if let Ok(usage) = self.usage.lock() {
+            let mut totals: Vec<crate::api::usage::Usage> = Vec::new();
+            for item in usage.iter() {
+                if let Some(total) = totals.iter_mut().find(|entry| entry.stage == item.stage && entry.provider == item.provider && entry.model == item.model) {
+                    total.input = total.input.zip(item.input).and_then(|(a, b)| a.checked_add(b));
+                    total.output = total.output.zip(item.output).and_then(|(a, b)| a.checked_add(b));
+                } else {
+                    totals.push(item.clone());
+                }
+            }
+            for item in totals {
+                let stage = stages.iter_mut().find(|s| s["stage"] == item.stage && s["provider"] == item.provider && s["model"] == item.model && s.get("input_tokens").is_none() && s.get("output_tokens").is_none());
+                if let Some(stage) = stage {
+                    stage["input_tokens"] = serde_json::json!(item.input);
+                    stage["output_tokens"] = serde_json::json!(item.output);
+                } else {
+                    stages.push(serde_json::json!({"stage": item.stage, "provider": item.provider, "model": item.model, "input_tokens": item.input, "output_tokens": item.output}));
+                }
+            }
+        }
+        serde_json::json!({"entry_id": entry_id, "audio_ms": audio_ms, "total_ms": self.started.elapsed().as_millis().min(u64::MAX as u128) as u64, "stages": stages, "failures": failures})
+    }
+
+    pub(super) fn usage_collector(&self) -> crate::api::usage::Collector { self.usage.clone() }
 }
 
 impl Drop for PipelineTelemetry {
@@ -139,6 +206,26 @@ mod tests {
         analytics.dictation_started(&id, false, false);
         let telemetry = PipelineTelemetry::new(Some(analytics.clone()), Some(id));
         (analytics, telemetry)
+    }
+
+    #[test]
+    fn history_log_aggregates_retry_usage_and_records_cleanup_failure() {
+        let (_, telemetry) = run();
+        {
+            let mut usage = telemetry.usage.lock().unwrap();
+            for (input, output) in [(10, 2), (20, 4)] {
+                usage.push(crate::api::usage::Usage { stage: "cleanup".into(), provider: "test".into(), model: "model".into(), input: Some(input), output: Some(output) });
+            }
+        }
+        telemetry.start_stage(Stage::Cleanup);
+        telemetry.complete_stage(None);
+        telemetry.cleanup_unavailable();
+        let log = telemetry.history_log(1, 1000, &[]);
+        assert_eq!(log["stages"][0]["status"], "failed");
+        assert_eq!(log["stages"][1]["input_tokens"], 30);
+        assert_eq!(log["stages"][1]["output_tokens"], 6);
+        assert_eq!(log["failures"].as_array().unwrap().len(), 1);
+        assert_eq!(log["failures"][0]["message"], "Cleanup was unavailable. Your transcript was preserved.");
     }
 
     #[test]

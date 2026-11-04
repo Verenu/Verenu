@@ -206,7 +206,8 @@ pub(super) async fn finalize_pipeline_completion(
     );
     let api_calls_task = if !calls.is_empty() {
         let db_for_calls = db_handle.inner().clone();
-        Some(tokio::task::spawn_blocking(move || db::insert_api_calls(&db_for_calls, &calls)))
+        let calls_for_insert = calls.clone();
+        Some(tokio::task::spawn_blocking(move || db::insert_api_calls(&db_for_calls, &calls_for_insert)))
     } else {
         None
     };
@@ -338,6 +339,12 @@ pub(super) async fn finalize_pipeline_completion(
                 },
                 entry.words,
             ),
+        }
+        let log = telemetry.history_log(entry.id, ctx.duration_ms, &calls);
+        let db_for_log = db_handle.inner().clone();
+        let entry_id = entry.id;
+        if let Err(error) = tokio::task::spawn_blocking(move || db::save_dictation_log(&db_for_log, entry_id, &log)).await.unwrap_or_else(|e| Err(e.into())) {
+            log::warn!("pipeline: could not save dictation log: {error}");
         }
     }
     log::debug!(

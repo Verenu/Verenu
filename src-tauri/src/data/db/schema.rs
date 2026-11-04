@@ -1074,6 +1074,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     if user_version <= 39 {
         conn.execute("DELETE FROM agent_library_changes WHERE created_at < datetime('now','-30 days')", [])?;
     }
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS dictation_logs (transcription_id INTEGER PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE, payload TEXT NOT NULL)")?;
     conn.execute("INSERT OR IGNORE INTO library_usage_coverage VALUES (1, datetime('now'))", [])?;
     conn.execute_batch(
         "CREATE VIEW IF NOT EXISTS combined_device_counters AS
