@@ -10,7 +10,7 @@ import { report } from '../src/report.js';
 import { nativeChecks } from '../src/checks/native.js';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { generate } from '../scripts/generate-model-manifest.js';
 
 test('fixtures report missing, corrupt, and error states without a network request', async t => {
@@ -139,6 +139,32 @@ test('SQLite checkpoint requires typed confirmation and backs up the database', 
   const backup = await fix(dataDir, 'checkpoint-db', { typedYes: true });
   assert.deepEqual(await readFile(join(backup, 'verenu.db')), original);
   assert.equal(spawnSync('sqlite3', [db, 'PRAGMA integrity_check;'], {encoding: 'utf8'}).stdout.trim(), 'ok');
+});
+
+test('checkpoint backs up and truncates a real unheld WAL', {timeout: 15000}, async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
+  const db = join(dataDir, 'verenu.db');
+  const child = spawn('sqlite3', [db], {stdio: ['pipe', 'pipe', 'pipe']});
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  await new Promise((resolve, reject) => {
+    let output = '';
+    child.once('error', reject);
+    child.stdout.on('data', data => { output += data; if (output.includes('fixture-ready')) resolve(); });
+    child.once('exit', code => reject(new Error(`SQLite fixture exited early: ${code}`)));
+    child.stdin.write("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE fixture(id INTEGER); INSERT INTO fixture VALUES (7); SELECT 'fixture-ready';\n");
+  });
+  const ended = new Promise(resolve => child.once('exit', resolve));
+  child.kill('SIGKILL');
+  await ended;
+  const wal = `${db}-wal`;
+  const originalWal = await readFile(wal);
+  assert.ok(originalWal.length > 0);
+  const backup = await fix(dataDir, 'checkpoint-db', {typedYes: true});
+  assert.deepEqual(await readFile(join(backup, 'verenu.db-wal')), originalWal);
+  const remaining = await readFile(wal).catch(error => { if (error.code === 'ENOENT') return Buffer.alloc(0); throw error; });
+  assert.equal(remaining.length, 0);
+  assert.equal(spawnSync('sqlite3', [db, 'SELECT id FROM fixture;'], {encoding: 'utf8'}).stdout.trim(), '7');
 });
 
 test('SQLite recovery requires typed confirmation and preserves the original backup', async t => {
