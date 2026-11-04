@@ -147,8 +147,6 @@ async fn skip_legal_locked(app: AppHandle) -> Result<ConsentState, String> {
     FORCED_OFF.store(true, Ordering::Release);
     REVOKING.store(true, Ordering::Release);
     let _reset = ResetRevoking;
-    #[cfg(target_os = "android")]
-    crate::android::security_plugin::revoke_analytics(&app).await?;
     let settings = crate::data::store::settings_handle(&app)?;
     let ever_accepted = possible_prior_acceptance(&settings.snapshot()?);
     settings.save_values([
@@ -159,6 +157,8 @@ async fn skip_legal_locked(app: AppHandle) -> Result<ConsentState, String> {
         (SYNC_PENDING, serde_json::json!(false)),
         (EVER_ACCEPTED, serde_json::json!(ever_accepted)),
     ])?;
+    #[cfg(target_os = "android")]
+    crate::android::security_plugin::revoke_analytics(&app).await?;
     {
         use tauri::Manager;
         if let Some(manager) = app.try_state::<crate::local_llm::LocalLlmManager>() {
@@ -317,12 +317,25 @@ pub(crate) async fn accept_legal(app: AppHandle, terms_version: String, privacy_
         return Err("The installation secret is unavailable".into());
     }
     let accepted_at = chrono::Utc::now().timestamp_millis();
+    // An explicit acceptance may be sent before consent is enabled. Nothing
+    // else can use this exception, and a server conflict must fail closed.
+    let result = if crate::is_dev_session() {
+        AcceptanceResult::Pending
+    } else {
+        post_acceptance("https://api.verenu.com/v1/legal/accept", &id, &secret, &terms_version, &privacy_version, accepted_at).await
+    };
+    if result == AcceptanceResult::Conflict {
+        return match skip_legal_locked(app.clone()).await {
+            Ok(_) => Err("consent_version_conflict".into()),
+            Err(error) => Err(format!("consent_version_conflict: {error}")),
+        };
+    }
     settings.save_values([
         (ACCEPTED_TERMS, serde_json::json!(TERMS_VERSION)),
         (ACCEPTED_PRIVACY, serde_json::json!(PRIVACY_VERSION)),
         (ACCEPTED_AT, serde_json::json!(accepted_at)),
         (SKIPPED, serde_json::json!(false)),
-        (SYNC_PENDING, serde_json::json!(true)),
+        (SYNC_PENDING, serde_json::json!(result != AcceptanceResult::Synced)),
         (EVER_ACCEPTED, serde_json::json!(true)),
     ])?;
     FORCED_OFF.store(false, Ordering::Release);
@@ -343,11 +356,6 @@ pub(crate) async fn accept_legal(app: AppHandle, terms_version: String, privacy_
                     .unwrap_or(false),
             );
         }
-    }
-    if sync_acceptance(&settings, &id, &secret, accepted_at).await {
-        drop(_sync_guard);
-        skip_legal(app.clone()).await?;
-        return Err("consent_version_conflict".into());
     }
     get_consent_state(app).await
 }
@@ -374,24 +382,35 @@ async fn sync_acceptance_to(
     endpoint: &str,
 ) -> bool {
     let Ok(_permit) = network_permit().await else { return false; };
+    match post_acceptance(endpoint, id, secret, TERMS_VERSION, PRIVACY_VERSION, accepted_at).await {
+        AcceptanceResult::Conflict => true,
+        AcceptanceResult::Synced => {
+            let _ = settings.save_value(SYNC_PENDING, serde_json::json!(false));
+            false
+        }
+        AcceptanceResult::Pending => false,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AcceptanceResult { Synced, Pending, Conflict }
+
+async fn post_acceptance(endpoint: &str, id: &str, secret: &str, terms: &str, privacy: &str, accepted_at: i64) -> AcceptanceResult {
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
     {
         Ok(client) => client,
-        Err(_) => return false,
+        Err(_) => return AcceptanceResult::Pending,
     };
     let result = client.post(endpoint)
         .bearer_auth(secret)
-        .json(&serde_json::json!({ "userId": id, "termsVersion": TERMS_VERSION, "privacyVersion": PRIVACY_VERSION, "acceptedAt": accepted_at }))
+        .json(&serde_json::json!({ "userId": id, "termsVersion": terms, "privacyVersion": privacy, "acceptedAt": accepted_at }))
         .send().await;
     match result {
-        Ok(response) if response.status() == reqwest::StatusCode::CONFLICT => true,
-        Ok(response) if response.status().is_success() => {
-            let _ = settings.save_value(SYNC_PENDING, serde_json::json!(false));
-            false
-        }
-        _ => false,
+        Ok(response) if response.status() == reqwest::StatusCode::CONFLICT => AcceptanceResult::Conflict,
+        Ok(response) if response.status().is_success() => AcceptanceResult::Synced,
+        _ => AcceptanceResult::Pending,
     }
 }
 
@@ -540,6 +559,32 @@ mod tests {
         assert!(shown_versions_are_current(TERMS_VERSION, PRIVACY_VERSION));
         assert!(!shown_versions_are_current(TERMS_VERSION, "2026-11-03"));
         assert!(!shown_versions_are_current("old", PRIVACY_VERSION));
+    }
+
+    #[tokio::test]
+    async fn acceptance_conflict_is_detected_before_local_acceptance() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 2048];
+            loop {
+                let count = socket.read(&mut chunk).unwrap();
+                request.extend_from_slice(&chunk[..count]);
+                if String::from_utf8_lossy(&request).contains(PRIVACY_VERSION) { break; }
+                assert!(count > 0);
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.contains(TERMS_VERSION));
+            assert!(request.contains(PRIVACY_VERSION));
+            socket.write_all(b"HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let result = post_acceptance(&format!("http://{address}"), "synthetic-id", "synthetic-secret", TERMS_VERSION, PRIVACY_VERSION, 1).await;
+        server.join().unwrap();
+        assert_eq!(result, AcceptanceResult::Conflict);
+        assert!(!permits_network(&SettingsSnapshot::from_pairs([])));
     }
 
     #[test]

@@ -67,8 +67,12 @@ invoke<string>('get_install_id');
 ```
 
 The acceptance command requires the versions shown to the user and rejects
-outdated versions with `consent_version_conflict`. The other commands take no
-arguments. Commands reject with an error string when local storage fails. An acceptance can succeed offline with `syncPending: true`.
+outdated versions with an error string starting `consent_version_conflict`,
+including when the acceptance endpoint returns HTTP 409. The backend checks
+the endpoint before persisting the new acceptance; a 409 clears existing
+acceptance and disables gated features. If the endpoint cannot be reached,
+acceptance can succeed offline with `syncPending: true`; a later 409 revokes it.
+The other commands take no arguments. Commands reject with an error string when local storage fails.
 Deletion may return `deletion_pending` until the server confirms deletion.
 The installation secret is never returned to the frontend. A copied ID is a
 support handle and does not authorize access or deletion.
