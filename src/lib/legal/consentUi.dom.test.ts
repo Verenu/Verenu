@@ -156,12 +156,12 @@ describe('gated feature hints', () => {
   it('shows a hint with an accept action when skipped, and nothing when accepted', async () => {
     backend(state('skipped'));
     const onaccept = vi.fn();
-    render(ConsentHint, { feature: 'Product analytics', onaccept });
+    render(ConsentHint, { feature: 'Product analytics', thenEnable: onaccept });
     expect(screen.queryByTestId('consent-hint')).toBeNull();
     await loadConsent();
     expect(await screen.findByTestId('consent-hint')).toBeTruthy();
     await fireEvent.click(screen.getByRole('button', { name: 'Review and accept' }));
-    expect(onaccept).toHaveBeenCalled();
+    expect(onaccept).not.toHaveBeenCalled();
     cleanup();
     backend(state('accepted'));
     await loadConsent();

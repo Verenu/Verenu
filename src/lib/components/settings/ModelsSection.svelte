@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { consentBlocked, requireConsent } from '../../legal/consentStore.svelte';
   import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount } from 'svelte';
   import { customProviderStore } from '../../customProviders.svelte';
@@ -248,6 +250,11 @@
     if (modelConflict) return;
     const target = preset.target;
     if (!target) return;
+    const usesNetwork = target.requiredLocalModels.length > 0 && target.requiredLocalModels.some(
+      (model) => !installedLocal[model.task]?.includes(model.id))
+      || [target.transcriptionDefaultModel, target.cleanupDefaultModel, ...target.transcriptionFallbacks, ...target.cleanupFallbacks]
+        .some((id) => !!id && isCloudModel(id));
+    if (usesNetwork && consentBlocked()) { requireConsent(() => applyPreset(preset)); return; }
     clearPendingPreset();
 
     const missing = target.requiredLocalModels.filter(
@@ -679,7 +686,14 @@
     }
   }
 
+  /** Anything that is not on-device calls a provider over the network. */
+  function isCloudModel(id: string): boolean {
+    const provider = splitModelId(id)?.provider;
+    return !!provider && provider !== 'local' && provider !== 'apple-intelligence';
+  }
+
   function selectModel(type: TaskType, id: string) {
+    if (isCloudModel(id) && consentBlocked()) { requireConsent(() => selectModel(type, id)); return; }
     modelSelectionMode = 'manual';
     const parsed = splitModelId(id);
     if (!parsed) return;
@@ -690,6 +704,7 @@
   }
 
   function addFallbackModel(type: TaskType, id: string) {
+    if (isCloudModel(id) && consentBlocked()) { requireConsent(() => addFallbackModel(type, id)); return; }
     modelSelectionMode = 'manual';
     const parsed = splitModelId(id);
     if (!parsed) return;
@@ -751,6 +766,7 @@
   });
 
   async function handleDualTranscription(value: boolean) {
+    if (value && consentBlocked()) { requireConsent(() => handleDualTranscription(true)); return; }
     modelSelectionMode = 'manual';
     dualTranscriptionEnabled = value;
     try {
@@ -824,6 +840,7 @@
 
 <h2 class="settings-h">Models</h2>
 <p class="settings-lede">Pick a setup and Verenu chooses the speech model, clean-up model, and backups for you.</p>
+<ConsentHint feature="Cloud transcription and cleanup, and model downloads" />
 
 {#if modelConflict}
   <div class="panel-note" role="alert">

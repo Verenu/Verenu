@@ -4,12 +4,15 @@
     onchange,
     label = '',
     disabled = false,
+    gated = false,
     error = $bindable(false),
   }: {
     checked: boolean;
     onchange: (value: boolean) => void;
     label?: string;
     disabled?: boolean;
+    /** Looks and reads as disabled, but still takes a tap so the caller can open the accept flow. */
+    gated?: boolean;
     error?: boolean;
   } = $props();
 
@@ -25,6 +28,8 @@
   class="toggle"
   class:on={checked}
   class:error
+  class:gated
+  aria-disabled={gated || undefined}
   role="switch"
   aria-checked={checked}
   aria-label={label || 'Toggle'}
@@ -74,6 +79,8 @@
     align-items: center;
     justify-content: center;
   }
+
+  .toggle.gated { opacity: 0.5; }
 
   .toggle.on {
     background: var(--accent);

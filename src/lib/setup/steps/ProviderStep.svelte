@@ -1,6 +1,8 @@
 <script lang="ts">
   import { providers, type WizardProviderId } from '../setupData';
   import { getProviderLogo } from '../ProviderLogos';
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { consentBlocked, requireConsent } from '../../legal/consentStore.svelte';
 
   let {
     provider = $bindable(),
@@ -20,13 +22,19 @@
 </script>
 
 <div class="step provider-step">
+  <ConsentHint feature="Cloud providers" />
   <div class="provider-cards">
     {#each visibleProviders as p}
       <button
         class="pick-card provider-card"
         class:selected={provider === p.id}
+        class:consent-dim={p.id !== 'local' && consentBlocked()}
         aria-pressed={provider === p.id}
-        onclick={() => { provider = p.id; onSelect?.(); }}
+        aria-disabled={p.id !== 'local' && consentBlocked() ? true : undefined}
+        onclick={() => {
+          const choose = () => { provider = p.id; onSelect?.(); };
+          if (p.id === 'local') choose(); else requireConsent(choose);
+        }}
       >
         <div class="provider-icon">{@html getProviderLogo(p.id)}</div>
         <div class="provider-info">
@@ -53,6 +61,7 @@
 </div>
 
 <style>
+  .consent-dim { opacity: 0.5; }
   .provider-step { gap: 14px; }
 
   .provider-cards { display: flex; flex-direction: column; gap: 8px; }

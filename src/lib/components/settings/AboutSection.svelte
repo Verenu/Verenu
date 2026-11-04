@@ -7,6 +7,9 @@
   import Toggle from '../Toggle.svelte';
   import { modalFocusTrap } from '../../modalFocus';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
+  import GatedButton from '../../legal/GatedButton.svelte';
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { consentBlocked, requireConsent, handleConsentError } from '../../legal/consentStore.svelte';
   import { installAvailableUpdate, updateActionLabel } from '../../updateActions';
 
   let { appVersion }: { appVersion: string } = $props();
@@ -82,7 +85,7 @@
       if (updateCheckSuperseded(generation, channelRevision)) return;
       updateCheckState = 'idle';
       updateCheckError = formatIpcError(err, 'Could not check for updates');
-      void emit('verenu:error', formatIpcError(err, 'Could not check for updates'));
+      if (!handleConsentError(err, checkForUpdateManual)) void emit('verenu:error', formatIpcError(err, 'Could not check for updates'));
     }
   }
 
@@ -143,7 +146,7 @@
       await installAvailableUpdate();
     } catch (e) {
       console.error('Install failed:', e);
-      void emit('verenu:error', appStore.updateInstallError || formatIpcError(e, 'Could not install the update'));
+      if (!handleConsentError(e, handleInstall)) void emit('verenu:error', appStore.updateInstallError || formatIpcError(e, 'Could not install the update'));
     }
   }
 
@@ -182,6 +185,7 @@
   <div>
     <div class="label">Version</div>
     <div class="desc"><button class="version-tap" data-setting-target="about-version" onclick={handleVersionTap}>v{appVersion}</button></div>
+    <ConsentHint feature="Update checks" thenEnable={checkForUpdateManual} />
     <div role="status" aria-live="polite">
     {#if appStore.updateInstallError || updateCheckError}
       <div class="desc">{appStore.updateInstallError || updateCheckError}</div>
@@ -207,24 +211,24 @@
   </div>
   <div class="update-controls">
     {#if updateCheckState === 'available' && appStore.updateInfo}
-      <button class="btn-ghost" onclick={handleInstall} disabled={appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging}>
+      <GatedButton class="btn-ghost" onclick={handleInstall} disabled={appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging}>
         {appStore.updateInstalled ? 'Installed' : appStore.updateInstalling
           ? (appStore.updateInfo?.installMode === 'download' ? 'Opening…' : 'Updating…')
           : updateActionLabel(appStore.updateInfo, false)}
-      </button>
+      </GatedButton>
       {#if !appStore.updateInstalled}
-        <button class="btn-ghost" onclick={checkForUpdateManual} disabled={appStore.updateInstalling || appStore.updateChannelChanging}>
+        <GatedButton class="btn-ghost" onclick={checkForUpdateManual} disabled={appStore.updateInstalling || appStore.updateChannelChanging}>
           Check for Updates
-        </button>
+        </GatedButton>
       {/if}
     {:else}
-      <button
+      <GatedButton
         class="btn-ghost"
         onclick={checkForUpdateManual}
         disabled={updateCheckState === 'checking' || appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging}
       >
         {updateCheckState === 'checking' ? 'Checking…' : 'Check for Updates'}
-      </button>
+      </GatedButton>
     {/if}
   </div>
 </div>
@@ -237,8 +241,9 @@
   <div>
     <div class="label">Beta updates</div>
     <div class="desc">Try early releases from the master branch. Expect bugs and possible data loss.</div>
+    <ConsentHint feature="Beta updates" thenEnable={() => handleBetaUpdatesToggle(true)} />
   </div>
-  <Toggle checked={appStore.betaUpdatesEnabled} disabled={appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging} onchange={handleBetaUpdatesToggle} label="Beta updates" bind:error={betaUpdatesError} />
+  <Toggle checked={appStore.betaUpdatesEnabled && !consentBlocked()} gated={consentBlocked()} disabled={appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging} onchange={(v) => (v ? requireConsent(() => handleBetaUpdatesToggle(true)) : handleBetaUpdatesToggle(false))} label="Beta updates" bind:error={betaUpdatesError} />
 </div>
 
 

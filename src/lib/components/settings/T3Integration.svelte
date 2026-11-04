@@ -111,7 +111,7 @@
       <label for="t3-pairing-link">{replacing ? 'New pairing link' : 'T3 Code pairing link'}</label>
       <div class="int-row">
         <input id="t3-pairing-link" class="ui-input" type="password" bind:value={draft} autocomplete="off" spellcheck="false" placeholder="Paste a fresh pairing link" disabled={t3State.connecting} aria-describedby="t3-pairing-help" />
-        <button type="submit" class="btn-primary" disabled={t3State.connecting || !draft.trim()}>{t3State.connecting ? 'Connecting…' : 'Connect T3 Code'}</button>
+        <button type="submit" class="btn-primary" data-needs-consent disabled={t3State.connecting || !draft.trim()}>{t3State.connecting ? 'Connecting…' : 'Connect T3 Code'}</button>
         {#if replacing}<button type="button" class="btn-ghost" disabled={t3State.connecting} onclick={() => { replacing = false; draft = ''; }}>Cancel</button>{/if}
       </div>
       <p id="t3-pairing-help" class="int-help">Create a link in T3 Code under Settings, Connections. Use localhost, a private LAN address, or an HTTPS address. Needs T3 Code {t3State.status?.minimumVersion ?? '0.46'} or newer.</p>

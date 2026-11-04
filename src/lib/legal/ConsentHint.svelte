@@ -1,19 +1,19 @@
 <script lang="ts">
-  import { consentStore } from './consentStore.svelte';
-  import { isConsentGranted } from './consent';
+  import { consentBlocked, requireConsent } from './consentStore.svelte';
 
-  /** Shown under a feature that needs accepted terms. Renders nothing once accepted. */
-  let { feature, onaccept }: { feature: string; onaccept?: () => void } = $props();
+  /**
+   * Shown under a feature that needs accepted terms. Renders nothing once accepted.
+   * "Review and accept" opens the accept dialog; `thenEnable` runs after Accept.
+   */
+  let { feature, thenEnable }: { feature: string; thenEnable?: () => void | Promise<void> } = $props();
 
-  const gated = $derived(consentStore.loaded && consentStore.state !== null && !isConsentGranted(consentStore.state));
+  const gated = $derived(consentBlocked());
 </script>
 
 {#if gated}
   <p class="consent-hint" data-testid="consent-hint">
     {feature} is off because you have not accepted the Terms and Privacy Policy.
-    {#if onaccept}
-      <button class="consent-hint-link ui-focus-ring" type="button" onclick={onaccept}>Review and accept</button>
-    {/if}
+    <button class="consent-hint-link ui-focus-ring" type="button" onclick={() => requireConsent(thenEnable ?? (() => {}))}>Review and accept</button>
   </p>
 {/if}
 

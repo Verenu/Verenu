@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatIpcError } from '../errors';
   import { invoke } from '../tauri';
+  import { consentBlocked, handleConsentError, requireConsent } from '../legal/consentStore.svelte';
   import { onMount } from 'svelte';
   import { appStore } from '../stores';
   import { loadSettingsSnapshot, saveSetting, type CleanupIntensity, type ProviderId, type ProviderModelMap, type ToneId } from '../settings';
@@ -427,6 +428,7 @@
       const result = await invoke<{ ok: boolean; status: 'valid' | 'invalid' | 'unknown'; message: string }>('validate_api_key', { provider: keyProvider, key });
       keyValidation = { status: result.status, message: result.message };
     } catch (err) {
+      if (handleConsentError(err)) { keyValidation = { status: 'idle', message: '' }; return; }
       keyValidation = { status: 'unknown', message: formatIpcError(err, 'Could not verify this API key') };
     }
   }
@@ -539,6 +541,7 @@
       if (!isAndroid) await invoke('initialize_autostart');
     } catch (err) {
       console.error('Failed to save setup settings:', err);
+      if (handleConsentError(err, finish)) { saveError = ''; finishing = false; return; }
       setupConflict = String(err).includes('changed while you were editing');
       if (setupConflict) localStorage.setItem('verenu-setup-reconcile', '1');
       saveError = setupConflict
@@ -656,6 +659,11 @@
     return bar({ rightLabel: 'Next', onRight: goNext });
   });
 
+  // After Skip, cloud providers need the accept dialog. Start on-device so setup can finish offline.
+  $effect(() => {
+    if (consentBlocked() && localAiSupported && provider !== 'local' && !providerExplicitlySelected) provider = 'local';
+  });
+
   const canGoBack = $derived(step > 0 && step <= onboardingTotalSteps);
 
   $effect(() => {
@@ -728,7 +736,7 @@
     {#if step === 0}
       <IntroStep />
     {:else if step === analyticsStep}
-      <AnalyticsStep enabled={analyticsEnabled} onchange={handleAnalytics} bind:error={analyticsError} />
+      <AnalyticsStep enabled={analyticsEnabled && !consentBlocked()} onchange={(v) => (v ? requireConsent(() => handleAnalytics(true)) : handleAnalytics(false))} bind:error={analyticsError} />
     {:else if step === providerStep}
       <ProviderStep
         bind:provider

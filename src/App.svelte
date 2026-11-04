@@ -15,7 +15,8 @@
   import SubAppSheet from './lib/components/SubAppSheet.svelte';
   import Callout from './lib/components/Callout.svelte';
   import LegalConsentScreen from './lib/legal/LegalConsentScreen.svelte';
-  import { consentStore, loadConsent } from './lib/legal/consentStore.svelte';
+  import { consentStore, handleConsentError, loadConsent } from './lib/legal/consentStore.svelte';
+  import ConsentFlowDialog from './lib/legal/ConsentFlowDialog.svelte';
   import { needsConsentPrompt } from './lib/legal/consent';
   import { contextsStore, loadContexts } from './lib/contextsStore.svelte';
   import { SUB_APP_CAPTURED_EVENT, SUB_APP_CAPTURE_FAILED_EVENT, type SubAppCapture } from './lib/subApps';
@@ -623,6 +624,7 @@
 
 
 {#if isBrowserDevSession()}<DeferredView view={devPanel} />{/if}
+<ConsentFlowDialog />
 {#if !isAndroid}<AgentApproval />{/if}
 
 <div
@@ -702,7 +704,7 @@
         severity={errorToastKind ? severityForKind(errorToastKind) : 'error'}
         role="alert"
         action={errorToastKind && settingsSectionForKind(errorToastKind)
-          ? { label: fixLabelForKind(errorToastKind) ?? 'Fix in Settings', onclick: () => openSettingsSection(settingsSectionForKind(errorToastKind!)!) }
+          ? { label: fixLabelForKind(errorToastKind) ?? 'Fix in Settings', onclick: () => errorToastKind === 'consent-required' ? handleConsentError('consent_required') : openSettingsSection(settingsSectionForKind(errorToastKind!)!) }
           : undefined}
         onDismiss={() => { errorToast = ''; errorToastKind = null; clearTimeout(toastTimer); }}
       >{errorToast}</Callout>

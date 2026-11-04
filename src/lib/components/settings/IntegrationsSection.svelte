@@ -1,4 +1,7 @@
 <script lang="ts">
+  import ConsentArea from '../../legal/ConsentArea.svelte';
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { requireConsent } from '../../legal/consentStore.svelte';
   import { onMount, tick } from 'svelte';
   import T3Integration from './T3Integration.svelte';
   import IntegrationRow from './IntegrationRow.svelte';
@@ -25,7 +28,7 @@
   const connected = $derived(!!githubState.username);
   const showForm = $derived(!connected || editing);
   const menuItems = $derived([
-    { label: 'Refresh now', icon: icons.refresh, disabled: saving || githubState.loading, onselect: () => { void refreshGithub(true); } },
+    { label: 'Refresh now', icon: icons.refresh, disabled: saving || githubState.loading, onselect: () => { requireConsent(() => { void refreshGithub(true); }); } },
     { label: 'Change account', icon: icons.pencil, disabled: saving, onselect: changeAccount },
     { label: 'Disconnect', icon: icons.unlink, danger: true, disabled: saving, onselect: () => { confirmDisconnect = githubState.username; } },
   ]);
@@ -78,6 +81,8 @@
 
 <h2 class="settings-h">Integrations</h2>
 <p class="section-intro">Connect your tools for dictation and Insights.</p>
+<ConsentHint feature="Integrations" />
+<ConsentArea>
 
 <div class="integration-list">
   <T3Integration />
@@ -109,7 +114,7 @@
             <span aria-hidden="true">@</span>
             <input id="github-username" bind:value={draft} placeholder="Your username" maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false" disabled={saving} aria-invalid={!!error} aria-describedby="github-form-status" oninput={() => { error = ''; }} />
           </div>
-          <button type="submit" class="btn-primary" disabled={saving || !draft.trim()}>{saving ? 'Connecting…' : editing ? 'Save account' : 'Connect GitHub'}</button>
+          <button type="submit" class="btn-primary" data-needs-consent disabled={saving || !draft.trim()}>{saving ? 'Connecting…' : editing ? 'Save account' : 'Connect GitHub'}</button>
           {#if editing}<button type="button" class="btn-ghost" disabled={saving} onclick={() => { editing = false; error = ''; }}>Cancel</button>{/if}
         </div>
         <div id="github-form-status" class="suggestion" role="status">
@@ -125,6 +130,7 @@
     {#if error || githubState.error}<p class="int-error" role="alert">{error || githubState.error}</p>{/if}
   </IntegrationRow>
 </div>
+</ConsentArea>
 
 {#if confirmDisconnect !== null}
   <IntegrationConfirmDialog

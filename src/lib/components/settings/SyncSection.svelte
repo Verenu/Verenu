@@ -1,4 +1,7 @@
 <script lang="ts">
+  import ConsentArea from '../../legal/ConsentArea.svelte';
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { consentBlocked, handleConsentError, requireConsent } from '../../legal/consentStore.svelte';
   import { formatSyncError as formatIpcError } from '../../errors';
   import { invoke } from '../../tauri';
   import Toggle from '../Toggle.svelte';
@@ -195,7 +198,7 @@
       await invoke<string>('sync_start_pairing', { deviceUuid: device.uuid });
       await refreshSyncStatus();
     } catch (err) {
-      flash(formatIpcError(err, 'Could not start pairing'), 'err');
+      if (!handleConsentError(err, () => startPairing(device))) flash(formatIpcError(err, 'Could not start pairing'), 'err');
     } finally {
       pairingUuid = '';
     }
@@ -385,6 +388,8 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <h2 class="settings-h">Sync</h2>
+<ConsentHint feature="Pairing and syncing devices" />
+<ConsentArea>
 
 <div class="id-card" data-setting-target="sync-this-device">
   <div class="tile" aria-hidden="true">
@@ -519,7 +524,7 @@
             class="btn-ghost btn-compact icon-btn"
             title="Sync now"
             aria-label="Sync {device.name} now"
-            onclick={() => void syncNow(device)}
+            data-needs-consent onclick={() => void syncNow(device)}
             disabled={syncingUuid !== '' || device.state === 'syncing'}
           >
             <svg
@@ -636,7 +641,7 @@
         <div class="device-actions">
           <button
             class="btn-primary btn-compact"
-            onclick={() => void startPairing(device)}
+            data-needs-consent onclick={() => void startPairing(device)}
             disabled={pairingUuid !== '' || !!outgoing}
           >
             {pairingUuid === device.uuid ? 'Starting…' : 'Pair'}
@@ -762,7 +767,7 @@
               <div class="field-actions">
                 <button
                   class="btn-primary btn-compact"
-                  onclick={() => void pairConnection()}
+                  data-needs-consent onclick={() => void pairConnection()}
                   disabled={connectionBusy || !!outgoing || !connectionDetails.trim() || !listenerActive}
                 >{connectionBusy ? 'Connecting…' : 'Pair'}</button>
               </div>
@@ -807,13 +812,16 @@
     {/if}
   </div>
   <Toggle
-    checked={syncMuting.enabled}
-    onchange={(value) => syncMuting.setEnabled(value)}
+    checked={syncMuting.enabled && !consentBlocked()}
+    gated={consentBlocked()}
+    onchange={(value) => (value ? requireConsent(() => syncMuting.setEnabled(true)) : syncMuting.setEnabled(false))}
     disabled={syncMuting.disabled}
     label="Synchronous muting"
     bind:error={syncMuting.flashError}
   />
 </div>
+
+</ConsentArea>
 
 {#if outgoing}
   <div class="dialog-layer" use:portal>

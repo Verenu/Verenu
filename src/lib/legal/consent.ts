@@ -49,3 +49,20 @@ export const CONSENT_STATUS_LABEL: Record<ConsentStatus, string> = {
   update_required: 'New terms to review',
   deletion_pending: 'Deletion pending',
 };
+
+/**
+ * True when online features must stay off. An unknown state (backend not
+ * answering) is not treated as blocked, so the UI never hides features the
+ * backend would allow. The backend still enforces consent on every call.
+ */
+export function isConsentBlocked(state: ConsentState | null): boolean {
+  return state !== null && state.status !== 'accepted';
+}
+
+/** The backend's `consent_required` error, including its current plain-text message. */
+export function isConsentRequiredError(err: unknown): boolean {
+  const text = typeof err === 'string' ? err
+    : err instanceof Error ? err.message
+    : typeof err === 'object' && err !== null ? JSON.stringify(err) : '';
+  return /consent_required|accept the (current )?terms and privacy policy/i.test(text);
+}
