@@ -10,6 +10,42 @@ export interface UpdateProgress {
 
 type InstallOutcome = 'installed' | 'downloadOpened' | 'installerOpened';
 
+export interface ReinstallState {
+  busy: boolean;
+  message: string;
+}
+
+export async function reinstallLatestUpdate(state: ReinstallState): Promise<void> {
+  if (state.busy || appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging) return;
+  state.busy = true;
+  appStore.updateInstalling = true;
+  appStore.updateInstallError = '';
+  appStore.updateProgress = 'Preparing reinstall…';
+  try {
+    state.message = 'Preparing reinstall…';
+    const result = await invoke<{ version: string; outcome: InstallOutcome }>('reinstall_latest_update');
+    if (result.outcome === 'downloadOpened') {
+      state.message = `Download opened for v${result.version}.`;
+      appStore.updateProgress = '';
+    } else if (result.outcome === 'installerOpened') {
+      state.message = 'Approve the update in the Android installer.';
+      appStore.updateProgress = state.message;
+    } else if (result.outcome === 'installed') {
+      state.message = `v${result.version} installed. Quit and reopen Verenu to finish.`;
+      appStore.updateInstalled = true;
+      appStore.updateProgress = 'Update installed. Quit and reopen Verenu to finish.';
+    } else {
+      throw new Error('The updater returned an unexpected result.');
+    }
+  } catch (error) {
+    appStore.updateProgress = '';
+    state.message = `Reinstall failed: ${formatIpcError(error, 'Could not install the update')}`;
+  } finally {
+    state.busy = false;
+    appStore.updateInstalling = false;
+  }
+}
+
 export function progressLabel(progress: UpdateProgress): string {
   switch (progress.phase) {
     case 'resolving': return 'Checking release…';
@@ -23,7 +59,7 @@ export function progressLabel(progress: UpdateProgress): string {
     case 'backing-up': return 'Backing up data…';
     case 'authorizing': return 'Waiting for administrator authorization…';
     case 'installing': return 'Installing…';
-    case 'complete': return 'Update installed. Restart Verenu to finish.';
+    case 'complete': return 'Update installed. Quit and reopen Verenu to finish.';
     default: return 'Updating…';
   }
 }
@@ -34,7 +70,8 @@ export function updateActionLabel(update: UpdateInfo, restart = true): string {
     if (update.assetName.toLowerCase().endsWith('.appimage')) return 'Download AppImage';
     return 'Download Installer';
   }
-  if (isLinuxInstaller(update) || update.assetName.endsWith('.apk')) return 'Update Verenu';
+  if (isLinuxInstaller(update)) return 'Update Verenu';
+  if (update.assetName.endsWith('.apk')) return 'Update Verenu';
   return restart ? 'Install & Restart' : 'Install Now';
 }
 
@@ -45,7 +82,7 @@ function isLinuxInstaller(update: UpdateInfo): boolean {
 
 export async function installAvailableUpdate(): Promise<void> {
   const update = appStore.updateInfo;
-  if (!update || appStore.updateInstalling || appStore.updateInstalled) return;
+  if (!update || appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging) return;
   appStore.updateInstalling = true;
   appStore.updateInstallError = '';
   appStore.updateProgress = update.installMode === 'download' ? 'Opening download…' : 'Preparing update…';
@@ -57,7 +94,7 @@ export async function installAvailableUpdate(): Promise<void> {
     const outcome = await invoke<InstallOutcome>('install_update', { downloadUrl: update.downloadUrl });
     if (outcome === 'installed') {
       appStore.updateInstalled = true;
-      appStore.updateProgress = 'Update installed. Restart Verenu to finish.';
+      appStore.updateProgress = 'Update installed. Quit and reopen Verenu to finish.';
     } else if (outcome === 'downloadOpened') {
       appStore.updateProgress = '';
     } else if (outcome === 'installerOpened') {
@@ -66,8 +103,10 @@ export async function installAvailableUpdate(): Promise<void> {
       throw new Error('The updater returned an unexpected result. Check for updates and try again.');
     }
   } catch (error) {
-    appStore.updateProgress = '';
-    appStore.updateInstallError = formatIpcError(error, 'Could not install the update');
+    if (!appStore.updateInstalled) {
+      appStore.updateProgress = '';
+      appStore.updateInstallError = formatIpcError(error, 'Could not install the update');
+    }
     throw error;
   } finally {
     stop?.();

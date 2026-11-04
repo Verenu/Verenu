@@ -12,6 +12,13 @@ pub enum InstallOutcome {
     DownloadOpened,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReinstallResult {
+    version: String,
+    outcome: InstallOutcome,
+}
+
 #[tauri::command]
 pub async fn check_for_update(
     app: AppHandle,
@@ -28,15 +35,15 @@ pub async fn check_for_update(
 }
 
 #[tauri::command]
-pub async fn reinstall_latest_update(app: AppHandle) -> Result<String, String> {
+pub async fn reinstall_latest_update(app: AppHandle) -> Result<ReinstallResult, String> {
     let channel = selected_update_channel(&app)?;
     let update = crate::api::updater::latest_installable(channel)
         .await
         .map_err(|e| format!("Could not look up the latest release: {e}"))?
         .ok_or_else(|| "No compatible release asset is available for this device.".to_string())?;
     let version = update.version.clone();
-    install_update(app, update.download_url).await?;
-    Ok(version)
+    let outcome = install_update(app, update.download_url).await?;
+    Ok(ReinstallResult { version, outcome })
 }
 
 fn selected_update_channel(app: &AppHandle) -> Result<crate::api::updater::UpdateChannel, String> {
@@ -82,8 +89,15 @@ pub async fn install_update(
 
     #[cfg(target_os = "linux")]
     {
-        crate::system::linux_updater::install(&app, &download_url, selected_update_channel(&app)?)
-            .await
+        let channel = selected_update_channel(&app)?;
+        // Keep the installation lock until the work finishes, even if the
+        // invoking webview disconnects.
+        tokio::spawn(async move {
+            let _attempt = _attempt;
+            crate::system::linux_updater::install(&app, &download_url, channel).await
+        })
+        .await
+        .map_err(|error| format!("Update installation failed: {error}"))?
     }
 
     #[cfg(target_os = "android")]
@@ -451,7 +465,7 @@ pub fn backup_sqlite_database(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_silent_nsis_setup_url, InstallOutcome};
+    use super::{is_silent_nsis_setup_url, InstallOutcome, ReinstallResult};
 
     #[test]
     fn install_outcomes_serialize_as_frontend_contract_values() {
@@ -463,6 +477,13 @@ mod tests {
         assert_eq!(
             serde_json::to_value(InstallOutcome::DownloadOpened).unwrap(),
             "downloadOpened"
+        );
+        assert_eq!(
+            serde_json::to_value(ReinstallResult {
+                version: "0.21.0".into(),
+                outcome: InstallOutcome::DownloadOpened,
+            }).unwrap(),
+            serde_json::json!({ "version": "0.21.0", "outcome": "downloadOpened" })
         );
     }
 

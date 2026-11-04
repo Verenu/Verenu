@@ -5,6 +5,48 @@ import { verifyNativePill } from '../../scripts/verification/native-pill.mjs';
 
 const capsule = { x: 10, y: 10, left: 10, top: 10, right: 82, bottom: 44, width: 72, height: 34 };
 
+test('native pill waits for its load before the first page execution', async () => {
+  const stop = new Error('stop after load ordering check');
+  const events = [];
+  const browser = {
+    command: async (_method, _path, body) => { events.push(body.handle); },
+    execute: async () => { events.push('execute'); throw stop; },
+  };
+  await assert.rejects(verifyNativePill({ browser, invoke: async () => { events.push('invoke'); },
+    waitForPillLoad: async () => { events.push('load'); }, directory: '.', screenshot: async () => {} }), error => error === stop);
+  assert.deepEqual(events.slice(0, 5), ['main', 'invoke', 'pill', 'load', 'execute']);
+});
+
+test('native pill diagnostics preserve exceptions with read-only messages', async () => {
+  const original = new DOMException('Native timeout', 'TimeoutError');
+  let first = true;
+  const browser = {
+    command: async () => { if (first) { first = false; throw original; } },
+    execute: async () => ({ readyState: 'complete', root: true, pill: true, bridge: true }),
+  };
+  await assert.rejects(verifyNativePill({ browser, invoke: async () => {}, directory: '.', screenshot: async () => {} }),
+    error => error === original);
+});
+
+for (const failure of ['window', 'idle']) {
+  test(`native pill diagnostics preserve the original error when ${failure} cleanup fails`, async () => {
+    const original = new DOMException('Native timeout', 'TimeoutError');
+    const cleanup = new Error('Cleanup failed');
+    let first = true;
+    const browser = {
+      command: async () => {
+        if (first) { first = false; throw original; }
+        if (failure === 'window') throw cleanup;
+      },
+      execute: async () => null,
+    };
+    await assert.rejects(verifyNativePill({
+      browser, invoke: async () => { if (failure === 'idle') throw cleanup; },
+      directory: '.', screenshot: async () => {},
+    }), error => error === original);
+  });
+}
+
 for (const [missing, message] of [
   ['pill', 'Visible native pill is missing'],
   ['cluster', 'Native pill cluster is missing'],
@@ -15,6 +57,7 @@ for (const [missing, message] of [
     const browser = {
       command: async () => {},
       execute: async script => {
+        if (script.includes("document.readyState === 'complete'")) return true;
         measurements++;
         const pillMissing = missing === 'pill' || (missing === 'interactive-pill' && measurements > 1);
         return vm.runInNewContext(`(() => { ${script} })()`, {

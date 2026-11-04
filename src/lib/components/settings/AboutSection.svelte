@@ -18,9 +18,7 @@
   let versionTapCount = $state(0);
   let versionTapTimer: ReturnType<typeof setTimeout> | null = null;
   let devModeHintVisible = $state(false);
-  let betaUpdatesEnabled = $state(false);
   let confirmBetaUpdates = $state(false);
-  let savingBetaUpdates = $state(false);
   let betaCancelButton = $state<HTMLButtonElement | null>(null);
 
   const SOURCE_REPO = 'Verenu/Verenu';
@@ -31,10 +29,12 @@
   });
 
   onMount(() => {
+    const channelRevision = appStore.updateChannelRevision;
+    const channelChanging = appStore.updateChannelChanging;
     invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' })
       .then((value) => {
-        betaUpdatesEnabled = value ?? /-(beta|nightly|dev)/i.test(appVersion);
-        appStore.betaUpdatesEnabled = betaUpdatesEnabled;
+        if (channelChanging || appStore.updateChannelChanging || channelRevision !== appStore.updateChannelRevision) return;
+        appStore.betaUpdatesEnabled = value ?? /-(beta|nightly|dev)/i.test(appVersion);
       })
       .catch((error) => console.error('Failed to load beta update setting:', error));
   });
@@ -48,16 +48,30 @@
     }
   }
 
+  function updateCheckSuperseded(generation: number, channelRevision: number): boolean {
+    if (generation !== checkGeneration) return true;
+    if (channelRevision !== appStore.updateChannelRevision) {
+      updateCheckState = appStore.updateInfo ? 'available' : 'idle';
+      return true;
+    }
+    if (!appStore.updateInstalling && !appStore.updateInstalled && !appStore.updateChannelChanging) return false;
+    updateCheckState = appStore.updateInfo ? 'available' : 'idle';
+    return true;
+  }
+
   async function checkForUpdateManual() {
+    if (appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging) return;
     const generation = ++checkGeneration;
+    const channelRevision = appStore.updateChannelRevision;
     updateCheckState = 'checking';
     updateCheckError = '';
     appStore.updateInstallError = '';
     try {
       const update = await invoke<UpdateInfo | null>('check_for_update');
-      if (generation !== checkGeneration) return;
+      if (updateCheckSuperseded(generation, channelRevision)) return;
       if (update) {
         try { await saveSetting('update_dismissed_version', null); } catch {}
+        if (updateCheckSuperseded(generation, channelRevision)) return;
         appStore.updateInfo = update;
         updateCheckState = 'available';
       } else {
@@ -65,7 +79,7 @@
         updateCheckState = 'up-to-date';
       }
     } catch (err) {
-      if (generation !== checkGeneration) return;
+      if (updateCheckSuperseded(generation, channelRevision)) return;
       updateCheckState = 'idle';
       updateCheckError = formatIpcError(err, 'Could not check for updates');
       void emit('verenu:error', formatIpcError(err, 'Could not check for updates'));
@@ -83,16 +97,16 @@
   let betaUpdatesError = $state(false);
 
   async function setBetaUpdates(value: boolean) {
-    if (savingBetaUpdates) return;
-    const previous = betaUpdatesEnabled;
-    savingBetaUpdates = true;
-    betaUpdatesEnabled = value;
+    if (appStore.updateChannelChanging || appStore.updateInstalling || appStore.updateInstalled) return;
+    const previous = appStore.betaUpdatesEnabled;
+    appStore.updateChannelChanging = true;
+    appStore.updateChannelRevision += 1;
+    let refresh = false;
     appStore.betaUpdatesEnabled = value;
     try {
       try {
         await saveSetting('beta_updates_enabled', value);
       } catch (error) {
-        betaUpdatesEnabled = previous;
         appStore.betaUpdatesEnabled = previous;
         betaUpdatesError = true;
         console.error('Failed to save beta update setting:', error);
@@ -104,10 +118,11 @@
       appStore.updateInfo = null;
       checkGeneration += 1;
       updateCheckState = 'idle';
-      await checkForUpdateManual();
+      refresh = true;
     } finally {
-      savingBetaUpdates = false;
+      appStore.updateChannelChanging = false;
     }
+    if (refresh) await checkForUpdateManual();
   }
 
   async function confirmEnableBetaUpdates() {
@@ -128,7 +143,7 @@
       await installAvailableUpdate();
     } catch (e) {
       console.error('Install failed:', e);
-      void emit('verenu:error', formatIpcError(e, 'Could not install the update'));
+      void emit('verenu:error', appStore.updateInstallError || formatIpcError(e, 'Could not install the update'));
     }
   }
 
@@ -168,10 +183,13 @@
     <div class="label">Version</div>
     <div class="desc"><button class="version-tap" data-setting-target="about-version" onclick={handleVersionTap}>v{appVersion}</button></div>
     <div role="status" aria-live="polite">
-    {#if appStore.updateProgress}
-      <div class="desc">{appStore.updateProgress}</div>
-    {:else if appStore.updateInstallError || updateCheckError}
+    {#if appStore.updateInstallError || updateCheckError}
       <div class="desc">{appStore.updateInstallError || updateCheckError}</div>
+      {#if appStore.updateInstalled && appStore.updateProgress}
+        <div class="desc">{appStore.updateProgress}</div>
+      {/if}
+    {:else if appStore.updateProgress}
+      <div class="desc">{appStore.updateProgress}</div>
     {/if}
     {#if updateCheckState === 'up-to-date'}
       <div class="update-status-wrap">
@@ -179,7 +197,7 @@
       </div>
     {:else if updateCheckState === 'available' && appStore.updateInfo}
       <div class="update-status-wrap">
-        <div class="desc update-available update-status">v{appStore.updateInfo.version} is available</div>
+        {#if !appStore.updateInstalled}<div class="desc update-available update-status">v{appStore.updateInfo.version} is available</div>{/if}
         {#if appStore.updateInfo.installHint && !appStore.updateInstalled}
           <div class="desc">{appStore.updateInfo.installHint}</div>
         {/if}
@@ -189,13 +207,13 @@
   </div>
   <div class="update-controls">
     {#if updateCheckState === 'available' && appStore.updateInfo}
-      <button class="btn-ghost" onclick={handleInstall} disabled={appStore.updateInstalling || appStore.updateInstalled}>
+      <button class="btn-ghost" onclick={handleInstall} disabled={appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging}>
         {appStore.updateInstalled ? 'Installed' : appStore.updateInstalling
           ? (appStore.updateInfo?.installMode === 'download' ? 'Opening…' : 'Updating…')
           : updateActionLabel(appStore.updateInfo, false)}
       </button>
       {#if !appStore.updateInstalled}
-        <button class="btn-ghost" onclick={checkForUpdateManual} disabled={appStore.updateInstalling}>
+        <button class="btn-ghost" onclick={checkForUpdateManual} disabled={appStore.updateInstalling || appStore.updateChannelChanging}>
           Check for Updates
         </button>
       {/if}
@@ -203,7 +221,7 @@
       <button
         class="btn-ghost"
         onclick={checkForUpdateManual}
-        disabled={updateCheckState === 'checking'}
+        disabled={updateCheckState === 'checking' || appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging}
       >
         {updateCheckState === 'checking' ? 'Checking…' : 'Check for Updates'}
       </button>
@@ -220,7 +238,7 @@
     <div class="label">Beta updates</div>
     <div class="desc">Try early releases from the master branch. Expect bugs and possible data loss.</div>
   </div>
-  <Toggle checked={betaUpdatesEnabled} disabled={appStore.updateInstalling || appStore.updateInstalled} onchange={handleBetaUpdatesToggle} label="Beta updates" bind:error={betaUpdatesError} />
+  <Toggle checked={appStore.betaUpdatesEnabled} disabled={appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging} onchange={handleBetaUpdatesToggle} label="Beta updates" bind:error={betaUpdatesError} />
 </div>
 
 
@@ -270,7 +288,7 @@
     <div class="modal-footer">
       <div class="footer-actions">
         <button bind:this={betaCancelButton} class="btn-ghost" onclick={() => (confirmBetaUpdates = false)}>Cancel</button>
-        <button class="btn-primary" onclick={confirmEnableBetaUpdates} disabled={savingBetaUpdates}>Enable beta updates</button>
+        <button class="btn-primary" onclick={confirmEnableBetaUpdates} disabled={appStore.updateChannelChanging}>Enable beta updates</button>
       </div>
     </div>
   </div>

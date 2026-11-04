@@ -443,13 +443,32 @@ impl SyncManager {
     }
 }
 
-struct RemoteMute(u64);
+struct RemoteMute(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl RemoteMute {
+    fn start(
+        apply: Arc<dyn Fn(bool) + Send + Sync>,
+    ) -> (Self, tokio::sync::oneshot::Receiver<bool>) {
+        let (release, released) = tokio::sync::oneshot::channel();
+        let (ready, ready_rx) = tokio::sync::oneshot::channel();
+        tauri::async_runtime::spawn(async move {
+            let mute = apply.clone();
+            let started = tokio::task::spawn_blocking(move || mute(true))
+                .await
+                .is_ok();
+            let _ = ready.send(started);
+            let _ = released.await;
+            let _ = tokio::task::spawn_blocking(move || apply(false)).await;
+        });
+        (Self(Some(release)), ready_rx)
+    }
+}
+
 impl Drop for RemoteMute {
     fn drop(&mut self) {
-        let owner = self.0;
-        tauri::async_runtime::spawn_blocking(move || {
-            crate::media::sound::set_remote_mute(owner, false)
-        });
+        if let Some(release) = self.0.take() {
+            let _ = release.send(());
+        }
     }
 }
 
@@ -511,12 +530,10 @@ pub(super) async fn receive(
     {
         return;
     }
-    let owner = RemoteMute(NEXT_OWNER.fetch_add(1, Ordering::Relaxed));
-    let id = owner.0;
-    if tauri::async_runtime::spawn_blocking(move || crate::media::sound::set_remote_mute(id, true))
-        .await
-        .is_err()
-    {
+    let id = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
+    let apply = Arc::new(move |muted| crate::media::sound::set_remote_mute(id, muted));
+    let (_owner, ready) = RemoteMute::start(apply);
+    if !matches!(ready.await, Ok(true)) {
         return;
     }
     let mut last_heartbeat = Instant::now();
@@ -566,6 +583,32 @@ async fn wait_for_release<R: tokio::io::AsyncRead + Unpin>(
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn cancelled_remote_mute_finishes_unmute_after_pending_mute() {
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let (unmuted, unmuted_rx) = tokio::sync::oneshot::channel();
+        let started = std::sync::Mutex::new(Some(started));
+        let unmuted = std::sync::Mutex::new(Some(unmuted));
+        let (finish, finish_rx) = std::sync::mpsc::channel::<()>();
+        let finish_rx = std::sync::Mutex::new(finish_rx);
+        let apply = Arc::new(move |muted| {
+            if muted {
+                let _ = started.lock().unwrap().take().unwrap().send(());
+                finish_rx.lock().unwrap().recv().unwrap();
+            } else {
+                let _ = unmuted.lock().unwrap().take().unwrap().send(());
+            }
+        });
+        let (owner, _ready) = RemoteMute::start(apply);
+        started_rx.await.unwrap();
+        drop(owner);
+        finish.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), unmuted_rx)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[test]
     fn mute_sender_deduplicates_only_the_same_recording_and_stale_cleanup_is_safe() {

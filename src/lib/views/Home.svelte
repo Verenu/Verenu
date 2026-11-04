@@ -275,15 +275,17 @@
       await installAvailableUpdate();
     } catch (e) {
       console.error('Install failed:', e);
-      void emit('verenu:error', formatIpcError(e, 'Could not install the update'));
+      void emit('verenu:error', appStore.updateInstallError || formatIpcError(e, 'Could not install the update'));
     }
   }
 
   async function dismissUpdate() {
-    if (!appStore.updateInfo) return;
+    const update = appStore.updateInfo;
+    if (!update || appStore.updateInstalling || appStore.updateInstalled) return;
     try {
-      await saveSetting('update_dismissed_version', appStore.updateInfo.version);
+      await saveSetting('update_dismissed_version', update.version);
     } catch {}
+    if (appStore.updateInstalling || appStore.updateInstalled || appStore.updateInfo !== update) return;
     appStore.updateInfo = null;
   }
 

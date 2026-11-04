@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Arch package upgrades repair inaccessible runtime directories left by older releases.
+- Linux updates and developer reinstalls report when installation finishes and prompt users to quit and reopen Verenu.
 - Isolated development sessions no longer send desktop cleanup-failure notifications; the in-app notice remains available.
 - On Linux, keep the microphone mute-button monitor running until dictation starts receiving audio, avoiding an interruption while switching capture streams.
 - NVIDIA RE-USE setup now reports recognized download, disk, permission, and integrity failures instead of suggesting every possible cause.
