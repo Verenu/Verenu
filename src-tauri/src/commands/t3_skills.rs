@@ -115,6 +115,8 @@ pub async fn get_t3_skills(app: AppHandle) -> Result<Status, String> {
 
 #[tauri::command]
 pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, String> {
+    #[cfg(target_os = "linux")]
+    let activity = linux_activity(&app).await;
     if cfg!(target_os = "android") {
         return Err("T3 skill pairing requires desktop Verenu.".into());
     }
@@ -122,7 +124,7 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
         return Err("Pair T3 from the installed desktop app. Browser test sessions cannot write native credentials.".into());
     }
     let target = t3::parse_pairing_link(&pairing_link)?;
-    let _guard = operation_lock().lock().await;
+    let guard = operation_lock().lock().await;
     let descriptor = t3::descriptor(&target.base_url).await?;
     let environment = descriptor
         .get("environmentId")
@@ -170,25 +172,41 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
             .unwrap_or_default(),
     };
     let value = serde_json::to_value(&current).map_err(|_| "Cannot save T3 connection.")?;
-    let previous_token = run_blocking("read_previous_t3_credential", || {
-        Ok(crate::data::credentials::get(store::T3_INTEGRATION))
-    })
-    .await?;
     let app_copy = app.clone();
-    run_blocking("save_t3_credential", move || {
-        crate::data::credentials::save(&app_copy, store::T3_INTEGRATION, &token)
+    #[cfg(target_os = "linux")]
+    let save_activity = activity.clone();
+    run_blocking("commit_t3_pairing", move || {
+        #[cfg(target_os = "linux")]
+        let _activity = save_activity;
+        let _guard = guard;
+        let previous_token = crate::data::credentials::get(store::T3_INTEGRATION);
+        commit_pairing(
+            &settings,
+            value,
+            previous_value,
+            &token,
+            &previous_token,
+            |value| crate::data::credentials::save(&app_copy, store::T3_INTEGRATION, value),
+        )
     })
-    .await?;
+    .await
+}
+
+fn commit_pairing(
+    settings: &store::SettingsHandle,
+    value: serde_json::Value,
+    previous_value: serde_json::Value,
+    token: &str,
+    previous_token: &str,
+    mut save_credential: impl FnMut(&str) -> Result<(), String>,
+) -> Result<Status, String> {
+    save_credential(token)?;
     if let Err(error) = settings
         .set(store::T3_CONNECTION, value)
         .and_then(|_| settings.save())
     {
         settings.set(store::T3_CONNECTION, previous_value)?;
-        let app_copy = app.clone();
-        run_blocking("restore_t3_credential", move || {
-            crate::data::credentials::save(&app_copy, store::T3_INTEGRATION, &previous_token)
-        })
-        .await?;
+        save_credential(previous_token)?;
         return Err(error);
     }
     Ok(status(&settings.snapshot()?))
@@ -196,6 +214,8 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
 
 #[tauri::command]
 pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Status, String> {
+    #[cfg(target_os = "linux")]
+    let _activity = linux_activity(&app).await;
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let Some(mut current) = connection(&settings.snapshot()?) else {
@@ -266,6 +286,8 @@ fn apply_refresh_result(
 
 #[tauri::command]
 pub async fn select_t3_catalog(app: AppHandle, catalog_id: String) -> Result<Status, String> {
+    #[cfg(target_os = "linux")]
+    let _activity = linux_activity(&app).await;
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let mut current = connection(&settings.snapshot()?).ok_or("Connect T3 first.")?;
@@ -290,6 +312,8 @@ pub async fn set_t3_excluded_skills(
     app: AppHandle,
     names: Vec<String>,
 ) -> Result<Status, String> {
+    #[cfg(target_os = "linux")]
+    let _activity = linux_activity(&app).await;
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let mut current = connection(&settings.snapshot()?).ok_or("Connect T3 first.")?;
@@ -311,22 +335,29 @@ pub async fn set_t3_excluded_skills(
 
 #[tauri::command]
 pub async fn disconnect_t3(app: AppHandle) -> Result<Status, String> {
+    #[cfg(target_os = "linux")]
+    let activity = linux_activity(&app).await;
     if cfg!(target_os = "android") {
         return Err("T3 skill pairing requires desktop Verenu.".into());
     }
     if crate::is_dev_session() {
         return Err("Disconnect T3 from the installed desktop app.".into());
     }
-    let _guard = operation_lock().lock().await;
+    let guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let transaction_settings = settings.clone();
+    #[cfg(target_os = "linux")]
+    let delete_activity = activity.clone();
     run_blocking("delete_t3_credential", move || {
+        #[cfg(target_os = "linux")]
+        let _activity = delete_activity;
+        let _guard = guard;
         commit_disconnect(&transaction_settings, || {
             crate::data::credentials::delete(store::T3_INTEGRATION)
-        })
+        })?;
+        Ok(status(&transaction_settings.snapshot()?))
     })
-    .await?;
-    Ok(status(&settings.snapshot()?))
+    .await
 }
 
 fn commit_disconnect(
@@ -378,6 +409,34 @@ mod tests {
             store::T3_CONNECTION.into(),
             serde_json::to_value(value).unwrap(),
         )])
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn excluded_skills_wait_for_restart_pause_to_end() {
+        let path = std::env::temp_dir().join(format!("verenu-t3-pause-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings.save_value(store::T3_CONNECTION, serde_json::to_value(sample()).unwrap()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let gate = std::sync::Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(settings.clone()).manage(gate.clone())
+            .build(tauri::generate_context!()).unwrap();
+        tauri::async_runtime::block_on(async {
+            let pause = gate.pause().await.unwrap();
+            let app_handle = app.handle().clone();
+            let change = tokio::spawn(async move {
+                set_t3_excluded_skills(app_handle, vec!["babysit-pr".into()]).await
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert!(!change.is_finished());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            drop(pause);
+            tokio::time::timeout(std::time::Duration::from_secs(5), change).await.unwrap().unwrap().unwrap();
+            assert_eq!(connection(&settings.snapshot().unwrap()).unwrap().excluded_skills, ["babysit-pr"]);
+        });
+        drop(app);
+        std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn t3_catalog_is_scoped_to_destination_and_context_and_captured_immutably() {
@@ -531,5 +590,57 @@ mod tests {
         );
         assert!(captured_catalog(&settings.snapshot().unwrap()).is_none());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn t3_pairing_restores_credential_when_settings_cannot_be_saved() {
+        let blocker = std::env::temp_dir().join(format!("verenu-t3-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&blocker, b"synthetic fixture").unwrap();
+        let settings = store::SettingsHandle::empty_for_test(blocker.join("settings.json"));
+        let previous = serde_json::to_value(sample()).unwrap();
+        settings
+            .set(store::T3_CONNECTION, previous.clone())
+            .unwrap();
+        let mut credential = "old synthetic token".to_string();
+        let result = commit_pairing(
+            &settings,
+            serde_json::json!({"id": "replacement"}),
+            previous.clone(),
+            "new synthetic token",
+            "old synthetic token",
+            |value| {
+                credential = value.to_string();
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(credential, "old synthetic token");
+        assert_eq!(settings.get(store::T3_CONNECTION), Some(previous));
+        std::fs::remove_file(blocker).unwrap();
+    }
+
+    #[test]
+    fn t3_pairing_saves_credential_and_connection() {
+        let path = std::env::temp_dir().join(format!("verenu-t3-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        let value = serde_json::to_value(sample()).unwrap();
+        let mut credential = "old synthetic token".to_string();
+        let result = commit_pairing(
+            &settings,
+            value.clone(),
+            serde_json::Value::Null,
+            "new synthetic token",
+            "old synthetic token",
+            |token| {
+                credential = token.to_string();
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(credential, "new synthetic token");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved[store::T3_CONNECTION], value);
+        std::fs::remove_file(path).unwrap();
     }
 }

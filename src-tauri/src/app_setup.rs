@@ -10,6 +10,213 @@ use std::time::Duration;
 pub(crate) struct FrontendReadiness {
     pub(crate) main: Arc<AtomicBool>,
     pub(crate) pill: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
+    main_navigation: Arc<PageReadiness>,
+    #[cfg(target_os = "linux")]
+    pill_navigation: Arc<PageReadiness>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct PageReadiness(std::sync::Mutex<(u32, u8)>);
+
+#[cfg(target_os = "linux")]
+impl PageReadiness {
+    fn start(&self, mask: u32) {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.0 = state.0.wrapping_add(1) & mask;
+        state.1 = 0;
+    }
+
+    fn generation(&self) -> u32 {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).0
+    }
+
+    fn mark(&self, generation: u32, flag: u8, error: &'static str) -> Result<(), String> {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.0 != generation {
+            return Err(error.into());
+        }
+        state.1 |= flag;
+        Ok(())
+    }
+
+    fn has(&self, flags: u8) -> bool {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).1 & flags == flags
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl FrontendReadiness {
+    pub(crate) fn main_page_started(&self) {
+        self.main_navigation.start(0x3fff_ffff);
+    }
+
+    pub(crate) fn main_settings_generation(&self) -> u32 {
+        self.main_navigation.generation()
+    }
+
+    pub(crate) fn mark_main_settings_ready(&self, generation: u32) -> Result<(), String> {
+        self.main_navigation.mark(
+            generation,
+            1,
+            "Settings readiness belongs to an earlier page.",
+        )
+    }
+
+    pub(crate) fn mark_home_ready(&self, generation: u32) -> Result<(), String> {
+        self.main_navigation.mark(
+            generation,
+            2,
+            "Settings readiness belongs to an earlier page.",
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn main_settings_ready(&self) -> bool {
+        self.main_navigation.has(1)
+    }
+
+    pub(crate) fn main_and_home_ready(&self) -> bool {
+        self.main_navigation.has(3)
+    }
+
+    pub(crate) fn pill_page_started(&self) {
+        self.pill_navigation.start(0x7fff_ffff);
+    }
+
+    pub(crate) fn pill_generation(&self) -> u32 {
+        self.pill_navigation.generation()
+    }
+
+    pub(crate) fn mark_pill_ready(&self, generation: u32) -> Result<(), String> {
+        self.pill_navigation
+            .mark(generation, 1, "Pill readiness belongs to an earlier page.")
+    }
+
+    pub(crate) fn current_pill_ready(&self) -> bool {
+        self.pill_navigation.has(1)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn main_settings_readiness_rejects_an_earlier_page() {
+    let readiness = FrontendReadiness::default();
+    readiness.main_page_started();
+    let old = readiness.main_settings_generation();
+    assert!(!readiness.main_settings_ready());
+    readiness.mark_main_settings_ready(old).unwrap();
+    assert!(readiness.main_settings_ready());
+    assert!(!readiness.main_and_home_ready());
+    readiness.mark_home_ready(old).unwrap();
+    assert!(readiness.main_and_home_ready());
+    readiness.main_page_started();
+    assert!(!readiness.main_settings_ready());
+    assert!(readiness.mark_main_settings_ready(old).is_err());
+    assert!(readiness.mark_home_ready(old).is_err());
+    assert!(!readiness.main_and_home_ready());
+    assert!(!readiness.main_settings_ready());
+    readiness
+        .mark_main_settings_ready(readiness.main_settings_generation())
+        .unwrap();
+    assert!(readiness.main_settings_ready());
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn navigation_cannot_inherit_a_racing_old_settings_acknowledgement() {
+    for _ in 0..500 {
+        let readiness = FrontendReadiness::default();
+        readiness.main_page_started();
+        let old = readiness.main_settings_generation();
+        let ack = readiness.clone();
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let other_start = start.clone();
+        let worker = std::thread::spawn(move || {
+            other_start.wait();
+            let _ = ack.mark_main_settings_ready(old);
+        });
+        start.wait();
+        readiness.main_page_started();
+        worker.join().unwrap();
+        assert!(!readiness.main_settings_ready());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn pill_readiness_rejects_an_earlier_page() {
+    let readiness = FrontendReadiness::default();
+    readiness.pill_page_started();
+    let old = readiness.pill_generation();
+    readiness.mark_pill_ready(old).unwrap();
+    assert!(readiness.current_pill_ready());
+    readiness.pill_page_started();
+    assert!(!readiness.current_pill_ready());
+    assert!(readiness.mark_pill_ready(old).is_err());
+    assert!(!readiness.current_pill_ready());
+    readiness.mark_pill_ready(readiness.pill_generation()).unwrap();
+    assert!(readiness.current_pill_ready());
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn navigation_cannot_inherit_a_racing_old_home_acknowledgement() {
+    for _ in 0..500 {
+        let readiness = FrontendReadiness::default();
+        readiness.main_page_started();
+        let old = readiness.main_settings_generation();
+        let ack = readiness.clone();
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let other_start = start.clone();
+        let worker = std::thread::spawn(move || {
+            other_start.wait();
+            let _ = ack.mark_home_ready(old);
+        });
+        start.wait();
+        readiness.main_page_started();
+        worker.join().unwrap();
+        readiness.mark_main_settings_ready(readiness.main_settings_generation()).unwrap();
+        assert!(!readiness.main_and_home_ready());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn listing_local_models_does_not_create_a_data_directory() {
+    const CHILD_MARKER: &str = "VERENU_TEST_READ_ONLY_MODEL_LIST";
+    if std::env::var_os(CHILD_MARKER).is_some() {
+        let root = app_data_dir();
+        assert!(!root.exists());
+        assert!(!crate::local_stt::LocalTranscriptionManager::new()
+            .list_models()
+            .unwrap()
+            .is_empty());
+        assert!(!crate::local_llm::LocalLlmManager::new()
+            .list_models()
+            .unwrap()
+            .is_empty());
+        assert!(!root.exists());
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("verenu-read-only-models-{}", uuid::Uuid::new_v4()));
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "app_setup::listing_local_models_does_not_create_a_data_directory",
+            "--nocapture",
+        ])
+        .env(CHILD_MARKER, "1")
+        .env("VERENU_APP_DATA_DIR_OVERRIDE", &root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!root.exists());
 }
 
 #[cfg(target_os = "windows")]

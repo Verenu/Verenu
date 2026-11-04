@@ -34,7 +34,8 @@ export function updateActionLabel(update: UpdateInfo, restart = true): string {
     if (update.assetName.toLowerCase().endsWith('.appimage')) return 'Download AppImage';
     return 'Download Installer';
   }
-  if (isLinuxInstaller(update) || update.assetName.endsWith('.apk')) return 'Update Verenu';
+  if (isLinuxInstaller(update)) return 'Install & Restart';
+  if (update.assetName.endsWith('.apk')) return 'Update Verenu';
   return restart ? 'Install & Restart' : 'Install Now';
 }
 
@@ -43,11 +44,30 @@ function isLinuxInstaller(update: UpdateInfo): boolean {
   return name.endsWith('.appimage') || name.endsWith('.pkg.tar.zst');
 }
 
+async function restartInstalledUpdate(): Promise<void> {
+  appStore.updateProgress = 'Restarting Verenu…';
+  try {
+    await invoke('restart_app');
+  } catch (error) {
+    appStore.updateProgress = 'Update installed. Quit and reopen Verenu to finish.';
+    appStore.updateInstallError = formatIpcError(error, 'Could not restart Verenu');
+    throw error;
+  }
+}
+
 export async function installAvailableUpdate(): Promise<void> {
   const update = appStore.updateInfo;
-  if (!update || appStore.updateInstalling || appStore.updateInstalled) return;
+  if (!update || appStore.updateInstalling) return;
   appStore.updateInstalling = true;
   appStore.updateInstallError = '';
+  if (appStore.updateInstalled) {
+    try {
+      await restartInstalledUpdate();
+    } finally {
+      appStore.updateInstalling = false;
+    }
+    return;
+  }
   appStore.updateProgress = update.installMode === 'download' ? 'Opening download…' : 'Preparing update…';
   let stop: (() => void) | undefined;
   try {
@@ -57,7 +77,7 @@ export async function installAvailableUpdate(): Promise<void> {
     const outcome = await invoke<InstallOutcome>('install_update', { downloadUrl: update.downloadUrl });
     if (outcome === 'installed') {
       appStore.updateInstalled = true;
-      appStore.updateProgress = 'Update installed. Restart Verenu to finish.';
+      await restartInstalledUpdate();
     } else if (outcome === 'downloadOpened') {
       appStore.updateProgress = '';
     } else if (outcome === 'installerOpened') {
@@ -66,8 +86,10 @@ export async function installAvailableUpdate(): Promise<void> {
       throw new Error('The updater returned an unexpected result. Check for updates and try again.');
     }
   } catch (error) {
-    appStore.updateProgress = '';
-    appStore.updateInstallError = formatIpcError(error, 'Could not install the update');
+    if (!appStore.updateInstalled) {
+      appStore.updateProgress = '';
+      appStore.updateInstallError = formatIpcError(error, 'Could not install the update');
+    }
     throw error;
   } finally {
     stop?.();

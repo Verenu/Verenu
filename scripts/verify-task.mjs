@@ -84,7 +84,8 @@ if (!args.includes('--inspect-only')) {
       console.log(`Checking ${category} ${index + 1}...`);
       const result = await run(command, argv, { directory, name: `${category}-${index}` });
       let status = result.status;
-      const childReport = path.join(directory, ['session', 'pipeline'].includes(category) ? `${category}-${index}.json` : `${category}.json`);
+      const reportIndex = argv.lastIndexOf('--report');
+      const childReport = reportIndex < 0 ? path.join(directory, `${category}.json`) : argv[reportIndex + 1];
       let detail;
       if (['session', 'pipeline', 'native', 'native-integration'].includes(category)) {
         try {

@@ -15,13 +15,13 @@ describe('update actions', () => {
     invoke.mockResolvedValue('installed');
   });
   it('labels Linux installation and download actions accurately', () => {
-    expect(updateActionLabel(state.updateInfo!)).toBe('Update Verenu');
+    expect(updateActionLabel(state.updateInfo!)).toBe('Install & Restart');
     expect(updateActionLabel({ ...state.updateInfo!, assetName: 'Verenu_0.21.0_amd64.AppImage', installMode: 'download' })).toBe('Download AppImage');
     expect(updateActionLabel({ ...state.updateInfo!, assetName: 'Verenu_0.21.0_x64-setup.exe' })).toBe('Install & Restart');
   });
-  it('shares one install attempt between Home and About and requires restart afterward', async () => {
+  it('shares one install attempt and starts a restart after installation', async () => {
     let resolve!: (outcome: 'installed') => void;
-    invoke.mockReturnValue(new Promise<'installed'>((done) => { resolve = done; }));
+    invoke.mockReturnValueOnce(new Promise<'installed'>((done) => { resolve = done; }));
     const first = installAvailableUpdate();
     await installAvailableUpdate();
     expect(invoke).toHaveBeenCalledTimes(1);
@@ -30,10 +30,20 @@ describe('update actions', () => {
     await first;
     expect(state.updateInstalling).toBe(false);
     expect(state.updateInstalled).toBe(true);
-    expect(state.updateProgress).toContain('Restart Verenu');
+    expect(state.updateProgress).toContain('Restarting');
     expect(stop).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenLastCalledWith('restart_app');
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+  it('keeps the installed update and offers restart retry after startup fails', async () => {
+    invoke.mockResolvedValueOnce('installed').mockRejectedValueOnce(new Error('Replacement startup failed'));
+    await expect(installAvailableUpdate()).rejects.toThrow('startup failed');
+    expect(state.updateInstalled).toBe(true);
+    expect(state.updateProgress).toContain('Quit and reopen');
+    expect(state.updateInstallError).toContain('startup failed');
     await installAvailableUpdate();
-    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(invoke).toHaveBeenLastCalledWith('restart_app');
   });
   it('a cancelled or failed installation permits retry and never says installed', async () => {
     invoke.mockRejectedValueOnce(new Error('Update authorization was cancelled.'));

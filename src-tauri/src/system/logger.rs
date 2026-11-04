@@ -57,13 +57,28 @@ fn suppress_repeated_parser_warning(target: &str, level: log::Level, message: &s
 }
 
 pub fn init_early() {
-    crate::system::diagnostics::init();
     #[cfg(not(target_os = "android"))]
     super::log_files::init(crate::app_data_dir().join("logs"));
+    init_memory();
+}
+
+fn init_memory() {
+    crate::system::diagnostics::init();
     let _ = LOG_BUFFER.set(Mutex::new(VecDeque::with_capacity(MAX_LOG_LINES)));
     if log::set_logger(&LOGGER).is_ok() {
         log::set_max_level(LevelFilter::Debug);
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn init_for_handoff() {
+    init_memory();
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) fn activate_handoff_files(_parent_exited: &crate::linux_handoff_transport::ParentExited) {
+    super::log_files::init(crate::app_data_dir().join("logs"));
 }
 
 pub fn attach_app(app: &AppHandle) {
@@ -401,6 +416,30 @@ mod tests {
     use std::sync::Mutex;
 
     static LOGGER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "uses the process-global logger"]
+    fn handoff_logs_stay_in_memory_until_parent_exit() {
+        let path = std::env::temp_dir().join(format!("verenu-logger-handoff-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        let previous = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &path);
+        super::init_for_handoff();
+        log::warn!("synthetic handoff log");
+        assert!(recent(None).iter().any(|line| line.contains("synthetic handoff log")));
+        assert!(!path.join("logs").exists());
+        let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+        super::activate_handoff_files(&parent_exited);
+        log::warn!("synthetic active log");
+        log::logger().flush();
+        assert!(std::fs::read_dir(path.join("logs")).unwrap().next().is_some());
+        match previous {
+            Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
+            None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     fn reset_buffer() {
         let _ = LOG_BUFFER.set(Mutex::new(VecDeque::new()));

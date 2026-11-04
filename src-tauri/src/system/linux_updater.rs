@@ -192,9 +192,28 @@ pub async fn install(
         app.shell().open(url, None).map_err(|e| e.to_string())?;
         return Ok(crate::commands::InstallOutcome::DownloadOpened);
     }
-    let (name, hash) = crate::api::updater::resolve_linux_download(url, channel)
-        .await
-        .map_err(|e| e.to_string())?;
+    #[cfg(all(feature = "native-testing", debug_assertions))]
+    let fixture = match (std::env::var("VERENU_UPDATE_TEST_LOCAL_URL"), std::env::var("VERENU_UPDATE_TEST_SHA256")) {
+        (Ok(url), Ok(hash)) => {
+            let parsed = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
+            if parsed.scheme() != "http" || parsed.host_str() != Some("127.0.0.1")
+                || hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("Invalid local update fixture".into());
+            }
+            Some(("Verenu-test.AppImage".to_owned(), hash, url))
+        }
+        _ => None,
+    };
+    #[cfg(not(all(feature = "native-testing", debug_assertions)))]
+    let fixture: Option<(String, String, String)> = None;
+    let (name, hash, download_url) = match fixture {
+        Some(fixture) => fixture,
+        None => {
+            let (name, hash) = crate::api::updater::resolve_linux_download(url, channel)
+                .await.map_err(|e| e.to_string())?;
+            (name, hash, url.to_owned())
+        }
+    };
     if Path::new(&name).file_name().and_then(|name| name.to_str()) != Some(&name) {
         return Err("Invalid release installer filename.".into());
     }
@@ -205,7 +224,7 @@ pub async fn install(
     };
     let staging = StagingDirectory::new(&cache)?;
     let installer = staging.0.join(&name);
-    download_file(url, &installer, &hash, |phase, downloaded, total| {
+    download_file(&download_url, &installer, &hash, |phase, downloaded, total| {
         progress(app, phase, downloaded, total)
     })
     .await?;
@@ -645,5 +664,148 @@ mod tests {
             worker.join().unwrap();
         }
         drop(dir);
+    }
+
+    #[cfg(feature = "native-testing")]
+    #[test]
+    #[ignore = "requires a private desktop, network and verified release fixtures"]
+    fn real_appimage_update_with_backup() {
+        use tauri::Listener;
+        let old = std::env::var_os("VERENU_UPDATE_TEST_APPIMAGE").expect("old AppImage fixture");
+        let expected =
+            std::env::var_os("VERENU_UPDATE_TEST_EXPECTED").expect("new AppImage fixture");
+        let url = std::env::var("VERENU_UPDATE_TEST_URL").expect("official beta asset URL");
+        let dir = StagingDirectory::new(&std::env::temp_dir()).unwrap();
+        let image = dir.0.join("Verenu.AppImage");
+        std::fs::copy(old, &image).unwrap();
+        std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let old_hash = Sha256::digest(std::fs::read(&image).unwrap());
+        let new_hash = Sha256::digest(std::fs::read(expected).unwrap());
+        struct MountedImage {
+            child: std::process::Child,
+            mount: PathBuf,
+            app_run: Vec<u8>,
+        }
+        impl Drop for MountedImage {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+        let mounted = if std::env::var_os("VERENU_UPDATE_TEST_MOUNT").is_some() {
+            use std::io::BufRead;
+            let mut child = std::process::Command::new(&image)
+                .arg("--appimage-mount")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let mut mounted = MountedImage {
+                child,
+                mount: PathBuf::new(),
+                app_run: Vec::new(),
+            };
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut line = String::new();
+                let result = std::io::BufReader::new(stdout)
+                    .read_line(&mut line)
+                    .map(|_| line);
+                let _ = sender.send(result);
+            });
+            let path = receiver
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .unwrap()
+                .unwrap();
+            mounted.mount = PathBuf::from(path.trim());
+            assert!(mounted.mount.is_absolute());
+            mounted.app_run = std::fs::read(mounted.mount.join("AppRun")).unwrap();
+            Some(mounted)
+        } else {
+            None
+        };
+        std::env::set_var("APPIMAGE", &image);
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &dir.0);
+        std::env::set_var("XDG_CACHE_HOME", dir.0.join("cache"));
+        let db = crate::data::db::open(dir.0.join("verenu.db")).unwrap();
+        db.lock()
+            .unwrap()
+            .execute_batch("CREATE TABLE update_fixture (value TEXT); INSERT INTO update_fixture VALUES ('synthetic');")
+            .unwrap();
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        app.manage(db.clone());
+        let gate = std::sync::Arc::new(crate::linux_activity::ActivityGate::default());
+        app.manage(gate.clone());
+        let settings =
+            crate::data::store::SettingsHandle::empty_for_test(dir.0.join("settings.json"));
+        settings
+            .set(
+                crate::data::store::BETA_UPDATES_ENABLED,
+                serde_json::json!(true),
+            )
+            .unwrap();
+        app.manage(settings);
+        tauri::async_runtime::block_on(async {
+            let blocked = crate::commands::install_update(
+                app.handle().clone(),
+                "https://example.com/not-an-official-release".into(),
+            )
+            .await;
+            assert!(blocked.unwrap_err().contains("blocked"));
+            let db_guard = db.lock().unwrap();
+            let (started, wait_started) = tokio::sync::oneshot::channel();
+            let started = std::sync::Mutex::new(Some(started));
+            app.listen_any("verenu:update-progress", move |_| {
+                if let Some(started) = started.lock().unwrap().take() {
+                    let _ = started.send(());
+                }
+            });
+            let handle = app.handle().clone();
+            let update_url = url.clone();
+            let caller = tokio::spawn(async move {
+                crate::commands::install_update(handle, update_url).await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(10), wait_started)
+                .await
+                .unwrap()
+                .unwrap();
+            caller.abort();
+            let _ = caller.await;
+            let error = crate::commands::install_update(app.handle().clone(), url.clone())
+                .await
+                .unwrap_err();
+            assert!(error.contains("already in progress"), "{error}");
+            drop(db_guard);
+            let _pause = tokio::time::timeout(std::time::Duration::from_secs(180), gate.pause())
+                .await
+                .unwrap()
+                .unwrap();
+        });
+        let backup = rusqlite::Connection::open_with_flags(
+            dir.0.join("verenu.db.bak"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let saved: String = backup
+            .query_row("SELECT value FROM update_fixture", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(saved, "synthetic");
+        assert_eq!(
+            Sha256::digest(std::fs::read(dir.0.join("Verenu.AppImage.previous")).unwrap()),
+            old_hash
+        );
+        assert_eq!(Sha256::digest(std::fs::read(&image).unwrap()), new_hash);
+        if let Some(mounted) = &mounted {
+            assert_eq!(
+                std::fs::read(mounted.mount.join("AppRun")).unwrap(),
+                mounted.app_run,
+                "The running AppImage mount changed during replacement"
+            );
+        }
+        drop(mounted);
+        drop(app);
     }
 }

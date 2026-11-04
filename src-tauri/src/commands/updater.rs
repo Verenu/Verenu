@@ -82,8 +82,17 @@ pub async fn install_update(
 
     #[cfg(target_os = "linux")]
     {
-        crate::system::linux_updater::install(&app, &download_url, selected_update_channel(&app)?)
-            .await
+        let channel = selected_update_channel(&app)?;
+        let activity = linux_activity(&app).await;
+        // The installation's blocking filesystem/package-manager work must keep
+        // both guards even if the invoking webview disconnects.
+        tokio::spawn(async move {
+            let _attempt = _attempt;
+            let _activity = activity;
+            crate::system::linux_updater::install(&app, &download_url, channel).await
+        })
+        .await
+        .map_err(|error| format!("Update installation failed: {error}"))?
     }
 
     #[cfg(target_os = "android")]

@@ -141,6 +141,7 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 secret-service = { version = "5.2", default-features = false, features = ["rt-tokio-crypto-rust"] }
 wl-clipboard-rs = "0.9.4"
 zbus = "5.19"
+enumflags2 = "0.7.12"
 # Matches the version tao/wry already resolve (see Cargo.lock) so the
 # gtk::ApplicationWindow returned by WebviewWindow::gtk_window() and the
 # gtk::Settings used to theme it are the same type, not a version mismatch.

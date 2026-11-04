@@ -4,6 +4,8 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Arch package upgrades repair inaccessible runtime directories left by older releases.
+- Linux updates restart Verenu after installation when the guarded handoff is available, with a retry if restart preparation fails.
 - On Linux, keep the microphone mute-button monitor running until dictation starts receiving audio, avoiding an interruption while switching capture streams.
 - NVIDIA RE-USE setup now reports recognized download, disk, permission, and integrity failures instead of suggesting every possible cause.
 
