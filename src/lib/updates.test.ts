@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-const state = vi.hoisted(() => ({ betaUpdatesEnabled: false, updateInstalling: false, updateInstalled: false, updateInfo: null as unknown }));
+const state = vi.hoisted(() => ({ betaUpdatesEnabled: false, updateInstalling: false, updateInstalled: false, updateChannelChanging: false, updateChannelRevision: 0, updateInfo: null as unknown }));
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('./stores', () => ({ appStore: state }));
 vi.mock('./tauri', () => ({ invoke }));
@@ -10,7 +10,7 @@ let stop: (() => void) | undefined;
 let browser: EventTarget;
 beforeEach(() => {
   vi.clearAllMocks();
-  Object.assign(state, { betaUpdatesEnabled: false, updateInstalling: false, updateInstalled: false, updateInfo: null });
+  Object.assign(state, { betaUpdatesEnabled: false, updateInstalling: false, updateInstalled: false, updateChannelChanging: false, updateChannelRevision: 0, updateInfo: null });
   browser = Object.assign(new EventTarget(), { setInterval: vi.fn(() => 1), clearInterval: vi.fn() });
   vi.stubGlobal('window', browser);
   invoke.mockResolvedValue(null);
@@ -74,4 +74,13 @@ it('does not check while installing or awaiting restart', () => {
   state.updateInstalled = true;
   browser.dispatchEvent(new Event('online'));
   expect(invoke).not.toHaveBeenCalled();
+});
+it('discards a check started before a channel change, even if the value changes back', async () => {
+  let finish!: (value: unknown) => void;
+  invoke.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+  stop = startAutomaticUpdateChecks();
+  state.updateChannelRevision++;
+  finish({ version: '0.21.0' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(state.updateInfo).toBe(null);
 });

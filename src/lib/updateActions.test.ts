@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ updateInfo: null as null | { version: string; assetName: string; downloadUrl: string; installMode: 'install' | 'download' }, updateInstalling: false, updateInstalled: false, updateProgress: '', updateInstallError: '' }));
+const state = vi.hoisted(() => ({ updateInfo: null as null | { version: string; assetName: string; downloadUrl: string; installMode: 'install' | 'download' }, updateInstalling: false, updateInstalled: false, updateChannelChanging: false, updateProgress: '', updateInstallError: '' }));
 const invoke = vi.hoisted(() => vi.fn());
 const stop = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn(async () => stop));
@@ -11,7 +11,7 @@ import { installAvailableUpdate, progressLabel, reinstallLatestUpdate, updateAct
 describe('update actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    Object.assign(state, { updateInfo: { version: '0.21.0', assetName: 'verenu-0.21.0-1-x86_64.pkg.tar.zst', downloadUrl: 'https://example.invalid/update', installMode: 'install' }, updateInstalling: false, updateInstalled: false, updateProgress: '', updateInstallError: '' });
+    Object.assign(state, { updateInfo: { version: '0.21.0', assetName: 'verenu-0.21.0-1-x86_64.pkg.tar.zst', downloadUrl: 'https://example.invalid/update', installMode: 'install' }, updateInstalling: false, updateInstalled: false, updateChannelChanging: false, updateProgress: '', updateInstallError: '' });
     invoke.mockResolvedValue('installed');
   });
   it('labels Linux installation and download actions accurately', () => {
@@ -86,6 +86,8 @@ describe('update actions', () => {
     await reinstallLatestUpdate(reinstall);
     expect(reinstall.message).toContain('v0.21.0 installed');
     expect(reinstall.message).toContain('Quit and reopen');
+    expect(state.updateInstalled).toBe(true);
+    expect(state.updateProgress).toContain('Quit and reopen');
     expect(invoke.mock.calls.map(([command]) => command)).toEqual(['reinstall_latest_update']);
     expect(reinstall.busy).toBe(false);
   });
@@ -113,6 +115,30 @@ describe('update actions', () => {
     finish({ version: '0.21.0', outcome: 'downloadOpened' });
     await first;
     expect(reinstall.busy).toBe(false);
+  });
+  it('shares the busy state between reinstall and a normal update', async () => {
+    const reinstall = { busy: false, message: '' };
+    let finish!: (result: { version: string; outcome: 'installed' }) => void;
+    invoke.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const first = reinstallLatestUpdate(reinstall);
+    expect(state.updateInstalling).toBe(true);
+    await installAvailableUpdate();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    finish({ version: '0.21.0', outcome: 'installed' });
+    await first;
+    await installAvailableUpdate();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(state.updateInstalled).toBe(true);
+  });
+  it('blocks reinstall while an update or channel change is pending', async () => {
+    const reinstall = { busy: false, message: '' };
+    state.updateInstalling = true;
+    await reinstallLatestUpdate(reinstall);
+    state.updateInstalling = false;
+    state.updateChannelChanging = true;
+    await reinstallLatestUpdate(reinstall);
+    await installAvailableUpdate();
+    expect(invoke).not.toHaveBeenCalled();
   });
   it('shows bounded progress even without a content length', () => {
     expect(progressLabel({ phase: 'downloading', downloaded: 20, total: 10 })).toBe('Downloading… 100%');
