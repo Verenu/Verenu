@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 const access = JSON.parse(await fs.readFile(process.env.VERENU_SESSION_ACCESS_FILE, 'utf8'));
 const base = new URL(access.localAccessUrl).origin;
@@ -70,6 +72,12 @@ test('production pipeline uses HTTP fallback and preserves speech when cleanup f
       assert.equal(rows.length, 1, 'Every completed production run must create exactly one new history row');
       assert.equal(rows[0].clean_text, expected);
       assert.equal(rows[0].website_domain, 'docs.example.test');
+      const database = new DatabaseSync(path.join(path.dirname(process.env.VERENU_SESSION_ACCESS_FILE), 'data', 'verenu.db'), { readOnly: true });
+      try {
+        const usage = database.prepare('SELECT task, model FROM api_calls WHERE transcription_id = ? ORDER BY task').all(rows[0].id);
+        assert.ok(usage.some(call => call.task === 'transcription' && call.model === 'synthetic-fallback'), 'Completion must retain the successful transcription usage');
+        assert.equal(usage.some(call => call.task === 'cleanup' && call.model === 'synthetic-cleanup'), !fails, 'Completion must record successful cleanup usage only');
+      } finally { database.close(); }
       const matches = await invoke('get_recent', { search: 'docs.example.test' });
       assert.ok(matches.some(row => row.id === rows[0].id));
       const events = (await (await request(`/events?after=${cursor}`)).json()).events;
