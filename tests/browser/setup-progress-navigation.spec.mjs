@@ -12,7 +12,11 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
         await page.emulateMedia({ reducedMotion });
         await session.invoke('save_setting', { key: 'setup_complete', value: false });
         await session.invoke('save_setting', { key: 'setup_progress', value: { step: 6, provider: 'local' } });
+        const progressLoaded = page.waitForResponse(response => response.url().endsWith('/__verenu_dev/invoke')
+          && response.request().postDataJSON()?.command === 'get_setting'
+          && response.request().postDataJSON()?.args?.key === 'setup_progress');
         await page.reload();
+        await progressLoaded;
         await expect(label(6)).toBeVisible();
         await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeEnabled();
 
