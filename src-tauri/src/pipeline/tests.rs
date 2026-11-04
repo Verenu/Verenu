@@ -1544,14 +1544,14 @@ async fn pipeline_fixture_skips_cleanup_for_pure_snippet_fast_path() {
     }));
     request.snippets.push(PipelineTestSnippet {
         trigger: "sig".into(),
-        expansion: "Best regards, Sam".into(),
+        expansion: "Best regards, Alex".into(),
         instructions: String::new(),
     });
 
     let result = run_pipeline_fixture(request)
         .await
         .expect("pure snippet fast path should succeed");
-    assert_eq!(result.final_text_before_dictionary, "Best regards, Sam");
+    assert_eq!(result.final_text_before_dictionary, "Best regards, Alex");
     assert_eq!(
         fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
         0
@@ -1577,7 +1577,7 @@ async fn pipeline_fixture_runs_cleanup_for_pure_snippet_with_context_instruction
         task: "cleanup".into(),
         provider: "groq".into(),
         model: "llama-3.3-70b-versatile".into(),
-        response: Some("Best regards, Sam.".into()),
+        response: Some("Best regards, Alex.".into()),
         error_kind: None,
         error_message: None,
     });
@@ -1597,14 +1597,14 @@ async fn pipeline_fixture_runs_cleanup_for_pure_snippet_with_context_instruction
     request.db = Some(db);
     request.snippets.push(PipelineTestSnippet {
         trigger: "sig".into(),
-        expansion: "Best regards, Sam".into(),
+        expansion: "Best regards, Alex".into(),
         instructions: String::new(),
     });
 
     let result = run_pipeline_fixture(request)
         .await
         .expect("context instructions should force cleanup for pure snippets");
-    assert_eq!(result.final_text_before_dictionary, "Best regards, Sam.");
+    assert_eq!(result.final_text_before_dictionary, "Best regards, Alex.");
     assert_eq!(
         fixture_hit_count("cleanup", "groq", "llama-3.3-70b-versatile"),
         1
