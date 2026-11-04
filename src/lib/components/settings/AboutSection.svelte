@@ -18,7 +18,6 @@
   let versionTapCount = $state(0);
   let versionTapTimer: ReturnType<typeof setTimeout> | null = null;
   let devModeHintVisible = $state(false);
-  let betaUpdatesEnabled = $state(appStore.betaUpdatesEnabled);
   let confirmBetaUpdates = $state(false);
   let betaCancelButton = $state<HTMLButtonElement | null>(null);
 
@@ -34,12 +33,8 @@
     const channelChanging = appStore.updateChannelChanging;
     invoke<boolean | null>('get_setting', { key: 'beta_updates_enabled' })
       .then((value) => {
-        if (channelChanging || appStore.updateChannelChanging || channelRevision !== appStore.updateChannelRevision) {
-          betaUpdatesEnabled = appStore.betaUpdatesEnabled;
-          return;
-        }
-        betaUpdatesEnabled = value ?? /-(beta|nightly|dev)/i.test(appVersion);
-        appStore.betaUpdatesEnabled = betaUpdatesEnabled;
+        if (channelChanging || appStore.updateChannelChanging || channelRevision !== appStore.updateChannelRevision) return;
+        appStore.betaUpdatesEnabled = value ?? /-(beta|nightly|dev)/i.test(appVersion);
       })
       .catch((error) => console.error('Failed to load beta update setting:', error));
   });
@@ -103,17 +98,15 @@
 
   async function setBetaUpdates(value: boolean) {
     if (appStore.updateChannelChanging || appStore.updateInstalling || appStore.updateInstalled) return;
-    const previous = betaUpdatesEnabled;
+    const previous = appStore.betaUpdatesEnabled;
     appStore.updateChannelChanging = true;
     appStore.updateChannelRevision += 1;
     let refresh = false;
-    betaUpdatesEnabled = value;
     appStore.betaUpdatesEnabled = value;
     try {
       try {
         await saveSetting('beta_updates_enabled', value);
       } catch (error) {
-        betaUpdatesEnabled = previous;
         appStore.betaUpdatesEnabled = previous;
         betaUpdatesError = true;
         console.error('Failed to save beta update setting:', error);
@@ -245,7 +238,7 @@
     <div class="label">Beta updates</div>
     <div class="desc">Try early releases from the master branch. Expect bugs and possible data loss.</div>
   </div>
-  <Toggle checked={betaUpdatesEnabled} disabled={appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging} onchange={handleBetaUpdatesToggle} label="Beta updates" bind:error={betaUpdatesError} />
+  <Toggle checked={appStore.betaUpdatesEnabled} disabled={appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging} onchange={handleBetaUpdatesToggle} label="Beta updates" bind:error={betaUpdatesError} />
 </div>
 
 

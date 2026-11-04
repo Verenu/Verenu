@@ -192,6 +192,41 @@ test('a pending beta setting change blocks installation until the offer is refre
   }
 });
 
+test('a failed beta save restores the toggle after navigating away and back', async ({ page }) => {
+  let releaseSave;
+  let saveStarted;
+  const pending = new Promise(resolve => { releaseSave = resolve; });
+  const started = new Promise(resolve => { saveStarted = resolve; });
+  await page.route('**/__verenu_dev/invoke', async route => {
+    const { command, args } = route.request().postDataJSON() ?? {};
+    if (command === 'get_setting' && args?.key === 'beta_updates_enabled') return route.fulfill({ status: 200, json: false });
+    if (command === 'save_setting' && args?.key === 'beta_updates_enabled') {
+      saveStarted();
+      await pending;
+      return route.fulfill({ status: 500, json: { error: 'Synthetic setting failure' } });
+    }
+    return route.fallback();
+  });
+  try {
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.about"]').click();
+    await page.getByRole('switch', { name: 'Beta updates' }).click();
+    await page.getByRole('button', { name: 'Enable beta updates' }).click();
+    await started;
+    await page.locator('[data-debug-id="nav.back"]').click();
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.about"]').click();
+    const toggle = page.getByRole('switch', { name: 'Beta updates' });
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await expect(toggle).toBeDisabled();
+    releaseSave();
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await expect(toggle).toBeEnabled();
+  } finally {
+    releaseSave();
+  }
+});
+
 test('developer reinstall survives navigation and asks the user to reopen', async ({ page }) => {
   let installs = 0;
   let restarts = 0;
