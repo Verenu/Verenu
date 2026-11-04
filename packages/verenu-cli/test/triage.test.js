@@ -4,11 +4,12 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
 import { checks } from '../src/checks/index.js';
-import { fix } from '../src/fixes/index.js';
+import { fix, stalePidFiles } from '../src/fixes/index.js';
 import { bundle } from '../src/bundle.js';
 import { report } from '../src/report.js';
 import { nativeChecks } from '../src/checks/native.js';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { generate } from '../scripts/generate-model-manifest.js';
 
@@ -157,4 +158,48 @@ test('settings reset restores the newest valid backed-up settings', async t => {
   await writeFile(join(dataDir, 'settings.json'), '{bad');
   await fix(dataDir, 'reset-settings');
   assert.equal(await readFile(join(dataDir, 'settings.json'), 'utf8'), '{"volume":42}');
+});
+
+test('stale PID cleanup preserves the file in backup', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
+  await writeFile(join(dataDir, 'verenu.pid'), '2147483647');
+  assert.equal((await stalePidFiles(dataDir)).length, 1);
+  const backup = await fix(dataDir, 'clear-stale-pids');
+  assert.equal(await readFile(join(backup, 'verenu.pid'), 'utf8'), '2147483647');
+  await assert.rejects(readFile(join(dataDir, 'verenu.pid')));
+});
+
+test('partial model cleanup moves only incomplete artifacts to backup', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
+  await mkdir(join(dataDir, 'models'));
+  await writeFile(join(dataDir, 'models', 'file.partial'), 'partial');
+  await writeFile(join(dataDir, 'models', 'good'), 'complete');
+  const backup = await fix(dataDir, 'clear-partial-models');
+  assert.equal(await readFile(join(backup, 'models', 'file.partial'), 'utf8'), 'partial');
+  assert.equal(await readFile(join(dataDir, 'models', 'good'), 'utf8'), 'complete');
+  await assert.rejects(readFile(join(dataDir, 'models', 'file.partial')));
+});
+
+test('noninteractive invocation declines fixes by default', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
+  await writeFile(join(dataDir, 'settings.json'), '{invalid');
+  const cli = fileURLToPath(new URL('../bin/verenu.js', import.meta.url));
+  const invoked = spawnSync(process.execPath, [cli, 'triage', '--data-dir', dataDir, '--json'], {encoding: 'utf8', timeout: 15000});
+  assert.equal(invoked.status, 0);
+  assert.equal(await readFile(join(dataDir, 'settings.json'), 'utf8'), '{invalid');
+  assert.deepEqual(JSON.parse(invoked.stdout).actions, []);
+});
+
+test('--yes does not approve transcript recovery without typed confirmation', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
+  await writeFile(join(dataDir, 'verenu.db'), 'broken fixture');
+  const cli = fileURLToPath(new URL('../bin/verenu.js', import.meta.url));
+  const invoked = spawnSync(process.execPath, [cli, 'triage', '--data-dir', dataDir, '--json', '--yes'], {encoding: 'utf8', timeout: 15000});
+  assert.equal(invoked.status, 0);
+  assert.equal(await readFile(join(dataDir, 'verenu.db'), 'utf8'), 'broken fixture');
+  assert.equal(JSON.parse(invoked.stdout).actions.some(action => action.fix === 'recover-db'), false);
 });

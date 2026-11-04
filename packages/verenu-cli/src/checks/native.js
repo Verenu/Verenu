@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { join, delimiter, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { stalePidFiles } from '../fixes/index.js';
 
 const result = (name, status, message) => ({ name, status, message });
 const exists = p => access(p, constants.X_OK).then(() => true, () => false);
@@ -78,7 +79,26 @@ export async function nativeChecks({ dataDir, settings, env = process.env, platf
     }
   }
   await walk(join(dataDir, 'models'), 0);
+  for (const bundle of builtIn.bundles || []) {
+    const root = join(dataDir, 'models', 'stt', bundle.id);
+    let info;
+    try { info = await lstat(root); } catch (error) { if (error.code === 'ENOENT') continue; partial = true; continue; }
+    if (!info.isDirectory() || info.isSymbolicLink()) { partial = true; continue; }
+    try {
+      if (await readFile(join(root, '.verenu-integrity'), 'utf8') !== bundle.revision) partial = true;
+      for (const file of bundle.files) {
+        const path = join(root, file.path);
+        const artifactInfo = await lstat(path);
+        if (!artifactInfo.isFile() || artifactInfo.isSymbolicLink() || artifactInfo.size !== file.size) { partial = true; continue; }
+        const hash = createHash('sha256');
+        for await (const chunk of createReadStream(path)) hash.update(chunk);
+        if (hash.digest('hex') !== file.sha256) partial = true;
+        else verified++;
+      }
+    } catch { partial = true; }
+  }
   const models = result('models', partial ? 'fail' : inspected ? 'warn' : 'pass', partial ? 'Partial, empty, or invalid model artifact found. Retry the download in Settings.' : inspected ? `${verified} manifest artifacts verified; other installed files may not be verified.` : 'No local model files found.');
+  if (partial) models.fix = 'clear-partial-models';
   let port;
   try { port = JSON.parse(await readFile(join(dataDir, 'agent-session.json'), 'utf8')).port; } catch {}
   let processCheck = result('process', 'pass', platform === 'win32' ? 'Single-instance mutex is OS-managed.' : 'No persisted agent port found.');
@@ -90,5 +110,6 @@ export async function nativeChecks({ dataDir, settings, env = process.env, platf
       processCheck = probe.error || ![0, 1].includes(probe.status) || (probe.stderr || '').trim() ? result('process', 'warn', 'Could not establish agent port ownership.') : pids.length ? result('process', 'pass', `Agent port is listening; owner PID: ${pids.join(', ')}.`) : result('process', 'warn', 'Agent port is not listening. Restart Verenu to refresh it.');
     }
   }
+  if (platform !== 'win32' && (await stalePidFiles(dataDir)).length) processCheck = { name: 'process', status: 'warn', message: 'A PID file names a process that no longer exists. Clear it after closing Verenu.', fix: 'clear-stale-pids' };
   return [launch, keyring, keys, models, processCheck];
 }
