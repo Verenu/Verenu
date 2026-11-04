@@ -63,6 +63,81 @@ test('an installed update shows the restart error and quit fallback', async ({ p
   await expect(row.getByRole('button', { name: 'Restart', exact: true })).toBeVisible();
 });
 
+test('a late update check cannot hide a failed restart', async ({ page }) => {
+  let releaseCheck;
+  let checkStarted;
+  let checkDelivered;
+  const pendingCheck = new Promise(resolve => { releaseCheck = resolve; });
+  const checkArrived = new Promise(resolve => { checkStarted = resolve; });
+  const checkReturned = new Promise(resolve => { checkDelivered = resolve; });
+  await page.route('**/__verenu_dev/invoke', async route => {
+    const command = route.request().postDataJSON()?.command;
+    if (command === 'check_for_update') {
+      checkStarted();
+      await pendingCheck;
+      await route.fulfill({ status: 200, json: null });
+      checkDelivered();
+      return;
+    }
+    if (command === 'install_update') return route.fulfill({ status: 200, json: 'installed' });
+    if (command === 'restart_app') return route.fulfill({ status: 500, json: { error: 'Synthetic replacement failure' } });
+    return route.fallback();
+  });
+  await page.locator('[data-debug-id="nav.settings"]').click();
+  await page.locator('[data-debug-id="settings.about"]').click();
+  await page.evaluate(async () => {
+    const { appStore } = await import('/src/lib/stores.svelte.ts');
+    appStore.updateInfo = { version: '99.0.0', assetName: 'Verenu_99.0.0_amd64.AppImage', downloadUrl: 'https://example.invalid/synthetic.AppImage', installMode: 'install' };
+  });
+  const row = page.locator('[data-setting-target="about-updates"]');
+  await row.getByRole('button', { name: 'Check for Updates', exact: true }).click();
+  await checkArrived;
+  await page.locator('[data-debug-id="nav.back"]').click();
+  await page.locator('.update-btn').click();
+  await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstallError)).toContain('Synthetic replacement failure');
+  releaseCheck();
+  await checkReturned;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(page.locator('.update-btn')).toHaveText('Restart');
+  await expect(page.locator('.update-banner')).toContainText('Synthetic replacement failure');
+});
+
+test('a late dismissal cannot hide a failed restart', async ({ page }) => {
+  let releaseDismissal;
+  let dismissalStarted;
+  let dismissalDelivered;
+  const pendingDismissal = new Promise(resolve => { releaseDismissal = resolve; });
+  const dismissalArrived = new Promise(resolve => { dismissalStarted = resolve; });
+  const dismissalReturned = new Promise(resolve => { dismissalDelivered = resolve; });
+  await page.route('**/__verenu_dev/invoke', async route => {
+    const { command, args } = route.request().postDataJSON() ?? {};
+    if (command === 'save_setting' && args?.key === 'update_dismissed_version' && args?.value === '99.0.0') {
+      dismissalStarted();
+      await pendingDismissal;
+      await route.fulfill({ status: 200, json: null });
+      dismissalDelivered();
+      return;
+    }
+    if (command === 'install_update') return route.fulfill({ status: 200, json: 'installed' });
+    if (command === 'restart_app') return route.fulfill({ status: 500, json: { error: 'Synthetic replacement failure' } });
+    return route.fallback();
+  });
+  await page.evaluate(async () => {
+    const { appStore } = await import('/src/lib/stores.svelte.ts');
+    appStore.updateInfo = { version: '99.0.0', assetName: 'Verenu_99.0.0_amd64.AppImage', downloadUrl: 'https://example.invalid/synthetic.AppImage', installMode: 'install' };
+  });
+  const banner = page.locator('.update-banner');
+  await banner.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await dismissalArrived;
+  await banner.locator('.update-btn').click();
+  await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstallError)).toContain('Synthetic replacement failure');
+  releaseDismissal();
+  await dismissalReturned;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(banner.getByRole('button', { name: 'Restart', exact: true })).toBeVisible();
+  await expect(banner).toContainText('Synthetic replacement failure');
+});
+
 test('developer reinstall offers a restart retry without reinstalling', async ({ page }) => {
   let installs = 0;
   let restarts = 0;

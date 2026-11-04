@@ -280,10 +280,12 @@
   }
 
   async function dismissUpdate() {
-    if (!appStore.updateInfo) return;
+    const update = appStore.updateInfo;
+    if (!update || appStore.updateInstalling || appStore.updateInstalled) return;
     try {
-      await saveSetting('update_dismissed_version', appStore.updateInfo.version);
+      await saveSetting('update_dismissed_version', update.version);
     } catch {}
+    if (appStore.updateInstalling || appStore.updateInstalled || appStore.updateInfo !== update) return;
     appStore.updateInfo = null;
   }
 
