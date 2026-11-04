@@ -342,6 +342,35 @@ pub struct SyncStatusSnapshot {
 }
 
 impl SyncManager {
+    #[cfg(test)]
+    pub(crate) fn isolated_for_test(app: AppHandle, db: DbHandle, data_dir: PathBuf) -> Self {
+        Self { inner: Arc::new(Inner {
+            db, app, data_dir,
+            identity: RwLock::new(None),
+            pending: tokio::sync::Mutex::new(None),
+            pairing_status: Mutex::new(None),
+            pairing_in_progress: AtomicBool::new(false),
+            pairing_generation: AtomicU64::new(0),
+            sessions: Mutex::new(HashSet::new()),
+            mute_sessions: Mutex::new(HashMap::new()),
+            discovered: Mutex::new(HashMap::new()),
+            status: Mutex::new(HashMap::new()),
+            backoff: Mutex::new(HashMap::new()),
+            dirty: AtomicBool::new(false),
+            last_change: Mutex::new(None),
+            pending_changes: Mutex::new(HashSet::new()),
+            mdns: tokio::sync::Mutex::new(None),
+            listener_task: tokio::sync::Mutex::new(None),
+            initialize_lock: tokio::sync::Mutex::new(()),
+            monitor_started: AtomicBool::new(false),
+            listener_port: AtomicU16::new(0),
+            available: AtomicBool::new(false),
+            listener_failed: AtomicBool::new(false),
+            incoming_slots: Arc::new(Semaphore::new(MAX_INCOMING_CONNECTIONS)),
+            mute_lease_slots: Arc::new(Semaphore::new(MAX_ACTIVE_MUTE_LEASES)),
+        }) }
+    }
+
     pub(crate) async fn suspend_discovery(&self) -> Result<()> {
         if let Some(task) = self.inner.listener_task.lock().await.take() {
             task.abort();
@@ -1772,15 +1801,15 @@ impl SyncManager {
         };
         let connector = transport::tls_connector(transport::client_config(cert, key)?);
         let consent = crate::legal_consent::network_permit().await?;
-        let tcp = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
-            .await
+        let tcp = crate::legal_consent::while_consented(tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)))
+            .await?
             .map_err(|_| connection_error(&peer.name, addr, "connection timed out"))?
             .map_err(|e| connection_error(&peer.name, addr, &e.to_string()))?;
-        let mut tls = tokio::time::timeout(
+        let mut tls = crate::legal_consent::while_consented(tokio::time::timeout(
             CONNECT_TIMEOUT,
             connector.connect(transport::server_name_for(&peer.device_uuid), tcp),
-        )
-        .await
+        ))
+        .await?
         .map_err(|_| connection_error(&peer.name, addr, "TLS handshake timed out"))?
         .map_err(|e| connection_error(&peer.name, addr, &format!("TLS handshake failed: {e}")))?;
         drop(consent);

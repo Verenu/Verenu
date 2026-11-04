@@ -14,6 +14,98 @@ mod regression_tests;
 #[path = "device_tests.rs"]
 mod device_tests;
 
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires an isolated Xvfb display"]
+async fn skip_command_cancels_inflight_model_download_and_sync() {
+    use std::sync::atomic::Ordering;
+    use tauri::Manager;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::time::{timeout, Duration};
+
+    const CHILD: &str = "VERENU_SKIP_INFLIGHT_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "sync::tests::skip_command_cancels_inflight_model_download_and_sync", "--ignored", "--nocapture"])
+            .env(CHILD, "1")
+            .status().unwrap();
+        assert!(status.success(), "isolated Skip test failed");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("verenu-skip-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &root);
+    let settings = crate::data::store::SettingsHandle::empty_for_test(root.join("settings.json"));
+    settings.set(crate::legal_consent::ACCEPTED_TERMS, json!(crate::legal_consent::TERMS_VERSION)).unwrap();
+    settings.set(crate::legal_consent::ACCEPTED_PRIVACY, json!(crate::legal_consent::PRIVACY_VERSION)).unwrap();
+    crate::legal_consent::install_network_settings(settings.clone());
+
+    let mut context = tauri::generate_context!();
+    context.config_mut().app.windows.clear();
+    let app = tauri::Builder::default().any_thread().build(context).unwrap();
+    let handle = app.handle().clone();
+    app.manage(settings);
+    let download_manager = crate::local_stt::LocalTranscriptionManager::new();
+    app.manage(download_manager.clone());
+    let local_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    let peer_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    let db = db::open(":memory:").unwrap();
+    sync_store::ensure_self_identity(&db.lock().unwrap(), local_id, "Fixture").unwrap();
+    let sync = super::manager::SyncManager::isolated_for_test(handle.clone(), db.clone(), root.clone());
+    app.manage(sync.clone());
+
+    let download_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url: &'static str = Box::leak(format!("http://{}/model", download_listener.local_addr().unwrap()).into_boxed_str());
+    let mut manifest = crate::local_stt::model::built_in_model_manifests().into_iter().next().unwrap();
+    manifest.id = "skip-fixture";
+    manifest.filename = "skip-fixture.bin";
+    manifest.install_name = "skip-fixture.bin";
+    manifest.url = Some(url);
+    manifest.sha256 = None;
+    manifest.is_directory = false;
+    manifest.engine_type = crate::local_stt::model::LocalSttEngineType::Whisper;
+    let (cancel, download) = download_manager.start_fixture_download(handle.clone(), manifest.clone(), root.clone());
+    let (mut download_server, _) = timeout(Duration::from_secs(10), download_listener.accept()).await.unwrap().unwrap();
+    let mut request = [0; 4096];
+    assert!(timeout(Duration::from_secs(10), download_server.read(&mut request)).await.unwrap().unwrap() > 0);
+    download_server.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\nx").await.unwrap();
+
+    let sync_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut client = TcpStream::connect(sync_listener.local_addr().unwrap()).await.unwrap();
+    let (mut sync_server, _) = sync_listener.accept().await.unwrap();
+    sync.inner.sessions.lock().unwrap().insert(peer_id.into());
+    let active = sync.inner.clone();
+    let sync_db = db.clone();
+    let peer = peer_of(peer_id);
+    let session = tokio::spawn(async move {
+        let result = engine::run_session(&sync_db, &TestHost::new(local_id), &mut client, true, &peer).await;
+        active.sessions.lock().unwrap().remove(peer_id);
+        result
+    });
+    let length = timeout(Duration::from_secs(10), sync_server.read_u32()).await.unwrap().unwrap() as usize;
+    let mut hello = vec![0; length];
+    sync_server.read_exact(&mut hello).await.unwrap();
+    assert!(matches!(serde_json::from_slice::<Message>(&hello).unwrap(), Message::Hello(_)));
+
+    let state = timeout(Duration::from_secs(10), crate::legal_consent::skip_legal(handle.clone())).await.unwrap().unwrap();
+    assert_eq!(serde_json::to_value(state).unwrap()["status"], "skipped");
+    assert!(cancel.load(Ordering::Acquire));
+    assert!(download.await.unwrap().is_err());
+    assert!(session.await.unwrap().is_err());
+    assert!(sync.inner.sessions.lock().unwrap().is_empty());
+    let mut byte = [0; 1];
+    assert_eq!(timeout(Duration::from_secs(3), sync_server.read(&mut byte)).await.unwrap().unwrap(), 0);
+    assert_eq!(timeout(Duration::from_secs(3), download_server.read(&mut byte)).await.unwrap().unwrap(), 0);
+    let (_, retry) = download_manager.start_fixture_download(handle, manifest, root.clone());
+    assert!(retry.await.unwrap().is_err());
+    assert!(timeout(Duration::from_millis(250), download_listener.accept()).await.is_err());
+    assert!(timeout(Duration::from_millis(250), sync_listener.accept()).await.is_err());
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn t3_skill_opt_out_syncs_with_contexts_and_old_payloads_omit_it() {
     let a = test_db("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");

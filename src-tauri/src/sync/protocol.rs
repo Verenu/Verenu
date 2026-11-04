@@ -189,11 +189,11 @@ pub async fn send_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Messa
     if len > MAX_MESSAGE_BYTES {
         return Err(anyhow!("message too large: {len} bytes"));
     }
-    timeout(Duration::from_secs(30), async {
+    crate::legal_consent::while_consented(timeout(Duration::from_secs(30), async {
         writer.write_all(&len.to_be_bytes()).await?;
         writer.write_all(&body).await?;
         writer.flush().await
-    }).await.map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out while writing sync message"))??;
+    })).await?.map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out while writing sync message"))??;
     Ok(())
 }
 

@@ -62,6 +62,31 @@ pub struct LocalTranscriptionState {
 }
 
 impl LocalTranscriptionManager {
+    #[cfg(test)]
+    pub(crate) fn start_fixture_download(
+        &self,
+        app: AppHandle,
+        manifest: super::model::LocalSttModelManifest,
+        root: PathBuf,
+    ) -> (Arc<AtomicBool>, tokio::task::JoinHandle<anyhow::Result<()>>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let completion = Arc::new(tokio::sync::Notify::new());
+        *self.download_task.lock().unwrap() = Some(DownloadTaskState {
+            model_id: manifest.id.into(),
+            cancel: cancel.clone(),
+            completion: completion.clone(),
+        });
+        let manager = self.clone();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            let result = download_model(&app, &manifest, &root, task_cancel).await;
+            *manager.download_task.lock().unwrap() = None;
+            completion.notify_waiters();
+            result
+        });
+        (cancel, task)
+    }
+
     pub fn new() -> Self {
         Self {
             engine: Arc::new(Mutex::new(None)),
