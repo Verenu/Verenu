@@ -15,6 +15,54 @@ pub struct RuntimeStatus {
 
 static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 static REALTIME_FAILED: AtomicBool = AtomicBool::new(false);
+static INSTALL_TASK: Mutex<Option<tokio::task::JoinHandle<()>>> = Mutex::new(None);
+static CHECK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub(crate) async fn hold_checks_for_deletion() -> tokio::sync::MutexGuard<'static, ()> {
+    CHECK_LOCK.lock().await
+}
+
+struct OwnedInstallChild(tokio::process::Child);
+
+impl Drop for OwnedInstallChild {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0.id() {
+            // The child is the leader of a process group created for this install.
+            unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
+        }
+    }
+}
+
+fn spawn_install_child(command: &mut tokio::process::Command) -> std::io::Result<OwnedInstallChild> {
+    #[cfg(unix)]
+    command.process_group(0);
+    command.kill_on_drop(true).spawn().map(OwnedInstallChild)
+}
+
+async fn install_child_status(command: &mut tokio::process::Command, timeout: std::time::Duration) -> anyhow::Result<std::process::ExitStatus> {
+    let mut child = spawn_install_child(command)?;
+    Ok(tokio::time::timeout(timeout, child.0.wait()).await??)
+}
+
+pub(crate) async fn cancel_network_installation() -> Result<(), String> {
+    let task = INSTALL_TASK.lock().map_err(|_| "NVIDIA setup state unavailable")?.take();
+    if let Some(task) = task {
+        if !task.is_finished() {
+            task.abort();
+            let _ = task.await;
+            set_status("not_installed", "NVIDIA RE-USE setup was cancelled.");
+        }
+    }
+    Ok(())
+}
+
+fn track_install(task: tokio::task::JoinHandle<()>) -> Result<(), String> {
+    match INSTALL_TASK.lock() {
+        Ok(mut slot) => { *slot = Some(task); Ok(()) }
+        Err(_) => { task.abort(); Err("NVIDIA setup state unavailable".into()) }
+    }
+}
 
 fn status_cell() -> &'static Mutex<RuntimeStatus> {
     static STATUS: OnceLock<Mutex<RuntimeStatus>> = OnceLock::new();
@@ -102,6 +150,10 @@ pub fn nvidia_reuse_status() -> RuntimeStatus {
 
 #[tauri::command]
 pub async fn nvidia_reuse_check() -> Result<(), String> {
+    let _check = CHECK_LOCK.lock().await;
+    if !matches!(crate::legal_deletion::marker_path(&crate::app_data_dir()).try_exists(), Ok(false)) {
+        return Err("deletion_pending".into());
+    }
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         set_status("unavailable", "Requires Linux x86_64 and a compatible NVIDIA GPU.");
         return Ok(());
@@ -129,6 +181,7 @@ pub async fn nvidia_reuse_check() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn nvidia_reuse_install() -> Result<(), String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         return Err("Requires Linux x86_64 and a compatible NVIDIA GPU.".into());
     }
@@ -142,9 +195,10 @@ pub async fn nvidia_reuse_install() -> Result<(), String> {
         set_status("unavailable", "No compatible NVIDIA GPU with a supported driver was detected.");
         return Err("No compatible NVIDIA GPU with a supported driver was detected.".into());
     }
-    tauri::async_runtime::spawn(async {
+    let task = tokio::spawn(async {
         if let Err(error) = install().await { set_status("error", error); }
     });
+    track_install(task)?;
     Ok(())
 }
 
@@ -206,6 +260,7 @@ pub fn nvidia_reuse_realtime_ready() -> bool {
 
 #[tauri::command]
 pub async fn nvidia_reuse_realtime_install() -> Result<(), String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     {
         let mut status = status_cell().lock().map_err(|_| "Runtime status unavailable")?;
         if status.state != "ready" { return Err("Set up NVIDIA RE-USE first.".into()); }
@@ -213,27 +268,26 @@ pub async fn nvidia_reuse_realtime_install() -> Result<(), String> {
         *status = RuntimeStatus { state: "installing", message: "Downloading the research-only real-time model…".into(), has_files: true, progress: None };
     }
     crate::media::realtime_reuse::unload().await;
-    tauri::async_runtime::spawn(async {
+    let task = tokio::spawn(async {
         let dir = runtime_dir();
         let result: anyhow::Result<()> = async {
             tokio::fs::write(dir.join("realtime_worker.py"), include_str!("../../resources/nvidia-reuse/realtime_worker.py")).await?;
             tokio::fs::write(dir.join("install-realtime-model.sh"), include_str!("../../resources/nvidia-reuse/install-realtime-model.sh")).await?;
             let model = dir.join("realtime-model");
             let _ = tokio::fs::remove_file(model.join("ready")).await;
-            let status = tokio::time::timeout(std::time::Duration::from_secs(900),
-                tokio::process::Command::new("sh").arg(dir.join("install-realtime-model.sh")).arg(&model)
-                    .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-                    .kill_on_drop(true).status()).await??;
+            let mut download = tokio::process::Command::new("sh");
+            download.arg(dir.join("install-realtime-model.sh")).arg(&model)
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            let status = install_child_status(&mut download, std::time::Duration::from_secs(900)).await?;
             anyhow::ensure!(status.success(), "real-time model download failed");
             set_status("installing", "Testing the real-time model and GPU…");
-            let status = tokio::time::timeout(std::time::Duration::from_secs(120),
-                tokio::process::Command::new(dir.join(".venv/bin/python"))
-                    .arg(dir.join("realtime_worker.py")).arg("--probe")
-                    .env("VERENU_REALTIME_MODEL_DIR", &model).env("HF_HUB_OFFLINE", "1")
-                    .env("HF_HOME", dir.join("hf-cache")).env("TORCH_HOME", dir.join("torch-cache"))
-                    .env("TRITON_CACHE_DIR", dir.join("triton-cache"))
-                    .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-                    .kill_on_drop(true).status()).await??;
+            let mut probe = tokio::process::Command::new(dir.join(".venv/bin/python"));
+            probe.arg(dir.join("realtime_worker.py")).arg("--probe")
+                .env("VERENU_REALTIME_MODEL_DIR", &model).env("HF_HUB_OFFLINE", "1")
+                .env("HF_HOME", dir.join("hf-cache")).env("TORCH_HOME", dir.join("torch-cache"))
+                .env("TRITON_CACHE_DIR", dir.join("triton-cache"))
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            let status = install_child_status(&mut probe, std::time::Duration::from_secs(120)).await?;
             anyhow::ensure!(status.success(), "real-time GPU self-test failed");
             tokio::fs::write(model.join("ready"), "ready").await?;
             Ok(())
@@ -249,6 +303,7 @@ pub async fn nvidia_reuse_realtime_install() -> Result<(), String> {
             },
         }
     });
+    track_install(task)?;
     Ok(())
 }
 
@@ -321,10 +376,11 @@ async fn install() -> Result<(), String> {
         ("worker.py", include_str!("../../resources/nvidia-reuse/worker.py")),
         ("requirements.lock", include_str!("../../resources/nvidia-reuse/requirements.lock")),
     ] { std::fs::write(dir.join(name), content).map_err(|e| e.to_string())?; }
-    let mut child = tokio::process::Command::new("sh").arg(dir.join("install.sh")).arg(&dir)
-        .stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn().map_err(|e| format!("Could not start setup: {e}"))?;
-    let stdout = child.stdout.take().ok_or("Could not read setup progress")?;
-    let mut stderr = child.stderr.take().ok_or("Could not read setup errors")?;
+    let mut command = tokio::process::Command::new("sh");
+    command.arg(dir.join("install.sh")).arg(&dir).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn_install_child(&mut command).map_err(|e| format!("Could not start setup: {e}"))?;
+    let stdout = child.0.stdout.take().ok_or("Could not read setup progress")?;
+    let mut stderr = child.0.stderr.take().ok_or("Could not read setup errors")?;
     let errors = tokio::spawn(async move {
         let mut tail = Vec::new();
         let mut buffer = [0u8; 4096];
@@ -355,7 +411,7 @@ async fn install() -> Result<(), String> {
             if line.is_empty() { continue; }
             if let Some(progress) = stage_progress(&line) { set_install_progress(line, progress); }
         }
-        child.wait().await
+        child.0.wait().await
     }).await;
     sizer.abort();
     let result = result.map_err(|_| "Runtime setup timed out after one hour.".to_string())?.map_err(|e| e.to_string())?;
@@ -543,6 +599,32 @@ mod tests {
         }
         let _ = std::fs::remove_file(path);
         assert!(!proc_path.exists(), "timed out worker must exit");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cancelled_install_reaps_its_owned_process() {
+        let path = std::env::temp_dir().join(format!("verenu-install-pid-{}", uuid::Uuid::new_v4()));
+        let child_path = path.clone();
+        let task = tokio::spawn(async move {
+            let mut command = tokio::process::Command::new("sh");
+            command.arg("-c").arg("echo $$ > \"$1\"; exec sleep 30").arg("install").arg(child_path);
+            super::install_child_status(&mut command, std::time::Duration::from_secs(30)).await
+        });
+        for _ in 0..100 {
+            if path.exists() { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let pid = std::fs::read_to_string(&path).unwrap();
+        let proc_path = std::path::Path::new("/proc").join(pid.trim());
+        task.abort();
+        let _ = task.await;
+        for _ in 0..100 {
+            if !proc_path.exists() { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let _ = std::fs::remove_file(path);
+        assert!(!proc_path.exists(), "cancelled install must exit");
     }
 
     #[cfg(target_os = "linux")]

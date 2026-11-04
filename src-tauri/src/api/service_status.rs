@@ -100,6 +100,7 @@ fn filter_alerts(
 pub async fn fetch_relevant_alerts(
     selected_providers: &[String],
 ) -> anyhow::Result<Vec<ProviderStatusAlert>> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let response: ProviderStatusResponse = super::client::get()
         .get(PROVIDER_STATUS_URL)
         .header("User-Agent", "verenu")
@@ -114,6 +115,7 @@ pub async fn fetch_relevant_alerts(
 }
 
 pub async fn fetch_raw() -> anyhow::Result<serde_json::Value> {
+    let _consent = crate::legal_consent::network_permit().await?;
     Ok(super::client::get()
         .get(PROVIDER_STATUS_URL)
         .header("User-Agent", "verenu")
@@ -126,6 +128,7 @@ pub async fn fetch_raw() -> anyhow::Result<serde_json::Value> {
 }
 
 pub async fn fetch_global_message() -> anyhow::Result<Option<GlobalMessage>> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let response: GlobalMessageResponse = super::client::get()
         .get(GLOBAL_MESSAGE_URL)
         .header("User-Agent", "verenu")
@@ -143,6 +146,7 @@ pub async fn fetch_global_message() -> anyhow::Result<Option<GlobalMessage>> {
 }
 
 pub async fn check_health() -> bool {
+    let Ok(_consent) = crate::legal_consent::network_permit().await else { return false; };
     matches!(
         super::client::get()
             .get(HEALTH_URL)

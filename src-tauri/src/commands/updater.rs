@@ -23,6 +23,7 @@ pub struct ReinstallResult {
 pub async fn check_for_update(
     app: AppHandle,
 ) -> Result<Option<crate::api::updater::UpdateInfo>, String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     let channel = selected_update_channel(&app)?;
 
     match crate::api::updater::check(channel).await {
@@ -36,6 +37,7 @@ pub async fn check_for_update(
 
 #[tauri::command]
 pub async fn reinstall_latest_update(app: AppHandle) -> Result<ReinstallResult, String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     let channel = selected_update_channel(&app)?;
     let update = crate::api::updater::latest_installable(channel)
         .await
@@ -70,6 +72,7 @@ pub async fn install_update(
     app: AppHandle,
     download_url: String,
 ) -> Result<InstallOutcome, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
     static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _attempt = INSTALL_LOCK.try_lock().map_err(|_| {
         "An update is already in progress. Wait for it to finish before trying again.".to_owned()
@@ -129,16 +132,15 @@ pub async fn install_update(
 
         let db = app.state::<DbHandle>().inner().clone();
 
-        let bytes = crate::api::client::get()
+        let request = crate::api::client::get()
             .get(&download_url)
             .header("User-Agent", "verenu")
-            .send()
-            .await
+            .send();
+        let response = crate::legal_consent::while_consented(request).await.map_err(|error| error.to_string())?
             .map_err(|error| crate::api::updater::request_error_message(&error))?
             .error_for_status()
-            .map_err(|error| crate::api::updater::request_error_message(&error))?
-            .bytes()
-            .await
+            .map_err(|error| crate::api::updater::request_error_message(&error))?;
+        let bytes = crate::legal_consent::while_consented(response.bytes()).await.map_err(|error| error.to_string())?
             .map_err(|error| crate::api::updater::request_error_message(&error))?;
 
         tokio::task::spawn_blocking(move || -> Result<(), String> {

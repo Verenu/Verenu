@@ -183,14 +183,17 @@ pub enum Message {
 }
 
 pub async fn send_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Message) -> Result<()> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let body = serde_json::to_vec(message).context("encode message")?;
     let len = u32::try_from(body.len()).map_err(|_| anyhow!("message too large"))?;
     if len > MAX_MESSAGE_BYTES {
         return Err(anyhow!("message too large: {len} bytes"));
     }
-    writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&body).await?;
-    writer.flush().await?;
+    timeout(Duration::from_secs(30), async {
+        writer.write_all(&len.to_be_bytes()).await?;
+        writer.write_all(&body).await?;
+        writer.flush().await
+    }).await.map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out while writing sync message"))??;
     Ok(())
 }
 
@@ -202,9 +205,16 @@ pub async fn read_message_with_timeout<R: AsyncRead + Unpin>(
     reader: &mut R,
     deadline: Duration,
 ) -> Result<Message> {
-    timeout(deadline, read_message_inner(reader))
-        .await
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out while reading sync message"))?
+    tokio::select! {
+        result = timeout(deadline, read_message_inner(reader)) => result
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out while reading sync message"))?,
+        _ = async {
+            loop {
+                if crate::legal_consent::require_consent().is_err() { break; }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        } => Err(anyhow!("consent_required")),
+    }
 }
 
 async fn read_message_inner<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Message> {

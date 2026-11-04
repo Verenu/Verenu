@@ -18,6 +18,7 @@ struct Device {
 
 impl Device {
     fn new() -> Self {
+        crate::legal_consent::enable_test_consent();
         let uuid = uuid::Uuid::new_v4().to_string();
         let dir = std::env::temp_dir().join(format!("verenu-sync-test-{uuid}"));
         std::fs::create_dir(&dir).unwrap();

@@ -375,6 +375,7 @@ fn discovery_excludes_tunnels_virtual_and_non_lan_interfaces() {
 }
 
 fn test_db(device_uuid: &str) -> DbHandle {
+    crate::legal_consent::enable_test_consent();
     let conn = db::open(":memory:").expect("test db");
     {
         let guard = conn.lock().expect("lock");
@@ -2329,6 +2330,7 @@ fn context_app_matching_uses_local_name_and_rejects_weak_matches() {
 
 #[tokio::test]
 async fn messages_roundtrip_through_the_framer() {
+    crate::legal_consent::enable_test_consent();
     use super::protocol::{read_message, send_message};
     let (mut client, mut server) = tokio::io::duplex(64 * 1024);
     let hello = Message::Hello(super::protocol::Hello {
@@ -2355,6 +2357,7 @@ async fn messages_roundtrip_through_the_framer() {
 
 #[tokio::test]
 async fn oversized_and_partial_frames_are_rejected_before_decode() {
+    crate::legal_consent::enable_test_consent();
     use super::protocol::{read_message, MAX_MESSAGE_BYTES};
     use tokio::io::AsyncWriteExt;
     let (mut writer, mut reader) = tokio::io::duplex(128);
@@ -2401,6 +2404,7 @@ async fn stalled_tls_handshake_times_out() {
 
 #[tokio::test]
 async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
+    crate::legal_consent::enable_test_consent();
     use super::pairing::{self, IdentityExchange};
     use super::protocol::{read_message, send_message};
 

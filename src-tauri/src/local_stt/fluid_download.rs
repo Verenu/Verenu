@@ -47,6 +47,7 @@ pub async fn download(
     root: &Path,
     cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let bundles: Vec<Bundle> = serde_json::from_str(include_str!("fluid_assets.json"))?;
     let bundle = bundles
         .into_iter()
@@ -61,6 +62,7 @@ pub async fn download(
     let mut progress = ProgressThrottle::default();
     let client = reqwest::Client::new();
     for file in &bundle.files {
+        crate::legal_consent::require_consent()?;
         anyhow::ensure!(!cancel.load(Ordering::Relaxed), "model download cancelled");
         anyhow::ensure!(
             Path::new(&file.path)
@@ -85,6 +87,7 @@ pub async fn download(
         let mut hash = Sha256::new();
         let mut received = 0;
         while let Some(chunk) = cancellable_io(&cancel, response.chunk()).await? {
+            crate::legal_consent::require_consent()?;
             anyhow::ensure!(!cancel.load(Ordering::Relaxed), "model download cancelled");
             received += chunk.len() as u64;
             anyhow::ensure!(
@@ -157,7 +160,7 @@ async fn cancellable_io<T>(
         _ = async {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                if cancel.load(Ordering::Acquire) {
+                if cancel.load(Ordering::Acquire) || crate::legal_consent::require_consent().is_err() {
                     break;
                 }
             }

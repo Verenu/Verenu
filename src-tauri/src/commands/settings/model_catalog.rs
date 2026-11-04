@@ -22,6 +22,7 @@ pub struct ProviderModelCatalog {
 }
 
 async fn public_json(url: &'static str) -> Result<serde_json::Value, String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     type Snapshot = (std::time::Instant, Result<serde_json::Value, String>);
     static CACHE: std::sync::OnceLock<tokio::sync::Mutex<BTreeMap<&'static str, Snapshot>>> =
         std::sync::OnceLock::new();
@@ -219,6 +220,7 @@ pub async fn get_provider_model_catalog(
     app: AppHandle,
     provider: String,
 ) -> Result<ProviderModelCatalog, String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     if !store::PROVIDERS.contains(&provider.as_str()) || provider == store::LOCAL {
         return Err("Unknown cloud provider.".into());
     }

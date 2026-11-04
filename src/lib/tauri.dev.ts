@@ -679,10 +679,10 @@ type DevConsentStatus = 'unanswered' | 'skipped' | 'accepted' | 'update_required
 const DEV_CONSENT_KEY = 'verenu-dev-consent';
 const DEV_CONSENT_VERSION = '2026-11-03';
 
-/** Browser dev sessions start accepted so existing flows are unaffected. Set localStorage `verenu-dev-consent` to a status to exercise the prompts. */
+/** Set localStorage `verenu-dev-consent` to a status to exercise the prompts. */
 function devConsentState(next?: DevConsentStatus) {
   if (next) localStorage.setItem(DEV_CONSENT_KEY, next);
-  const status = (localStorage.getItem(DEV_CONSENT_KEY) as DevConsentStatus | null) ?? 'accepted';
+  const status = (localStorage.getItem(DEV_CONSENT_KEY) as DevConsentStatus | null) ?? 'unanswered';
   return {
     status,
     termsVersion: DEV_CONSENT_VERSION,
@@ -697,6 +697,9 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     case 'get_consent_state':
       return devConsentState() as T;
     case 'accept_legal':
+      if (args?.termsVersion !== DEV_CONSENT_VERSION || args?.privacyVersion !== '2026-11-03.1') {
+        throw new Error('consent_version_conflict');
+      }
       return devConsentState('accepted') as T;
     case 'skip_legal':
       return devConsentState('skipped') as T;
@@ -1006,6 +1009,7 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       ) as T;
     }
     case 'check_domain_exists': {
+      if (devConsentState().status !== 'accepted') throw new Error('consent_required');
       const domain = String(args?.domain ?? '').trim().toLowerCase();
       if (!domain) return false as T;
       try {

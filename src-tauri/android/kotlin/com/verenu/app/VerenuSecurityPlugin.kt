@@ -17,8 +17,36 @@ internal class CredentialWriteArgs {
 
 @TauriPlugin
 class VerenuSecurityPlugin(private val activity: Activity) : Plugin(activity) {
+  @Command
+  fun revokeAnalytics(invoke: Invoke) {
+    synchronized(VerenuKeystore.consentLock) { VerenuAnalytics.setEnabled(false) }
+    invoke.resolve()
+  }
   companion object {
     const val TAG = "VerenuSecurity"
+  }
+
+  @Command
+  fun legalIdentity(invoke: Invoke) {
+    try {
+      val (id, secret) = VerenuKeystore(activity).legalIdentity()
+      invoke.resolveObject(mapOf("id" to id, "secret" to secret))
+    } catch (e: Exception) {
+      Log.e(TAG, "secure installation identity unavailable", e)
+      invoke.reject("Secure installation identity is unavailable")
+    }
+  }
+
+  @Command
+  fun deleteProviderCredentials(invoke: Invoke) {
+    try { VerenuKeystore(activity).deleteProviderCredentials(); invoke.resolve() }
+    catch (e: Exception) { invoke.reject("Secure credential deletion failed") }
+  }
+
+  @Command
+  fun deleteLegalIdentity(invoke: Invoke) {
+    try { VerenuKeystore(activity).deleteLegalIdentity(); invoke.resolve() }
+    catch (e: Exception) { invoke.reject("Secure identity deletion failed") }
   }
 
   @Command
@@ -29,13 +57,19 @@ class VerenuSecurityPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.reject("Unknown provider")
       return
     }
-    try {
-      VerenuKeystore(activity).save(provider, args.key)
-      invoke.resolve()
-    } catch (e: Exception) {
-      Log.e(TAG, "secure credential write failed provider=$provider", e)
-      invoke.reject("Secure credential storage is unavailable")
-    }
+    Thread {
+      try {
+        synchronized(VerenuKeystore.consentLock) {
+          check(args.key.isEmpty() || VerenuBridge(activity).hasNetworkConsent()) { "consent_required" }
+          VerenuKeystore(activity).save(provider, args.key)
+        }
+        invoke.resolve()
+      } catch (e: Exception) {
+        if (e.message == "consent_required") { invoke.reject("consent_required"); return@Thread }
+        Log.e(TAG, "secure credential write failed provider=$provider", e)
+        invoke.reject("Secure credential storage is unavailable")
+      }
+    }.start()
   }
 
   @Command

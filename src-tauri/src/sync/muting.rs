@@ -8,6 +8,7 @@ const STATE_CHECK: Duration = Duration::from_millis(100);
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 fn enabled(app: &AppHandle) -> bool {
+    if crate::legal_consent::require_consent().is_err() { return false; }
     store::settings_snapshot(app).is_ok_and(|settings| {
         settings
             .get(store::SYNC_MUTING_ENABLED)
@@ -282,6 +283,7 @@ impl SyncManager {
                     let expected_fingerprint = expected_fingerprint.clone();
                     async move {
                         let connect = async {
+                            let _consent = crate::legal_consent::network_permit().await?;
                             let tcp = tokio::net::TcpStream::connect(addr).await?;
                             let tls = connector
                                 .connect(transport::server_name_for(&peer_uuid), tcp)
@@ -1062,6 +1064,7 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_and_explicit_stop_release_without_waiting_for_expiry() {
+        crate::legal_consent::enable_test_consent();
         for explicit in [false, true] {
             let (mut sender, mut receiver) = tokio::io::duplex(512);
             if explicit {
@@ -1079,6 +1082,7 @@ mod tests {
 
     #[tokio::test]
     async fn stalled_connection_and_partial_frame_cannot_hold_mute_forever() {
+        crate::legal_consent::enable_test_consent();
         for partial in [false, true] {
             let (mut sender, mut receiver) = tokio::io::duplex(512);
             if partial {
@@ -1092,6 +1096,7 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeats_renew_lease_but_revoking_consent_releases_it() {
+        crate::legal_consent::enable_test_consent();
         let (mut sender, mut receiver) = tokio::io::duplex(512);
         let consent = Arc::new(AtomicBool::new(true));
         let enabled = consent.clone();
@@ -1115,6 +1120,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_checks_do_not_corrupt_a_slow_frame() {
+        crate::legal_consent::enable_test_consent();
         let (mut sender, mut receiver) = tokio::io::duplex(512);
         let body = serde_json::to_vec(&Message::DictationMuteHeartbeat).unwrap();
         let task = tokio::spawn(async move { lease(&mut receiver, || true).await });

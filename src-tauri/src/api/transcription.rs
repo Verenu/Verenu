@@ -30,6 +30,8 @@ pub async fn transcribe(
         return result;
     }
 
+    let _consent = crate::legal_consent::network_permit().await?;
+
     log::debug!(
         "transcription: start gen={} provider={} language={} wav_bytes={}",
         gen,
@@ -164,6 +166,7 @@ async fn transcribe_whisper(
     let form = build_whisper_form(wav, fields)?;
 
     let request_started = std::time::Instant::now();
+    crate::legal_consent::require_consent()?;
     let resp = wire
         .apply(wire.client().post(url), api_key)
         .multipart(form)
@@ -243,6 +246,7 @@ async fn transcribe_gemini_dedicated(
     let request =
         super::base64_audio::json_request(request, &body, wav.len(), prompt.len() + model.len())?;
     drop(body);
+    crate::legal_consent::require_consent()?;
     let resp = request.send().await?;
     let status = resp.status();
     let request_id = super::response_request_id(&resp);
@@ -314,6 +318,7 @@ async fn transcribe_gemini_with_prompt(
         .header("x-goog-api-key", api_key);
     let request = super::base64_audio::json_request(request, &body, wav_len, prompt.len())?;
     drop(body);
+    crate::legal_consent::require_consent()?;
     let resp = request.send().await?;
 
     let status = resp.status();
@@ -448,6 +453,7 @@ async fn transcribe_assemblyai(
     );
 
     let request_started = std::time::Instant::now();
+    crate::legal_consent::require_consent()?;
     let upload_resp = super::client::get()
         .post("https://api.assemblyai.com/v2/upload")
         .header("authorization", api_key)
@@ -470,6 +476,7 @@ async fn transcribe_assemblyai(
     let upload: UploadResponse = upload_resp.json().await?;
 
     let submit_started = std::time::Instant::now();
+    crate::legal_consent::require_consent()?;
     let submit_body = build_assemblyai_submit_request(upload.upload_url, model, language, &prompt);
     let submit_resp = super::client::get()
         .post("https://api.assemblyai.com/v2/transcript")
@@ -500,6 +507,7 @@ async fn transcribe_assemblyai(
     let deadline = request_started + std::time::Duration::from_secs(ASSEMBLYAI_POLL_TIMEOUT_SECS);
     let mut poll_count: u32 = 0;
     loop {
+        crate::legal_consent::require_consent()?;
         if std::time::Instant::now() >= deadline {
             log::warn!(
                 "transcription: assemblyai poll timed out gen={} job_id={} poll_count={} elapsed_ms={}",
@@ -648,6 +656,7 @@ async fn transcribe_openrouter(
     let request =
         super::base64_audio::json_request(request, &body, wav_len, model.len() + language.len())?;
     drop(body);
+    crate::legal_consent::require_consent()?;
     let resp = request.send().await?;
     let resp = checked_transcription_response(resp, provider_label, model, gen).await?;
     let body: TextResponse = resp.json().await?;
@@ -685,6 +694,7 @@ async fn transcribe_xai(
         wav.len()
     );
     let form = build_xai_form(wav, model, language)?;
+    crate::legal_consent::require_consent()?;
     let resp = wire
         .apply(wire.client().post(url), api_key)
         .multipart(form)

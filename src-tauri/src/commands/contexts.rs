@@ -212,11 +212,13 @@ pub async fn get_context_websites(
 
 #[tauri::command]
 pub async fn check_domain_exists(domain: String) -> Result<bool, String> {
+    let permit = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
     let host = domain.trim().to_string();
     if host.is_empty() {
         return Ok(false);
     }
     let lookup = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         use std::net::ToSocketAddrs;
         (host.as_str(), 443u16)
             .to_socket_addrs()

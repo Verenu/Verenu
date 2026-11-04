@@ -232,11 +232,12 @@ async fn download_to_file(
     aggregate_downloaded: &mut u64,
     aggregate_total: Option<u64>,
 ) -> anyhow::Result<()> {
+    let _consent = crate::legal_consent::network_permit().await?;
     ensure_not_cancelled(cancel)?;
-    let response = super::download::download_client()
+    let request = super::download::download_client()
         .get(url)
-        .send()
-        .await?
+        .send();
+    let response = crate::legal_consent::while_consented(request).await??
         .error_for_status()?;
     let aggregate_total = if *aggregate_downloaded == 0 {
         aggregate_total.or(response.content_length())
@@ -250,7 +251,7 @@ async fn download_to_file(
     let mut last_emit = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = crate::legal_consent::while_consented(response.chunk()).await?? {
         ensure_not_cancelled(cancel)?;
         file.write_all(&chunk).await?;
         *aggregate_downloaded += chunk.len() as u64;

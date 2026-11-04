@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn approval_reader_uses_the_requested_deadline() {
+    crate::legal_consent::enable_test_consent();
     use super::super::protocol::{read_message_with_timeout, send_message};
     let (mut reader, mut writer) = tokio::io::duplex(4096);
     let (result, ()) = tokio::join!(

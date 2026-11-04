@@ -366,7 +366,7 @@ fn state_payload(state: &BridgeState) -> Value {
     let analytics_enabled = settings
         .as_ref()
         .map(analytics_enabled_value)
-        .unwrap_or(true);
+        .unwrap_or(false);
     let sync_muting_enabled = sync_muting_enabled_value(settings.as_ref());
     let pill_position = settings
         .as_ref()
@@ -676,6 +676,7 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
 
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/v1/state") => ok(state_payload(state)),
+        ("GET", "/v1/legal-consent") => ok(json!({ "allowed": crate::legal_consent::require_consent().is_ok() })),
         ("POST", "/v1/focus") => {
             let report = FocusReport {
                 keyboard_visible: bool_field("keyboardVisible"),

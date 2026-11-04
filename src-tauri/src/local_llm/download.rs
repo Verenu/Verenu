@@ -128,8 +128,10 @@ async fn negotiate_total_bytes(
     manifest: &LocalLlmModelManifest,
     root: &Path,
 ) -> anyhow::Result<Option<u64>> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let mut total = 0u64;
     for artifact in manifest.artifacts {
+        crate::legal_consent::require_consent()?;
         let url = format!(
             "https://huggingface.co/{}/resolve/main/{}",
             manifest.repo_id, artifact.filename
@@ -138,11 +140,11 @@ async fn negotiate_total_bytes(
             .await
             .map(|meta| meta.len())
             .unwrap_or(0);
-        let response = download_client()
+        let request = download_client()
             .get(&url)
             .header(reqwest::header::RANGE, format!("bytes={partial}-"))
-            .send()
-            .await?;
+            .send();
+        let response = crate::legal_consent::while_consented(request).await??;
         match response.status() {
             reqwest::StatusCode::PARTIAL_CONTENT => {
                 if let Some(len) = response.content_length() {
@@ -178,6 +180,7 @@ async fn download_one_artifact(
     aggregate_downloaded: &mut u64,
     aggregate_total: Option<u64>,
 ) -> anyhow::Result<()> {
+    let _consent = crate::legal_consent::network_permit().await?;
     ensure_not_cancelled(cancel)?;
 
     let partial_path = partial_file_path(root, manifest, artifact);
@@ -193,15 +196,15 @@ async fn download_one_artifact(
         manifest.repo_id, artifact.filename
     );
 
-    let probe = if partial_size > 0 {
+    let request = if partial_size > 0 {
         download_client()
             .get(&url)
             .header(reqwest::header::RANGE, format!("bytes={partial_size}-"))
             .send()
-            .await?
     } else {
-        download_client().get(&url).send().await?
+        download_client().get(&url).send()
     };
+    let probe = crate::legal_consent::while_consented(request).await??;
 
     let resumed = probe.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     let already_complete = probe.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE;
@@ -237,7 +240,8 @@ async fn download_one_artifact(
         .take()
         .expect("response exists when artifact is not already complete");
 
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = crate::legal_consent::while_consented(response.chunk()).await?? {
+        crate::legal_consent::require_consent()?;
         ensure_not_cancelled(cancel)?;
         file.write_all(&chunk).await?;
         *aggregate_downloaded = aggregate_downloaded.saturating_add(chunk.len() as u64);

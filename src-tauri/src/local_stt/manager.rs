@@ -323,6 +323,16 @@ impl LocalTranscriptionManager {
         Ok(())
     }
 
+    pub(crate) async fn wait_for_downloads_to_stop(&self) -> anyhow::Result<()> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let active = self.download_task.lock().map_err(|_| anyhow::anyhow!("download state lock poisoned"))?.is_some();
+                if !active { return Ok(()); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.map_err(|_| anyhow::anyhow!("downloads did not stop"))?
+    }
+
     pub async fn delete_model(&self, app: &AppHandle, model_id: &str) -> anyhow::Result<()> {
         log::info!("local-stt: delete requested id={model_id}");
         let manifest = manifest_by_id(model_id)

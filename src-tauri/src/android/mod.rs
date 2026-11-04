@@ -49,7 +49,15 @@ pub mod permissions_plugin {
 
 #[cfg(target_os = "android")]
 pub mod security_plugin {
-    use tauri::{Manager, Runtime};
+    use tauri::{plugin::PluginHandle, AppHandle, Manager, Runtime};
+
+    struct SecurityHandle<R: Runtime>(PluginHandle<R>);
+
+    #[derive(serde::Deserialize)]
+    pub struct LegalIdentity {
+        pub id: String,
+        pub secret: String,
+    }
 
     const PLUGIN_IDENTIFIER: &str = "com.verenu.app";
     const PLUGIN_CLASS: &str = "VerenuSecurityPlugin";
@@ -58,10 +66,39 @@ pub mod security_plugin {
         tauri::plugin::Builder::new("verenu-security")
             .setup(|app, api| {
                 let handle = api.register_android_plugin(PLUGIN_IDENTIFIER, PLUGIN_CLASS)?;
-                app.manage(handle);
+                app.manage(SecurityHandle(handle));
                 Ok(())
             })
             .build()
+    }
+
+    pub async fn legal_identity<R: Runtime>(app: &AppHandle<R>) -> Result<LegalIdentity, String> {
+        app.state::<SecurityHandle<R>>()
+            .0
+            .run_mobile_plugin_async("legalIdentity", serde_json::json!({}))
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn delete_provider_credentials<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+        let _: serde_json::Value = app.state::<SecurityHandle<R>>().0
+            .run_mobile_plugin_async("deleteProviderCredentials", serde_json::json!({}))
+            .await.map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub async fn revoke_analytics<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+        let _: serde_json::Value = app.state::<SecurityHandle<R>>().0
+            .run_mobile_plugin_async("revokeAnalytics", serde_json::json!({}))
+            .await.map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub async fn delete_legal_identity<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+        let _: serde_json::Value = app.state::<SecurityHandle<R>>().0
+            .run_mobile_plugin_async("deleteLegalIdentity", serde_json::json!({}))
+            .await.map_err(|error| error.to_string())?;
+        Ok(())
     }
 }
 

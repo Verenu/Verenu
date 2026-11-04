@@ -859,6 +859,9 @@ pub async fn save_model_settings_if_unchanged(
     expected: serde_json::Map<String, serde_json::Value>,
     values: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
+    let _consent = if values.iter().any(|(key, value)| enables_network_setting(key, value)) {
+        Some(crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?)
+    } else { None };
     let settings = store::settings_handle(&app)?;
     let keys: Vec<String> = values.keys().cloned().collect();
     let refresh_icons = keys.iter().any(|key| crate::app_tray::setting_updates_runtime_icons(key));
@@ -1047,6 +1050,10 @@ async fn save_setting_inner(
     expected: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Result<(), String> {
     validate_setting(&key, &value)?;
+    let _consent = if enables_network_setting(&key, &value) {
+        Some(crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?)
+    } else { None };
+    let analytics_enabled = if key == store::ANALYTICS_ENABLED { value.as_bool() } else { None };
     if key == store::HOTKEY {
         let keys: Vec<String> = serde_json::from_value(value).map_err(|_| "Invalid hotkey value")?;
         return match expected {
@@ -1181,6 +1188,12 @@ async fn save_setting_inner(
     })
     .await;
     save_result?;
+    #[cfg(desktop)]
+    if let (Some(enabled), Some(analytics)) = (analytics_enabled, app.try_state::<crate::analytics::Analytics>()) {
+        analytics.set_enabled(enabled && crate::legal_consent::require_consent().is_ok());
+    }
+    #[cfg(not(desktop))]
+    let _ = analytics_enabled;
     if disable_cleanup_cache || enable_cleanup_cache {
         let db = db_state(&app);
         run_blocking("set_cleanup_cache_enabled", move || {
@@ -1255,6 +1268,54 @@ async fn save_setting_inner(
     }
 
     Ok(())
+}
+
+fn enables_network_setting(key: &str, value: &serde_json::Value) -> bool {
+    if matches!(key, store::ANALYTICS_ENABLED | store::SYNC_ENABLED | store::SYNC_MUTING_ENABLED | store::VERENU_SERVICE_CHECKS_ENABLED | store::BETA_UPDATES_ENABLED | store::DUAL_TRANSCRIPTION_ENABLED | store::CLEANUP_ENABLED) {
+        return value == true;
+    }
+    if key == store::CLEANUP_INTENSITY {
+        return value.as_str().is_some_and(|intensity| !matches!(intensity, "none" | "rules"));
+    }
+    let is_remote_model = |id: &str| store::parse_model_id(id).is_none_or(|(provider, _)| provider != store::LOCAL);
+    if matches!(key, store::TRANSCRIPTION_DEFAULT_MODEL | store::CLEANUP_DEFAULT_MODEL) {
+        return value.as_str().is_some_and(is_remote_model);
+    }
+    if matches!(key, store::TRANSCRIPTION_FALLBACK_MODELS | store::CLEANUP_FALLBACK_MODELS) {
+        return value.as_array().is_some_and(|models| models.iter().filter_map(|model| model.as_str()).any(is_remote_model));
+    }
+    if matches!(key, store::TRANSCRIPTION_PROVIDER | store::CLEANUP_PROVIDER) {
+        return value.as_str().is_some_and(|provider| provider != store::LOCAL);
+    }
+    if key == store::GITHUB_USERNAME {
+        return value.as_str().is_some_and(|name| !name.trim().is_empty());
+    }
+    key == store::CUSTOM_PROVIDERS && value.as_array().is_some_and(|providers| !providers.is_empty())
+}
+
+#[cfg(test)]
+#[test]
+fn network_settings_require_consent_when_enabled() {
+    assert_eq!(read_all_settings(&store::SettingsSnapshot::from_pairs([])).analytics_enabled, Some(false));
+    for key in [store::ANALYTICS_ENABLED, store::SYNC_ENABLED, store::SYNC_MUTING_ENABLED, store::VERENU_SERVICE_CHECKS_ENABLED, store::BETA_UPDATES_ENABLED, store::DUAL_TRANSCRIPTION_ENABLED, store::CLEANUP_ENABLED] {
+        assert!(enables_network_setting(key, &serde_json::json!(true)));
+        assert!(!enables_network_setting(key, &serde_json::json!(false)));
+    }
+    for (key, value) in [
+        (store::TRANSCRIPTION_PROVIDER, serde_json::json!("groq")),
+        (store::CLEANUP_PROVIDER, serde_json::json!("openai")),
+        (store::GITHUB_USERNAME, serde_json::json!("fixture")),
+        (store::CUSTOM_PROVIDERS, serde_json::json!([{}])),
+        (store::TRANSCRIPTION_DEFAULT_MODEL, serde_json::json!("groq/model")),
+        (store::CLEANUP_DEFAULT_MODEL, serde_json::json!("openai/model")),
+        (store::TRANSCRIPTION_FALLBACK_MODELS, serde_json::json!(["local/model", "groq/model"])),
+        (store::CLEANUP_FALLBACK_MODELS, serde_json::json!(["openai/model"])),
+        (store::CLEANUP_INTENSITY, serde_json::json!("medium")),
+    ] {
+        assert!(enables_network_setting(key, &value));
+    }
+    assert!(!enables_network_setting(store::TRANSCRIPTION_DEFAULT_MODEL, &serde_json::json!("local/model")));
+    assert!(!enables_network_setting(store::CLEANUP_INTENSITY, &serde_json::json!("rules")));
 }
 
 #[tauri::command]
@@ -1357,6 +1418,7 @@ macro_rules! all_settings {
 
 macro_rules! snapshot_value {
     ($s:ident, bool_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_bool) };
+    ($s:ident, bool_default_off, $key:path) => { Some($s.get($key).and_then(serde_json::Value::as_bool).unwrap_or(false)) };
     ($s:ident, str_val, $key:path) => { $s.get($key).and_then(|v| v.as_str().map(String::from)) };
     ($s:ident, f64_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_f64) };
     ($s:ident, u64_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_u64) };
@@ -1417,7 +1479,7 @@ all_settings! {
     setup_progress = json_val(store::SETUP_PROGRESS),
     autostart_enabled = bool_val(store::AUTOSTART_ENABLED),
     auto_learn_enabled = bool_val(store::AUTO_LEARN_ENABLED),
-    analytics_enabled = bool_val(store::ANALYTICS_ENABLED),
+    analytics_enabled = bool_default_off(store::ANALYTICS_ENABLED),
     force_setup_on_launch = bool_val(store::FORCE_SETUP_ON_LAUNCH),
     contextual_caps_enabled = bool_val(store::CONTEXTUAL_CAPS),
     auto_spacing_enabled = bool_val(store::AUTO_SPACING),

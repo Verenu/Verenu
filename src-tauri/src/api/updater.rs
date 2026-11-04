@@ -205,6 +205,7 @@ async fn check_repo(
 }
 
 async fn fetch_releases(repo: &str, channel: UpdateChannel) -> anyhow::Result<Vec<GhRelease>> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let url = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
     let resp = super::client::get()
         .get(&url)
@@ -315,6 +316,7 @@ pub async fn resolve_verified_download(
                 "This release has no SHA256 verification metadata. Installation was blocked."
             )
         })?;
+    let _consent = crate::legal_consent::network_permit().await?;
     let mut response = super::client::get()
         .get(&sums.browser_download_url)
         .send()

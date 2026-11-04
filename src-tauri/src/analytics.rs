@@ -996,17 +996,8 @@ impl Analytics {
         );
         let enabled = self.enabled.clone();
         tauri::async_runtime::spawn(async move {
-            if !enabled.load(Ordering::Acquire) {
-                return;
-            }
-            let result = DELIVERY_CLIENT
-                .get_or_init(reqwest::Client::new)
-                .post(format!("{host}/{}", kind.endpoint()))
-                .json(&payload)
-                .send()
-                .await
-                .and_then(reqwest::Response::error_for_status);
-            if let Err(error) = result {
+            let url = format!("{host}/{}", kind.endpoint());
+            if let Some(Err(error)) = deliver_analytics(&url, &payload, &enabled).await {
                 log::debug!(
                     "{} delivery unavailable ({})",
                     kind.log_prefix(),
@@ -1015,6 +1006,18 @@ impl Analytics {
             }
         });
     }
+}
+
+pub(crate) async fn deliver_analytics(url: &str, payload: &Value, enabled: &AtomicBool) -> Option<reqwest::Result<reqwest::Response>> {
+    if !enabled.load(Ordering::Acquire) { return None; }
+    let Ok(_consent) = crate::legal_consent::network_permit().await else { return None; };
+    Some(DELIVERY_CLIENT
+        .get_or_init(|| reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().expect("analytics client"))
+        .post(url)
+        .json(payload)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status))
 }
 
 fn outbound_payload(token: &str, event: &str, distinct_id: &str, properties: Value) -> Value {

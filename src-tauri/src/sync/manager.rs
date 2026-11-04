@@ -140,6 +140,9 @@ pub(crate) struct Inner {
     pub last_change: Mutex<Option<ChangeStamp>>,
     pub pending_changes: Mutex<HashSet<String>>,
     pub mdns: tokio::sync::Mutex<Option<ServiceDaemon>>,
+    pub listener_task: tokio::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    pub initialize_lock: tokio::sync::Mutex<()>,
+    pub monitor_started: AtomicBool,
     pub listener_port: AtomicU16,
     pub available: AtomicBool,
     pub listener_failed: AtomicBool,
@@ -339,6 +342,44 @@ pub struct SyncStatusSnapshot {
 }
 
 impl SyncManager {
+    pub(crate) async fn suspend_discovery(&self) -> Result<()> {
+        if let Some(task) = self.inner.listener_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.inner.available.store(false, Ordering::Release);
+        if let Some(daemon) = self.inner.mdns.lock().await.take() {
+            let receiver = daemon.shutdown().map_err(|error| anyhow!("discovery shutdown failed: {error}"))?;
+            tokio::time::timeout(Duration::from_secs(5), receiver.recv_async())
+                .await.map_err(|_| anyhow!("discovery shutdown timed out"))?
+                .map_err(|error| anyhow!("discovery shutdown failed: {error}"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn wait_for_sessions_to_stop(&self) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let sessions_empty = self.inner.sessions.lock().map(|sessions| sessions.is_empty()).unwrap_or(false);
+                let muting_empty = self.inner.mute_sessions.lock().map(|sessions| sessions.is_empty()).unwrap_or(false);
+                if sessions_empty && muting_empty { return; }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.map_err(|_| anyhow!("sync sessions did not stop"))?;
+        Ok(())
+    }
+
+    pub(crate) async fn resume_discovery(&self) -> Result<()> {
+        if !self.inner.available.load(Ordering::Acquire) {
+            return self.initialize().await;
+        }
+        let discovery_missing = self.inner.mdns.lock().await.is_none();
+        if self.inner.available.load(Ordering::Relaxed) && discovery_missing {
+            self.start_discovery().await?;
+        }
+        Ok(())
+    }
+
     pub fn start(app: AppHandle, db: DbHandle) -> SyncManager {
         let data_dir = crate::app_setup::app_data_dir();
         let inner = Arc::new(Inner {
@@ -359,6 +400,9 @@ impl SyncManager {
             last_change: Mutex::new(None),
             pending_changes: Mutex::new(HashSet::new()),
             mdns: tokio::sync::Mutex::new(None),
+            listener_task: tokio::sync::Mutex::new(None),
+            initialize_lock: tokio::sync::Mutex::new(()),
+            monitor_started: AtomicBool::new(false),
             listener_port: AtomicU16::new(0),
             available: AtomicBool::new(false),
             listener_failed: AtomicBool::new(false),
@@ -369,6 +413,9 @@ impl SyncManager {
 
         let init = manager.clone();
         tauri::async_runtime::spawn(async move {
+            while crate::legal_consent::require_consent().is_err() {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
             if let Err(err) = init.initialize().await {
                 init.inner.listener_failed.store(true, Ordering::Relaxed);
                 log::error!("sync: disabled - {err:#}");
@@ -379,6 +426,9 @@ impl SyncManager {
     }
 
     async fn initialize(&self) -> Result<()> {
+        let _initialize_guard = self.inner.initialize_lock.lock().await;
+        if self.inner.available.load(Ordering::Acquire) { return Ok(()); }
+        let _consent = crate::legal_consent::network_permit().await?;
         let known_uuid = {
             let conn = self.lock_db()?;
             sync_store::self_uuid(&conn)?
@@ -437,10 +487,11 @@ impl SyncManager {
         log::info!("sync: listening on port {port}");
 
         let accept_inner = self.inner.clone();
-        tauri::async_runtime::spawn(async move {
+        let listener_task = tauri::async_runtime::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((tcp, _)) => {
+                        let Ok(consent) = crate::legal_consent::network_permit().await else { continue; };
                         let permit = match accept_inner.incoming_slots.clone().try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {
@@ -453,13 +504,14 @@ impl SyncManager {
                         let cfg = server_cfg.clone();
                         tauri::async_runtime::spawn(async move {
                             let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
-                            match transport::accept_with_timeout(
+                            let result = transport::accept_with_timeout(
                                 &acceptor,
                                 tcp,
                                 TLS_HANDSHAKE_TIMEOUT,
                             )
-                            .await
-                            {
+                            .await;
+                            drop(consent);
+                            match result {
                                 Ok(tls) => {
                                     handle_connection(inner, tls, permit, generation).await;
                                 }
@@ -476,6 +528,7 @@ impl SyncManager {
                 }
             }
         });
+        *self.inner.listener_task.lock().await = Some(listener_task);
 
         if let Err(err) = self.reconcile_stale_context_targets() {
             log::warn!("sync: stale context target reconciliation failed: {err:#}");
@@ -486,13 +539,15 @@ impl SyncManager {
             ChangeStamp::read(&conn)?
         };
         *self.inner.last_change.lock().expect("change stamp lock") = Some(initial_change);
-        let monitor = self.clone();
-        tauri::async_runtime::spawn(async move {
-            loop {
-                tokio::time::sleep(CHANGE_CHECK_INTERVAL).await;
-                monitor.monitor_tick().await;
-            }
-        });
+        if !self.inner.monitor_started.swap(true, Ordering::AcqRel) {
+            let monitor = self.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(CHANGE_CHECK_INTERVAL).await;
+                    monitor.monitor_tick().await;
+                }
+            });
+        }
 
         if let Err(err) = self.start_discovery().await {
             log::warn!("sync: discovery failed; saved connections remain available: {err:#}");
@@ -519,6 +574,7 @@ impl SyncManager {
     }
 
     async fn start_discovery(&self) -> Result<()> {
+        crate::legal_consent::require_consent()?;
         let mut mdns = self.inner.mdns.lock().await;
         if let Some(previous) = mdns.take() {
             let _ = previous.shutdown();
@@ -985,6 +1041,7 @@ impl SyncManager {
             candidates.insert(0, address);
         }
         for addr in candidates.iter().copied() {
+            let consent = crate::legal_consent::network_permit().await?;
             let stream = match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
                 Ok(Ok(stream)) => stream,
                 Ok(Err(err)) => { failures.push(format!("{addr}: {err}")); continue; }
@@ -994,7 +1051,7 @@ impl SyncManager {
                 CONNECT_TIMEOUT,
                 connector.connect(transport::server_name_for(&target.uuid), stream),
             ).await {
-                Ok(Ok(stream)) => { tls = Some(stream); break; }
+                Ok(Ok(stream)) => { drop(consent); tls = Some(stream); break; }
                 Ok(Err(err)) => failures.push(format!("{addr}: TLS handshake failed: {err}")),
                 Err(_) => failures.push(format!("{addr}: TLS handshake timed out")),
             }
@@ -1351,6 +1408,7 @@ impl SyncManager {
         };
         let connector = transport::tls_connector(transport::client_config(cert, key)?);
         for addr in addresses {
+            let consent = crate::legal_consent::network_permit().await?;
             let tcp = match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
                 Ok(Ok(tcp)) => tcp,
                 _ => continue,
@@ -1359,6 +1417,7 @@ impl SyncManager {
                 Ok(Ok(tls)) => tls,
                 _ => continue,
             };
+            drop(consent);
             let certs = tls.get_ref().1.peer_certificates().ok_or_else(|| anyhow!("peer presented no certificate"))?;
             if transport::peer_fingerprint(certs)? != peer.cert_fp {
                 return Err(anyhow!("peer identity changed since pairing"));
@@ -1475,6 +1534,7 @@ impl SyncManager {
     }
 
     pub async fn sync_now(&self, peer_uuid: Option<String>) -> Result<()> {
+        crate::legal_consent::require_consent()?;
         let targets = match peer_uuid {
             Some(uuid) => vec![uuid],
             None => {
@@ -1533,6 +1593,7 @@ impl SyncManager {
     }
 
     async fn monitor_tick(&self) {
+        if crate::legal_consent::require_consent().is_err() { return; }
         self.monitor_muting();
         let paired = conn_peers(&self.inner.db);
         if paired.is_empty() {
@@ -1611,6 +1672,7 @@ impl SyncManager {
     }
 
     pub async fn sync_to_peer(&self, peer_uuid: &str) -> Result<()> {
+        crate::legal_consent::require_consent()?;
         if peer_uuid == self.device_uuid() {
             return Err(anyhow!("Cannot sync this device with itself"));
         }
@@ -1709,6 +1771,7 @@ impl SyncManager {
             (identity.cert_der().clone(), identity.tls_key())
         };
         let connector = transport::tls_connector(transport::client_config(cert, key)?);
+        let consent = crate::legal_consent::network_permit().await?;
         let tcp = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
             .await
             .map_err(|_| connection_error(&peer.name, addr, "connection timed out"))?
@@ -1720,6 +1783,7 @@ impl SyncManager {
         .await
         .map_err(|_| connection_error(&peer.name, addr, "TLS handshake timed out"))?
         .map_err(|e| connection_error(&peer.name, addr, &format!("TLS handshake failed: {e}")))?;
+        drop(consent);
 
         let presented = transport::peer_fingerprint(
             tls.get_ref()

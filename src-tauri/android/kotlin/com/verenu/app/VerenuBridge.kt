@@ -57,6 +57,8 @@ class VerenuBridge(appContext: Context) {
 
     @Volatile private var cached: BridgeConnection? = null
 
+    fun hasNetworkConsent(): Boolean = request("GET", "/v1/legal-consent")?.optBoolean("allowed", false) == true
+
     fun invalidate() {
         cached = null
     }

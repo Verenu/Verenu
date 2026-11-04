@@ -1780,8 +1780,14 @@ class VerenuAccessibilityService : AccessibilityService(), VerenuOverlayView.Lis
                 val pending = bridge.takeKeystorePending()
                 if (pending != null) {
                     try {
-                        keystore.save(pending.first, pending.second)
-                        keystore.pushAll(bridge)
+                        synchronized(VerenuKeystore.consentLock) {
+                            if (pending.second.isNotEmpty() && !bridge.hasNetworkConsent()) {
+                                Log.w(TAG, "Credential rotation rejected: consent_required")
+                            } else {
+                                keystore.save(pending.first, pending.second)
+                                keystore.pushAll(bridge)
+                            }
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "keystore rotation failed", e)
                     }

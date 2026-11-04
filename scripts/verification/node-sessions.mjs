@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { root, artifact } from './identity.mjs';
 import { run } from './process.mjs';
-import { sessionIdentityMismatch, startOwnedSession } from './session.mjs';
+import { invokeSession, sessionIdentityMismatch, startOwnedSession } from './session.mjs';
 import { summarizeNodeTests } from './node-reporter.mjs';
 import { partitionFiles } from './session-partition.mjs';
 
@@ -100,6 +100,11 @@ export async function runOwnedNodeSuite({ identity, fixtures, directory, synthet
       return response.json();
     },
     execute: async (file, session) => {
+      const consent = await invokeSession(session, 'get_consent_state');
+      await invokeSession(session, 'accept_legal', {
+        termsVersion: consent.termsVersion,
+        privacyVersion: consent.privacyVersion,
+      });
       const name = `session-tests-${file.slice(0, -9)}`;
       const nodeReport = path.join(directory, `${name}.json`);
       const env = { ...process.env, VERENU_SESSION_ACCESS_FILE: session.accessFile, VERENU_DEV_REQUIRE_LIVE: live ? '1' : '0' };

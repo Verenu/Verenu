@@ -33,6 +33,7 @@ struct ModelPricingFields {
 }
 
 pub async fn fetch_model_pricing() -> Result<Vec<ModelPricing>> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         client::get()
