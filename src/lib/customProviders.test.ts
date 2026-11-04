@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { invoke } from './tauri';
-import { customProviderStore, refreshCustomProviders, type CustomProvider } from './customProviders.svelte';
+import { beginCustomProviderRefresh, customProviderStore, refreshCustomProviders, type CustomProvider } from './customProviders.svelte';
 
 vi.mock('./tauri', () => ({ invoke: vi.fn() }));
 
@@ -39,4 +39,12 @@ it('uses an older successful refresh when a newer refresh fails', async () => {
   resolveOld({ custom_providers: [old] });
   await older;
   expect(customProviderStore.providers[0]?.name).toBe('Old name');
+});
+
+it('keeps a newer refresh when an older models snapshot arrives late', async () => {
+  const applyOlderModelsSnapshot = beginCustomProviderRefresh();
+  vi.mocked(invoke).mockResolvedValueOnce({ custom_providers: [{ ...old, name: 'New name' }] });
+  await refreshCustomProviders();
+  applyOlderModelsSnapshot([old]);
+  expect(customProviderStore.providers[0]?.name).toBe('New name');
 });
