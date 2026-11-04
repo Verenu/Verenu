@@ -16,24 +16,33 @@ export interface ReinstallState {
 }
 
 export async function reinstallLatestUpdate(state: ReinstallState): Promise<void> {
-  if (state.busy) return;
+  if (state.busy || appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging) return;
   state.busy = true;
+  appStore.updateInstalling = true;
+  appStore.updateInstallError = '';
+  appStore.updateProgress = 'Preparing reinstall…';
   try {
     state.message = 'Preparing reinstall…';
     const result = await invoke<{ version: string; outcome: InstallOutcome }>('reinstall_latest_update');
     if (result.outcome === 'downloadOpened') {
       state.message = `Download opened for v${result.version}.`;
+      appStore.updateProgress = '';
     } else if (result.outcome === 'installerOpened') {
       state.message = 'Approve the update in the Android installer.';
+      appStore.updateProgress = state.message;
     } else if (result.outcome === 'installed') {
       state.message = `v${result.version} installed. Quit and reopen Verenu to finish.`;
+      appStore.updateInstalled = true;
+      appStore.updateProgress = 'Update installed. Quit and reopen Verenu to finish.';
     } else {
       throw new Error('The updater returned an unexpected result.');
     }
   } catch (error) {
+    appStore.updateProgress = '';
     state.message = `Reinstall failed: ${formatIpcError(error, 'Could not install the update')}`;
   } finally {
     state.busy = false;
+    appStore.updateInstalling = false;
   }
 }
 
@@ -73,7 +82,7 @@ function isLinuxInstaller(update: UpdateInfo): boolean {
 
 export async function installAvailableUpdate(): Promise<void> {
   const update = appStore.updateInfo;
-  if (!update || appStore.updateInstalling || appStore.updateInstalled) return;
+  if (!update || appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging) return;
   appStore.updateInstalling = true;
   appStore.updateInstallError = '';
   appStore.updateProgress = update.installMode === 'download' ? 'Opening download…' : 'Preparing update…';

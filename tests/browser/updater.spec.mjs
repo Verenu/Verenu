@@ -135,11 +135,12 @@ test('a late dismissal cannot hide the installed update', async ({ page }) => {
   await expect(banner).toContainText('Quit and reopen');
 });
 
-test('a late beta setting save cannot hide the installed update', async ({ page }) => {
+test('a pending beta setting change blocks installation until the offer is refreshed', async ({ page }) => {
   let releaseSave;
   let saveStarted;
   let saveReturned;
   let notificationSaved;
+  let installs = 0;
   const pendingSave = new Promise(resolve => { releaseSave = resolve; });
   const saveArrived = new Promise(resolve => { saveStarted = resolve; });
   const returned = new Promise(resolve => { saveReturned = resolve; });
@@ -161,7 +162,11 @@ test('a late beta setting save cannot hide the installed update', async ({ page 
       notificationSaved();
       return;
     }
-    if (command === 'install_update') return route.fulfill({ status: 200, json: 'installed' });
+    if (command === 'install_update') {
+      installs++;
+      return route.fulfill({ status: 200, json: 'installed' });
+    }
+    if (command === 'check_for_update') return route.fulfill({ status: 200, json: null });
     return route.fallback();
   });
   try {
@@ -175,15 +180,13 @@ test('a late beta setting save cannot hide the installed update', async ({ page 
     await page.getByRole('button', { name: 'Enable beta updates' }).click();
     await saveArrived;
     await page.locator('[data-debug-id="nav.back"]').click();
-    await page.locator('.update-btn').click();
-    await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstalled)).toBe(true);
+    await expect(page.locator('.update-btn')).toBeDisabled();
+    expect(installs).toBe(0);
     releaseSave();
     await returned;
     await notification;
-    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    await expect(page.locator('.update-btn')).toHaveText('Installed');
-    await expect(page.locator('.update-btn')).toBeDisabled();
-    await expect(page.locator('.update-banner')).toContainText('Quit and reopen');
+    await expect(page.locator('.update-banner')).toHaveCount(0);
+    expect(installs).toBe(0);
   } finally {
     releaseSave();
   }
@@ -207,6 +210,10 @@ test('developer reinstall survives navigation and asks the user to reopen', asyn
     }
     return route.fallback();
   });
+  await page.evaluate(async () => {
+    const { appStore } = await import('/src/lib/stores.svelte.ts');
+    appStore.updateInfo = { version: '99.0.0', assetName: 'Verenu_99.0.0_amd64.AppImage', downloadUrl: 'https://example.invalid/synthetic.AppImage', installMode: 'install' };
+  });
   await page.locator('[data-debug-id="nav.settings"]').click();
   await page.locator('[data-debug-id="settings.about"]').click();
   const version = page.locator('button.version-tap');
@@ -221,12 +228,16 @@ test('developer reinstall survives navigation and asks the user to reopen', asyn
   await page.getByRole('tab', { name: 'Developer Settings' }).click();
   await expect(button).toBeDisabled();
   completeInstall();
-  await expect(button).toBeEnabled();
+  await expect(button).toBeDisabled();
   await expect(page.getByRole('status').filter({ hasText: 'installed' })).toContainText('Quit and reopen');
   await page.getByRole('tab', { name: 'Overview', exact: true }).click();
   await page.getByRole('tab', { name: 'Developer Settings' }).click();
   await expect(button).toHaveText('Reinstall latest');
+  await expect(button).toBeDisabled();
   await expect(page.getByRole('status').filter({ hasText: 'installed' })).toContainText('Quit and reopen');
+  await page.locator('[data-debug-id="nav.back"]').click();
+  await expect(page.locator('.update-btn')).toHaveText('Installed');
+  await expect(page.locator('.update-btn')).toBeDisabled();
   expect(restarts).toBe(0);
   expect(installs).toBe(1);
 });

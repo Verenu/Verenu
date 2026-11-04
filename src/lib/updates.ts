@@ -8,9 +8,10 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let automaticCheckInFlight = false;
 
 async function checkForAutomaticUpdates(active: () => boolean): Promise<void> {
-  if (automaticCheckInFlight || appStore.updateInstalling || appStore.updateInstalled) return;
+  if (automaticCheckInFlight || appStore.updateInstalling || appStore.updateInstalled || appStore.updateChannelChanging) return;
   automaticCheckInFlight = true;
   const channel = appStore.betaUpdatesEnabled;
+  const channelRevision = appStore.updateChannelRevision;
   try {
   let update: UpdateInfo | null = null;
 
@@ -21,7 +22,7 @@ async function checkForAutomaticUpdates(active: () => boolean): Promise<void> {
     return;
   }
 
-  if (!active() || channel !== appStore.betaUpdatesEnabled || appStore.updateInstalling || appStore.updateInstalled || !update) return;
+  if (!active() || channel !== appStore.betaUpdatesEnabled || channelRevision !== appStore.updateChannelRevision || appStore.updateChannelChanging || appStore.updateInstalling || appStore.updateInstalled || !update) return;
 
   let dismissedVersion: string | null = null;
   let notifiedVersion: string | null = null;
@@ -42,6 +43,8 @@ async function checkForAutomaticUpdates(active: () => boolean): Promise<void> {
   if (
     !active()
     || channel !== appStore.betaUpdatesEnabled
+    || channelRevision !== appStore.updateChannelRevision
+    || appStore.updateChannelChanging
     || appStore.updateInstalling
     || appStore.updateInstalled
   ) return;
