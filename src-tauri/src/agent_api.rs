@@ -27,39 +27,92 @@ pub(crate) struct Agent {
     gate: Arc<tokio::sync::Semaphore>,
 }
 
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) struct AgentDrain(Arc<tokio::sync::Semaphore>, Option<(u16, String)>);
+
+#[cfg(target_os = "linux")]
+impl AgentDrain {
+    #[cfg(all(test, feature = "native-testing"))]
+    pub(crate) fn gate_for_test(&self) -> Arc<tokio::sync::Semaphore> {
+        self.0.clone()
+    }
+    #[allow(dead_code)]
+    pub(crate) async fn pause(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        self.0
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| "The agent service is unavailable.".to_owned())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn restore_discovery(&self) -> anyhow::Result<()> {
+        if let Some((port, instance)) = &self.1 {
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build()?;
+            let status: Value = client.get(format!("http://127.0.0.1:{port}/v1/status"))
+                .send().await?.error_for_status()?.json().await?;
+            anyhow::ensure!(status.get("instance").and_then(Value::as_str) == Some(instance.as_str()),
+                "Original agent service is unavailable");
+            publish_discovery(*port, instance)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_pending_approval(app: &AppHandle) -> Result<(), String> {
+        let approvals = app
+            .try_state::<Arc<Mutex<Approvals>>>()
+            .ok_or("Agent access is unavailable.")?;
+        let approvals = approvals
+            .try_lock()
+            .map_err(|_| "Agent access is busy. Try restarting again shortly.")?;
+        if approvals.pending.as_ref().is_some_and(|pending| pending.expires > Instant::now()) {
+            return Err("Finish the pending agent approval before restarting.".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn validate_discovery_target(path: &std::path::Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let directory = path.parent().ok_or_else(|| anyhow::anyhow!("Missing agent directory"))?;
+    let metadata = std::fs::symlink_metadata(directory)?;
+    anyhow::ensure!(
+        metadata.is_dir()
+            && !metadata.file_type().is_symlink()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o300 == 0o300
+            && metadata.mode() & 0o022 == 0,
+        "Agent profile directory is not private to this user"
+    );
+    let resolved = std::fs::canonicalize(directory)?;
+    for ancestor in directory.ancestors().chain(resolved.ancestors()) {
+        let entry = std::fs::symlink_metadata(ancestor)?;
+        let uid = entry.uid();
+        anyhow::ensure!(
+            (uid == 0 || uid == unsafe { libc::geteuid() })
+                && (!entry.is_dir()
+                    || entry.mode() & 0o022 == 0
+                    || (uid == 0 && entry.mode() & 0o1000 != 0)),
+            "Agent profile has an untrusted ancestor"
+        );
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => anyhow::ensure!(metadata.is_file(), "Agent descriptor must be a regular file"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn publish_discovery(port: u16, instance: &str) -> anyhow::Result<()> {
     let path = crate::app_data_dir().join("agent-session.json");
     #[cfg(unix)]
     {
         use std::io::Write;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        let directory = path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Missing agent directory"))?;
-        let metadata = std::fs::symlink_metadata(directory)?;
-        anyhow::ensure!(
-            metadata.is_dir()
-                && !metadata.file_type().is_symlink()
-                && metadata.uid() == unsafe { libc::geteuid() }
-                && metadata.mode() & 0o022 == 0,
-            "Agent profile directory is not private to this user"
-        );
-        let resolved = std::fs::canonicalize(directory)?;
-        for ancestor in directory.ancestors().chain(resolved.ancestors()) {
-            let entry = std::fs::symlink_metadata(ancestor)?;
-            let uid = entry.uid();
-            anyhow::ensure!(
-                (uid == 0 || uid == unsafe { libc::geteuid() })
-                    && (!entry.is_dir()
-                        || entry.mode() & 0o022 == 0
-                        || (uid == 0 && entry.mode() & 0o1000 != 0)),
-                "Agent profile has an untrusted ancestor"
-            );
-        }
-        anyhow::ensure!(
-            !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()),
-            "Agent descriptor cannot be a symbolic link"
-        );
+        use std::os::unix::fs::OpenOptionsExt;
+        validate_discovery_target(&path)?;
         let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -94,6 +147,21 @@ struct Approvals {
     pending: Option<Pending>,
     grants: HashMap<[u8; 32], Grant>,
     legacy_token: Option<String>,
+}
+
+#[cfg(all(test, target_os = "linux", feature = "native-testing"))]
+pub(crate) fn start_test_agent(app: AppHandle) -> anyhow::Result<Arc<tokio::sync::Semaphore>> {
+    prepare_agent(None, None)?.activate(app.clone())?;
+    Ok(app.state::<AgentDrain>().gate_for_test())
+}
+
+#[cfg(all(test, target_os = "linux", feature = "native-testing"))]
+pub(crate) fn set_test_pending_approval(app: &AppHandle, pending: bool) {
+    app.state::<Arc<Mutex<Approvals>>>().lock().unwrap().pending = pending.then(|| Pending {
+        digest: [0; 32],
+        code: "TEST".into(),
+        expires: Instant::now() + Duration::from_secs(60),
+    });
 }
 
 struct Grant {
@@ -145,6 +213,9 @@ pub fn agent_pending_request(app: AppHandle) -> Option<ApprovalRequest> {
 
 #[tauri::command]
 pub fn agent_respond(app: AppHandle, id: String, approve: bool, scopes: Option<Vec<String>>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let _permit = app.try_state::<AgentDrain>().ok_or("Agent access unavailable")?.0.clone()
+        .try_acquire_owned().map_err(|_| "Agent access is busy. Try again.")?;
     let state = app
         .try_state::<Arc<Mutex<Approvals>>>()
         .ok_or("Agent access unavailable")?;
@@ -168,6 +239,9 @@ pub fn agent_respond(app: AppHandle, id: String, approve: bool, scopes: Option<V
 
 #[tauri::command]
 pub fn agent_revoke_all(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let _permit = app.try_state::<AgentDrain>().ok_or("Agent access unavailable")?.0.clone()
+        .try_acquire_owned().map_err(|_| "Agent access is busy. Try again.")?;
     let state = app
         .try_state::<Arc<Mutex<Approvals>>>()
         .ok_or("Agent access unavailable")?;
@@ -234,14 +308,25 @@ fn required_scopes(request: &Request) -> Vec<&'static str> {
     scopes
 }
 
-pub fn start(app: AppHandle) -> anyhow::Result<()> {
-    let token = std::env::var("VERENU_AGENT_TOKEN").ok();
+pub(crate) struct PreparedAgent {
+    listener: std::net::TcpListener,
+    token: Option<String>,
+    port: u16,
+    instance: String,
+}
+
+fn prepare_agent(
+    token: Option<String>,
+    configured_port: Option<String>,
+) -> anyhow::Result<PreparedAgent> {
     let port: u16 = if let Some(ref token) = token {
         anyhow::ensure!(
             valid_token(token),
             "VERENU_AGENT_TOKEN must be 32 random bytes encoded as 64 hex characters"
         );
-        let port = std::env::var("VERENU_AGENT_PORT")?.parse()?;
+        let port = configured_port
+            .ok_or_else(|| anyhow::anyhow!("VERENU_AGENT_PORT is required"))?
+            .parse()?;
         anyhow::ensure!(port > 0, "VERENU_AGENT_PORT must be 1..65535");
         port
     } else {
@@ -251,36 +336,211 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
     listener.set_nonblocking(true)?;
     let actual_port = listener.local_addr()?.port();
     let instance = uuid::Uuid::new_v4().to_string();
-    publish_discovery(actual_port, &instance)?;
-    let approvals = Arc::new(Mutex::new(Approvals {
-        legacy_token: token,
-        ..Approvals::default()
-    }));
-    app.manage(approvals.clone());
-    let state = Agent {
-        app,
+    Ok(PreparedAgent {
+        listener,
+        token,
+        port: actual_port,
         instance,
-        approvals,
-        gate: Arc::new(tokio::sync::Semaphore::new(1)),
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) fn prepare_for_handoff() -> anyhow::Result<PreparedAgent> {
+    let prepared = prepare_from_environment()?;
+    validate_discovery_target(&crate::app_data_dir().join("agent-session.json"))?;
+    Ok(prepared)
+}
+
+fn prepare_from_environment() -> anyhow::Result<PreparedAgent> {
+    let token = std::env::var("VERENU_AGENT_TOKEN").ok();
+    let configured_port = if token.as_ref().is_some_and(|token| valid_token(token)) {
+        Some(std::env::var("VERENU_AGENT_PORT")?)
+    } else {
+        None
     };
-    tauri::async_runtime::spawn(async move {
-        let listener = match tokio::net::TcpListener::from_std(listener) {
-            Ok(l) => l,
-            Err(_) => return,
+    prepare_agent(token, configured_port)
+}
+
+pub fn start(app: AppHandle) -> anyhow::Result<()> {
+    prepare_from_environment()?.activate(app)
+}
+
+impl PreparedAgent {
+    fn activate(self, app: AppHandle) -> anyhow::Result<()> {
+        let Self { listener, token, port, instance } = self;
+        publish_discovery(port, &instance)?;
+        let approvals = Arc::new(Mutex::new(Approvals {
+            legacy_token: token,
+            ..Approvals::default()
+        }));
+        app.manage(approvals.clone());
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        #[cfg(target_os = "linux")]
+        app.manage(AgentDrain(gate.clone(), Some((port, instance.clone()))));
+        let state = Agent {
+            app,
+            instance,
+            approvals,
+            gate,
         };
-        let routes = Router::new()
-            .route("/v1/invoke", post(invoke))
-            .route("/v1/status", get(status))
-            .route("/v1/authorize", post(authorize))
-            .route("/v1/authorization-status", post(authorization_status))
-            .route("/v1/revoke", post(revoke))
-            .layer(DefaultBodyLimit::max(64 * 1024))
-            .with_state(state);
-        if axum::serve(listener, routes).await.is_err() {
-            log::error!("Agent API stopped");
+        tauri::async_runtime::spawn(async move {
+            let listener = match tokio::net::TcpListener::from_std(listener) {
+                Ok(l) => l,
+                Err(_) => return,
+            };
+            let routes = agent_routes(state);
+            if axum::serve(listener, routes).await.is_err() {
+                log::error!("Agent API stopped");
+            }
+        });
+        Ok(())
+    }
+}
+
+fn agent_routes(state: Agent) -> Router {
+    Router::new()
+        .route("/v1/invoke", post(invoke))
+        .route("/v1/status", get(status))
+        .route("/v1/authorize", post(authorize))
+        .route("/v1/authorization-status", post(authorization_status))
+        .route("/v1/revoke", post(revoke))
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .with_state(state)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct StagedAgent {
+    port: u16,
+    instance: String,
+    active: Arc<std::sync::atomic::AtomicBool>,
+    server: Option<tauri::async_runtime::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct PublishedAgent {
+    staged: StagedAgent,
+    gate: Arc<crate::linux_activity::ActivityGate>,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct ReadyAgent {
+    staged: StagedAgent,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+#[cfg(target_os = "linux")]
+impl PreparedAgent {
+    pub(crate) async fn stage_for_handoff(self, app: AppHandle) -> anyhow::Result<StagedAgent> {
+        use std::sync::atomic::Ordering;
+        let Self { listener, token, port, instance } = self;
+        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let approvals = Arc::new(Mutex::new(Approvals { legacy_token: token, ..Approvals::default() }));
+        anyhow::ensure!(app.manage(approvals.clone()), "Agent approvals are already initialized");
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        anyhow::ensure!(app.manage(AgentDrain(gate.clone(), Some((port, instance.clone())))), "Agent service is already initialized");
+        let state = Agent { app, instance: instance.clone(), approvals, gate };
+        let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let access = active.clone();
+        let routes = agent_routes(state).layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let access = access.clone();
+                async move {
+                    use axum::response::IntoResponse;
+                    if access.load(Ordering::Acquire)
+                        || (request.method() == axum::http::Method::GET
+                            && request.uri().path() == "/v1/status")
+                    {
+                        next.run(request).await
+                    } else {
+                        StatusCode::SERVICE_UNAVAILABLE.into_response()
+                    }
+                }
+            },
+        ));
+        let server = tauri::async_runtime::spawn(async move {
+            if let Err(error) = axum::serve(listener, routes).await {
+                log::error!("Agent API stopped: {error}");
+            }
+        });
+        let staged = StagedAgent { port, instance, active, server: Some(server) };
+        staged.verify().await?;
+        Ok(staged)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl StagedAgent {
+    pub(crate) async fn verify(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.server.as_ref().is_some_and(|server| !server.inner().is_finished()), "Agent service stopped during restart");
+        let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build()?;
+        let endpoint = format!("http://127.0.0.1:{}", self.port);
+        let status: Value = client.get(format!("{endpoint}/v1/status")).send().await?.error_for_status()?.json().await?;
+        anyhow::ensure!(status.get("instance").and_then(Value::as_str) == Some(self.instance.as_str()), "Agent service returned the wrong identity");
+        let response = client.post(format!("{endpoint}/v1/authorization-status")).json(&json!({"token": "a".repeat(64)})).send().await?;
+        anyhow::ensure!(response.status() == StatusCode::SERVICE_UNAVAILABLE, "Agent probation endpoint was not isolated");
+        Ok(())
+    }
+
+    pub(crate) fn publish_while_paused(
+        self,
+        app: &AppHandle,
+        pause: &crate::linux_activity::Pause,
+    ) -> anyhow::Result<PublishedAgent> {
+        let gate = app.try_state::<Arc<crate::linux_activity::ActivityGate>>()
+            .ok_or_else(|| anyhow::anyhow!("Agent restart gate is unavailable"))?;
+        anyhow::ensure!(pause.belongs_to(gate.inner()), "Agent restart gate does not match");
+        anyhow::ensure!(self.server.as_ref().is_some_and(|server| !server.inner().is_finished()), "Agent service stopped during restart");
+        publish_discovery(self.port, &self.instance)?;
+        Ok(PublishedAgent { staged: self, gate: gate.inner().clone() })
+    }
+
+}
+
+#[cfg(target_os = "linux")]
+impl PublishedAgent {
+    pub(crate) async fn verify(&self) -> anyhow::Result<()> {
+        self.staged.verify().await?;
+        let descriptor: Value = serde_json::from_slice(&std::fs::read(crate::app_data_dir().join("agent-session.json"))?)?;
+        anyhow::ensure!(descriptor.get("port").and_then(Value::as_u64) == Some(u64::from(self.staged.port))
+            && descriptor.get("instance").and_then(Value::as_str) == Some(self.staged.instance.as_str()),
+            "Agent discovery changed during restart");
+        Ok(())
+    }
+
+    pub(crate) fn prepare_activation(
+        self,
+        app: &AppHandle,
+        pause: &crate::linux_activity::Pause,
+    ) -> anyhow::Result<ReadyAgent> {
+        anyhow::ensure!(pause.belongs_to(&self.gate), "Agent restart gate does not match");
+        let drain = app.try_state::<AgentDrain>().ok_or_else(|| anyhow::anyhow!("Agent service is unavailable"))?;
+        let permit = drain.0.clone().try_acquire_owned().map_err(|_| anyhow::anyhow!("Agent service is busy"))?;
+        anyhow::ensure!(self.staged.server.as_ref().is_some_and(|server| !server.inner().is_finished()), "Agent service stopped during restart");
+        Ok(ReadyAgent { staged: self.staged, _permit: permit })
+    }
+
+}
+
+#[cfg(target_os = "linux")]
+impl ReadyAgent {
+    pub(crate) async fn verify(&self) -> anyhow::Result<()> {
+        self.staged.verify().await
+    }
+
+    pub(crate) fn activate(mut self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
+        self.staged.active.store(true, std::sync::atomic::Ordering::Release);
+        drop(self.staged.server.take());
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for StagedAgent {
+    fn drop(&mut self) {
+        if let Some(server) = self.server.take() {
+            server.abort();
         }
-    });
-    Ok(())
+    }
 }
 
 async fn status(State(agent): State<Agent>, headers: HeaderMap) -> (StatusCode, Json<Value>) {
@@ -311,6 +571,11 @@ async fn authorize(
             Json(json!({"error":"Unauthorized"})),
         );
     }
+    #[cfg(target_os = "linux")]
+    let _permit = match agent.gate.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"Agent access is busy"}))),
+    };
     let hash = digest(&request.token);
     let code = hash[..6]
         .iter()
@@ -401,6 +666,11 @@ async fn revoke(
             Json(json!({"error":"Unauthorized"})),
         );
     }
+    #[cfg(target_os = "linux")]
+    let _permit = match agent.gate.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"Agent access is busy"}))),
+    };
     if let Ok(mut approvals) = agent.approvals.lock() {
         let hash = digest(&request.token);
         approvals.grants.remove(&hash);
@@ -1067,6 +1337,265 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_preflight_rejects_unsafe_paths_without_publishing() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let directory = std::env::temp_dir().join(format!("verenu-agent-preflight-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        let path = directory.join("agent-session.json");
+        validate_discovery_target(&path).unwrap();
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        std::fs::write(&path, b"existing").unwrap();
+        validate_discovery_target(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing");
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink("missing", &path).unwrap();
+        assert!(validate_discovery_target(&path).is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(validate_discovery_target(&path).is_err());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(validate_discovery_target(&path).is_err());
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(validate_discovery_target(&path).is_err());
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn prepared_agent_reserves_and_releases_its_local_port() {
+        let reserved = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        assert!(prepare_agent(Some("a".repeat(64)), Some(port.to_string())).is_err());
+        drop(reserved);
+
+        let prepared = prepare_agent(None, None).unwrap();
+        let address = prepared.listener.local_addr().unwrap();
+        assert!(std::net::TcpListener::bind(address).is_err());
+        drop(prepared);
+        assert!(std::net::TcpListener::bind(address).is_ok());
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn aborted_staged_agent_closes_listener_without_publishing() {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = std::env::temp_dir().join(format!("verenu-agent-abort-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        let previous = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &directory);
+        let descriptor = directory.join("agent-session.json");
+        std::fs::write(&descriptor, b"parent descriptor").unwrap();
+        let app = tauri::Builder::default().any_thread().build(tauri::generate_context!()).unwrap();
+        let prepared = prepare_agent(None, None).unwrap();
+        let port = prepared.port;
+        tauri::async_runtime::block_on(async {
+            let staged = prepared.stage_for_handoff(app.handle().clone()).await.unwrap();
+            staged.verify().await.unwrap();
+            staged.server.as_ref().unwrap().abort();
+            assert!(staged.verify().await.is_err());
+            drop(staged);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("aborted agent listener stayed open");
+        });
+        assert_eq!(std::fs::read(&descriptor).unwrap(), b"parent descriptor");
+        drop(app);
+        match previous {
+            Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
+            None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn staged_agent_rejects_requests_until_parent_exit() {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = std::env::temp_dir().join(format!("verenu-agent-staged-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        let previous = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &directory);
+        let descriptor = directory.join("agent-session.json");
+        std::fs::write(&descriptor, b"parent descriptor").unwrap();
+        let prepared = prepare_agent(None, None).unwrap();
+        let port = prepared.port;
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(gate.clone()).build(tauri::generate_context!()).unwrap();
+        tauri::async_runtime::block_on(async {
+            let staged = prepared.stage_for_handoff(app.handle().clone()).await.unwrap();
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
+            let endpoint = format!("http://127.0.0.1:{port}");
+            let status: Value = client.get(format!("{endpoint}/v1/status")).send().await.unwrap().json().await.unwrap();
+            assert_eq!(status["instance"], staged.instance);
+            for path in ["authorize", "authorization-status", "revoke", "invoke"] {
+                assert_eq!(client.post(format!("{endpoint}/v1/{path}"))
+                    .json(&json!({"token": "a".repeat(64)}))
+                    .send().await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
+            }
+            assert_eq!(std::fs::read(&descriptor).unwrap(), b"parent descriptor");
+            let pause = gate.pause().await.unwrap();
+            let published = staged.publish_while_paused(app.handle(), &pause).unwrap();
+            published.verify().await.unwrap();
+            assert_ne!(std::fs::read(&descriptor).unwrap(), b"parent descriptor");
+            assert_eq!(client.post(format!("{endpoint}/v1/authorization-status"))
+                .json(&json!({"token": "a".repeat(64)})).send().await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
+            let ready = published.prepare_activation(app.handle(), &pause).unwrap();
+            let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
+            ready.activate(&parent_exited);
+            drop(pause);
+            let response = client.get(format!("{endpoint}/v1/status")).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let status: Value = response.json().await.unwrap();
+            let published: Value = serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+            assert_eq!(status["instance"], published["instance"]);
+            assert_eq!(client.post(format!("{endpoint}/v1/authorization-status"))
+                .json(&json!({"token": "a".repeat(64)})).send().await.unwrap().status(), StatusCode::OK);
+        });
+        drop(app);
+        match previous {
+            Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
+            None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn published_agent_rejects_an_unrelated_activity_gate() {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = std::env::temp_dir().join(format!("verenu-agent-gate-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        let previous = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &directory);
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default().any_thread().manage(gate.clone()).build(tauri::generate_context!()).unwrap();
+        tauri::async_runtime::block_on(async {
+            let staged = prepare_agent(None, None).unwrap().stage_for_handoff(app.handle().clone()).await.unwrap();
+            let pause = gate.pause().await.unwrap();
+            let published = staged.publish_while_paused(app.handle(), &pause).unwrap();
+            let other = Arc::new(crate::linux_activity::ActivityGate::default());
+            let wrong_pause = other.pause().await.unwrap();
+            assert!(published.prepare_activation(app.handle(), &wrong_pause).is_err());
+            assert!(gate.try_enter().is_none());
+        });
+        drop(app);
+        match previous {
+            Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
+            None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn prepared_agent_publishes_a_working_endpoint_only_after_activation() {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = std::env::temp_dir().join(format!("verenu-agent-test-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new().mode(0o700).create(&directory).unwrap();
+        let previous = std::env::var_os("VERENU_APP_DATA_DIR_OVERRIDE");
+        std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &directory);
+        let prepared = prepare_agent(None, None).unwrap();
+        let descriptor = directory.join("agent-session.json");
+        assert!(!descriptor.exists());
+        let app = tauri::Builder::default().any_thread().build(tauri::generate_context!()).unwrap();
+        prepared.activate(app.handle().clone()).unwrap();
+        let published: Value = serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+        let port = published["port"].as_u64().unwrap();
+        let response: Value = tauri::async_runtime::block_on(async {
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                client.get(format!("http://127.0.0.1:{port}/v1/status"))
+                    .send().await.unwrap().error_for_status().unwrap().json().await.unwrap()
+            }).await.unwrap()
+        });
+        assert_eq!(response["version"], 1);
+        assert_eq!(response["instance"], published["instance"]);
+        std::fs::write(&descriptor, b"replacement descriptor").unwrap();
+        let wrong_instance = AgentDrain(Arc::new(tokio::sync::Semaphore::new(1)), Some((port as u16, "wrong-instance".into())));
+        assert!(tauri::async_runtime::block_on(wrong_instance.restore_discovery()).is_err());
+        assert_eq!(std::fs::read(&descriptor).unwrap(), b"replacement descriptor");
+        tauri::async_runtime::block_on(app.state::<AgentDrain>().restore_discovery()).unwrap();
+        let restored: Value = serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+        assert_eq!(restored, published);
+        let response: Value = tauri::async_runtime::block_on(async {
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
+            client.get(format!("http://127.0.0.1:{port}/v1/status"))
+                .send().await.unwrap().error_for_status().unwrap().json().await.unwrap()
+        });
+        assert_eq!(response["instance"], restored["instance"]);
+        drop(app);
+        match previous {
+            Some(value) => std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", value),
+            None => std::env::remove_var("VERENU_APP_DATA_DIR_OVERRIDE"),
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn restart_drain_blocks_authorization_changes() {
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let approvals = Arc::new(Mutex::new(Approvals::default()));
+        app.manage(approvals.clone());
+        app.manage(AgentDrain(gate.clone(), None));
+        let agent = Agent {
+            app: app.handle().clone(),
+            instance: "test".into(),
+            approvals,
+            gate: gate.clone(),
+        };
+        tauri::async_runtime::block_on(async {
+            let permit = gate.clone().acquire_owned().await.unwrap();
+            let request = || Json(Authorization { token: "a".repeat(64) });
+            assert_eq!(authorize(State(agent.clone()), HeaderMap::new(), request()).await.0, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(revoke(State(agent.clone()), HeaderMap::new(), request()).await.0, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(agent_revoke_all(app.handle().clone()).is_err());
+            drop(permit);
+            assert_eq!(authorize(State(agent.clone()), HeaderMap::new(), request()).await.0, StatusCode::OK);
+            assert!(AgentDrain::check_pending_approval(app.handle()).is_err());
+            assert_eq!(revoke(State(agent), HeaderMap::new(), request()).await.0, StatusCode::OK);
+            assert!(AgentDrain::check_pending_approval(app.handle()).is_ok());
+        });
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn restart_drain_waits_for_detached_agent_request_and_blocks_new_requests() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = gate.clone().try_acquire_owned().unwrap();
+        let (finish, waiting) = tokio::sync::oneshot::channel::<()>();
+        let task = spawn_with_permit(permit, async move { waiting.await.unwrap() });
+        drop(task);
+        let drain = AgentDrain(gate.clone(), None);
+        let mut pause = Box::pin(drain.pause());
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut pause)
+            .await
+            .is_err());
+        assert!(gate.clone().try_acquire_owned().is_err());
+        finish.send(()).unwrap();
+        let paused = tokio::time::timeout(Duration::from_secs(2), pause)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(gate.clone().try_acquire_owned().is_err());
+        drop(paused);
+        assert!(gate.clone().try_acquire_owned().is_ok());
+    }
+
     #[tokio::test]
     async fn timed_out_request_keeps_the_gate_until_work_finishes() {
         let gate = Arc::new(tokio::sync::Semaphore::new(1));

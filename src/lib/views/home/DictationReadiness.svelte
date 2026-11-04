@@ -1,6 +1,6 @@
 <script lang="ts">
   import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { invoke, listen, type LocalSttModelInfo, type LocalLlmModelInfo, type LocalLlmRuntimeInfo } from '../../tauri';
   import { appStore } from '../../stores';
   import { dictationReadiness, hasCleanupIntensityOverride, hasCloudSpeechCandidate, hasReachableOffCleanupOverride, hasReadyOfflineSpeech, readinessModel, type ReadinessCustomProvider, type ReadinessIssue, type ReadinessInput } from '../../dictationReadiness';
@@ -27,6 +27,10 @@
 
   async function refresh(isOnline = appStore.isOnline) {
     const current = ++sequence;
+    const probe = (window as Window & { __VERENU_RESTART_PROBE__?: boolean }).__VERENU_RESTART_PROBE__ === true;
+    const generation = probe
+      ? invoke<number>('frontend_settings_generation').catch(() => null)
+      : Promise.resolve(null);
     try {
       const setting = <T,>(key: string) => invoke<T | null>('get_setting', { key });
       const [
@@ -87,6 +91,13 @@
       failed = true;
     }
     checking = false;
+    if (probe && !failed) {
+      await tick();
+      const readyGeneration = await generation;
+      if (mounted && current === sequence && readyGeneration !== null) {
+        await invoke('frontend_home_ready', { generation: readyGeneration }).catch(() => {});
+      }
+    }
   }
 
   $effect(() => {

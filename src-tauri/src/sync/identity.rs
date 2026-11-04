@@ -81,6 +81,27 @@ pub fn load_or_create(
     Ok(identity)
 }
 
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) fn load_existing(
+    app_data_dir: &std::path::Path,
+    known_uuid: String,
+) -> Result<DeviceIdentity> {
+    anyhow::ensure!(!known_uuid.is_empty(), "Sync identity is unavailable for restart");
+    let cert_path = app_data_dir.join(CERT_FILE);
+    let cert_der = std::fs::read(&cert_path).context("Could not read sync certificate for restart")?;
+    anyhow::ensure!(cert_file_fresh(&cert_path), "Sync identity needs renewal after restart");
+    let key_der = secrets::load_identity_key(app_data_dir)
+        .ok_or_else(|| anyhow!("Sync identity key is unavailable for restart"))?;
+    validate_key(&key_der)?;
+    Ok(DeviceIdentity {
+        uuid: known_uuid,
+        name: default_device_name(),
+        cert_der: CertificateDer::from(cert_der),
+        key_der,
+    })
+}
+
 fn validate_key(key_der: &[u8]) -> Result<()> {
     KeyPair::from_pkcs8_der_and_sign_algo(
         &PrivatePkcs8KeyDer::from(key_der.to_vec()),
@@ -166,6 +187,28 @@ fn hostname_raw() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn handoff_identity_probe_never_creates_or_rewrites_identity() {
+        let directory = std::env::temp_dir().join(format!("verenu-sync-probe-{}", uuid::Uuid::new_v4()));
+        assert!(load_existing(&directory, "fixture".into()).is_err());
+        assert!(!directory.exists());
+        std::fs::create_dir(&directory).unwrap();
+        let identity = create_identity(Some("fixture".into())).unwrap();
+        secrets::store_identity_key(&directory, &identity.key_der).unwrap();
+        std::fs::write(directory.join(CERT_FILE), identity.cert_der.as_ref()).unwrap();
+        let cert_before = std::fs::read(directory.join(CERT_FILE)).unwrap();
+        let key_before = secrets::load_identity_key(&directory).unwrap();
+        let loaded = load_existing(&directory, "fixture".into()).unwrap();
+        assert_eq!(loaded.uuid, "fixture");
+        assert_eq!(loaded.cert_der.as_ref(), cert_before);
+        assert!(secrets::load_identity_key(&directory).unwrap() == key_before);
+        secrets::delete_identity_key(&directory);
+        assert!(load_existing(&directory, "fixture".into()).is_err());
+        assert!(!directory.join("sync-identity.key").exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn identity_survives_restart() {

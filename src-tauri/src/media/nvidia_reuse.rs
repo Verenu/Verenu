@@ -16,6 +16,14 @@ pub struct RuntimeStatus {
 static ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 static REALTIME_FAILED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "linux")]
+pub(crate) fn ensure_restart_idle() -> Result<(), String> {
+    if ACTIVE_WORKERS.load(Ordering::Acquire) != 0 {
+        return Err("NVIDIA RE-USE is finishing a recording. Try restarting again shortly.".into());
+    }
+    Ok(())
+}
+
 fn status_cell() -> &'static Mutex<RuntimeStatus> {
     static STATUS: OnceLock<Mutex<RuntimeStatus>> = OnceLock::new();
     STATUS.get_or_init(|| Mutex::new(RuntimeStatus { state: "unknown", message: String::new(), has_files: false, progress: None }))
@@ -101,7 +109,9 @@ pub fn nvidia_reuse_status() -> RuntimeStatus {
 }
 
 #[tauri::command]
-pub async fn nvidia_reuse_check() -> Result<(), String> {
+pub async fn nvidia_reuse_check(_app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let _activity = crate::commands::linux_try_activity(&_app)?;
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         set_status("unavailable", "Requires Linux x86_64 and a compatible NVIDIA GPU.");
         return Ok(());
@@ -128,7 +138,9 @@ pub async fn nvidia_reuse_check() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn nvidia_reuse_install() -> Result<(), String> {
+pub async fn nvidia_reuse_install(_app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let activity = crate::commands::linux_try_activity(&_app)?;
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         return Err("Requires Linux x86_64 and a compatible NVIDIA GPU.".into());
     }
@@ -142,7 +154,9 @@ pub async fn nvidia_reuse_install() -> Result<(), String> {
         set_status("unavailable", "No compatible NVIDIA GPU with a supported driver was detected.");
         return Err("No compatible NVIDIA GPU with a supported driver was detected.".into());
     }
-    tauri::async_runtime::spawn(async {
+    tauri::async_runtime::spawn(async move {
+        #[cfg(target_os = "linux")]
+        let _activity = activity;
         if let Err(error) = install().await { set_status("error", error); }
     });
     Ok(())
@@ -161,7 +175,9 @@ fn begin_removal(status: &mut RuntimeStatus, active_workers: usize) -> Result<()
 }
 
 #[tauri::command]
-pub async fn nvidia_reuse_remove() -> Result<(), String> {
+pub async fn nvidia_reuse_remove(_app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let _activity = crate::commands::linux_try_activity(&_app)?;
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         return Err("Requires Linux x86_64 and a compatible NVIDIA GPU.".into());
     }
@@ -199,13 +215,21 @@ impl RuntimeUse {
     }
 }
 
+#[cfg(all(test, feature = "native-testing", target_os = "linux"))]
+pub(crate) fn test_active_worker() -> RuntimeUse {
+    ACTIVE_WORKERS.fetch_add(1, Ordering::AcqRel);
+    RuntimeUse
+}
+
 #[tauri::command]
 pub fn nvidia_reuse_realtime_ready() -> bool {
     !REALTIME_FAILED.load(Ordering::Acquire) && runtime_dir().join("realtime-model/ready").is_file() && runtime_dir().join("realtime_worker.py").is_file()
 }
 
 #[tauri::command]
-pub async fn nvidia_reuse_realtime_install() -> Result<(), String> {
+pub async fn nvidia_reuse_realtime_install(_app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let activity = crate::commands::linux_try_activity(&_app)?;
     {
         let mut status = status_cell().lock().map_err(|_| "Runtime status unavailable")?;
         if status.state != "ready" { return Err("Set up NVIDIA RE-USE first.".into()); }
@@ -213,7 +237,9 @@ pub async fn nvidia_reuse_realtime_install() -> Result<(), String> {
         *status = RuntimeStatus { state: "installing", message: "Downloading the research-only real-time model…".into(), has_files: true, progress: None };
     }
     crate::media::realtime_reuse::unload().await;
-    tauri::async_runtime::spawn(async {
+    tauri::async_runtime::spawn(async move {
+        #[cfg(target_os = "linux")]
+        let _activity = activity;
         let dir = runtime_dir();
         let result: anyhow::Result<()> = async {
             tokio::fs::write(dir.join("realtime_worker.py"), include_str!("../../resources/nvidia-reuse/realtime_worker.py")).await?;
@@ -434,6 +460,36 @@ fn decode_samples(data: &[u8], expected_samples: usize) -> anyhow::Result<Vec<f3
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn runtime_operations_refuse_to_start_during_restart() {
+        use std::sync::Arc;
+        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+        let app = tauri::Builder::default()
+            .any_thread()
+            .manage(gate.clone())
+            .build(tauri::generate_context!())
+            .unwrap();
+        tauri::async_runtime::block_on(async {
+            let pause = gate.pause().await.unwrap();
+            for result in [
+                super::nvidia_reuse_check(app.handle().clone()).await,
+                super::nvidia_reuse_install(app.handle().clone()).await,
+                super::nvidia_reuse_remove(app.handle().clone()).await,
+                super::nvidia_reuse_realtime_install(app.handle().clone()).await,
+            ] {
+                assert!(result.unwrap_err().contains("preparing to restart"));
+            }
+            super::ACTIVE_WORKERS.fetch_add(1, super::Ordering::AcqRel);
+            let worker = super::RuntimeUse;
+            assert!(super::ensure_restart_idle().unwrap_err().contains("finishing a recording"));
+            drop(worker);
+            assert!(super::ensure_restart_idle().is_ok());
+            drop(pause);
+        });
+    }
+
     #[test]
     fn setup_errors_classify_failures_without_exposing_installer_output() {
         for (detail, expected) in [

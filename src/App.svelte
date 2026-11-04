@@ -386,9 +386,10 @@
         const cleanupVersion = appStore.cleanupChangeVersion;
         const appearanceVersion = appStore.appearanceChangeVersion;
         const legacyVersion = appStore.legacyFeaturesChangeVersion;
+        let savedThemesLoaded = true;
         const savedThemesRead = readSettingsWithRetry(() =>
           invoke<unknown>('get_setting', { key: 'custom_themes' }),
-        ).catch(() => null);
+        ).catch(() => { savedThemesLoaded = false; return null; });
         const [done, appearance, accentColor, customTheme, forceSetupOnLaunch, cleanupEnabled, betaUpdatesEnabled, legacyFeaturesEnabled, ruinAccessibility, devModeOnStartup, subAppCaptureHotkey] = await readSettingsWithRetry(() => Promise.all([
           invoke<boolean | null>('get_setting', { key: 'setup_complete' }),
           invoke<AppearanceMode | null>('get_setting', { key: 'appearance_mode' }),
@@ -419,13 +420,18 @@
         appStore.devModeOnStartup = devModeOnStartup ?? false;
         appStore.subAppCaptureHotkey = typeof subAppCaptureHotkey === 'string' ? subAppCaptureHotkey : null;
         if (appStore.ruinAccessibility || appStore.devModeOnStartup) appStore.devModeEnabled = true;
+        return savedThemesLoaded;
       } catch {
         appStore.setupComplete = false;
+        return false;
       }
     }
 
     (async () => {
-      await reloadGlobalSettings();
+      const settingsGeneration = isLinuxDesktop && isTauriRuntime()
+        ? invoke<number>('frontend_settings_generation').catch(() => null)
+        : Promise.resolve(null);
+      const settingsLoaded = await reloadGlobalSettings();
       if (!mounted) return;
       try { stopSyncListeners = startSyncListeners(); }
       catch (error) { console.error('Failed to start sync listeners:', error); }
@@ -434,6 +440,12 @@
         showErrorToast(ev.payload ?? '');
       });
       cleanupFn = unlisten;
+      if (settingsLoaded && mounted) {
+        const generation = await settingsGeneration;
+        if (generation !== null && mounted) {
+          await invoke('frontend_settings_ready', { generation }).catch(error => console.error('Failed to complete settings startup handshake:', error));
+        }
+      }
     })();
 
     listen('verenu:settings-imported', () => {

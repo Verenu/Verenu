@@ -4,9 +4,7 @@ use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
-#[cfg(not(target_os = "linux"))]
-use tauri::Emitter;
-use tauri::{AppHandle, Manager, Theme};
+use tauri::{AppHandle, Emitter, Manager, Theme};
 
 #[cfg(not(target_os = "linux"))]
 const TRAY_ID: &str = "verenu-tray";
@@ -34,18 +32,18 @@ impl LinuxSystemTheme {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+fn setup_system_theme(app: &AppHandle) {
     use gtk::prelude::{GtkSettingsExt, GtkWindowExt};
     if let Some((display, settings)) = independent_gtk_settings() {
         let probe = gtk::Window::new(gtk::WindowType::Toplevel);
         probe.set_screen(&display.default_screen());
-        update_gtk_system_theme(app.handle(), gtk_theme_is_dark(&probe, &settings));
-        let owner = app.handle().clone();
+        update_gtk_system_theme(app, gtk_theme_is_dark(&probe, &settings));
+        let owner = app.clone();
         let theme_probe = probe.clone();
         settings.connect_gtk_application_prefer_dark_theme_notify(move |settings| {
             update_gtk_system_theme(&owner, gtk_theme_is_dark(&theme_probe, settings));
         });
-        let owner = app.handle().clone();
+        let owner = app.clone();
         settings.connect_gtk_theme_name_notify(move |settings| {
             let _keep_display_open = &display;
             update_gtk_system_theme(&owner, gtk_theme_is_dark(&probe, settings));
@@ -53,10 +51,51 @@ pub(crate) fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     } else {
         log::warn!("Could not open an independent GTK settings display");
     }
+    watch_system_theme(app.clone());
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    setup_system_theme(app);
     linux::setup(app)?;
-    watch_system_theme(app.handle().clone());
-    apply_runtime_icons(app.handle(), None);
+    apply_runtime_icons(app, None);
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn suspend_for_handoff(app: &AppHandle) -> Result<(), String> {
+    linux::stop(app).await
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) async fn resume_after_handoff(app: &AppHandle) -> Result<(), String> {
+    linux::start(app).await
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn setup_probation_tray(app: &AppHandle) -> tauri::Result<()> {
+    setup_system_theme(app);
+    linux::setup_with_visibility(app, false)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn verify_probation_tray(app: &AppHandle) -> Result<(), String> {
+    linux::verify_probation(app).await
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(crate) async fn activate_while_paused(
+    app: &AppHandle,
+    pause: &crate::linux_activity::Pause,
+) -> Result<(), String> {
+    let gate = app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
+        .ok_or("Restart gate is unavailable")?;
+    if !pause.belongs_to(gate.inner()) {
+        return Err("Tray restart gate does not match".into());
+    }
+    linux::activate_after_handoff(app).await
 }
 
 #[cfg(target_os = "linux")]
@@ -175,7 +214,18 @@ fn relaunch_app(app: &AppHandle) {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = crate::commands::restart_app(app.clone()).await {
+                crate::show_main_window(&app);
+                let _ = app.emit("verenu:error", error);
+            }
+        });
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     app.restart();
 }
 
@@ -1436,6 +1486,26 @@ fn is_inside_rounded_rect(
 #[cfg(test)]
 mod icon_theme_tests {
     use super::{cached_icon_art, runtime_icon_image, setting_updates_runtime_icons, IconTheme};
+
+    #[cfg(all(target_os = "linux", feature = "native-testing"))]
+    #[test]
+    #[ignore = "requires an isolated graphical session"]
+    fn linux_tray_relaunch_keeps_the_running_app_and_reports_the_error() {
+        use tauri::Listener;
+        let app = tauri::Builder::default()
+            .any_thread()
+            .build(tauri::generate_context!())
+            .unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        app.listen_any("verenu:error", move |event| {
+            let _ = sent.send(event.payload().to_owned());
+        });
+        super::relaunch_app(app.handle());
+        assert!(received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap()
+            .contains("Quit and reopen"));
+    }
 
     fn pixel(image: &tauri::image::Image<'_>, size: u32, x: u32, y: u32) -> [u8; 4] {
         let offset = ((y * size + x) * 4) as usize;

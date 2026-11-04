@@ -650,7 +650,7 @@ pub fn open_notifications_settings() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn restart_app(handle: tauri::AppHandle) -> Result<(), String> {
+pub async fn restart_app(handle: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         if let Some(bundle) = crate::system::mac_app::bundle_path()
@@ -682,7 +682,28 @@ pub fn restart_app(handle: tauri::AppHandle) -> Result<(), String> {
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        static RESTART_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _attempt = RESTART_LOCK.try_lock().map_err(|_| "A restart is already in progress.")?;
+        let availability = super::get_api_key_status(handle.clone()).await?;
+        let availability = serde_json::from_value(availability)
+            .map_err(|error| format!("Could not prepare credential status: {error}"))?;
+        let binary = tauri::process::current_binary(&handle.env())
+            .map_err(|error| format!("Could not find Verenu for restart: {error}"))?;
+        let mut command = std::process::Command::new(binary);
+        command.args(std::env::args_os().skip(1));
+        let staged = crate::linux_handoff_transport::stage_replacement(
+            &handle, command, crate::data::db::HANDOFF_SCHEMA_VERSION, availability,
+            std::time::Duration::from_secs(45),
+        ).await?;
+        let commit_handle = handle.clone();
+        tauri::async_runtime::spawn_blocking(move || staged.commit(&commit_handle))
+            .await.map_err(|error| format!("Restart activation stopped: {error}"))??;
+        handle.exit(0);
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         handle.restart();
     }

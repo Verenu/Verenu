@@ -128,7 +128,7 @@
       await installAvailableUpdate();
     } catch (e) {
       console.error('Install failed:', e);
-      void emit('verenu:error', formatIpcError(e, 'Could not install the update'));
+      void emit('verenu:error', appStore.updateInstallError || formatIpcError(e, 'Could not install the update'));
     }
   }
 
@@ -168,10 +168,13 @@
     <div class="label">Version</div>
     <div class="desc"><button class="version-tap" data-setting-target="about-version" onclick={handleVersionTap}>v{appVersion}</button></div>
     <div role="status" aria-live="polite">
-    {#if appStore.updateProgress}
-      <div class="desc">{appStore.updateProgress}</div>
-    {:else if appStore.updateInstallError || updateCheckError}
+    {#if appStore.updateInstallError || updateCheckError}
       <div class="desc">{appStore.updateInstallError || updateCheckError}</div>
+      {#if appStore.updateInstalled && appStore.updateProgress}
+        <div class="desc">{appStore.updateProgress}</div>
+      {/if}
+    {:else if appStore.updateProgress}
+      <div class="desc">{appStore.updateProgress}</div>
     {/if}
     {#if updateCheckState === 'up-to-date'}
       <div class="update-status-wrap">
@@ -179,7 +182,7 @@
       </div>
     {:else if updateCheckState === 'available' && appStore.updateInfo}
       <div class="update-status-wrap">
-        <div class="desc update-available update-status">v{appStore.updateInfo.version} is available</div>
+        {#if !appStore.updateInstalled}<div class="desc update-available update-status">v{appStore.updateInfo.version} is available</div>{/if}
         {#if appStore.updateInfo.installHint && !appStore.updateInstalled}
           <div class="desc">{appStore.updateInfo.installHint}</div>
         {/if}
@@ -189,8 +192,8 @@
   </div>
   <div class="update-controls">
     {#if updateCheckState === 'available' && appStore.updateInfo}
-      <button class="btn-ghost" onclick={handleInstall} disabled={appStore.updateInstalling || appStore.updateInstalled}>
-        {appStore.updateInstalled ? 'Installed' : appStore.updateInstalling
+      <button class="btn-ghost" onclick={handleInstall} disabled={appStore.updateInstalling}>
+        {appStore.updateInstalled ? (appStore.updateInstalling ? 'Restarting…' : 'Restart') : appStore.updateInstalling
           ? (appStore.updateInfo?.installMode === 'download' ? 'Opening…' : 'Updating…')
           : updateActionLabel(appStore.updateInfo, false)}
       </button>

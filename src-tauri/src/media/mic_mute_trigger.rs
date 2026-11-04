@@ -117,28 +117,36 @@ mod common {
         EVENT_TX.get_or_init(|| std::sync::Mutex::new(None))
     }
 
-    pub fn setup(app: &mut tauri::App, shared: SharedState) {
+    pub fn setup(app: &AppHandle, shared: SharedState) {
         if STARTED.swap(true, Ordering::SeqCst) {
-            reload(app.handle());
+            reload(app);
             return;
         }
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MuteTriggerEvent>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<MuteTriggerEvent>();
         if let Ok(mut slot) = event_tx_slot().lock() {
             *slot = Some(tx);
         }
 
-        let app_handle = app.handle().clone();
+        let app_handle = app.clone();
         let state_watch = shared.clone();
-        std::thread::Builder::new()
-            .name("mic-mute-trigger".into())
-            .spawn(move || watcher_loop(app_handle, state_watch))
-            .expect("spawn mic-mute-trigger thread");
+        spawn_watcher(app_handle, state_watch).expect("spawn mic-mute-trigger thread");
 
-        let app_hk = app.handle().clone();
-        let state_hk = shared;
+        start_dispatch(app.clone(), shared, rx);
+
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+        log::info!("mic_mute_trigger: watcher started");
+    }
+
+    fn start_dispatch(
+        app_hk: AppHandle,
+        state_hk: SharedState,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<MuteTriggerEvent>,
+    ) {
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
+                #[cfg(target_os = "linux")]
+                let _activity = crate::commands::linux_activity(&app_hk).await;
                 #[cfg(windows)]
                 if matches!(event, MuteTriggerEvent::BecameUnmuted { .. }) {
                     let _ = tauri::async_runtime::spawn_blocking(release_active_pcm).await;
@@ -146,9 +154,82 @@ mod common {
                 dispatch_event(&app_hk, &state_hk, event);
             }
         });
+    }
 
+    fn spawn_watcher(app: AppHandle, shared: SharedState) -> std::io::Result<std::thread::JoinHandle<()>> {
+        std::thread::Builder::new()
+            .name("mic-mute-trigger".into())
+            .spawn(move || watcher_loop(app, shared))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) struct ActiveMicMute(std::thread::JoinHandle<()>);
+
+    #[cfg(target_os = "linux")]
+    impl ActiveMicMute {
+        pub(crate) fn verify(&self) -> Result<(), String> {
+            if self.0.is_finished() {
+                return Err("Microphone watcher stopped during restart".into());
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn start_for_handoff(
+        app: &AppHandle,
+        shared: SharedState,
+        pause: &crate::linux_activity::Pause,
+    ) -> Result<ActiveMicMute, String> {
+        use tauri::Manager;
+        let gate = app
+            .try_state::<Arc<crate::linux_activity::ActivityGate>>()
+            .ok_or("Microphone watcher restart gate is unavailable")?;
+        if !pause.belongs_to(gate.inner()) {
+            return Err("Microphone watcher restart gate does not match".into());
+        }
+        if STARTED.swap(true, Ordering::SeqCst) {
+            return Err("Microphone watcher is already running".into());
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        match event_tx_slot().lock() {
+            Ok(mut slot) => *slot = Some(tx),
+            Err(_) => {
+                STARTED.store(false, Ordering::SeqCst);
+                return Err("Microphone watcher is unavailable".into());
+            }
+        }
+        start_dispatch(app.clone(), shared.clone(), rx);
+        let thread = match spawn_watcher(app.clone(), shared) {
+            Ok(thread) => thread,
+            Err(error) => {
+                if let Ok(mut slot) = event_tx_slot().lock() {
+                    *slot = None;
+                }
+                STARTED.store(false, Ordering::SeqCst);
+                return Err(format!("Could not start microphone watcher: {error}"));
+            }
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if WATCHER_THREAD
+                .lock()
+                .map_err(|_| "Microphone watcher state is unavailable")?
+                .is_some()
+            {
+                break;
+            }
+            if thread.is_finished() {
+                return Err("Microphone watcher stopped during startup".into());
+            }
+            if Instant::now() >= deadline {
+                return Err("Microphone watcher did not start".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
         GENERATION.fetch_add(1, Ordering::SeqCst);
         log::info!("mic_mute_trigger: watcher started");
+        Ok(ActiveMicMute(thread))
     }
 
     pub fn reload(app: &AppHandle) {
@@ -320,6 +401,8 @@ mod common {
     pub(super) struct PcmMonitorGuard {
         pub(super) stop: Arc<AtomicBool>,
         pub(super) join: Option<std::thread::JoinHandle<()>>,
+        #[cfg(target_os = "linux")]
+        pub(super) _activity: Option<Arc<crate::linux_activity::Activity>>,
     }
 
     impl Drop for PcmMonitorGuard {
@@ -353,6 +436,47 @@ mod common {
     mod tests {
         use super::*;
 
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn stopped_microphone_watcher_is_not_ready() {
+            let thread = std::thread::spawn(|| {});
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !thread.is_finished() {
+                assert!(Instant::now() < deadline, "watcher fixture did not stop");
+                std::thread::yield_now();
+            }
+            assert!(ActiveMicMute(thread).verify().is_err());
+        }
+
+        #[cfg(all(target_os = "linux", feature = "native-testing"))]
+        #[test]
+        #[ignore = "requires an isolated graphical session"]
+        fn microphone_starts_only_with_its_paused_gate() {
+            use tauri::Manager;
+            let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+            let app = tauri::Builder::default().any_thread().manage(gate.clone())
+                .build(tauri::generate_context!()).unwrap();
+            app.manage(crate::data::store::SettingsHandle::empty_for_test(
+                std::env::temp_dir().join(format!("verenu-mic-handoff-{}", uuid::Uuid::new_v4())),
+            ));
+            assert!(!STARTED.load(Ordering::SeqCst));
+            assert!(WATCHER_THREAD.lock().unwrap().is_none());
+            let wrong_gate = Arc::new(crate::linux_activity::ActivityGate::default());
+            let wrong_pause = tauri::async_runtime::block_on(wrong_gate.pause()).unwrap();
+            assert!(start_for_handoff(app.handle(), crate::new_shared_state(), &wrong_pause).is_err());
+            assert!(!STARTED.load(Ordering::SeqCst));
+            let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
+            let active = start_for_handoff(app.handle(), crate::new_shared_state(), &pause).unwrap();
+            active.verify().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while WATCHER_THREAD.lock().unwrap().is_none() {
+                assert!(Instant::now() < deadline, "microphone watcher did not start");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(gate.try_enter().is_none());
+            drop(pause);
+        }
+
         #[test]
         fn pulse_duration_keeps_inclusive_bounds_and_rejects_reversed_time() {
             let start = Instant::now();
@@ -374,9 +498,45 @@ mod common {
                 }
                 worker_completed.store(true, Ordering::SeqCst);
             });
-            drop(PcmMonitorGuard { stop: stop.clone(), join: Some(join) });
+            drop(PcmMonitorGuard {
+                stop: stop.clone(),
+                join: Some(join),
+                #[cfg(target_os = "linux")]
+                _activity: None,
+            });
             assert!(stop.load(Ordering::SeqCst));
             assert!(completed.load(Ordering::SeqCst));
+        }
+
+        #[cfg(target_os = "linux")]
+        #[tokio::test]
+        async fn restart_waits_for_pcm_monitor_to_stop() {
+            let gate = Arc::new(crate::linux_activity::ActivityGate::default());
+            let activity = Arc::new(gate.try_enter().unwrap());
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let worker = std::thread::spawn(move || {
+                while !worker_stop.load(Ordering::SeqCst) {
+                    std::thread::yield_now();
+                }
+            });
+            let monitor = PcmMonitorGuard {
+                stop,
+                join: Some(worker),
+                _activity: Some(activity),
+            };
+            let pause_gate = gate.clone();
+            let pause = tokio::spawn(async move { pause_gate.pause().await.unwrap() });
+            tokio::task::yield_now().await;
+            assert!(gate.try_enter().is_none());
+            assert!(!pause.is_finished());
+            drop(monitor);
+            let lease = tokio::time::timeout(Duration::from_secs(2), pause)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(gate.try_enter().is_none());
+            drop(lease);
         }
     }
 }
@@ -1040,8 +1200,11 @@ mod win {
 #[cfg(any(windows, target_os = "linux"))]
 pub use common::{reload, setup};
 
+#[cfg(target_os = "linux")]
+pub(crate) use common::start_for_handoff;
+
 #[cfg(not(any(windows, target_os = "linux")))]
-pub fn setup(_app: &mut tauri::App, _shared: crate::pipeline::SharedState) {}
+pub fn setup(_app: &tauri::AppHandle, _shared: crate::pipeline::SharedState) {}
 
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn reload(_app: &tauri::AppHandle) {}
@@ -1056,7 +1219,7 @@ mod linux {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
-    use tauri::AppHandle;
+    use tauri::{AppHandle, Manager};
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -1274,8 +1437,23 @@ mod linux {
         let mut last_rebind_check = Instant::now();
         let mut last_drift_poll = Instant::now();
         const DRIFT_POLL: Duration = Duration::from_secs(2);
+        let activity_gate = app
+            .try_state::<Arc<crate::linux_activity::ActivityGate>>()
+            .map(|gate| gate.inner().clone());
 
         loop {
+            let activity = if let Some(gate) = &activity_gate {
+                match gate.try_enter() {
+                    Some(activity) => Some(Arc::new(activity)),
+                    None => {
+                        release_active_pcm();
+                        std::thread::sleep(POLL_INTERVAL);
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
             if GENERATION.load(Ordering::SeqCst) != gen {
                 log::info!("mic_mute_trigger: generation changed — rebinding");
                 break;
@@ -1399,7 +1577,10 @@ mod linux {
                     if can_retry {
                         log::info!("mic_mute_trigger: starting digital-silence PCM monitor");
                         last_pcm_start_at = Some(Instant::now());
-                        install_active_pcm(start_pcm_monitor(selected_device_name(app)));
+                        install_active_pcm(start_pcm_monitor(
+                            selected_device_name(app),
+                            activity.clone(),
+                        ));
                     }
                 }
             }
@@ -1412,7 +1593,10 @@ mod linux {
         Ok(())
     }
 
-    fn start_pcm_monitor(device_name: Option<String>) -> PcmMonitorGuard {
+    fn start_pcm_monitor(
+        device_name: Option<String>,
+        activity: Option<Arc<crate::linux_activity::Activity>>,
+    ) -> PcmMonitorGuard {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let join = std::thread::Builder::new()
@@ -1423,7 +1607,11 @@ mod linux {
                 }
             })
             .ok();
-        PcmMonitorGuard { stop, join }
+        PcmMonitorGuard {
+            stop,
+            join,
+            _activity: activity,
+        }
     }
 
     fn run_pcm_monitor(

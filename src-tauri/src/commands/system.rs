@@ -21,6 +21,71 @@ pub fn frontend_ready(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn frontend_settings_ready(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+    generation: u32,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Settings readiness is only accepted from the main window.".into());
+    }
+    readiness.mark_main_settings_ready(generation)
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn frontend_home_ready(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+    generation: u32,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Home readiness is only accepted from the main window.".into());
+    }
+    readiness.mark_home_ready(generation)
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn frontend_pill_generation(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+) -> Result<u32, String> {
+    if window.label() != "pill" { return Err("Pill readiness is only accepted from the pill window.".into()); }
+    Ok(readiness.pill_generation())
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn frontend_pill_ready(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+    generation: u32,
+) -> Result<(), String> {
+    if window.label() != "pill" { return Err("Pill readiness is only accepted from the pill window.".into()); }
+    readiness.mark_pill_ready(generation)
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn frontend_settings_generation(
+    window: tauri::WebviewWindow,
+    readiness: tauri::State<'_, crate::FrontendReadiness>,
+) -> Result<u32, String> {
+    if window.label() != "main" {
+        return Err("Settings readiness is only accepted from the main window.".into());
+    }
+    Ok(readiness.main_settings_generation())
+}
+
+#[cfg(all(target_os = "linux", feature = "native-testing", debug_assertions))]
+#[tauri::command]
+pub fn native_main_settings_ready(readiness: tauri::State<'_, crate::FrontendReadiness>) -> bool {
+    readiness.main_settings_ready()
+}
+
 #[tauri::command]
 pub async fn local_models_supported_on_this_platform() -> bool {
     if cfg!(target_os = "android") {
@@ -521,11 +586,11 @@ fn human_diagnostics_bundle(snapshot: &crate::system::diagnostics::DiagnosticsSn
 }
 
 #[tauri::command]
-pub async fn set_hotkey_capture(active: bool) -> Result<(), String> {
+pub async fn set_hotkey_capture(app: AppHandle, active: bool) -> Result<(), String> {
     if crate::is_dev_session() {
         return Ok(());
     }
-    run_blocking("set_hotkey_capture", move || {
+    run_app_blocking(&app, "set_hotkey_capture", move || {
         crate::core::hotkey::set_capture_active(active)
     })
     .await
@@ -594,6 +659,8 @@ async fn save_hotkey_transaction(app: AppHandle, keys: Vec<String>, expected: Op
 }
 
 async fn save_hotkey_inner(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let activity = linux_activity(&app).await;
     let keys = crate::core::hotkey::normalize_codes(&keys)?;
     let ids = crate::core::hotkey::mapped_codes(&keys)?;
     if !check_hotkey(app.clone(), keys.clone()).await? {
@@ -614,7 +681,11 @@ async fn save_hotkey_inner(app: AppHandle, keys: Vec<String>) -> Result<(), Stri
         crate::core::hotkey::update_keys(&ids)?;
     }
     let stored_keys = keys.clone();
+    #[cfg(target_os = "linux")]
+    let save_activity = activity.clone();
     run_blocking("save_hotkey", move || {
+        #[cfg(target_os = "linux")]
+        let _activity = save_activity;
         if let Err(error) = settings.save_value(store::HOTKEY, serde_json::json!(stored_keys)) {
             if !crate::is_dev_session() {
                 if let Ok(ids) = crate::core::hotkey::mapped_codes(&previous) {
@@ -690,8 +761,12 @@ pub(crate) async fn reconcile_autostart(app: AppHandle) -> Result<(), String> {
 }
 
 async fn set_autostart_inner(app: AppHandle, enabled: bool, expected: Option<serde_json::Value>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let activity = linux_activity(&app).await;
     let settings = store::settings_handle(&app)?;
     run_blocking("set_autostart", move || {
+        #[cfg(target_os = "linux")]
+        let _activity = activity;
         commit_autostart(&settings, enabled, expected, || set_autostart_native(app, enabled))
     }).await
 }
