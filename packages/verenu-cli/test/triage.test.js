@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, open } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, open, chmod } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
 import { checks } from '../src/checks/index.js';
@@ -178,6 +178,21 @@ test('SQLite recovery requires typed confirmation and preserves the original bac
   const backup = await fix(dataDir, 'recover-db', { typedYes: true });
   assert.deepEqual(await readFile(join(backup, 'verenu.db')), original);
   assert.equal(spawnSync('sqlite3', [db, 'SELECT id FROM example;'], { encoding: 'utf8' }).stdout.trim(), '1');
+});
+
+test('recovery ignores a sqlite executable that advertises but cannot perform recovery', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  const previousPath = process.env.PATH;
+  t.after(async () => { process.env.PATH = previousPath; await rm(dataDir, {recursive: true, force: true}); });
+  const db = join(dataDir, 'verenu.db');
+  assert.equal(spawnSync('sqlite3', [db, 'CREATE TABLE fixture(id INTEGER); INSERT INTO fixture VALUES (7);']).status, 0);
+  const fake = join(dataDir, 'sqlite3');
+  await writeFile(fake, '#!/bin/sh\nif [ "$2" = ".help recover" ]; then echo .recover; exit 0; fi\nexit 1\n');
+  await chmod(fake, 0o700);
+  process.env.PATH = `${dataDir}${process.platform === 'win32' ? ';' : ':'}${previousPath}`;
+  const backup = await fix(dataDir, 'recover-db', {typedYes: true});
+  assert.ok((await readFile(join(backup, 'verenu.db'))).length > 0);
+  assert.equal(spawnSync('sqlite3', [db, 'SELECT id FROM fixture;'], {encoding: 'utf8', env: {...process.env, PATH: previousPath}}).stdout.trim(), '7');
 });
 
 test('failed recovery keeps a corrupt original and its backup', async t => {

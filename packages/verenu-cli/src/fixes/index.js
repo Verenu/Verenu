@@ -31,7 +31,8 @@ export async function stalePidFiles(dataDir) {
 
 export function holders(paths, platform = process.platform, run = spawnSync) {
   if (!['linux', 'darwin'].includes(platform)) throw new Error('Holder detection is unavailable on this platform');
-  const probe = run('lsof', ['-t', '--', ...paths], { encoding: 'utf8', timeout: 5000 });
+  const probe = run('lsof', ['-t', '--', ...paths], { encoding: 'utf8', timeout: 20000 });
+  if (probe.error?.code === 'ETIMEDOUT') throw new Error('Database holder inspection timed out');
   if (probe.error || ![0, 1].includes(probe.status) || (probe.stderr || '').trim()) throw new Error('Unable to establish database holders');
   return [...new Set((probe.stdout || '').trim().split(/\s+/).filter(p => /^\d+$/.test(p)))];
 }
@@ -39,10 +40,10 @@ export function holders(paths, platform = process.platform, run = spawnSync) {
 function recoverySqlite() {
   for (const dir of (process.env.PATH || '').split(delimiter).filter(Boolean)) {
     const binary = join(dir, process.platform === 'win32' ? 'sqlite3.exe' : 'sqlite3');
-    const probe = spawnSync(binary, [':memory:', '.help recover'], { encoding: 'utf8', timeout: 3000 });
-    if (!probe.error && probe.status === 0 && /\.recover/.test(probe.stdout)) return binary;
+    const probe = spawnSync(binary, [':memory:', 'CREATE TABLE verenu_probe(id INTEGER); INSERT INTO verenu_probe VALUES(7);', '.recover'], { encoding: 'utf8', timeout: 3000 });
+    if (!probe.error && probe.status === 0 && /CREATE TABLE verenu_probe\(id INTEGER\)/.test(probe.stdout) && /INSERT OR IGNORE INTO ['"]?verenu_probe/.test(probe.stdout)) return binary;
   }
-  throw new Error('No sqlite3 executable with .recover support found');
+  throw new Error('No sqlite3 executable with working .recover support found');
 }
 
 async function backupDatabase(dataDir, backup) {

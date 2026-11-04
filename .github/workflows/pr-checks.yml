@@ -32,6 +32,16 @@ jobs:
           node-version: 24
       - name: Install SQLite and holder inspection tools
         run: sudo apt-get update && sudo apt-get install -y sqlite3 lsof
+      - name: Install recovery-capable SQLite fixture tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/triage-sqlite"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/triage-sqlite/tools.zip" https://www.sqlite.org/2026/sqlite-tools-linux-x64-3540100.zip
+          node -e 'const fs=require("fs"), crypto=require("crypto"); const actual=crypto.createHash("sha3-256").update(fs.readFileSync(process.argv[1])).digest("hex"); if(actual !== "555635de98534d87a67ee2e6e1b0d79f494b1b33b223477d3e7a8ea0c66e416f") throw new Error("SQLite archive checksum mismatch");' "$RUNNER_TEMP/triage-sqlite/tools.zip"
+          unzip -q "$RUNNER_TEMP/triage-sqlite/tools.zip" sqlite3 -d "$RUNNER_TEMP/triage-sqlite"
+          chmod +x "$RUNNER_TEMP/triage-sqlite/sqlite3"
+          echo "$RUNNER_TEMP/triage-sqlite" >> "$GITHUB_PATH"
       - name: Test triage CLI
         run: npm test --prefix packages/verenu-cli
 
