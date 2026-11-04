@@ -10,6 +10,24 @@ async function hashFile(path) {
   return hash.digest('hex');
 }
 
+export async function stalePidFiles(dataDir) {
+  if (!['linux', 'darwin'].includes(process.platform)) return [];
+  const stale = [];
+  for (const name of ['verenu.pid', 'verenu.lock']) {
+    const path = join(dataDir, name);
+    try {
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 32) continue;
+      const contents = (await readFile(path, 'utf8')).trim();
+      if (!/^[1-9]\d{0,9}$/.test(contents)) continue;
+      const pid = Number(contents);
+      if (!Number.isSafeInteger(pid) || pid <= 1 || pid > 2147483647) continue;
+      try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') stale.push({ name, contents }); }
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  return stale;
+}
+
 export function holders(paths, platform = process.platform, run = spawnSync) {
   if (!['linux', 'darwin'].includes(platform)) throw new Error('Holder detection is unavailable on this platform');
   const probe = run('lsof', ['-t', '--', ...paths], { encoding: 'utf8', timeout: 5000 });
@@ -43,11 +61,43 @@ async function backupDatabase(dataDir, backup) {
   return files;
 }
 export async function fix(dataDir, id, { typedYes = false } = {}) {
-  if (!['clear-caches', 'reset-settings', 'checkpoint-db', 'recover-db'].includes(id)) throw new Error('Unknown fix');
+  if (!['clear-caches', 'reset-settings', 'checkpoint-db', 'recover-db', 'clear-stale-pids', 'clear-partial-models'].includes(id)) throw new Error('Unknown fix');
   if (['checkpoint-db', 'recover-db'].includes(id) && !typedYes) throw new Error('Typed yes required');
   const backupRoot = join(dataDir, 'triage-backups');
   await mkdir(backupRoot, { recursive: true, mode: 0o700 });
   const backup = await mkdtemp(join(backupRoot, `${Date.now()}-`));
+  if (id === 'clear-stale-pids') {
+    for (const item of await stalePidFiles(dataDir)) {
+      const source = join(dataDir, item.name);
+      await cp(source, join(backup, item.name), { errorOnExist: true, force: false });
+      if (!(await stalePidFiles(dataDir)).some(current => current.name === item.name && current.contents === item.contents)) throw new Error('PID file changed or process is alive');
+      await rename(source, join(backup, `${item.name}.original`));
+    }
+    return backup;
+  }
+  if (id === 'clear-partial-models') {
+    const root = join(dataDir, 'models');
+    const backupModels = join(backup, 'models');
+    const moved = [];
+    async function movePartials(dir, target, depth) {
+      if (depth > 8) throw new Error('Model directory nesting is too deep');
+      let entries;
+      try { entries = await readdir(dir, {withFileTypes: true}); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+      for (const entry of entries) {
+        const source = join(dir, entry.name), destination = join(target, entry.name);
+        const info = await lstat(source);
+        if (info.isSymbolicLink()) continue;
+        if (/\.(partial|tmp)$/i.test(entry.name) || (info.isFile() && info.size === 0)) {
+          await mkdir(target, {recursive: true, mode: 0o700});
+          await rename(source, destination);
+          moved.push(source.slice(root.length + 1));
+        } else if (info.isDirectory()) await movePartials(source, destination, depth + 1);
+      }
+    }
+    await movePartials(root, backupModels, 0);
+    await writeFile(join(backup, 'model-cleanup.json'), JSON.stringify({moved}, null, 2), {flag: 'wx', mode: 0o600});
+    return backup;
+  }
   if (id === 'checkpoint-db') {
     const files = await backupDatabase(dataDir, backup);
     const active = holders(files);
