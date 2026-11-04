@@ -6,7 +6,7 @@ const stop = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn(async () => stop));
 vi.mock('./stores', () => ({ appStore: state }));
 vi.mock('./tauri', () => ({ invoke, listen }));
-import { installAvailableUpdate, progressLabel, updateActionLabel } from './updateActions';
+import { installAvailableUpdate, progressLabel, reinstallLatestUpdate, updateActionLabel } from './updateActions';
 
 describe('update actions', () => {
   beforeEach(() => {
@@ -82,6 +82,47 @@ describe('update actions', () => {
 
     expect(state.updateInstalled).toBe(false);
     expect(state.updateProgress).toBe('');
+  });
+  it('restarts after a completed reinstall and retries restart without reinstalling', async () => {
+    const reinstall = { busy: false, installedVersion: null as string | null, message: '' };
+    invoke.mockResolvedValueOnce({ version: '0.21.0', outcome: 'installed' })
+      .mockRejectedValueOnce(new Error('Replacement startup failed'));
+    await reinstallLatestUpdate(reinstall);
+    expect(reinstall.installedVersion).toBe('0.21.0');
+    expect(reinstall.message).toContain('Restart failed');
+    expect(reinstall.message).toContain('quit and reopen');
+    await reinstallLatestUpdate(reinstall);
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      'reinstall_latest_update', 'restart_app', 'restart_app',
+    ]);
+    expect(reinstall.busy).toBe(false);
+  });
+  it('does not restart when reinstall opens a download', async () => {
+    const reinstall = { busy: false, installedVersion: null as string | null, message: '' };
+    invoke.mockResolvedValueOnce({ version: '0.21.0', outcome: 'downloadOpened' });
+    await reinstallLatestUpdate(reinstall);
+    expect(reinstall.message).toContain('Download opened');
+    expect(reinstall.installedVersion).toBeNull();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+  it('leaves Android installation to the installer', async () => {
+    const reinstall = { busy: false, installedVersion: null as string | null, message: '' };
+    invoke.mockResolvedValueOnce({ version: '0.21.0', outcome: 'installerOpened' });
+    await reinstallLatestUpdate(reinstall);
+    expect(reinstall.message).toContain('Android installer');
+    expect(reinstall.installedVersion).toBeNull();
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+  it('prevents overlapping reinstalls', async () => {
+    const reinstall = { busy: false, installedVersion: null as string | null, message: '' };
+    let finish!: (result: { version: string; outcome: 'downloadOpened' }) => void;
+    invoke.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const first = reinstallLatestUpdate(reinstall);
+    await reinstallLatestUpdate(reinstall);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    finish({ version: '0.21.0', outcome: 'downloadOpened' });
+    await first;
+    expect(reinstall.busy).toBe(false);
   });
   it('shows bounded progress even without a content length', () => {
     expect(progressLabel({ phase: 'downloading', downloaded: 20, total: 10 })).toBe('Downloading… 100%');

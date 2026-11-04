@@ -10,6 +10,41 @@ export interface UpdateProgress {
 
 type InstallOutcome = 'installed' | 'downloadOpened' | 'installerOpened';
 
+export interface ReinstallState {
+  busy: boolean;
+  installedVersion: string | null;
+  message: string;
+}
+
+export async function reinstallLatestUpdate(state: ReinstallState): Promise<void> {
+  if (state.busy) return;
+  state.busy = true;
+  try {
+    if (!state.installedVersion) {
+      state.message = 'Preparing reinstall…';
+      const result = await invoke<{ version: string; outcome: InstallOutcome }>('reinstall_latest_update');
+      if (result.outcome === 'downloadOpened') {
+        state.message = `Download opened for v${result.version}.`;
+        return;
+      }
+      if (result.outcome === 'installerOpened') {
+        state.message = 'Approve the update in the Android installer.';
+        return;
+      }
+      if (result.outcome !== 'installed') throw new Error('The updater returned an unexpected result.');
+      state.installedVersion = result.version;
+    }
+    state.message = 'Restarting Verenu…';
+    await invoke('restart_app');
+  } catch (error) {
+    state.message = state.installedVersion
+      ? `v${state.installedVersion} installed. Restart failed: ${formatIpcError(error, 'Could not restart Verenu')} Try again or quit and reopen Verenu.`
+      : `Reinstall failed: ${formatIpcError(error, 'Could not install the update')}`;
+  } finally {
+    state.busy = false;
+  }
+}
+
 export function progressLabel(progress: UpdateProgress): string {
   switch (progress.phase) {
     case 'resolving': return 'Checking release…';

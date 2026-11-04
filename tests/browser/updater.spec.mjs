@@ -62,3 +62,45 @@ test('an installed update shows the restart error and quit fallback', async ({ p
   await expect(row.getByText('Update installed. Quit and reopen Verenu to finish.')).toBeVisible();
   await expect(row.getByRole('button', { name: 'Restart', exact: true })).toBeVisible();
 });
+
+test('developer reinstall offers a restart retry without reinstalling', async ({ page }) => {
+  let installs = 0;
+  let restarts = 0;
+  let completeInstall;
+  const installPending = new Promise(resolve => { completeInstall = resolve; });
+  await page.route('**/__verenu_dev/invoke', async route => {
+    const command = route.request().postDataJSON()?.command;
+    if (command === 'reinstall_latest_update') {
+      installs++;
+      await installPending;
+      return route.fulfill({ status: 200, json: { version: '0.21.0', outcome: 'installed' } });
+    }
+    if (command === 'restart_app') {
+      restarts++;
+      return route.fulfill({ status: 500, json: { error: 'Synthetic replacement failure' } });
+    }
+    return route.fallback();
+  });
+  await page.locator('[data-debug-id="nav.settings"]').click();
+  await page.locator('[data-debug-id="settings.about"]').click();
+  const version = page.locator('button.version-tap');
+  await expect(version).toBeVisible();
+  for (let tap = 0; tap < 10; tap++) await version.click();
+  await page.locator('[data-debug-id="settings.developer"]').click();
+  await page.getByRole('tab', { name: 'Developer Settings' }).click();
+  const button = page.locator('[data-setting-target="developer-installer"]');
+  await button.click();
+  await expect(button).toBeDisabled();
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await page.getByRole('tab', { name: 'Developer Settings' }).click();
+  await expect(button).toBeDisabled();
+  completeInstall();
+  await expect(button).toHaveText('Retry restart');
+  await expect(page.getByRole('status').filter({ hasText: 'Restart failed' })).toContainText('quit and reopen');
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await page.getByRole('tab', { name: 'Developer Settings' }).click();
+  await expect(button).toHaveText('Retry restart');
+  await button.click();
+  await expect.poll(() => restarts).toBe(2);
+  expect(installs).toBe(1);
+});

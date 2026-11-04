@@ -9,6 +9,7 @@
   import { ensureNotificationPermission } from '../../notifications';
   import { invoke } from '../../tauri';
   import { saveSetting, type ProviderId } from '../../settings';
+  import { reinstallLatestUpdate } from '../../updateActions';
   import { MOTION_MS, MOTION_PX, modalBackdrop, modalCard, motionMs, motionPx } from '../../motion';
   import { modalFocusTrap } from '../../modalFocus';
 
@@ -70,9 +71,6 @@
     if (!(await ensureNotificationPermission())) { message = 'Notification permission not granted.'; return; }
     await invoke('test_notifications', { notificationType: 'service' }).then(() => { message = 'Notification sent.'; }).catch((error) => { message = `Notification failed: ${String(error).slice(0, 100)}`; });
   }
-  async function installer() {
-    await invoke<string>('reinstall_latest_update').then((version) => { message = `Installer started for v${version}.`; }).catch((error) => { message = `Installer failed: ${String(error).slice(0, 100)}`; });
-  }
   async function providerStatus() {
     statusRaw = '';
     await invoke('check_provider_status_raw').then((value) => { statusRaw = JSON.stringify(value, null, 2); }).catch((error) => { statusRaw = `Check failed: ${String(error).slice(0, 160)}`; });
@@ -124,10 +122,11 @@
       <button class="btn-ghost btn-compact" onclick={globalMessage}>Global message</button>
       <button class="btn-ghost btn-compact" onclick={driveFull}>Drive full</button>
       <button class="btn-ghost btn-compact" data-setting-target="developer-notifications" onclick={() => void notify()}>Notification</button>
-      <button class="btn-ghost btn-compact" data-setting-target="developer-installer" onclick={() => void installer()}>Reinstall stable</button>
+      <button class="btn-ghost btn-compact" data-setting-target="developer-installer" disabled={appStore.updateReinstall.busy} onclick={() => void reinstallLatestUpdate(appStore.updateReinstall)}>{appStore.updateReinstall.installedVersion ? 'Retry restart' : 'Reinstall stable'}</button>
       <button class="btn-ghost btn-compact" data-setting-target="developer-status" onclick={() => void providerStatus()}>Check providers</button>
     </div>
     {#if message}<p class="msg" transition:fade={{ duration: motionMs(MOTION_MS.fast) }}>{message}</p>{/if}
+    {#if appStore.updateReinstall.message}<p class="msg" role="status" transition:fade={{ duration: motionMs(MOTION_MS.fast) }}>{appStore.updateReinstall.message}</p>{/if}
     {#if statusRaw}<pre class="out">{statusRaw}</pre>{/if}
   </section>
 </div>
