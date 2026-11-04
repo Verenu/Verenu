@@ -783,6 +783,7 @@ pub fn run() {
             legal_consent::get_consent_state,
             legal_consent::skip_legal,
             legal_consent::accept_legal,
+            legal_consent::delete_my_data,
             commands::save_model_settings_if_unchanged,
             commands::save_setting_if_unchanged,
             commands::analytics_setup_event,

@@ -1,9 +1,9 @@
 # Legal consent API
 
 Implementation in progress: `get_install_id`, `get_consent_state`,
-`skip_legal`, and `accept_legal` are registered. Skip does not yet gate all
-provider calls, and deletion is not implemented. Acceptance and sync are not
-yet verified end to end.
+`skip_legal`, `accept_legal`, and `delete_my_data` are registered. Skip does
+not yet gate all provider calls. `delete_my_data` currently returns an error;
+it does not delete anything. Acceptance and sync are not yet verified end to end.
 
 The app invokes these Tauri commands with `invoke`. Both current document
 versions are `2026-11-03`; their public URLs are

@@ -83,6 +83,11 @@ pub(crate) async fn skip_legal(app: AppHandle) -> Result<ConsentState, String> {
 }
 
 #[tauri::command]
+pub(crate) async fn delete_my_data() -> Result<ConsentState, String> {
+    Err("Data deletion is not available yet".into())
+}
+
+#[tauri::command]
 pub(crate) async fn accept_legal(app: AppHandle) -> Result<ConsentState, String> {
     let _sync_guard = SYNC_LOCK.lock().await;
     let settings = crate::data::store::settings_handle(&app)?;
