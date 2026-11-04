@@ -11,7 +11,9 @@ export const consentStore = $state<{
   error: string;
   /** Explains a rejected acceptance. Cleared on the next attempt. */
   notice: string;
-}>({ state: null, loaded: false, busy: false, error: '', notice: '' });
+  /** True once a pending deletion has left `deletion_pending`, meaning the server confirmed it. */
+  deletionConfirmed: boolean;
+}>({ state: null, loaded: false, busy: false, error: '', notice: '', deletionConfirmed: false });
 
 /** The document versions to show and send: the backend's current ones, else the built-in pair. */
 export function currentVersions(): { termsVersion: string; privacyVersion: string } {
@@ -23,7 +25,11 @@ export function currentVersions(): { termsVersion: string; privacyVersion: strin
 
 export async function loadConsent(): Promise<void> {
   try {
-    consentStore.state = await api.getConsentState();
+    const next = await api.getConsentState();
+    if (consentStore.state?.status === 'deletion_pending' && next.status !== 'deletion_pending') {
+      consentStore.deletionConfirmed = true;
+    }
+    consentStore.state = next;
     consentStore.error = '';
   } catch (err) {
     consentStore.error = formatIpcError(err);
@@ -118,6 +124,7 @@ export function dismissConsentFlow() {
   consentFlow.pending = null;
   consentStore.error = '';
   consentStore.notice = '';
+  consentStore.deletionConfirmed = false;
 }
 
 export function resetConsentStoreForTests() {
@@ -128,4 +135,5 @@ export function resetConsentStoreForTests() {
   consentStore.busy = false;
   consentStore.error = '';
   consentStore.notice = '';
+  consentStore.deletionConfirmed = false;
 }

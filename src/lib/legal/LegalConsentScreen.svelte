@@ -50,6 +50,7 @@
       <LegalLinks />
     </div>
 
+    {#if consentStore.deletionConfirmed}<Callout severity="info" compact data-testid="deletion-confirmed">Deletion confirmed. The server confirmed it deleted the record it held for this install.</Callout>{/if}
     {#if consentStore.notice}<Callout severity="warning" compact data-testid="consent-notice">{consentStore.notice}</Callout>{/if}
     {#if consentStore.error}
       <Callout severity="error" compact>Could not save your choice. {consentStore.error}</Callout>

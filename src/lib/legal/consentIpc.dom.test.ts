@@ -9,6 +9,7 @@ vi.mock('@tauri-apps/plugin-shell', () => ({ open: vi.fn() }));
 
 import ConsentFlowDialog from './ConsentFlowDialog.svelte';
 import LegalConsentScreen from './LegalConsentScreen.svelte';
+import DeletionPendingScreen from './DeletionPendingScreen.svelte';
 import PrivacySection from '../components/settings/PrivacySection.svelte';
 import { consentStore, loadConsent, resetConsentStoreForTests } from './consentStore.svelte';
 import { PRIVACY_VERSION, TERMS_VERSION, type ConsentState, type ConsentStatus } from './consent';
@@ -218,5 +219,52 @@ describe('Settings > Privacy over IPC', () => {
   it('renders the deletion pending state from get_consent_state', async () => {
     await openSettings('deletion_pending');
     expect(await screen.findByTestId('deletion-pending')).toBeTruthy();
+  });
+});
+
+describe('deletion pending screen', () => {
+  it('shows Deletion pending with the install ID while the server has not confirmed', async () => {
+    rust('deletion_pending');
+    render(DeletionPendingScreen);
+    await loadConsent();
+    expect(await screen.findByTestId('deletion-pending')).toBeTruthy();
+    expect(screen.getByText('Deleting your data')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('install-id').textContent).toBe(INSTALL_ID));
+    expect(consentStore.deletionConfirmed).toBe(false);
+  });
+
+  it('polls get_consent_state and flags the deletion as confirmed when the status leaves deletion_pending', async () => {
+    rust('deletion_pending');
+    render(DeletionPendingScreen);
+    await loadConsent();
+    const before = ran('get_consent_state').length;
+    current = st('unanswered'); // the server confirmed, the backend cleared its marker
+    await fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await waitFor(() => expect(ran('get_consent_state').length).toBeGreaterThan(before));
+    await waitFor(() => expect(consentStore.state?.status).toBe('unanswered'));
+    expect(consentStore.deletionConfirmed).toBe(true);
+  });
+
+  it('tells the user on the next consent screen that deletion was confirmed', async () => {
+    rust('deletion_pending');
+    await loadConsent();
+    current = st('unanswered');
+    await loadConsent();
+    render(LegalConsentScreen);
+    expect(screen.getByTestId('deletion-confirmed').textContent).toMatch(/Deletion confirmed/);
+  });
+
+  it('keeps polling on a timer', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      rust('deletion_pending');
+      render(DeletionPendingScreen);
+      await loadConsent();
+      const before = ran('get_consent_state').length;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(ran('get_consent_state').length).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
