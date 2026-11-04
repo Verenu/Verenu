@@ -24,12 +24,13 @@ export async function main(args) {
   const actions = [];
   if (!json) console.log(report(results));
   for (const id of [...new Set(results.map(r => r.fix).filter(Boolean))]) {
-    let approved = yes;
-    if (!yes && !json && process.stdin.isTTY && process.stdout.isTTY) {
+    const transcriptAction = ['checkpoint-db', 'recover-db'].includes(id);
+    let approved = yes && !transcriptAction;
+    if ((!yes || transcriptAction) && !json && process.stdin.isTTY && process.stdout.isTTY) {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
-      try { approved = (await rl.question(`Back up and apply ${id}? [y/N] `)).trim().toLowerCase() === 'y'; } finally { rl.close(); }
+      try { const answer = (await rl.question(transcriptAction ? `Back up and apply ${id}, which touches transcript data? Type yes to confirm: ` : `Back up and apply ${id}? [y/N] `)).trim(); approved = transcriptAction ? answer === 'yes' : answer.toLowerCase() === 'y'; } finally { rl.close(); }
     }
-    if (approved) { try { actions.push({ fix: id, backup: await fix(dataDir, id) }); } catch { actions.push({ fix: id, error: 'Fix failed; inspect backup and permissions.' }); process.exitCode = 1; } }
+    if (approved) { try { actions.push({ fix: id, backup: await fix(dataDir, id, { typedYes: transcriptAction }) }); } catch (error) { actions.push({ fix: id, error: error.message }); process.exitCode = 1; } }
   }
   if (makeBundle) { const target = path.resolve('verenu-triage-bundle.json'); await writeFile(target, bundle(results), { flag: 'wx', mode: 0o600 }); actions.push({ bundle: target }); }
   if (json) console.log(JSON.stringify({ results, actions }, null, 2));

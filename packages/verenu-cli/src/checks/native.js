@@ -3,7 +3,7 @@ import { constants, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, delimiter, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import net from 'node:net';
+import { fileURLToPath } from 'node:url';
 
 const result = (name, status, message) => ({ name, status, message });
 const exists = p => access(p, constants.X_OK).then(() => true, () => false);
@@ -43,6 +43,8 @@ export async function nativeChecks({ dataDir, settings, env = process.env, platf
     else if (probe.status !== 0) missing = true;
   }
   const keys = result('provider-keys', missing ? 'fail' : unknown || !settings ? 'warn' : 'pass', missing ? 'A configured provider has no saved key. Add it in Settings > Providers.' : unknown || !settings ? 'Some provider credentials could not be checked.' : 'Configured provider credentials are present or not required.');
+  const builtIn = JSON.parse(await readFile(fileURLToPath(new URL('../model-manifest.json', import.meta.url)), 'utf8'));
+  const expectedHashes = new Map(builtIn.files.map(file => [file.name, file.sha256]));
   let partial = false, inspected = 0, verified = 0;
   async function walk(dir, depth) {
     if (depth > 8) return;
@@ -53,6 +55,12 @@ export async function nativeChecks({ dataDir, settings, env = process.env, platf
         if (info.isSymbolicLink()) continue;
         if (/\.(partial|tmp)$/i.test(entry) || (info.isFile() && info.size === 0)) partial = true;
         if (info.isFile()) inspected++;
+        if (info.isFile() && expectedHashes.has(entry)) {
+          const hash = createHash('sha256');
+          for await (const chunk of createReadStream(p)) hash.update(chunk);
+          if (hash.digest('hex') !== expectedHashes.get(entry)) partial = true;
+          else verified++;
+        }
         if (info.isFile() && entry === 'manifest.json' && info.size < 1_000_000) {
           const manifest = JSON.parse(await readFile(p, 'utf8'));
           if (Array.isArray(manifest.files)) for (const file of manifest.files) {
@@ -73,8 +81,14 @@ export async function nativeChecks({ dataDir, settings, env = process.env, platf
   const models = result('models', partial ? 'fail' : inspected ? 'warn' : 'pass', partial ? 'Partial, empty, or invalid model artifact found. Retry the download in Settings.' : inspected ? `${verified} manifest artifacts verified; other installed files may not be verified.` : 'No local model files found.');
   let port;
   try { port = JSON.parse(await readFile(join(dataDir, 'agent-session.json'), 'utf8')).port; } catch {}
-  let listening = false;
-  if (networkAllowed && Number.isInteger(port) && port > 0 && port < 65536) listening = await new Promise(resolve => { const socket = net.connect({host: '127.0.0.1', port}); socket.setTimeout(500); socket.once('connect', () => { socket.destroy(); resolve(true); }); socket.once('error', () => resolve(false)); socket.once('timeout', () => { socket.destroy(); resolve(false); }); });
-  const processCheck = result('process', port && (!networkAllowed || !listening) ? 'warn' : 'pass', port && !networkAllowed ? 'Agent port check skipped without network consent.' : port && !listening ? 'Agent discovery port is not listening. Restart Verenu to refresh it.' : port ? 'Agent discovery port is listening; ownership was not verified.' : 'No persisted agent port found.');
+  let processCheck = result('process', 'pass', platform === 'win32' ? 'Single-instance mutex is OS-managed.' : 'No persisted agent port found.');
+  if (Number.isInteger(port) && port > 0 && port < 65536) {
+    if (!['linux', 'darwin'].includes(platform)) processCheck = result('process', 'warn', 'Port ownership probe unsupported on this OS.');
+    else {
+      const probe = run('lsof', ['-nP', '-t', `-iTCP:${port}`, '-sTCP:LISTEN'], {encoding: 'utf8', timeout: 3000});
+      const pids = (probe.stdout || '').trim().split(/\s+/).filter(s => /^\d+$/.test(s));
+      processCheck = probe.error || ![0, 1].includes(probe.status) || (probe.stderr || '').trim() ? result('process', 'warn', 'Could not establish agent port ownership.') : pids.length ? result('process', 'pass', `Agent port is listening; owner PID: ${pids.join(', ')}.`) : result('process', 'warn', 'Agent port is not listening. Restart Verenu to refresh it.');
+    }
+  }
   return [launch, keyring, keys, models, processCheck];
 }

@@ -14,9 +14,11 @@ export async function checks({ dataDir: dir, checkNetwork = false, fetcher = glo
   const db = join(dir, 'verenu.db');
   if (!await exists(db)) out.push(result('sqlite', 'warn', 'Database not found. Check the data directory.'));
   else {
-    const probe = spawnSync('sqlite3', ['-readonly', '-cmd', '.timeout 1000', db, 'PRAGMA quick_check;'], { encoding: 'utf8', timeout: 3000 });
+    const probe = spawnSync('sqlite3', ['-readonly', '-cmd', '.timeout 1000', db, 'PRAGMA integrity_check;'], { encoding: 'utf8', timeout: 3000 });
     const ok = probe.status === 0 && probe.stdout.trim() === 'ok';
-    out.push(result('sqlite', ok ? 'pass' : probe.error?.code === 'ENOENT' ? 'warn' : 'fail', ok ? 'Database quick_check passed.' : 'Database check unavailable, locked, or corrupt. Close Verenu and inspect a backup with SQLite.'));
+    const busy = /(?:locked|busy)/i.test(probe.stderr || '');
+    const unavailable = Boolean(probe.error);
+    out.push(result('sqlite', ok ? 'pass' : unavailable ? 'warn' : 'fail', ok ? 'Database integrity_check passed.' : unavailable ? 'Database check unavailable. Install sqlite3 and retry.' : busy ? 'Database is locked. Close processes using it before checkpointing.' : 'Database integrity check failed. Back up and inspect before recovery.', unavailable || ok ? undefined : busy ? 'checkpoint-db' : 'recover-db'));
   }
   const found = (await Promise.all(['icon-cache', 'favicon-cache'].map(async n => await exists(join(dir, n)) ? n : null))).filter(Boolean);
   out.push(result('cache', found.length ? 'warn' : 'pass', found.length ? 'Icon caches exist. Clear them if icons are stale.' : 'No icon caches found.', found.length ? 'clear-caches' : undefined));

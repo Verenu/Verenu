@@ -9,6 +9,8 @@ import { bundle } from '../src/bundle.js';
 import { report } from '../src/report.js';
 import { nativeChecks } from '../src/checks/native.js';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { generate } from '../scripts/generate-model-manifest.js';
 
 test('fixtures report missing, corrupt, and error states without a network request', async t => {
   const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
@@ -103,4 +105,56 @@ test('model manifest hash and size mismatches are reported', async t => {
   assert.match((await check()).message, /1 manifest artifacts verified/);
   await writeFile(join(dir, 'model.bin'), 'wrong');
   assert.equal((await check()).status, 'fail');
+});
+
+test('generated model manifest matches Rust source', async () => {
+  assert.equal(await readFile(new URL('../src/model-manifest.json', import.meta.url), 'utf8'), await generate());
+});
+
+test('SQLite checkpoint requires typed confirmation and backs up the database', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const db = join(dataDir, 'verenu.db');
+  assert.equal(spawnSync('sqlite3', [db, 'CREATE TABLE example (id INTEGER); INSERT INTO example VALUES (1);']).status, 0);
+  const original = await readFile(db);
+  await assert.rejects(fix(dataDir, 'checkpoint-db'), /Typed yes/);
+  assert.deepEqual(await readFile(db), original);
+  const backup = await fix(dataDir, 'checkpoint-db', { typedYes: true });
+  assert.deepEqual(await readFile(join(backup, 'verenu.db')), original);
+  assert.equal(spawnSync('sqlite3', [db, 'PRAGMA integrity_check;'], {encoding: 'utf8'}).stdout.trim(), 'ok');
+});
+
+test('SQLite recovery requires typed confirmation and preserves the original backup', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const db = join(dataDir, 'verenu.db');
+  assert.equal(spawnSync('sqlite3', [db, 'CREATE TABLE example (id INTEGER); INSERT INTO example VALUES (1);']).status, 0);
+  const original = await readFile(db);
+  await assert.rejects(fix(dataDir, 'recover-db'), /Typed yes/);
+  assert.deepEqual(await readFile(db), original);
+  const backup = await fix(dataDir, 'recover-db', { typedYes: true });
+  assert.deepEqual(await readFile(join(backup, 'verenu.db')), original);
+  assert.equal(spawnSync('sqlite3', [db, 'SELECT id FROM example;'], { encoding: 'utf8' }).stdout.trim(), '1');
+});
+
+test('failed recovery keeps a corrupt original and its backup', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const db = join(dataDir, 'verenu.db');
+  await writeFile(db, 'synthetic corrupt database');
+  await assert.rejects(fix(dataDir, 'recover-db', {typedYes: true}));
+  assert.equal(await readFile(db, 'utf8'), 'synthetic corrupt database');
+  const backups = await (await import('node:fs/promises')).readdir(join(dataDir, 'triage-backups'));
+  assert.equal(await readFile(join(dataDir, 'triage-backups', backups[0], 'verenu.db'), 'utf8'), 'synthetic corrupt database');
+});
+
+test('settings reset restores the newest valid backed-up settings', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const previous = join(dataDir, 'triage-backups', '100-old');
+  await mkdir(previous, { recursive: true });
+  await writeFile(join(previous, 'settings.json'), '{"volume":42}');
+  await writeFile(join(dataDir, 'settings.json'), '{bad');
+  await fix(dataDir, 'reset-settings');
+  assert.equal(await readFile(join(dataDir, 'settings.json'), 'utf8'), '{"volume":42}');
 });
