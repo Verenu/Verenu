@@ -196,6 +196,9 @@ describe('Settings > Privacy over IPC', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Delete my data' }));
     expect(ran('delete_my_data')).toHaveLength(0);
     const dialog = screen.getByRole('dialog', { name: 'Delete your data?' });
+    // The backend wipes local data and restarts the app, so the dialog must say so before it runs.
+    expect(dialog.textContent).toMatch(/history, settings, dictionary, and saved API keys on this device/);
+    expect(dialog.textContent).toMatch(/restarts/);
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Delete my data' }));
     await waitFor(() => expect(ran('delete_my_data')).toHaveLength(1));
     expect(await screen.findByTestId('deletion-pending')).toBeTruthy();

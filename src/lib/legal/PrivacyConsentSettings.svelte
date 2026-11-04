@@ -95,9 +95,9 @@
     <div class="label">Delete my data</div>
     <div class="desc">
       {#if pending}
-        <span data-testid="deletion-pending">Deletion pending.</span> We have asked the server to delete the data tied to this install. This stays here until the server confirms.
+        <span data-testid="deletion-pending">Deletion pending.</span> Local data on this device is being removed, and Verenu is waiting for the server to confirm it deleted your record. This stays here until the server confirms.
       {:else}
-        Deletes the data Verenu holds on its servers for this install, including your recorded acceptance. Local history and settings on this device are not affected.
+        Deletes your history, settings, dictionary, and saved API keys on this device, and the acceptance record Verenu holds for this install. Verenu restarts when it is done. This cannot be undone.
       {/if}
     </div>
   </div>
@@ -124,7 +124,7 @@
     <div class="ui-modal-head"><h2 id="delete-data-title" class="ui-modal-title">Delete your data?</h2></div>
     <div class="ui-modal-body">
       <p class="ui-modal-copy">
-        This asks Verenu to delete the server-side data tied to this install, including your recorded acceptance. It cannot be undone. Analytics and online features turn off until you accept again.
+        This deletes your history, settings, dictionary, and saved API keys on this device, and the record Verenu holds for this install, including your recorded acceptance. Verenu restarts when it is done. It cannot be undone, and online features stay off until you accept again.
       </p>
       {#if consentStore.error}<p class="ui-modal-copy consent-error" role="alert">{consentStore.error}</p>{/if}
     </div>
