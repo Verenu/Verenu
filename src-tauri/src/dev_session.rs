@@ -400,6 +400,8 @@ fn allowed(command: &str) -> bool {
             | "get_provider_model_catalog"
             | "get_apple_intelligence_availability"
             | "get_recent"
+            | "get_dictation_log"
+            | "delete_history_entry"
             | "get_history_apps"
             | "get_stats"
             | "get_insights"

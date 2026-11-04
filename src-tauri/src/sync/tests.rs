@@ -2087,6 +2087,28 @@ fn syncable_settings_exclude_device_local_keys() {
 }
 
 #[test]
+fn explicit_history_deletion_syncs_and_rejects_stale_history() {
+    let a = test_db(&uuid("explicit-delete-a"));
+    let b = test_db(&uuid("explicit-delete-b"));
+    let entry = db::insert_transcription_returning(&a, "synthetic", "synthetic", 1, 1000, "test", None, None).unwrap();
+    db::insert_api_calls(&a, &[db::ApiCall { transcription_id: entry.id, model: "synthetic-model".into(), provider: "synthetic".into(), task: "transcription".into(), audio_ms: 1000, input_chars: 0, output_chars: 0, created_at: entry.created_at.clone() }]).unwrap();
+    let stale = {
+        let conn = a.lock().unwrap();
+        let mut progress = engine::SnapshotProgress::default();
+        engine::collect_ops(&conn, 0, true, 10_000, &mut progress).unwrap().0
+    };
+    exchange(&a, &b);
+    assert_eq!(count(&b.lock().unwrap(), "SELECT COUNT(*) FROM transcriptions"), 1);
+    db::delete_history_entry(&a, entry.id).unwrap();
+    exchange(&a, &b);
+    assert_eq!(count(&b.lock().unwrap(), "SELECT COUNT(*) FROM transcriptions"), 0);
+    assert!(stale.iter().any(|op| op.table == "api_calls"));
+    let summary = engine::apply_ops(&b.lock().unwrap(), &stale).unwrap();
+    assert!(!summary.deferred, "stale provider calls must not stall sync");
+    assert_eq!(count(&b.lock().unwrap(), "SELECT COUNT(*) FROM transcriptions"), 0);
+}
+
+#[test]
 fn remote_transcription_deletes_do_not_erase_local_history() {
     let db = test_db(&uuid("cccc"));
     db::insert_transcription_returning(

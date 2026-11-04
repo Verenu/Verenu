@@ -339,6 +339,8 @@ async fn transcribe_gemini_with_prompt(
     let data: GeminiResp =
         serde_json::from_str(&raw_body).context("Gemini transcription response parse error")?;
 
+    data.record_usage();
+
     if let Some(fb) = &data.prompt_feedback {
         if let Some(reason) = fb.get("blockReason").and_then(|v| v.as_str()) {
             anyhow::bail!("Gemini blocked: {reason}");
