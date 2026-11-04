@@ -2,6 +2,7 @@ pub mod apple_intelligence;
 pub mod auto_learn;
 pub mod base64_audio;
 pub mod cleanup;
+pub(crate) mod usage;
 pub mod client;
 pub mod custom;
 pub mod gemini_types;

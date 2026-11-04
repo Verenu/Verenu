@@ -37,6 +37,7 @@ pub const SYNCABLE_SETTINGS: &[&str] = &[
 
 const UNRESOLVED_APP_PREFIX: &str = "?::";
 const NATURAL_KEY_TOMBSTONE_TABLE: &str = "dictionary_natural_key";
+const USER_DELETED_TRANSCRIPTION: &str = "user_deleted_transcription";
 
 pub(crate) fn cleanup_cache_send_gate() -> &'static tokio::sync::RwLock<()> {
     static GATE: std::sync::OnceLock<tokio::sync::RwLock<()>> = std::sync::OnceLock::new();
@@ -984,6 +985,7 @@ enum Applied {
 
 fn apply_rank(op: &SyncOp) -> u8 {
     match (op.table.as_str(), op.is_delete()) {
+        (USER_DELETED_TRANSCRIPTION, true) => 0,
         ("contexts", true)
         | ("dictionary", true)
         | ("snippets", true)
@@ -1059,6 +1061,16 @@ fn apply_ops_inner(conn: &Connection, ops: &[SyncOp], cutoff: Option<&str>) -> R
         }
         let op = normalized.as_ref().unwrap_or(original);
         let (applied, touched) = match op.table.as_str() {
+            USER_DELETED_TRANSCRIPTION if op.is_delete() => {
+                if latest_is_delete(conn, USER_DELETED_TRANSCRIPTION, &op.row_uuid)? {
+                    (Applied::Skipped, &mut summary.history)
+                } else {
+                    conn.execute("DELETE FROM api_calls WHERE transcription_id IN (SELECT id FROM transcriptions WHERE uuid=?1)", [&op.row_uuid])?;
+                    conn.execute("DELETE FROM transcriptions WHERE uuid=?1", [&op.row_uuid])?;
+                    log_applied(conn, op)?;
+                    (Applied::Yes, &mut summary.history)
+                }
+            }
             "cleanup_cache" => (apply_cleanup_cache_op(conn, op)?, &mut summary.stats),
             "cleanup_cache_rejection" => (apply_cleanup_cache_rejection(conn, op)?, &mut summary.stats),
             "dictionary" | NATURAL_KEY_TOMBSTONE_TABLE => {
@@ -2699,6 +2711,7 @@ fn resolve_replayed_receipt(conn: &Connection, op: &SyncOp) -> Result<bool> {
 
 fn apply_history_with_retention(conn: &Connection, op: &SyncOp, cutoff: Option<&str>) -> Result<Applied> {
     if op.is_delete() { return Ok(Applied::Skipped); }
+    if latest_is_delete(conn, USER_DELETED_TRANSCRIPTION, &op.row_uuid)? { return Ok(Applied::Skipped); }
     if let Some(payload) = op.payload.as_ref() {
         if let (Some(target), Some(sources)) = (payload.get("context_uuid").and_then(|v| v.as_str()), payload.get("context_sources").and_then(|v| v.as_array())) {
             let pending: Option<String> = conn.query_row("SELECT context_uuid FROM pending_transcription_contexts WHERE transcription_uuid=?1", [&op.row_uuid], |r| r.get(0)).optional()?;
@@ -2868,6 +2881,9 @@ fn apply_api_call_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             db::ReceiptOutcome::Conflict => anyhow::bail!("Conflicting provider receipt"),
         };
     };
+    if latest_is_delete(conn, USER_DELETED_TRANSCRIPTION, transcription_uuid)? {
+        return Ok(Applied::Skipped);
+    }
     let Some(transcription_id) = conn
         .query_row(
             "SELECT id FROM transcriptions WHERE uuid = ?1",

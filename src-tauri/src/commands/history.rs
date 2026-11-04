@@ -1,6 +1,16 @@
 use super::*;
 
 #[tauri::command]
+pub async fn get_dictation_log(app: AppHandle, id: i64) -> Result<Option<serde_json::Value>, String> {
+    run_db(&app, "get_dictation_log", move |db| db::get_dictation_log(db, id)).await
+}
+
+#[tauri::command]
+pub async fn delete_history_entry(app: AppHandle, id: i64) -> Result<(), String> {
+    run_db(&app, "delete_history_entry", move |db| db::delete_history_entry(db, id)).await
+}
+
+#[tauri::command]
 pub async fn get_recent(
     app: AppHandle,
     limit: Option<usize>,
