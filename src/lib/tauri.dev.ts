@@ -675,8 +675,35 @@ function assertDevText(value: unknown, field: string): string {
   return value;
 }
 
+type DevConsentStatus = 'unanswered' | 'skipped' | 'accepted' | 'update_required' | 'deletion_pending';
+const DEV_CONSENT_KEY = 'verenu-dev-consent';
+const DEV_CONSENT_VERSION = '2026-11-03';
+
+/** Browser dev sessions start accepted so existing flows are unaffected. Set localStorage `verenu-dev-consent` to a status to exercise the prompts. */
+function devConsentState(next?: DevConsentStatus) {
+  if (next) localStorage.setItem(DEV_CONSENT_KEY, next);
+  const status = (localStorage.getItem(DEV_CONSENT_KEY) as DevConsentStatus | null) ?? 'accepted';
+  return {
+    status,
+    termsVersion: DEV_CONSENT_VERSION,
+    privacyVersion: DEV_CONSENT_VERSION,
+    acceptedAt: status === 'accepted' ? Date.parse('2026-11-03T12:00:00Z') : null,
+    syncPending: false,
+  };
+}
+
 export async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
   switch (command) {
+    case 'get_consent_state':
+      return devConsentState() as T;
+    case 'accept_legal':
+      return devConsentState('accepted') as T;
+    case 'skip_legal':
+      return devConsentState('skipped') as T;
+    case 'delete_my_data':
+      return devConsentState('deletion_pending') as T;
+    case 'get_install_id':
+      return 'dev-00000000-0000-4000-8000-000000000000' as T;
     case 'frontend_ready':
       return undefined as T;
     case 'get_setting':

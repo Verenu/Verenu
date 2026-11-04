@@ -14,6 +14,9 @@
   import Settings from './lib/views/Settings.svelte';
   import SubAppSheet from './lib/components/SubAppSheet.svelte';
   import Callout from './lib/components/Callout.svelte';
+  import LegalConsentScreen from './lib/legal/LegalConsentScreen.svelte';
+  import { consentStore, loadConsent } from './lib/legal/consentStore.svelte';
+  import { needsConsentPrompt } from './lib/legal/consent';
   import { contextsStore, loadContexts } from './lib/contextsStore.svelte';
   import { SUB_APP_CAPTURED_EVENT, SUB_APP_CAPTURE_FAILED_EVENT, type SubAppCapture } from './lib/subApps';
   import { startSyncListeners, syncStore } from './lib/syncStore.svelte';
@@ -212,6 +215,7 @@
     }
   });
 
+  const consentPrompt = $derived(consentStore.loaded && needsConsentPrompt(consentStore.state));
   let prevSetupComplete = appStore.setupComplete;
   $effect(() => {
     const complete = appStore.setupComplete;
@@ -425,7 +429,7 @@
     }
 
     (async () => {
-      await reloadGlobalSettings();
+      await Promise.all([reloadGlobalSettings(), loadConsent()]);
       if (!mounted) return;
       try { stopSyncListeners = startSyncListeners(); }
       catch (error) { console.error('Failed to start sync listeners:', error); }
@@ -633,12 +637,14 @@
   {#if isLinuxDesktop}
     <div class="native-drag-region" data-tauri-drag-region aria-hidden="true"></div>
   {/if}
-  {#if appStore.setupComplete === false}
+  {#if consentPrompt}
+    <LegalConsentScreen mode={consentStore.state?.status === 'update_required' ? 'update' : 'first'} />
+  {:else if appStore.setupComplete === false && consentStore.loaded}
     <div inert={appStore.settingsOpen} style:visibility={appStore.settingsOpen ? 'hidden' : 'visible'}>
       <DeferredView view={setup} />
     </div>
   {/if}
-  <div class="body" inert={appStore.setupComplete === false}>
+  <div class="body" inert={appStore.setupComplete === false || consentPrompt}>
     <div class="rail">
       <Sidebar />
     </div>

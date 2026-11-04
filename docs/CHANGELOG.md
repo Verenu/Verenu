@@ -7,6 +7,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 - Arch package upgrades repair inaccessible runtime directories left by older releases.
 - Linux updates and developer reinstalls report when installation finishes and prompt users to quit and reopen Verenu.
 - Isolated development sessions no longer send desktop cleanup-failure notifications; the in-app notice remains available.
+- Added a Terms of Service and Privacy Policy prompt (version 2026-11-03) at first launch and when the version changes. Skipping keeps analytics and online features off. Settings > Privacy shows the install ID, consent status, Accept terms, and Delete my data with a pending state.
 - On Linux, keep the microphone mute-button monitor running until dictation starts receiving audio, avoiding an interruption while switching capture streams.
 - NVIDIA RE-USE setup now reports recognized download, disk, permission, and integrity failures instead of suggesting every possible cause.
 

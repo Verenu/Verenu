@@ -5,6 +5,10 @@
   import { fly, fade } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import Toggle from '../Toggle.svelte';
+  import PrivacyConsentSettings from '../../legal/PrivacyConsentSettings.svelte';
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { acceptConsent, consentStore } from '../../legal/consentStore.svelte';
+  import { isConsentGranted } from '../../legal/consent';
   import Dropdown from '../Dropdown.svelte';
   import { loadSettingsSnapshot, saveSetting, type HistoryRetention } from '../../settings';
   import { setServiceChecksEnabled } from '../../serviceStatus';
@@ -34,6 +38,7 @@
   let historyMenuOpensUp = $state(false);
   let serviceChecksEnabled = $state(true);
   let analyticsEnabled = $state(true);
+  const consentOff = $derived(consentStore.loaded && consentStore.state !== null && !isConsentGranted(consentStore.state));
   let cleanupCacheEntries = $state(0);
   let cleanupCacheStatus = $state<CleanupCacheStatus>(null);
   let cleanupCacheEnabled = $state(true);
@@ -321,8 +326,10 @@
 
 <h2 class="settings-h">Privacy</h2>
 
+<PrivacyConsentSettings />
+
 {#if !isAndroid && isTauriRuntime()}
-  <h3 class="settings-subhead first">Agent access</h3>
+  <h3 class="settings-subhead">Agent access</h3>
   <div class="setting-row" data-setting-target="privacy-agent-access">
     <div>
       <div class="label">Connected agents</div>
@@ -337,16 +344,18 @@
   <div>
     <div class="label">Allow Verenu service checks</div>
     <div class="desc">Checks provider status, service health, and global messages in the background. Turn this off to stop background requests to api.verenu.com. Dictation requests to your selected AI provider are unaffected.</div>
+    <ConsentHint feature="Service checks" onaccept={acceptConsent} />
   </div>
-  <Toggle checked={serviceChecksEnabled} onchange={handleServiceChecks} label="Allow Verenu service checks" bind:error={serviceChecksError} />
+  <Toggle checked={serviceChecksEnabled && !consentOff} disabled={consentOff} onchange={handleServiceChecks} label="Allow Verenu service checks" bind:error={serviceChecksError} />
 </div>
 
 <div class="setting-row" data-setting-target="privacy-analytics">
   <div>
         <div class="label">Share pseudonymous product analytics</div>
     <div class="desc">Helps improve Verenu by measuring feature usage, settings adoption, pipeline reliability, retries, and fallbacks. Dictated content, prompts, clipboard contents, app names, and raw errors are never included.</div>
+    <ConsentHint feature="Product analytics" onaccept={acceptConsent} />
   </div>
-        <Toggle checked={analyticsEnabled} onchange={handleAnalytics} label="Share pseudonymous product analytics" bind:error={analyticsError} />
+        <Toggle checked={analyticsEnabled && !consentOff} disabled={consentOff} onchange={handleAnalytics} label="Share pseudonymous product analytics" bind:error={analyticsError} />
 </div>
 
 <h3 class="settings-subhead">Stored on this device</h3>
