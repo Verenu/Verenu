@@ -12,7 +12,7 @@ impl Drop for Controls {
 #[tokio::test]
 #[ignore = "requires the real Hyprland desktop portal; uses no keyboard injection"]
 async fn secondary_controls_register_selected_keys_and_receive_native_actions() {
-    let (shortcuts, _connection) = portal::connect().await.expect("desktop portal");
+    let shortcuts = portal::connect().await.expect("desktop portal");
     let session = shortcuts.create_session(Default::default()).await.unwrap();
     let prefix = format!("secondary-probe-{}", std::process::id());
     let actions = [format!("{prefix}-cancel"), format!("{prefix}-handsfree")];
@@ -74,7 +74,7 @@ async fn controls_accept_free_keys_without_stealing_modified_desktop_bindings() 
             }
         }
     }
-    let (portal, _connection) = portal::connect().await.expect("desktop portal");
+    let portal = portal::connect().await.expect("desktop portal");
     let session = portal.create_session(Default::default()).await.unwrap();
     let prefix = format!("key-probe-{}", std::process::id());
     let actions = [format!("{prefix}-cancel"), format!("{prefix}-handsfree")];

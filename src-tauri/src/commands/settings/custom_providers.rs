@@ -55,8 +55,7 @@ pub async fn delete_custom_provider(app: AppHandle, provider: String) -> Result<
         return Err("Invalid custom provider id.".into());
     }
     let settings = store::settings_handle(&app)?;
-    let command_app = app.clone();
-    run_app_blocking(&command_app, "delete_custom_provider", move || {
+    run_blocking("delete_custom_provider", move || {
         let snapshot = settings.snapshot()?;
         let mut providers = crate::api::custom::parse_stored(snapshot.get(store::CUSTOM_PROVIDERS));
         if !providers.iter().any(|p| p.id == provider) {

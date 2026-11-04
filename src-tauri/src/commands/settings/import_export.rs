@@ -307,8 +307,7 @@ pub async fn import_data(
     json: String,
 ) -> Result<ImportSummary, String> {
     let db = db.inner().clone();
-    let command_app = app.clone();
-    run_app_blocking(&command_app, "import_data", move || {
+    run_blocking("import_data", move || {
         with_import_payload(&json, |payload| {
             let settings = store::settings_handle(&app)?;
             let installed_apps = crate::system::apps::list_installed_apps_cached_with_status().0;

@@ -737,8 +737,6 @@ mod tests {
             .build(tauri::generate_context!())
             .unwrap();
         app.manage(db.clone());
-        let gate = std::sync::Arc::new(crate::linux_activity::ActivityGate::default());
-        app.manage(gate.clone());
         let settings =
             crate::data::store::SettingsHandle::empty_for_test(dir.0.join("settings.json"));
         settings
@@ -758,9 +756,19 @@ mod tests {
             let db_guard = db.lock().unwrap();
             let (started, wait_started) = tokio::sync::oneshot::channel();
             let started = std::sync::Mutex::new(Some(started));
-            app.listen_any("verenu:update-progress", move |_| {
+            let (completed, wait_completed) = tokio::sync::oneshot::channel();
+            let completed = std::sync::Mutex::new(Some(completed));
+            app.listen_any("verenu:update-progress", move |event| {
                 if let Some(started) = started.lock().unwrap().take() {
                     let _ = started.send(());
+                }
+                if serde_json::from_str::<serde_json::Value>(event.payload())
+                    .ok().and_then(|value| value.get("phase")?.as_str().map(str::to_owned))
+                    .as_deref() == Some("complete")
+                {
+                    if let Some(completed) = completed.lock().unwrap().take() {
+                        let _ = completed.send(());
+                    }
                 }
             });
             let handle = app.handle().clone();
@@ -779,7 +787,7 @@ mod tests {
                 .unwrap_err();
             assert!(error.contains("already in progress"), "{error}");
             drop(db_guard);
-            let _pause = tokio::time::timeout(std::time::Duration::from_secs(180), gate.pause())
+            tokio::time::timeout(std::time::Duration::from_secs(180), wait_completed)
                 .await
                 .unwrap()
                 .unwrap();

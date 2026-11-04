@@ -1729,7 +1729,6 @@ fn is_official_version(value: &str) -> bool {
 mod tests {
     use super::*;
 
-
     #[test]
     fn adoption_and_healthy_input_are_once_per_session_but_failures_are_not() {
         let path = std::env::temp_dir().join(format!("verenu-adoption-{}", Uuid::new_v4()));

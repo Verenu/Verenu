@@ -161,53 +161,14 @@ pub async fn get_context_targets(
     context_id: Option<i64>,
 ) -> Result<Vec<db::ContextTarget>, String> {
     run_db(&app, "get_context_targets", move |db| {
-        read_context_targets(
-            db,
-            context_id,
-            crate::system::apps::list_installed_apps_cached_with_status,
-        )
+        let (installed_apps, refreshed) =
+            crate::system::apps::list_installed_apps_cached_with_status();
+        if refreshed {
+            db::reconcile_context_targets(db, &installed_apps)?;
+        }
+        db::query_context_targets(db, context_id)
     })
     .await
-}
-
-fn read_context_targets(
-    db: &DbHandle,
-    context_id: Option<i64>,
-    installed_apps: impl FnOnce() -> (std::sync::Arc<[InstalledApp]>, bool),
-) -> anyhow::Result<Vec<db::ContextTarget>> {
-    #[cfg(target_os = "linux")]
-    let read_only = db
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Database lock was poisoned"))?
-        .query_row("PRAGMA query_only", [], |row| row.get::<_, bool>(0))?;
-    #[cfg(not(target_os = "linux"))]
-    let read_only = false;
-    if !read_only {
-        let (apps, refreshed) = installed_apps();
-        if refreshed {
-            db::reconcile_context_targets(db, &apps)?;
-        }
-    }
-    db::query_context_targets(db, context_id)
-}
-
-#[cfg(all(test, target_os = "linux"))]
-#[test]
-fn read_only_context_targets_do_not_scan_or_reconcile() {
-    let db = crate::data::db::open(":memory:").unwrap();
-    let context =
-        db::insert_context_returning(&db, "Example", None, None, None, None, false).unwrap();
-    db::assign_context_target(&db, context.id, "example-app").unwrap();
-    db.lock()
-        .unwrap()
-        .execute_batch("PRAGMA query_only = ON;")
-        .unwrap();
-    let targets = read_context_targets(&db, Some(context.id), || {
-        panic!("read-only startup must not scan or reconcile installed applications")
-    })
-    .unwrap();
-    assert_eq!(targets.len(), 1);
-    assert_eq!(targets[0].executable, "example-app");
 }
 
 #[tauri::command]

@@ -95,19 +95,6 @@ pub fn failover_dir() -> PathBuf {
     crate::app_data_dir().join("dictation-failover")
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn ensure_no_pending_handoff(root: &Path) -> Result<(), String> {
-    match fs::read_dir(root) {
-        Ok(mut entries) => match entries.next() {
-            None => Ok(()),
-            Some(Ok(_)) => Err("Quit and reopen Verenu to finish dictation recovery.".into()),
-            Some(Err(_)) => Err("Could not check dictation recovery before restarting.".into()),
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err("Could not check dictation recovery before restarting.".into()),
-    }
-}
-
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1077,20 +1064,6 @@ pub fn flush_on_exit(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn handoff_preserves_pending_recovery_files() {
-        let root = std::env::temp_dir().join(format!("verenu-handoff-recovery-{}", uuid::Uuid::new_v4()));
-        ensure_no_pending_handoff(&root).unwrap();
-        std::fs::create_dir(&root).unwrap();
-        ensure_no_pending_handoff(&root).unwrap();
-        let pending = root.join("pending");
-        std::fs::write(&pending, b"synthetic recovery marker").unwrap();
-        assert!(ensure_no_pending_handoff(&root).is_err());
-        assert_eq!(std::fs::read(&pending).unwrap(), b"synthetic recovery marker");
-        std::fs::remove_dir_all(root).unwrap();
-    }
 
     fn test_root() -> PathBuf {
         let p = std::env::temp_dir().join(format!("verenu-failover-{}", uuid::Uuid::new_v4()));

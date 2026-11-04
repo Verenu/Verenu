@@ -202,8 +202,8 @@
   </div>
   <div class="update-controls">
     {#if updateCheckState === 'available' && appStore.updateInfo}
-      <button class="btn-ghost" onclick={handleInstall} disabled={appStore.updateInstalling}>
-        {appStore.updateInstalled ? (appStore.updateInstalling ? 'Restarting…' : 'Restart') : appStore.updateInstalling
+      <button class="btn-ghost" onclick={handleInstall} disabled={appStore.updateInstalling || appStore.updateInstalled}>
+        {appStore.updateInstalled ? 'Installed' : appStore.updateInstalling
           ? (appStore.updateInfo?.installMode === 'download' ? 'Opening…' : 'Updating…')
           : updateActionLabel(appStore.updateInfo, false)}
       </button>

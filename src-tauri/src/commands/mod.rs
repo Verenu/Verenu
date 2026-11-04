@@ -76,107 +76,13 @@ fn db_state(app: &AppHandle) -> DbHandle {
     app.state::<DbHandle>().inner().clone()
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) async fn linux_activity(
-    app: &AppHandle,
-) -> Option<std::sync::Arc<crate::linux_activity::Activity>> {
-    let gate = app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()?;
-    Some(std::sync::Arc::new(gate.inner().clone().enter().await))
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) fn linux_try_activity(
-    app: &AppHandle,
-) -> Result<Option<std::sync::Arc<crate::linux_activity::Activity>>, String> {
-    let Some(gate) = app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>() else {
-        return Ok(None);
-    };
-    gate.inner()
-        .try_enter()
-        .map(std::sync::Arc::new)
-        .map(Some)
-        .ok_or_else(|| "Verenu is preparing to restart. Try again shortly.".into())
-}
-
 async fn run_db<T, F>(app: &AppHandle, label: &'static str, f: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce(&DbHandle) -> anyhow::Result<T> + Send + 'static,
 {
     let db = db_state(app);
-    run_app_blocking(app, label, move || {
-        f(&db).map_err(|error| error.to_string())
-    })
-    .await
-}
-
-async fn run_app_blocking<T, F>(_app: &AppHandle, label: &'static str, f: F) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, String> + Send + 'static,
-{
-    #[cfg(target_os = "linux")]
-    let activity = if let Some(gate) =
-        _app.try_state::<std::sync::Arc<crate::linux_activity::ActivityGate>>()
-    {
-        Some(gate.inner().clone().enter().await)
-    } else {
-        None
-    };
-    run_blocking(label, move || {
-        #[cfg(target_os = "linux")]
-        let _activity = activity;
-        f()
-    })
-    .await
-}
-
-#[cfg(all(test, target_os = "linux", feature = "native-testing"))]
-mod linux_handoff_tests {
-    use super::*;
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    #[test]
-    #[ignore = "requires a private desktop"]
-    fn cancelled_command_keeps_blocking_work_in_the_drain() {
-        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
-        let app = tauri::Builder::default()
-            .any_thread()
-            .build(tauri::generate_context!())
-            .unwrap();
-        app.manage(gate.clone());
-        tauri::async_runtime::block_on(async {
-            let (started, started_rx) = tokio::sync::oneshot::channel();
-            let (finish, finish_rx) = std::sync::mpsc::channel::<()>();
-            let app_handle = app.handle().clone();
-            let caller = tokio::spawn(async move {
-                run_app_blocking(&app_handle, "synthetic_handoff_test", move || {
-                    let _ = started.send(());
-                    finish_rx.recv().map_err(|error| error.to_string())
-                })
-                .await
-            });
-            started_rx.await.unwrap();
-            caller.abort();
-            let _ = caller.await;
-            let pause_gate = gate.clone();
-            let pause = tokio::spawn(async move { pause_gate.pause().await.unwrap() });
-            tokio::time::timeout(Duration::from_secs(2), async {
-                while gate.try_enter().is_some() {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap();
-            assert!(!pause.is_finished());
-            finish.send(()).unwrap();
-            let _pause = tokio::time::timeout(Duration::from_secs(2), pause)
-                .await
-                .unwrap()
-                .unwrap();
-        });
-    }
+    run_blocking(label, move || f(&db).map_err(|error| error.to_string())).await
 }
 
 pub use analytics::*;

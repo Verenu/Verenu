@@ -35,8 +35,6 @@ pub async fn start_input_recording(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let activity = linux_try_activity(&app)?;
     pipeline::reserve_starting(state.inner())?;
 
     let target = capture_in_app_target(&app);
@@ -54,11 +52,7 @@ pub async fn start_input_recording(
 
     let state_clone = state.inner().clone();
     let app_clone = app.clone();
-    #[cfg(target_os = "linux")]
-    let worker_activity = activity.clone();
     let start_result = tokio::task::spawn_blocking(move || {
-        #[cfg(target_os = "linux")]
-        let _activity = worker_activity;
         pipeline::start_recording_session_ex(
             &app_clone,
             &state_clone,
@@ -100,8 +94,6 @@ pub async fn start_setup_try_recording(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let activity = linux_try_activity(&app)?;
     pipeline::reserve_starting(state.inner())?;
 
     let target = capture_in_app_target(&app);
@@ -119,11 +111,7 @@ pub async fn start_setup_try_recording(
 
     let state_clone = state.inner().clone();
     let app_clone = app.clone();
-    #[cfg(target_os = "linux")]
-    let worker_activity = activity.clone();
     let start_result = tokio::task::spawn_blocking(move || {
-        #[cfg(target_os = "linux")]
-        let _activity = worker_activity;
         pipeline::start_recording_session_ex(
             &app_clone,
             &state_clone,
@@ -169,8 +157,6 @@ pub async fn stop_setup_try_recording(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = linux_try_activity(&app)?;
     if pipeline::cancel_starting_reservation(state.inner()) {
         pipeline::hide_pill(&app);
         return Ok(());
@@ -188,8 +174,6 @@ pub async fn stop_and_transcribe_input(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    let _activity = linux_try_activity(&app)?;
     pipeline::transcribe_input_only(app, state.inner().clone())
         .await
         .map_err(|e| crate::api::user_facing_error(&e))
@@ -200,8 +184,6 @@ pub async fn stop_recording(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let activity = linux_try_activity(&app)?;
     crate::core::hotkey::set_handless_active(false);
     let taken = pipeline::take_recording_for_cancel(state.inner());
     if let Some(manager) = app.try_state::<crate::local_stt::LocalTranscriptionManager>() {
@@ -210,11 +192,7 @@ pub async fn stop_recording(
     if let Some((session, exclusive_mic_session_id, prepend_audio, recording_context)) = taken {
         let app_for_cancel = app.clone();
         let state_for_cancel = state.inner().clone();
-        #[cfg(target_os = "linux")]
-        let worker_activity = activity.clone();
         let handle = tauri::async_runtime::spawn(async move {
-            #[cfg(target_os = "linux")]
-            let _activity = worker_activity;
             pipeline::cancel_recording_with_resume(
                 &app_for_cancel,
                 &state_for_cancel,
@@ -241,8 +219,6 @@ pub async fn stop_handless_mode(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = linux_try_activity(&app)?;
     crate::core::hotkey::set_handless_active(false);
     crate::core::hotkey::reset_chord_state();
     let has_session = lock_state(&state)?.lifecycle.is_recording();
@@ -260,8 +236,6 @@ pub async fn resume_cancelled_capture(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = linux_try_activity(&app)?;
     pipeline::reserve_starting(state.inner())?;
     let Some(capture) = pipeline::peek_cancelled_capture_if_fresh(state.inner()) else {
         pipeline::cancel_starting_reservation(state.inner());
@@ -350,8 +324,6 @@ pub async fn dismiss_cancelled_capture(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = linux_try_activity(&app)?;
     if pipeline::take_cancelled_capture_if_fresh(state.inner()).is_some() {
         pipeline::failover::discard_durable();
         pipeline::emit_cancelled_capture_cleared(&app);
@@ -361,13 +333,8 @@ pub async fn dismiss_cancelled_capture(
 
 #[tauri::command]
 pub async fn copy_paste_failure_to_clipboard(
-    app: AppHandle,
     state: tauri::State<'_, SharedState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = linux_try_activity(&app)?;
-    #[cfg(not(target_os = "linux"))]
-    let _ = app;
     let Some(text) = pipeline::peek_paste_failure_if_fresh(state.inner()) else {
         return Err("Nothing to copy".to_string());
     };

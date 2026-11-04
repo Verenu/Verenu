@@ -859,26 +859,16 @@ pub async fn save_model_settings_if_unchanged(
     expected: serde_json::Map<String, serde_json::Value>,
     values: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let activity = linux_activity(&app).await;
     let settings = store::settings_handle(&app)?;
     let keys: Vec<String> = values.keys().cloned().collect();
     let refresh_icons = keys.iter().any(|key| crate::app_tray::setting_updates_runtime_icons(key));
     #[cfg(target_os = "windows")]
     let refresh_titlebar = keys.iter().any(|key| key == store::APPEARANCE_MODE || key == store::CUSTOM_THEME);
-    #[cfg(target_os = "linux")]
-    let save_activity = activity.clone();
     run_blocking("save_model_settings_if_unchanged", move || {
-        #[cfg(target_os = "linux")]
-        let _activity = save_activity;
         commit_model_settings(&settings, expected, values)
     }).await?;
     let db = app.state::<DbHandle>().inner().clone();
-    #[cfg(target_os = "linux")]
-    let stamp_activity = activity.clone();
     let stamped = run_blocking("save_model_settings_stamp", move || {
-        #[cfg(target_os = "linux")]
-        let _activity = stamp_activity;
         let conn = db.lock().map_err(|_| "database lock poisoned".to_string())?;
         for key in keys {
             if crate::sync::engine::SYNCABLE_SETTINGS.contains(&key.as_str()) {
@@ -934,8 +924,6 @@ async fn save_sub_app_shortcut(
 ) -> Result<(), String> {
     tokio::spawn(async move {
         let _guard = super::system::HOTKEY_SETTINGS_LOCK.lock().await;
-        #[cfg(target_os = "linux")]
-        let activity = linux_activity(&app).await;
         validate_setting(store::SUB_APP_CAPTURE_HOTKEY, &value)?;
         if let Some(ref expected) = expected {
             if expected.len() != 1 || !expected.contains_key(store::SUB_APP_CAPTURE_HOTKEY) {
@@ -945,11 +933,7 @@ async fn save_sub_app_shortcut(
         let chord = value.as_str().and_then(crate::core::hotkey::chord::Chord::parse)
             .ok_or("Invalid sub-app shortcut")?;
         let settings = store::settings_handle(&app)?;
-        #[cfg(target_os = "linux")]
-        let save_activity = activity.clone();
         run_blocking("save_sub_app_shortcut", move || {
-            #[cfg(target_os = "linux")]
-            let _activity = save_activity;
             crate::core::hotkey::with_capture_transition_lock(|| {
                 if crate::core::hotkey::capture_active() {
                     return Err("Finish recording the shortcut before changing the sub-app shortcut".into());
@@ -1087,8 +1071,6 @@ async fn save_setting_inner(
             None => super::set_autostart(app, enabled).await,
         };
     }
-    #[cfg(target_os = "linux")]
-    let activity = linux_activity(&app).await;
     let disable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == false;
     let enable_cleanup_cache = key == store::CLEANUP_CACHE_ENABLED && value == true;
     if key == store::CUSTOM_PROVIDERS {
@@ -1119,11 +1101,7 @@ async fn save_setting_inner(
     };
     let credential_app = app.clone();
     let key_clone = key.clone();
-    #[cfg(target_os = "linux")]
-    let save_activity = activity.clone();
     let save_result = run_blocking("save_setting", move || {
-        #[cfg(target_os = "linux")]
-        let _activity = save_activity;
         if store::storage_full_simulation_enabled() {
             return Err(format!(
                 "{}: simulated settings write failure",
@@ -1205,11 +1183,7 @@ async fn save_setting_inner(
     save_result?;
     if disable_cleanup_cache || enable_cleanup_cache {
         let db = db_state(&app);
-        #[cfg(target_os = "linux")]
-        let cleanup_activity = activity.clone();
         run_blocking("set_cleanup_cache_enabled", move || {
-            #[cfg(target_os = "linux")]
-            let _activity = cleanup_activity;
             db::cleanup_cache_set_enabled(&db, enable_cleanup_cache).map_err(|e| e.to_string())
         })
         .await?;
@@ -1218,11 +1192,7 @@ async fn save_setting_inner(
     if crate::sync::engine::SYNCABLE_SETTINGS.contains(&key.as_str()) {
         let db = app.state::<DbHandle>().inner().clone();
         let key_for_stamp = key.clone();
-        #[cfg(target_os = "linux")]
-        let stamp_activity = activity.clone();
         let stamped = run_blocking("save_setting_stamp", move || {
-            #[cfg(target_os = "linux")]
-            let _activity = stamp_activity;
             let conn = db
                 .lock()
                 .map_err(|_| "database lock poisoned".to_string())?;
@@ -1273,11 +1243,7 @@ async fn save_setting_inner(
     if let Some(days) = history_prune_days {
         let db = app.state::<DbHandle>().inner().clone();
         let settings = store::settings_handle(&app)?;
-        #[cfg(target_os = "linux")]
-        let prune_activity = activity.clone();
         let deleted = tokio::task::spawn_blocking(move || {
-            #[cfg(target_os = "linux")]
-            let _activity = prune_activity;
             db::prune_transcriptions_for_retention(&db, &settings, days)
         })
         .await

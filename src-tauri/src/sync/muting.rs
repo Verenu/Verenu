@@ -235,8 +235,6 @@ impl SyncManager {
             let manager = self.clone();
             let active = active.clone();
             tauri::async_runtime::spawn(async move {
-                #[cfg(target_os = "linux")]
-                let _activity = crate::commands::linux_activity(&manager.inner.app).await;
                 let _ = manager.send_mute(&uuid, active.clone()).await;
                 release_mute_session(
                     &mut manager
@@ -450,13 +448,10 @@ struct RemoteMute(Option<tokio::sync::oneshot::Sender<()>>);
 impl RemoteMute {
     fn start(
         apply: Arc<dyn Fn(bool) + Send + Sync>,
-        #[cfg(target_os = "linux")] activity: Option<Arc<crate::linux_activity::Activity>>,
     ) -> (Self, tokio::sync::oneshot::Receiver<bool>) {
         let (release, released) = tokio::sync::oneshot::channel();
         let (ready, ready_rx) = tokio::sync::oneshot::channel();
         tauri::async_runtime::spawn(async move {
-            #[cfg(target_os = "linux")]
-            let _activity = activity;
             let mute = apply.clone();
             let started = tokio::task::spawn_blocking(move || mute(true))
                 .await
@@ -483,7 +478,6 @@ pub(super) async fn receive(
     uuid: String,
     fingerprint: String,
     incoming_permit: tokio::sync::OwnedSemaphorePermit,
-    #[cfg(target_os = "linux")] activity: Option<Arc<crate::linux_activity::Activity>>,
 ) {
     if !trusted(&inner, &uuid, &fingerprint) {
         return;
@@ -538,9 +532,6 @@ pub(super) async fn receive(
     }
     let id = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
     let apply = Arc::new(move |muted| crate::media::sound::set_remote_mute(id, muted));
-    #[cfg(target_os = "linux")]
-    let (_owner, ready) = RemoteMute::start(apply, activity);
-    #[cfg(not(target_os = "linux"))]
     let (_owner, ready) = RemoteMute::start(apply);
     if !matches!(ready.await, Ok(true)) {
         return;
@@ -593,11 +584,8 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn cancelled_remote_mute_finishes_unmute_before_restart_drain() {
-        let gate = Arc::new(crate::linux_activity::ActivityGate::default());
-        let activity = Arc::new(gate.try_enter().unwrap());
+    async fn cancelled_remote_mute_finishes_unmute_after_pending_mute() {
         let (started, started_rx) = tokio::sync::oneshot::channel();
         let (unmuted, unmuted_rx) = tokio::sync::oneshot::channel();
         let started = std::sync::Mutex::new(Some(started));
@@ -612,19 +600,11 @@ mod tests {
                 let _ = unmuted.lock().unwrap().take().unwrap().send(());
             }
         });
-        let (owner, _ready) = RemoteMute::start(apply, Some(activity));
+        let (owner, _ready) = RemoteMute::start(apply);
         started_rx.await.unwrap();
         drop(owner);
-        let pause_gate = gate.clone();
-        let pause = tokio::spawn(async move { pause_gate.pause().await.unwrap() });
-        tokio::task::yield_now().await;
-        assert!(!pause.is_finished());
         finish.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(2), unmuted_rx)
-            .await
-            .unwrap()
-            .unwrap();
-        let _pause = tokio::time::timeout(Duration::from_secs(2), pause)
             .await
             .unwrap()
             .unwrap();
