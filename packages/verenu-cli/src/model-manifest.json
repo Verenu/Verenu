@@ -1,0 +1,68 @@
+{
+  "files": [
+    {
+      "name": "gemma-4-E2B_q4_0-it.gguf",
+      "sha256": "3646b4c147cd235a44d91df1546d3b7d8e29b547dbe4e1f80856419aa455e6fd"
+    },
+    {
+      "name": "gemma-4-E2B-it-mmproj.gguf",
+      "sha256": "58c187648007cab392bd5678b87e862c3e8794017deb945feea2cf256195e96a"
+    },
+    {
+      "name": "gemma-4-E4B_q4_0-it.gguf",
+      "sha256": "e8b6a059ba86947a44ace84d6e5679795bc41862c25c30513142588f0e9dba1d"
+    },
+    {
+      "name": "gemma-4-E4B-it-mmproj.gguf",
+      "sha256": "c6398448d84a4836fdedf58f9775979e69ae0cc4dfdf4d697b5597693a555b12"
+    },
+    {
+      "name": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+      "sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
+    },
+    {
+      "name": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
+    },
+    {
+      "name": "qwen2.5-3b-instruct-q4_k_m.gguf",
+      "sha256": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
+    },
+    {
+      "name": "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+      "sha256": "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db"
+    },
+    {
+      "name": "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
+      "sha256": "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a"
+    },
+    {
+      "name": "Phi-3-mini-4k-instruct-q4.gguf",
+      "sha256": "8a83c7fb9049a9b2e92266fa7ad04933bb53aa1e85136b7b30f1b8000ff2edef"
+    },
+    {
+      "name": "smollm2-360m-instruct-q8_0.gguf",
+      "sha256": "48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201"
+    },
+    {
+      "name": "smollm2-1.7b-instruct-q4_k_m.gguf",
+      "sha256": "decd2598bc2c8ed08c19adc3c8fdd461ee19ed5708679d1c54ef54a5a30d4f33"
+    },
+    {
+      "name": "granite-3.3-2b-instruct-Q4_K_M.gguf",
+      "sha256": "ac71e9e32c0bea919b409c5918f69ca74339854b0319c5065e4e9fb6d95c4852"
+    },
+    {
+      "name": "granite-3.3-8b-instruct-Q4_K_M.gguf",
+      "sha256": "77bcee066a76dcdd10d0d123c87e32c8ec2c74e31b6ffd87ebee49c9ac215dca"
+    },
+    {
+      "name": "ggml-small.bin",
+      "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+    },
+    {
+      "name": "ggml-large-v3-turbo.bin",
+      "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"
+    }
+  ]
+}
