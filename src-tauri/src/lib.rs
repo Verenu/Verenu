@@ -37,6 +37,8 @@ mod data;
 mod dev_session;
 mod local_llm;
 mod local_stt;
+#[allow(dead_code)]
+mod legal_consent;
 mod media;
 mod model_performance;
 mod pipeline;
@@ -452,12 +454,20 @@ pub fn run() {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 app.manage(settings.clone());
+                let legal_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        crate::legal_consent::retry_pending_acceptance(legal_app.clone()).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
+                });
                 #[cfg(desktop)]
                 app.manage(crate::analytics::Analytics::new(
-                    settings
+                    settings.snapshot().is_ok_and(|snapshot| crate::legal_consent::permits_network(&snapshot))
+                        && settings
                         .get(crate::data::store::ANALYTICS_ENABLED)
                         .and_then(|value| value.as_bool())
-                        .unwrap_or(true),
+                        .unwrap_or(false),
                     crate::app_data_dir(),
                 ));
                 first_launch
@@ -769,6 +779,10 @@ pub fn run() {
             commands::request_notification_permission,
             commands::check_keychain_access,
             commands::save_setting,
+            legal_consent::get_install_id,
+            legal_consent::get_consent_state,
+            legal_consent::skip_legal,
+            legal_consent::accept_legal,
             commands::save_model_settings_if_unchanged,
             commands::save_setting_if_unchanged,
             commands::analytics_setup_event,

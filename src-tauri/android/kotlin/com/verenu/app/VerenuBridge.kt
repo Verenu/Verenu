@@ -143,7 +143,7 @@ class VerenuBridge(appContext: Context) {
                 )
             },
             targetPackage = json.optString("targetPackage", ""),
-            analyticsEnabled = json.optBoolean("analyticsEnabled", true),
+            analyticsEnabled = json.optBoolean("analyticsEnabled", false),
             pillPosition = VerenuPillPlacement.sanitizePosition(json.optString("pillPosition")),
             pillDockPosition = VerenuPillPlacement.sanitizeDockPosition(json.optString("pillDockPosition")),
             coverKeyboardMic = json.optBoolean("coverKeyboardMic", true),

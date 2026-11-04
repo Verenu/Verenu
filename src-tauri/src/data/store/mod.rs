@@ -535,6 +535,8 @@ pub const CAPS_LOCK_UPPERCASE: &str = "caps_lock_uppercase_enabled";
 pub const DEFAULT_CLIPBOARD_PHRASE: &str = "paste clipboard here";
 pub const LOCAL_MODEL_MEMORY_POLICY: &str = "local_model_memory_policy";
 pub const ANALYTICS_ENABLED: &str = "analytics_enabled";
+pub(crate) const LEGAL_INSTALL_SECRET: &str = "legal_install_secret";
+pub(crate) const KEY_LEGAL_INSTALL_SECRET: &str = "key_legal_install_secret";
 
 pub const DEFAULT_TONES: &[&str] = &["casual", "formal", "very_casual"];
 pub const CLEANUP_INTENSITIES: &[&str] = &["none", "rules", "light", "medium", "high"];
