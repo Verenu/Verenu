@@ -1,0 +1,80 @@
+import { access, lstat, readdir, readFile } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { join, delimiter, basename } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import net from 'node:net';
+
+const result = (name, status, message) => ({ name, status, message });
+const exists = p => access(p, constants.X_OK).then(() => true, () => false);
+const names = p => readdir(p).catch(() => []);
+
+export async function nativeChecks({ dataDir, settings, env = process.env, platform = process.platform, run = spawnSync, networkAllowed = false }) {
+  const paths = (env.PATH || '').split(delimiter).filter(Boolean);
+  const executable = env.VERENU_BINARY || (platform === 'win32' ? 'verenu.exe' : 'verenu');
+  const binary = executable.includes('/') || executable.includes('\\') ? await exists(executable) : (await Promise.all(paths.map(p => exists(join(p, executable))))).some(Boolean);
+  let crash = false, keyringError = false;
+  for (const name of (await names(join(dataDir, 'logs'))).slice(0, 20)) {
+    try {
+      const p = join(dataDir, 'logs', name), info = await lstat(p);
+      if (!info.isFile() || info.size > 5_000_000) continue;
+      const content = await readFile(p, 'utf8');
+      crash ||= /(?:panic(?:ked)? at|fatal startup|frontend watchdog|segmentation fault)/i.test(content);
+      keyringError ||= /(?:secret service|keyring|keychain|credential manager).{0,100}(?:unavailable|locked|failed|error)/i.test(content);
+    } catch { /* A non-readable log cannot establish an error. */ }
+  }
+  const launch = result('launch', !binary ? 'warn' : crash ? 'fail' : 'pass', !binary ? 'Executable not found on PATH. Set VERENU_BINARY to the installed binary.' : crash ? 'Executable found; logs contain a crash marker. Inspect local logs.' : 'Executable is present and executable; no crash markers found in inspected logs.');
+  let keyring;
+  if (platform !== 'linux') keyring = result('keyring', 'warn', 'Native secure-storage probe is not supported on this OS.');
+  else {
+    const probe = run('secret-tool', ['search', '--all', 'service', 'com.verenu.app', 'username', '__verenu_triage_probe__'], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 3000 });
+    const ping = run('dbus-send', ['--session', '--print-reply', '--dest=org.freedesktop.secrets', '/org/freedesktop/secrets', 'org.freedesktop.DBus.Peer.Ping'], { stdio: 'ignore', timeout: 3000 });
+    const available = !probe.error && !ping.error && ping.status === 0;
+    keyring = result('keyring', keyringError ? 'fail' : available ? 'pass' : 'warn', keyringError ? 'Logs show a secure-storage error. Unlock the keyring and retry.' : available ? 'Secret Service probe responded.' : 'Secret Service probe unavailable. Check secret-tool and unlock the keyring.');
+  }
+  const providers = [...new Set([settings?.transcription_provider, settings?.cleanup_provider].filter(p => typeof p === 'string' && !['local', 'apple_intelligence', ''].includes(p)))];
+  let missing = false, unknown = false;
+  for (const provider of providers) {
+    if (!/^(groq|openai|google|assemblyai|openrouter|xai)$/.test(provider)) { unknown = true; continue; }
+    if (typeof settings[`api_key_${provider}`] === 'string' && settings[`api_key_${provider}`].trim()) continue;
+    if (platform !== 'linux' || keyring.status !== 'pass') { unknown = true; continue; }
+    const probe = run('secret-tool', ['lookup', 'service', 'com.verenu.app', 'username', `api_key_${provider}`], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 3000 });
+    if (probe.error || ![0, 1].includes(probe.status)) unknown = true;
+    else if (probe.status !== 0) missing = true;
+  }
+  const keys = result('provider-keys', missing ? 'fail' : unknown || !settings ? 'warn' : 'pass', missing ? 'A configured provider has no saved key. Add it in Settings > Providers.' : unknown || !settings ? 'Some provider credentials could not be checked.' : 'Configured provider credentials are present or not required.');
+  let partial = false, inspected = 0, verified = 0;
+  async function walk(dir, depth) {
+    if (depth > 8) return;
+    for (const entry of await names(dir)) {
+      const p = join(dir, entry);
+      try {
+        const info = await lstat(p);
+        if (info.isSymbolicLink()) continue;
+        if (/\.(partial|tmp)$/i.test(entry) || (info.isFile() && info.size === 0)) partial = true;
+        if (info.isFile()) inspected++;
+        if (info.isFile() && entry === 'manifest.json' && info.size < 1_000_000) {
+          const manifest = JSON.parse(await readFile(p, 'utf8'));
+          if (Array.isArray(manifest.files)) for (const file of manifest.files) {
+            if (typeof file.name !== 'string' || basename(file.name) !== file.name || !/^[a-f0-9]{64}$/i.test(file.sha256)) { partial = true; continue; }
+            const artifact = join(dir, file.name), artifactInfo = await lstat(artifact);
+            if (!artifactInfo.isFile() || artifactInfo.isSymbolicLink() || (Number.isSafeInteger(file.size) && artifactInfo.size !== file.size)) { partial = true; continue; }
+            const hash = createHash('sha256');
+            for await (const chunk of createReadStream(artifact)) hash.update(chunk);
+            if (hash.digest('hex') !== file.sha256.toLowerCase()) partial = true;
+            else verified++;
+          }
+        }
+        if (info.isDirectory()) await walk(p, depth + 1);
+      } catch { partial = true; }
+    }
+  }
+  await walk(join(dataDir, 'models'), 0);
+  const models = result('models', partial ? 'fail' : inspected ? 'warn' : 'pass', partial ? 'Partial, empty, or invalid model artifact found. Retry the download in Settings.' : inspected ? `${verified} manifest artifacts verified; other installed files may not be verified.` : 'No local model files found.');
+  let port;
+  try { port = JSON.parse(await readFile(join(dataDir, 'agent-session.json'), 'utf8')).port; } catch {}
+  let listening = false;
+  if (networkAllowed && Number.isInteger(port) && port > 0 && port < 65536) listening = await new Promise(resolve => { const socket = net.connect({host: '127.0.0.1', port}); socket.setTimeout(500); socket.once('connect', () => { socket.destroy(); resolve(true); }); socket.once('error', () => resolve(false)); socket.once('timeout', () => { socket.destroy(); resolve(false); }); });
+  const processCheck = result('process', port && (!networkAllowed || !listening) ? 'warn' : 'pass', port && !networkAllowed ? 'Agent port check skipped without network consent.' : port && !listening ? 'Agent discovery port is not listening. Restart Verenu to refresh it.' : port ? 'Agent discovery port is listening; ownership was not verified.' : 'No persisted agent port found.');
+  return [launch, keyring, keys, models, processCheck];
+}

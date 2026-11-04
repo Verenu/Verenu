@@ -22,14 +22,16 @@ export async function main(args) {
   }
   const results = await checks({ dataDir, checkNetwork });
   const actions = [];
-  if (results.some(r => r.fix === 'clear-caches')) {
+  if (!json) console.log(report(results));
+  for (const id of [...new Set(results.map(r => r.fix).filter(Boolean))]) {
     let approved = yes;
     if (!yes && !json && process.stdin.isTTY && process.stdout.isTTY) {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
-      try { approved = (await rl.question('Back up and clear icon caches? [y/N] ')).trim().toLowerCase() === 'y'; } finally { rl.close(); }
+      try { approved = (await rl.question(`Back up and apply ${id}? [y/N] `)).trim().toLowerCase() === 'y'; } finally { rl.close(); }
     }
-    if (approved) { try { actions.push({ fix: 'clear-caches', backup: await fix(dataDir, 'clear-caches') }); } catch { actions.push({ fix: 'clear-caches', error: 'Fix failed; inspect backup and permissions.' }); process.exitCode = 1; } }
+    if (approved) { try { actions.push({ fix: id, backup: await fix(dataDir, id) }); } catch { actions.push({ fix: id, error: 'Fix failed; inspect backup and permissions.' }); process.exitCode = 1; } }
   }
   if (makeBundle) { const target = path.resolve('verenu-triage-bundle.json'); await writeFile(target, bundle(results), { flag: 'wx', mode: 0o600 }); actions.push({ bundle: target }); }
-  console.log(json ? JSON.stringify({ results, actions }, null, 2) : [report(results), ...actions.map(a => JSON.stringify(a))].join('\n'));
+  if (json) console.log(JSON.stringify({ results, actions }, null, 2));
+  else for (const action of actions) console.log(JSON.stringify(action));
 }
