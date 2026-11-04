@@ -12,11 +12,10 @@ const MAX_MESSAGE: usize = 4096;
 const CHILD_FD_ENV: &str = "VERENU_HANDOFF_FD";
 pub(crate) type KeyAvailability = BTreeMap<String, bool>;
 
-// Bump when a replacement can change persistent state during probation in a
-// way the original cannot safely resume, or when callback handoff formats
-// change. Schema changes are checked separately. Matching versions promise
-// that probation remains read-only and that rollback can resume the parent.
-const STATE_COMPATIBILITY: &str = "3";
+// Bump when a replacement needs schema preparation not covered by the schema
+// version, changes persistent state during probation in a way the original
+// cannot safely resume, or changes callback handoff formats.
+const STATE_COMPATIBILITY: &str = "4";
 
 fn descends_from(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     for _ in 0..32 {
@@ -887,12 +886,15 @@ mod tests {
                 protocol: PROTOCOL,
                 pid: 42,
                 schema: 39,
-                database_code: "different".into(),
+                database_code: "3".into(),
             },
         ] {
             let (parent, mut child) = pair();
             child.send(&message).unwrap();
-            assert!(parent.prepare().is_err());
+            assert_eq!(
+                parent.prepare().err().as_deref(),
+                Some("Replacement identity or compatibility did not match")
+            );
         }
     }
 

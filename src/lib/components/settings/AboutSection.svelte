@@ -48,6 +48,13 @@
     }
   }
 
+  function updateCheckSuperseded(generation: number): boolean {
+    if (generation !== checkGeneration) return true;
+    if (!appStore.updateInstalling && !appStore.updateInstalled) return false;
+    updateCheckState = appStore.updateInfo ? 'available' : 'idle';
+    return true;
+  }
+
   async function checkForUpdateManual() {
     const generation = ++checkGeneration;
     updateCheckState = 'checking';
@@ -55,9 +62,10 @@
     appStore.updateInstallError = '';
     try {
       const update = await invoke<UpdateInfo | null>('check_for_update');
-      if (generation !== checkGeneration) return;
+      if (updateCheckSuperseded(generation)) return;
       if (update) {
         try { await saveSetting('update_dismissed_version', null); } catch {}
+        if (updateCheckSuperseded(generation)) return;
         appStore.updateInfo = update;
         updateCheckState = 'available';
       } else {
@@ -65,7 +73,7 @@
         updateCheckState = 'up-to-date';
       }
     } catch (err) {
-      if (generation !== checkGeneration) return;
+      if (updateCheckSuperseded(generation)) return;
       updateCheckState = 'idle';
       updateCheckError = formatIpcError(err, 'Could not check for updates');
       void emit('verenu:error', formatIpcError(err, 'Could not check for updates'));
