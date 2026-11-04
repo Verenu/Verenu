@@ -312,21 +312,9 @@ pub(super) async fn finalize_pipeline_completion(
             }
         }
     };
-    if let Some(task) = api_calls_task {
-        match task.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                log::warn!(
-                    "pipeline: failed to record api usage rows: {}",
-                    trim_err(&e.to_string())
-                )
-            }
-            Err(e) => log::warn!("pipeline: api usage recording task panicked: {e}"),
-        }
-    }
-
+    let injection_elapsed = inject_stage.elapsed();
     let injected_text = injected.text;
-    if let Some(telemetry) = ctx.telemetry {
+    let history_log = if let Some(telemetry) = ctx.telemetry {
         match injected.case_decision {
             "inject_failed" => telemetry.failed(FailureCategory::InsertionFailed, false),
             "android_accessibility_handoff" => {}
@@ -340,7 +328,18 @@ pub(super) async fn finalize_pipeline_completion(
                 entry.words,
             ),
         }
-        let log = telemetry.history_log(entry.id, ctx.duration_ms, &calls);
+        Some(telemetry.history_log(entry.id, ctx.duration_ms, &calls))
+    } else {
+        None
+    };
+    if let Some(task) = api_calls_task {
+        match task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => log::warn!("pipeline: failed to record api usage rows: {}", trim_err(&e.to_string())),
+            Err(e) => log::warn!("pipeline: api usage recording task panicked: {e}"),
+        }
+    }
+    if let Some(log) = history_log {
         let db_for_log = db_handle.inner().clone();
         let entry_id = entry.id;
         if let Err(error) = tokio::task::spawn_blocking(move || db::save_dictation_log(&db_for_log, entry_id, &log)).await.unwrap_or_else(|e| Err(e.into())) {
@@ -355,7 +354,7 @@ pub(super) async fn finalize_pipeline_completion(
         injected.probe_source,
         injected.selection_state,
         injected_text.chars().count(),
-        inject_stage.elapsed().as_millis()
+        injection_elapsed.as_millis()
     );
     app.emit("verenu:transcribed", &injected_text).ok();
 

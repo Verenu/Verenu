@@ -44,16 +44,21 @@ impl PipelineTelemetry {
     }
 
     pub(super) fn complete_stage(&self, provider_model: Option<&str>) {
+        self.complete_stage_with_duration(provider_model, None);
+    }
+
+    pub(super) fn complete_stage_with_duration(&self, provider_model: Option<&str>, duration: Option<std::time::Duration>) {
         if let Ok(current) = self.stage.lock() {
+            let elapsed = duration.unwrap_or_else(|| current.1.elapsed());
             if let Ok(mut stages) = self.log_stages.lock() {
                 let name = if matches!(current.0, Stage::Insertion) { "injection" } else { current.0.as_str() };
-                stages.push(serde_json::json!({"stage": name, "duration_ms": current.1.elapsed().as_millis().min(u64::MAX as u128) as u64, "status": "ok"}));
+                stages.push(serde_json::json!({"stage": name, "duration_ms": elapsed.as_millis().min(u64::MAX as u128) as u64, "status": "ok"}));
             }
             self.with_run(|analytics, id| {
                 analytics.pipeline_stage_completed_with_model(
                     id,
                     current.0,
-                    current.1.elapsed().as_millis(),
+                    elapsed.as_millis(),
                     provider_model,
                 );
             });
@@ -206,6 +211,20 @@ mod tests {
         analytics.dictation_started(&id, false, false);
         let telemetry = PipelineTelemetry::new(Some(analytics.clone()), Some(id));
         (analytics, telemetry)
+    }
+
+    #[test]
+    fn history_log_uses_overlapped_vad_duration_and_freezes_at_delivery() {
+        let (_, telemetry) = run();
+        telemetry.start_stage(Stage::Vad);
+        telemetry.complete_stage_with_duration(None, Some(std::time::Duration::from_millis(250)));
+        telemetry.insertion_attempted();
+        telemetry.delivered("direct_insertion", 1);
+        let log_at_delivery = telemetry.history_log(1, 1000, &[]);
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        assert_eq!(log_at_delivery["stages"][0]["duration_ms"], 250);
+        assert!(telemetry.history_log(1, 1000, &[])["total_ms"].as_u64().unwrap() >= log_at_delivery["total_ms"].as_u64().unwrap() + 35);
+        assert_eq!(telemetry.history_log(1, 1000, &[])["stages"][1]["duration_ms"], log_at_delivery["stages"][1]["duration_ms"]);
     }
 
     #[test]
