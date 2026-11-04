@@ -524,7 +524,7 @@
             class="btn-ghost btn-compact icon-btn"
             title="Sync now"
             aria-label="Sync {device.name} now"
-            data-needs-consent onclick={() => void syncNow(device)}
+            data-needs-consent aria-disabled={consentBlocked() || undefined} onclick={() => void syncNow(device)}
             disabled={syncingUuid !== '' || device.state === 'syncing'}
           >
             <svg
@@ -641,7 +641,7 @@
         <div class="device-actions">
           <button
             class="btn-primary btn-compact"
-            data-needs-consent onclick={() => void startPairing(device)}
+            data-needs-consent aria-disabled={consentBlocked() || undefined} onclick={() => void startPairing(device)}
             disabled={pairingUuid !== '' || !!outgoing}
           >
             {pairingUuid === device.uuid ? 'Starting…' : 'Pair'}
@@ -767,7 +767,7 @@
               <div class="field-actions">
                 <button
                   class="btn-primary btn-compact"
-                  data-needs-consent onclick={() => void pairConnection()}
+                  data-needs-consent aria-disabled={consentBlocked() || undefined} onclick={() => void pairConnection()}
                   disabled={connectionBusy || !!outgoing || !connectionDetails.trim() || !listenerActive}
                 >{connectionBusy ? 'Connecting…' : 'Pair'}</button>
               </div>

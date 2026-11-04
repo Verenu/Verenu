@@ -686,7 +686,7 @@ function devConsentState(next?: DevConsentStatus) {
   return {
     status,
     termsVersion: DEV_CONSENT_VERSION,
-    privacyVersion: DEV_CONSENT_VERSION,
+    privacyVersion: '2026-11-03.1',
     acceptedAt: status === 'accepted' ? Date.parse('2026-11-03T12:00:00Z') : null,
     syncPending: false,
   };

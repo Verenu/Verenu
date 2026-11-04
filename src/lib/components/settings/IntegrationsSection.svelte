@@ -1,7 +1,7 @@
 <script lang="ts">
   import ConsentArea from '../../legal/ConsentArea.svelte';
   import ConsentHint from '../../legal/ConsentHint.svelte';
-  import { requireConsent } from '../../legal/consentStore.svelte';
+  import { consentBlocked, requireConsent } from '../../legal/consentStore.svelte';
   import { onMount, tick } from 'svelte';
   import T3Integration from './T3Integration.svelte';
   import IntegrationRow from './IntegrationRow.svelte';
@@ -114,7 +114,7 @@
             <span aria-hidden="true">@</span>
             <input id="github-username" bind:value={draft} placeholder="Your username" maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false" disabled={saving} aria-invalid={!!error} aria-describedby="github-form-status" oninput={() => { error = ''; }} />
           </div>
-          <button type="submit" class="btn-primary" data-needs-consent disabled={saving || !draft.trim()}>{saving ? 'Connecting…' : editing ? 'Save account' : 'Connect GitHub'}</button>
+          <button type="submit" class="btn-primary" data-needs-consent aria-disabled={consentBlocked() || undefined} disabled={saving || !draft.trim()}>{saving ? 'Connecting…' : editing ? 'Save account' : 'Connect GitHub'}</button>
           {#if editing}<button type="button" class="btn-ghost" disabled={saving} onclick={() => { editing = false; error = ''; }}>Cancel</button>{/if}
         </div>
         <div id="github-form-status" class="suggestion" role="status">

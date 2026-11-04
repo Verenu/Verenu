@@ -6,7 +6,7 @@ import { invoke } from '../tauri';
  * functions, so a contract change touches only this file.
  */
 export const TERMS_VERSION = '2026-11-03';
-export const PRIVACY_VERSION = '2026-11-03';
+export const PRIVACY_VERSION = '2026-11-03.1';
 export const TERMS_URL = `https://verenu.com/legal/terms/${TERMS_VERSION}`;
 export const PRIVACY_URL = `https://verenu.com/legal/privacy/${PRIVACY_VERSION}`;
 

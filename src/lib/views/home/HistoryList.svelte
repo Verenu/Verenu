@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { consentBlocked, requireConsent } from '../../legal/consentStore.svelte';
   import { onMount, tick } from 'svelte';
   import { fly } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
@@ -389,10 +391,12 @@
           transition:fly={{ y: -10, duration: motionMs(400), easing: expoOut }}
         >
           <div class="day-time">{fmtTime(failedEntry.created_at)}</div>
-          <div class="day-text error-msg">Your last dictation could not be transcribed. Retry to use the same recording.</div>
+          <div class="day-text error-msg">Your last dictation could not be transcribed. Retry to use the same recording.<ConsentHint feature="Retrying with a cloud provider" thenEnable={onRetry} /></div>
           <button
             class="retry-btn"
-            onclick={onRetry}
+            class:consent-dim={consentBlocked()}
+            aria-disabled={consentBlocked() || undefined}
+            onclick={() => requireConsent(onRetry)}
             disabled={retrying}
           >
             {retrying ? '…' : 'Retry'}
@@ -490,6 +494,7 @@
 {/if}
 
 <style>
+  .consent-dim { opacity: 0.5; }
   .load-older-wrap {
     display: flex;
     justify-content: center;
