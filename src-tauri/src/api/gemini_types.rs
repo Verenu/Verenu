@@ -5,6 +5,39 @@ pub struct GeminiResp {
     pub candidates: Option<Vec<GeminiCandidate>>,
     #[serde(rename = "promptFeedback")]
     pub prompt_feedback: Option<serde_json::Value>,
+    #[serde(rename = "usageMetadata")]
+    pub usage_metadata: Option<GeminiUsage>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GeminiUsage {
+    pub prompt_token_count: Option<u64>,
+    pub candidates_token_count: Option<u64>,
+}
+
+impl GeminiResp {
+    pub(crate) fn record_usage(&self) {
+        if let Some(usage) = &self.usage_metadata {
+            super::usage::record(usage.prompt_token_count, usage.candidates_token_count);
+        }
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn gemini_response_records_transcription_usage() {
+        let collector: super::super::usage::Collector = Default::default();
+        super::super::usage::scope(Some(collector.clone()), "transcription", "google", "gemini", async {
+            let response: GeminiResp = serde_json::from_str(r#"{"usageMetadata":{"promptTokenCount":17,"candidatesTokenCount":4}}"#).unwrap();
+            response.record_usage();
+        }).await;
+        let records = collector.lock().unwrap();
+        assert_eq!((records[0].stage.as_str(), records[0].input, records[0].output), ("transcription", Some(17), Some(4)));
+    }
 }
 
 #[derive(Deserialize, Debug)]

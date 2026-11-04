@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{Duration, Utc};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::*;
@@ -21,6 +21,40 @@ pub struct Stats {
     pub total_words: i64,
     pub avg_wpm: f64,
     pub day_streak: i64,
+}
+
+pub fn save_dictation_log(db: &Db, id: i64, log: &serde_json::Value) -> Result<()> {
+    let conn = lock_conn(db)?;
+    let mut log = log.clone();
+    if let Some(stages) = log.get_mut("stages").and_then(|s| s.as_array_mut()) {
+        for stage in stages {
+            if stage["provider"] != "openrouter" { continue; }
+            let (Some(model), Some(input), Some(output)) = (stage["model"].as_str(), stage["input_tokens"].as_u64(), stage["output_tokens"].as_u64()) else { continue; };
+            let rate: Option<(f64, f64)> = conn.query_row("SELECT prompt_usd_per_token, completion_usd_per_token FROM openrouter_pricing WHERE model_id = ?1", [model], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+            if let Some((prompt, completion)) = rate {
+                let cost = input as f64 * prompt + output as f64 * completion;
+                if cost.is_finite() && cost >= 0.0 { stage["cost_usd"] = serde_json::json!(cost); }
+            }
+        }
+    }
+    conn.execute("INSERT OR REPLACE INTO dictation_logs (transcription_id, payload) SELECT id, ?2 FROM transcriptions WHERE id = ?1", params![id, serde_json::to_string(&log)?])?;
+    Ok(())
+}
+
+pub fn get_dictation_log(db: &Db, id: i64) -> Result<Option<serde_json::Value>> {
+    let conn = lock_conn(db)?;
+    let payload: Option<String> = conn.query_row("SELECT payload FROM dictation_logs WHERE transcription_id = ?1", [id], |r| r.get(0)).optional()?;
+    payload.map(|s| serde_json::from_str(&s).map_err(Into::into)).transpose()
+}
+
+pub fn delete_history_entry(db: &Db, id: i64) -> Result<()> {
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    tx.execute("INSERT INTO sync_log (table_name, row_uuid, op, ts_ms, origin, origin_seq) SELECT 'user_deleted_transcription', t.uuid, 'delete', CAST(strftime('%s','now') AS INTEGER)*1000, s.uuid, COALESCE((SELECT MAX(origin_seq) FROM sync_log WHERE origin=s.uuid),0)+1 FROM transcriptions t CROSS JOIN sync_identity s WHERE t.id=?1", [id])?;
+    tx.execute("DELETE FROM api_calls WHERE transcription_id = ?1", [id])?;
+    tx.execute("DELETE FROM transcriptions WHERE id = ?1", [id])?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn recent_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentEntry> {
@@ -470,6 +504,40 @@ mod tests {
         history_fts_available, insert_transcription_returning, query_distinct_apps,
         query_recent_page, query_recent_page_before, query_recent_page_fts, query_stats,
     };
+
+    #[test]
+    fn dictation_log_is_local_to_its_entry_and_deleted_with_it() {
+        let db = crate::data::db::open(":memory:").expect("db");
+        let entry = insert_transcription_returning(&db, "synthetic", "synthetic", 1, 1000, "test", None, None).unwrap();
+        assert!(super::get_dictation_log(&db, entry.id).unwrap().is_none());
+        let log = serde_json::json!({"entry_id": entry.id, "stages": [{"stage": "transcription", "duration_ms": 25}]});
+        super::save_dictation_log(&db, entry.id, &log).unwrap();
+        assert_eq!(super::get_dictation_log(&db, entry.id).unwrap(), Some(log));
+        super::delete_history_entry(&db, entry.id).unwrap();
+        assert!(super::get_dictation_log(&db, entry.id).unwrap().is_none());
+        assert!(query_recent_page(&db, 10, 0, None, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn dictation_log_prices_only_known_openrouter_usage() {
+        let db = crate::data::db::open(":memory:").unwrap();
+        let entry = insert_transcription_returning(&db, "synthetic", "synthetic", 1, 1000, "test", None, None).unwrap();
+        {
+            let conn = crate::data::db::lock_conn(&db).unwrap();
+            conn.execute("INSERT INTO openrouter_pricing (model_id, prompt_usd_per_token, completion_usd_per_token, fetched_at) VALUES ('test/model', 0.001, 0.002, 1)", []).unwrap();
+        }
+        let log = serde_json::json!({"entry_id":entry.id,"stages":[
+            {"provider":"openrouter","model":"test/model","input_tokens":10,"output_tokens":5},
+            {"provider":"other","model":"test/model","input_tokens":10,"output_tokens":5},
+            {"provider":"openrouter","model":"test/model","input_tokens":10}
+        ]});
+        super::save_dictation_log(&db, entry.id, &log).unwrap();
+        let saved = super::get_dictation_log(&db, entry.id).unwrap().unwrap();
+        assert!((saved["stages"][0]["cost_usd"].as_f64().unwrap() - 0.02).abs() < 1e-12);
+        assert!(saved["stages"][1].get("cost_usd").is_none());
+        assert!(saved["stages"][2].get("cost_usd").is_none());
+        assert!(saved.get("estimated_cost_usd").is_none());
+    }
 
     #[test]
     fn query_recent_page_applies_limit_and_offset() {

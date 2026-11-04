@@ -723,11 +723,13 @@ async fn run_pipeline_with_delivery(
 
     let vad_samples = captured_audio.samples_16k.clone();
     let vad_handle = tokio::task::spawn_blocking(move || {
-        crate::media::vad::analyze_speech_with_sensitivity(
+        let started = std::time::Instant::now();
+        let result = crate::media::vad::analyze_speech_with_sensitivity(
             &vad_samples,
             active_gain,
             sensitivity_level,
-        )
+        );
+        (result, started.elapsed())
     });
 
     let stage_config = std::time::Instant::now();
@@ -786,16 +788,16 @@ async fn run_pipeline_with_delivery(
 
     let vad_span = diagnostics::start_span(trace_guard.trace_id(), "vad_gate", Some("vad"), None);
     telemetry.start_stage(Stage::Vad);
-    let vad_result = tokio::select! {
+    let (vad_result, vad_duration) = tokio::select! {
         result = vad_handle => match result {
-            Ok(Ok(result)) => Some(result),
-            Ok(Err(e)) => {
+            Ok((Ok(result), duration)) => (Some(result), Some(duration)),
+            Ok((Err(e), duration)) => {
                 log::warn!("pipeline: VAD analysis failed, falling back to RMS-only gate: {e}");
-                None
+                (None, Some(duration))
             }
             Err(e) => {
                 log::warn!("pipeline: VAD task panicked, falling back to RMS-only gate: {e}");
-                None
+                (None, None)
             }
         },
         _ = wait_for_cancel(&mut cancel_rx) => {
@@ -827,7 +829,7 @@ async fn run_pipeline_with_delivery(
     } else {
         "vad_internal_failure"
     });
-    telemetry.complete_stage(None);
+    telemetry.complete_stage_with_duration(None, vad_duration);
 
     let stage_transcribe = std::time::Instant::now();
     telemetry.start_stage(Stage::Transcription);

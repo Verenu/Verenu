@@ -118,6 +118,7 @@ pub(super) async fn guard_cleanup_refusal(
     app: Option<&AppHandle>,
     alternate_transcript: Option<&str>,
     gen: u64,
+    telemetry: Option<&PipelineTelemetry>,
 ) -> Option<String> {
     if !cleanup_output_is_unusable_against_candidates(
         intensity,
@@ -151,7 +152,7 @@ pub(super) async fn guard_cleanup_refusal(
         let Some(cp) = crate::api::Target::resolve(provider_id, customs) else {
             return Some(cleaned);
         };
-        cleanup::cleanup_with_alternate_and_evidence(
+        crate::api::usage::scope(telemetry.map(|t| t.usage_collector()), "cleanup", provider_id, model, cleanup::cleanup_with_alternate_and_evidence(
             expanded,
             cp,
             key,
@@ -164,7 +165,7 @@ pub(super) async fn guard_cleanup_refusal(
             Some(prompts::hardened_retry_template()),
             alternate_transcript,
             gen,
-        )
+        ))
         .await
     };
 
@@ -200,6 +201,7 @@ pub(super) async fn guard_cleanup_refusal(
 }
 
 struct CleanupSuccess {
+    fallback: bool,
     cleaned: String,
     provider_id: String,
     model: String,
@@ -228,11 +230,6 @@ async fn run_cleanup_provider_chain(
     {
         if !candidate_available_offline(&provider_id, offline) {
             continue;
-        }
-        if provider_index > 0 {
-            if let Some(telemetry) = telemetry {
-                telemetry.fallback("cleanup");
-            }
         }
         if !crate::api::cleanup::chain_entry_supports_cleanup(
             &cfg.custom_providers,
@@ -290,7 +287,7 @@ async fn run_cleanup_provider_chain(
                     } else {
                         CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS
                     }),
-                    cleanup::cleanup_with_alternate_and_evidence(
+                    crate::api::usage::scope(telemetry.map(|t| t.usage_collector()), "cleanup", &provider_id, &model, cleanup::cleanup_with_alternate_and_evidence(
                         expanded,
                         cp,
                         &key,
@@ -303,7 +300,7 @@ async fn run_cleanup_provider_chain(
                         custom_template.as_deref(),
                         alternate_transcript,
                         gen,
-                    ),
+                    )),
                 )
                 .await
                 {
@@ -338,6 +335,7 @@ async fn run_cleanup_provider_chain(
                     );
                     return (
                         Some(CleanupSuccess {
+                            fallback: provider_index > 0,
                             cleaned,
                             provider_id,
                             model,
@@ -674,6 +672,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         )
         .await;
         let provider_succeeded = cleanup_res.is_some();
+        let used_fallback = cleanup_res.as_ref().is_some_and(|success| success.fallback);
         if let Some(success) = cleanup_res.as_ref() {
             cleanup_api_used = format!("{}/{}", success.provider_id, success.model);
         }
@@ -695,6 +694,7 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
                     app,
                     alternate.map(|candidate| candidate.text.as_str()),
                     gen,
+                    telemetry,
                 )
                 .await
             }
@@ -713,9 +713,12 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
             valid
         });
         record_provider_duration(provider_started.elapsed());
+        if guarded.is_some() && used_fallback {
+            if let Some(telemetry) = telemetry { telemetry.fallback("cleanup"); }
+        }
         if guarded.is_none() {
             if let Some(telemetry) = telemetry {
-                telemetry.fallback("cleanup");
+                telemetry.cleanup_unavailable();
             }
         }
         if guarded.is_none() {
