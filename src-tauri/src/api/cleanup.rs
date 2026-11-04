@@ -273,6 +273,7 @@ struct MsgResp {
 
 #[derive(Deserialize)]
 struct ChatUsage {
+    prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     completion_tokens_details: Option<CompletionDetails>,
 }
@@ -370,6 +371,9 @@ async fn openai_compat(
     let resp = checked_cleanup_response(resp, provider_label, model, gen).await?;
 
     let data: ChatResp = wire.json(resp).await?;
+    if let Some(usage) = &data.usage {
+        super::usage::record(usage.prompt_tokens, usage.completion_tokens);
+    }
     let output = parse_chat_cleanup(data)?;
     log::debug!(
         "cleanup: openai_compat parsed gen={} chars={}",
@@ -588,6 +592,7 @@ async fn anthropic_cleanup(
     let resp = wire.check_status(resp, provider_label, model)?;
     let resp = checked_cleanup_response(resp, provider_label, model, gen).await?;
     let data: serde_json::Value = wire.json(resp).await?;
+    super::usage::record(data.pointer("/usage/input_tokens").and_then(|v| v.as_u64()), data.pointer("/usage/output_tokens").and_then(|v| v.as_u64()));
     parse_anthropic_text(&data)
         .ok_or_else(|| anyhow::anyhow!("No text content in {provider_label} response"))
 }
@@ -756,6 +761,7 @@ async fn google_cleanup(
         })?;
 
     let data: GeminiResp = resp.json().await?;
+    data.record_usage();
     if let Some(candidate) = data.candidates.as_ref().and_then(|c| c.first()) {
         if let Some(reason) = candidate.finish_reason.as_deref() {
             if reason != "STOP" && reason != "MAX_TOKENS" {

@@ -313,7 +313,7 @@ pub(super) async fn run_transcription(
 
     let dual_enabled = cfg.dual_transcription_enabled && transcription_model_chain(cfg).len() > 1;
     let (raw, provider_id, model, alternate_result) = match if dual_enabled {
-        run_dual_transcription_candidates(app, audio, cfg, gen).await
+        run_dual_transcription_candidates(app, audio, cfg, gen, telemetry).await
     } else {
         run_primary_transcription_chain(app, audio, cfg, gen, telemetry)
             .await
@@ -392,12 +392,14 @@ pub(super) async fn run_transcription(
 const DUAL_TRANSCRIPTION_TIMEOUT_SECS: u64 = 30;
 
 type CandidateOutcome = (usize, String, String, anyhow::Result<String>);
+type DualSelection = (String, String, String, Option<(String, String, String)>);
 
 async fn run_dual_transcription_candidates(
     app: &AppHandle,
     audio: &CapturedAudio,
     cfg: &store::PipelineConfig,
     gen: u64,
+    telemetry: &PipelineTelemetry,
 ) -> anyhow::Result<(String, String, String, Option<(String, String, String)>)> {
     let chain = runtime_model_chain(Some(app), cfg, "transcription");
     let mut next_index = 0usize;
@@ -425,6 +427,7 @@ async fn run_dual_transcription_candidates(
                 chain[next_index].clone(),
                 next_index > 0 && provider != store::LOCAL,
                 gen,
+                telemetry.usage_collector(),
             );
             next_index += 1;
             if provider == store::LOCAL {
@@ -480,18 +483,50 @@ async fn run_dual_transcription_candidates(
         }
     }
 
-    successes.sort_by_key(|(index, _, _, _)| *index);
-    let mut successes = successes.into_iter();
-    let Some((_, primary_text, primary_provider, primary_model)) = successes.next() else {
+    let Some((primary_text, primary_provider, primary_model, alternate)) =
+        select_dual_transcription_successes(successes, telemetry)
+    else {
         if let Some(error) = last_err {
             return Err(error);
         }
         anyhow::bail!("Nothing transcribed - please try speaking more clearly");
     };
-    let alternate = successes
-        .next()
-        .map(|(_, text, provider, model)| (text, provider, model));
     Ok((primary_text, primary_provider, primary_model, alternate))
+}
+
+fn select_dual_transcription_successes(
+    mut successes: Vec<(usize, String, String, String)>,
+    telemetry: &PipelineTelemetry,
+) -> Option<DualSelection> {
+    successes.sort_by_key(|(index, _, _, _)| *index);
+    let mut successes = successes.into_iter();
+    let (index, text, provider, model) = successes.next()?;
+    if index > 0 {
+        telemetry.fallback("transcription");
+    }
+    let alternate = successes.next().map(|(_, text, provider, model)| (text, provider, model));
+    Some((text, provider, model, alternate))
+}
+
+#[cfg(test)]
+mod dual_selection_tests {
+    use super::*;
+
+    #[test]
+    fn selected_dual_candidate_records_fallback_only_when_primary_is_missing() {
+        for (indices, expected) in [(vec![1, 2], true), (vec![1, 0], false), (vec![], false)] {
+            let telemetry = PipelineTelemetry::new(None, None);
+            let candidates = indices.into_iter().map(|index| {
+                (index, format!("text{index}"), format!("provider{index}"), "model".into())
+            }).collect();
+            let selected = select_dual_transcription_successes(candidates, &telemetry);
+            if let Some((_, provider, _, _)) = selected {
+                assert_eq!(provider, if expected { "provider1" } else { "provider0" });
+            }
+            let log = telemetry.history_log(1, 1000, &[]);
+            assert_eq!(!log["failures"].as_array().unwrap().is_empty(), expected);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -504,6 +539,7 @@ fn spawn_transcription_candidate(
     candidate: (String, String),
     bounded: bool,
     gen: u64,
+    usage: crate::api::usage::Collector,
 ) {
     let app = app.clone();
     let audio = audio.clone();
@@ -513,7 +549,7 @@ fn spawn_transcription_candidate(
     let vocabulary = cfg.speech_vocabulary.clone();
     in_flight.spawn(async move {
         let (provider, model) = candidate;
-        let request = transcribe_any(
+        let request = crate::api::usage::scope(Some(usage), "transcription", &provider, &model, transcribe_any(
             &app,
             &audio,
             &provider,
@@ -523,7 +559,7 @@ fn spawn_transcription_candidate(
             &model,
             gen,
             &vocabulary,
-        );
+        ));
         let result = if bounded {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(DUAL_TRANSCRIPTION_TIMEOUT_SECS),
@@ -580,11 +616,8 @@ async fn run_primary_transcription_chain(
         if !candidate_available_offline(&provider_id, offline) {
             continue;
         }
-        if provider_index > 0 {
-            telemetry.fallback("transcription");
-        }
         let key = cfg.key_for_request(&provider_id);
-        match transcribe_any(
+        match crate::api::usage::scope(Some(telemetry.usage_collector()), "transcription", &provider_id, &model, transcribe_any(
             app,
             audio,
             &provider_id,
@@ -598,10 +631,11 @@ async fn run_primary_transcription_chain(
             &model,
             gen,
             &cfg.speech_vocabulary,
-        )
+        ))
         .await
         {
             Ok(raw) if !raw.is_empty() => {
+                if provider_index > 0 { telemetry.fallback("transcription"); }
                 log::debug!(
                     "pipeline: transcription provider success gen={} provider={} model={} chars={}",
                     gen,

@@ -2,11 +2,12 @@
   import { onMount, tick } from 'svelte';
   import { fly } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
-  import { icons } from '../../icons';
   import { appStore } from '../../stores';
   import { motionMs } from '../../motion';
   import { fmtDuration } from '../insights/helpers';
   import HistoryToolbar from './HistoryToolbar.svelte';
+  import HistoryRowMenu from './HistoryRowMenu.svelte';
+  import { virtualWindowUnchanged } from './virtualWindow';
   import type { InstalledApp } from '../../appMappings';
   import { fmtDate, fmtTime, formatAppLabel, localDayKey, type Entry, type RenderItem } from './helpers';
 
@@ -37,6 +38,8 @@
   export let onDismissCancelled: () => void;
   export let onLoadOlder: () => void;
   export let onCopy: (entry: Entry) => void;
+  export let onViewLogs: (entry: Entry) => void = () => {};
+  export let onDelete: (entry: Entry) => void = () => {};
 
   $: hasBanner = !!failedEntry || !!cancelledEntry;
   $: filtersActive = search.trim().length > 0 || appFilter !== null;
@@ -138,6 +141,8 @@
   let listOffset = 0;
   let lastStart = -1;
   let lastEnd = -1;
+  let lastItems: RenderItem[] | null = null;
+  let lastTotalHeight = -1;
 
   function updateListOffset() {
     if (!container || !listContainer) return;
@@ -170,6 +175,7 @@
       bottomSpacerHeight = 0;
       lastStart = -1;
       lastEnd = -1;
+      lastItems = null;
       return;
     }
     const scrollTop = container === document.documentElement ? window.scrollY : container.scrollTop;
@@ -212,11 +218,15 @@
     start = Math.max(0, Math.min(start, flatItems.length));
     end = Math.max(start, Math.min(end, flatItems.length));
 
-    if (start === lastStart && end === lastEnd) {
+    const prevWindow = { start: lastStart, end: lastEnd, items: lastItems, totalHeight: lastTotalHeight };
+    const nextWindow = { start, end, items: flatItems, totalHeight };
+    if (virtualWindowUnchanged(prevWindow, nextWindow)) {
       return;
     }
     lastStart = start;
     lastEnd = end;
+    lastItems = flatItems;
+    lastTotalHeight = totalHeight;
 
     visibleItems = flatItems.slice(start, end).map((item, idx) => ({
       item,
@@ -457,21 +467,12 @@
                 <div class="day-meta day-meta-below" aria-hidden={!!stackedMeta[item.key]}>{rowMeta(item.entry, installedApps)}</div>
               {/if}
             </div>
-            <button
-              class="copy-btn"
-              class:copied={copiedId === item.entry.id}
-              onclick={() => onCopy(item.entry)}
-              title="Copy to clipboard"
-              aria-label="Copy"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                {#if copiedId === item.entry.id}
-                  {@html icons.check}
-                {:else}
-                  {@html icons.copy}
-                {/if}
-              </svg>
-            </button>
+            <HistoryRowMenu
+              copied={copiedId === item.entry.id}
+              oncopy={() => onCopy(item.entry)}
+              onviewlogs={() => onViewLogs(item.entry)}
+              ondelete={() => onDelete(item.entry)}
+            />
           </div>
         {/if}
       {/each}
@@ -515,7 +516,7 @@
 
   .day-row {
     display: grid;
-    grid-template-columns: 84px 1fr 18px;
+    grid-template-columns: 84px 1fr 22px;
     align-items: start;
     padding: 11px 4px;
     border-bottom: 1px solid var(--line);
@@ -526,36 +527,6 @@
   .day-row:hover { background: var(--control-hover); }
 
   .day-row.banner-row { grid-template-columns: 84px 1fr auto; }
-
-  .copy-btn {
-    all: unset;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    border-radius: 4px;
-    color: var(--ink-mute);
-    opacity: 0;
-    transform: translateX(8px);
-    transition: opacity 0.16s var(--ui-ease-out, ease), transform 0.16s var(--ui-ease-out, ease), color 0.12s;
-    flex-shrink: 0;
-    margin-top: 2px;
-  }
-  .day-row:hover .copy-btn,
-  .copy-btn:focus-visible,
-  .copy-btn.copied {
-    opacity: 0.9;
-    transform: translateX(0);
-  }
-  .copy-btn:hover { color: var(--ink-strong); }
-  .copy-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .copy-btn.copied { color: var(--accent); opacity: 1; }
-  .copy-btn svg { width: 10px; height: 10px; }
 
   .day-time {
     position: relative;

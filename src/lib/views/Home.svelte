@@ -13,7 +13,11 @@
   import ProviderStatusBanner from './home/ProviderStatusBanner.svelte';
   import GlobalMessageBanner from './home/GlobalMessageBanner.svelte';
   import HistoryList from './home/HistoryList.svelte';
+  import DictationLogDialog from './home/DictationLogDialog.svelte';
+  import { parseDictationLog, type DictationLog } from './home/dictationLog';
   import StatsCard from './home/StatsCard.svelte';
+  import { createLatestGate, createLatestRefresher } from './home/latestRequest';
+  import { createLoadSequencer } from './home/loadSequencer';
   import { loadHotkey, hotkeyCodes } from '../hotkey.svelte';
   import { listenForSyncCompletion } from '../syncStore.svelte';
   import { desktopShortcut, type ShortcutStatus } from '../shortcutStatus.svelte';
@@ -58,7 +62,16 @@
   let apps: string[] = [];
   let installedApps: InstalledApp[] = [];
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
-  let loadSeq = 0;
+  const statsGate = createLatestGate();
+  const refreshStats = createLatestRefresher(
+    () => invoke<Stats>('get_stats'),
+    (next) => { stats = next; },
+    statsGate,
+  );
+  const refreshApps = createLatestRefresher(
+    () => invoke<string[] | null>('get_history_apps'),
+    (list) => { apps = list ?? []; },
+  );
 
   function handleSearchChange(value: string) {
     search = value;
@@ -152,46 +165,99 @@
     }
   }
 
-  async function load(reset = true, refreshStats = false) {
-    const seq = ++loadSeq;
-    const nextOffset = reset ? 0 : historyOffset;
-    const nextCursor = reset ? null : historyCursor;
+  let logEntry: Entry | null = null;
+  let logData: DictationLog | null = null;
+  let logLoading = false;
+  let logError = '';
+  let logSeq = 0;
+
+  async function viewLogs(entry: Entry) {
+    const seq = ++logSeq;
+    logEntry = entry;
+    logData = null;
+    logError = '';
+    logLoading = true;
     try {
-      const [r, s] = await Promise.all([
-        invoke<Entry[]>('get_recent', {
-          limit: HISTORY_PAGE_SIZE,
-          offset: nextOffset,
-          beforeId: nextCursor ?? undefined,
-          search: debouncedSearch.trim() || undefined,
-          appName: appFilter ?? undefined,
-        }),
-        refreshStats ? invoke<Stats>('get_stats') : Promise.resolve(null),
-      ]);
-      if (seq !== loadSeq) return;
-      const page = r ?? [];
+      const raw = await invoke<unknown>('get_dictation_log', { id: entry.id });
+      if (seq !== logSeq) return;
+      logData = parseDictationLog(raw);
+    } catch (err) {
+      if (seq !== logSeq) return;
+      logError = formatIpcError(err, 'Could not load the log for this dictation');
+    } finally {
+      if (seq === logSeq) logLoading = false;
+    }
+  }
+
+  function closeLogs() {
+    logSeq++;
+    logEntry = null;
+  }
+
+  async function copyLogDetails(details: string) {
+    try {
+      await navigator.clipboard.writeText(details);
+    } catch (err) {
+      void emit('verenu:error', formatIpcError(err, 'Could not copy the log details'));
+    }
+  }
+
+  async function deleteEntry(entry: Entry) {
+    try {
+      await invoke('delete_history_entry', { id: entry.id });
+      recents = recents.filter((item) => item.id !== entry.id);
+      historyOffset = Math.max(0, historyOffset - 1);
+      // A get_recent issued before the delete may still be in flight and would restore the row.
+      const interrupted = sequencer.interrupt();
+      if (interrupted?.reset) void load(true);
+      if (logEntry?.id === entry.id) closeLogs();
+      void refreshStats();
+      void refreshApps();
+    } catch (err) {
+      void emit('verenu:error', formatIpcError(err, 'Could not delete this dictation'));
+    }
+  }
+
+  const sequencer = createLoadSequencer({
+    fetchPage: async (reset) => {
+      const nextOffset = reset ? 0 : historyOffset;
+      const nextCursor = reset ? null : historyCursor;
+      const page = await invoke<Entry[]>('get_recent', {
+        limit: HISTORY_PAGE_SIZE,
+        offset: nextOffset,
+        beforeId: nextCursor ?? undefined,
+        search: debouncedSearch.trim() || undefined,
+        appName: appFilter ?? undefined,
+      });
+      return { page: page ?? [], nextOffset };
+    },
+    refreshStats,
+    onSuccess: ({ page, nextOffset }, reset) => {
       const cached = applyHistoryPage(recents, page, nextOffset, reset);
       recents = cached.entries;
       historyOffset = cached.nextOffset;
       if (page.length > 0) historyCursor = page[page.length - 1].id;
       else if (reset) historyCursor = null;
-      if (s) {
-        stats = s;
-      }
       if (reset) historyError = '';
       hasMoreHistory = cached.hasMore;
-    } catch (err) {
-      if (seq !== loadSeq) return;
+    },
+    onFailure: (err, reset) => {
       console.error('Home load failed:', err);
       if (reset) {
         historyError = formatIpcError(err, 'Could not load your dictation history');
         recents = [];
         historyOffset = 0;
         historyCursor = null;
-        stats = { total_words: 0, avg_wpm: 0, day_streak: 0 };
         hasMoreHistory = false;
       }
-    }
-    if (reset) loading = false;
+    },
+    onSettled: (reset) => {
+      if (reset) loading = false;
+    },
+  });
+
+  function load(reset = true, withStats = false) {
+    return sequencer.load(reset, withStats);
   }
 
   async function loadOlder() {
@@ -226,9 +292,7 @@
       .then(list => { installedApps = list ?? []; })
       .catch(() => { installedApps = []; });
     getVersion().then(v => currentVersion = v);
-    invoke<string[] | null>('get_history_apps')
-      .then(list => { apps = list ?? []; })
-      .catch(() => { apps = []; });
+    void refreshApps();
     loadHotkey()
       .then(() => {
         refreshShortcut();
@@ -285,13 +349,13 @@
       failedEntry = null;
       if (failedTimer) { clearTimeout(failedTimer); failedTimer = null; }
       recents = [ev.payload, ...recents.filter((entry) => entry.id !== ev.payload.id)].slice(0, HISTORY_MAX_RETAINED);
-      invoke<Stats>('get_stats').then((nextStats) => { stats = nextStats; }).catch(() => {});
+      void refreshStats();
     }));
 
     trackListener(listen('verenu:history-pruned', () => load(true, true)));
     trackListener(listenForSyncCompletion(() => {
       load(true, true);
-      invoke<string[]>('get_history_apps').then(list => { apps = list ?? []; }).catch(() => {});
+      void refreshApps();
     }));
 
     trackListener(listen<string>('verenu:pipeline-failed', (ev) => {
@@ -403,6 +467,8 @@
         onDismissCancelled={dismissCancelled}
         onLoadOlder={loadOlder}
         onCopy={copyText}
+        onViewLogs={viewLogs}
+        onDelete={deleteEntry}
       />
     </div>
 
@@ -413,6 +479,18 @@
     {/if}
   </div>
 </div>
+
+{#if logEntry}
+  <DictationLogDialog
+    entry={logEntry}
+    log={logData}
+    loading={logLoading}
+    error={logError}
+    devMode={appStore.devModeEnabled}
+    onclose={closeLogs}
+    oncopy={copyLogDetails}
+  />
+{/if}
 
 <style>
   .content-inner {
