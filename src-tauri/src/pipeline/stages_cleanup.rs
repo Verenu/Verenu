@@ -5,6 +5,30 @@ const CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS: u64 = 3;
 const CLEANUP_FAST_ATTEMPTS: u8 = 2;
 pub(super) const CLEANUP_PROMPT_VERSION: &str = "dictation-v11";
 
+fn cleanup_failure_notice(is_dev_session: bool, in_app: impl FnOnce(), desktop: impl FnOnce()) {
+    in_app();
+    if !is_dev_session {
+        desktop();
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::cleanup_failure_notice;
+    use std::cell::Cell;
+
+    #[test]
+    fn development_sessions_keep_in_app_notice_without_desktop_notification() {
+        for (dev_session, expected_desktop) in [(true, false), (false, true)] {
+            let in_app = Cell::new(false);
+            let desktop = Cell::new(false);
+            cleanup_failure_notice(dev_session, || in_app.set(true), || desktop.set(true));
+            assert!(in_app.get());
+            assert_eq!(desktop.get(), expected_desktop);
+        }
+    }
+}
+
 fn cleanup_soft_timeout_error(provider: &str, model: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "CLEANUP_SOFT_TIMEOUT provider={provider} model={model} timeout_secs={CLEANUP_FAST_ATTEMPT_TIMEOUT_SECS}"
@@ -723,12 +747,17 @@ pub(super) async fn run_cleanup_and_snippets_for_db(
         }
         if guarded.is_none() {
             if let Some(app) = app {
-                app.emit(
-                    "verenu:model-notice",
-                    "Cleanup was unavailable. Your transcript was preserved.",
-                )
-                .ok();
-                crate::system::notify::notify_cleanup_failed(app);
+                cleanup_failure_notice(
+                    crate::is_dev_session(),
+                    || {
+                        app.emit(
+                            "verenu:model-notice",
+                            "Cleanup was unavailable. Your transcript was preserved.",
+                        )
+                        .ok();
+                    },
+                    || crate::system::notify::notify_cleanup_failed(app),
+                );
             }
         }
         match guarded {
