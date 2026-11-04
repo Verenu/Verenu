@@ -107,6 +107,50 @@ async fn skip_command_cancels_inflight_model_download_and_sync() {
 }
 
 #[test]
+fn transcription_wire_payload_omits_nulls_with_a_strict_byte_budget() {
+    let row = engine::TranscriptionRow {
+        raw_text: "hello".into(),
+        clean_text: "Hello.".into(),
+        words: 1,
+        spoken_words: None,
+        duration_ms: 1000,
+        api_used: "local".into(),
+        app_name: None,
+        website_domain: None,
+        context_uuid: None,
+        created_at: "2026-01-01 00:00:00".into(),
+        activity_day: None,
+        activity_hour: None,
+    };
+    let encoded = serde_json::to_vec(&row).unwrap();
+    assert_eq!(encoded, br#"{"raw_text":"hello","clean_text":"Hello.","words":1,"duration_ms":1000,"api_used":"local","created_at":"2026-01-01 00:00:00"}"#);
+    let decoded: engine::TranscriptionRow = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.clean_text, row.clean_text);
+    assert!(decoded.spoken_words.is_none() && decoded.app_name.is_none() && decoded.context_uuid.is_none());
+    assert!(decoded.activity_day.is_none() && decoded.activity_hour.is_none());
+    let mut legacy: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    for field in ["spoken_words", "app_name", "context_uuid", "activity_day", "activity_hour"] {
+        legacy[field] = serde_json::Value::Null;
+    }
+    let decoded_legacy: engine::TranscriptionRow = serde_json::from_value(legacy).unwrap();
+    assert!(decoded_legacy.spoken_words.is_none() && decoded_legacy.context_uuid.is_none());
+
+    let mut populated = row;
+    populated.spoken_words = Some(0);
+    populated.app_name = Some(String::new());
+    populated.context_uuid = Some("context".into());
+    populated.activity_day = Some("2026-01-01".into());
+    populated.activity_hour = Some(0);
+    let decoded: engine::TranscriptionRow =
+        serde_json::from_slice(&serde_json::to_vec(&populated).unwrap()).unwrap();
+    assert_eq!(decoded.spoken_words, Some(0));
+    assert_eq!(decoded.app_name.as_deref(), Some(""));
+    assert_eq!(decoded.context_uuid.as_deref(), Some("context"));
+    assert_eq!(decoded.activity_day.as_deref(), Some("2026-01-01"));
+    assert_eq!(decoded.activity_hour, Some(0));
+}
+
+#[test]
 fn t3_skill_opt_out_syncs_with_contexts_and_old_payloads_omit_it() {
     let a = test_db("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     let b = test_db("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
@@ -1933,6 +1977,20 @@ fn compaction_is_safe_without_a_successful_sync_session() {
 }
 
 #[tokio::test]
+async fn session_exchanges_large_metadata_between_compression_capable_peers() {
+    let a = test_db(&uuid("metadata-a"));
+    let b = test_db(&uuid("metadata-b"));
+    let host_a = TestHost::new(&uuid("metadata-a"));
+    let host_b = TestHost::new(&uuid("metadata-b"));
+    let key = crate::data::store::CLEANUP_PROMPT_OVERRIDE;
+    let value = json!("Synthetic instructions. ".repeat(100));
+    host_a.settings.lock().unwrap().insert(key.into(), value.clone());
+    host_a.stamps.lock().unwrap().insert(key.into(), (1, host_a.uuid.clone()));
+    run_two_sessions(&a, &b, &host_a, &host_b).await;
+    assert_eq!(host_b.settings.lock().unwrap().get(key), Some(&value));
+}
+
+#[tokio::test]
 async fn session_exchanges_changes_incrementally() {
     let a = test_db(&uuid("aaaa"));
     let b = test_db(&uuid("bbbb"));
@@ -2421,6 +2479,113 @@ fn context_app_matching_uses_local_name_and_rejects_weak_matches() {
 }
 
 #[tokio::test]
+async fn compressed_sync_batch_has_a_wire_budget_and_round_trips() {
+    use super::protocol::{read_message, send_message_with_compression, OpsBatch, SyncOp};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let ops = (0..100).map(|i| SyncOp {
+        table: "transcriptions".into(), row_uuid: format!("{i:036}"), op: "upsert".into(),
+        ts_ms: 1767225600000, origin: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), origin_seq: i,
+        payload: Some(json!({"raw_text":"Synthetic history fixture", "clean_text":"Synthetic history fixture."})),
+    }).collect();
+    let message = Message::Ops(OpsBatch { ops, cursor: 100, done: true, snapshot: false });
+    let (mut sender, mut receiver) = tokio::io::duplex(128 * 1024);
+    send_message_with_compression(&mut sender, message.clone(), true).await.unwrap();
+    sender.shutdown().await.unwrap();
+    let mut wire = Vec::new();
+    receiver.read_to_end(&mut wire).await.unwrap();
+    assert!(wire.len() <= 1127, "compressed batch budget exceeded: {} bytes", wire.len());
+    assert_ne!(wire[0] & 0x80, 0);
+    let decoded = read_message(&mut wire.as_slice()).await.unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), serde_json::to_value(&message).unwrap());
+    let (mut sender, mut receiver) = tokio::io::duplex(128 * 1024);
+    send_message_with_compression(&mut sender, message.clone(), false).await.unwrap();
+    sender.shutdown().await.unwrap();
+    let mut legacy_wire = Vec::new();
+    receiver.read_to_end(&mut legacy_wire).await.unwrap();
+    assert_eq!(legacy_wire[0] & 0x80, 0, "old peers must receive uncompressed frames");
+    assert_eq!(serde_json::to_value(read_message(&mut legacy_wire.as_slice()).await.unwrap()).unwrap(), serde_json::to_value(message).unwrap());
+}
+
+#[tokio::test]
+async fn compressed_frames_reject_expansion_past_declared_size() {
+    use std::io::Write;
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gzip.write_all(b"oversized").unwrap();
+    let compressed = gzip.finish().unwrap();
+    let mut wire = Vec::new();
+    wire.extend_from_slice(&((compressed.len() as u32 + 4) | 0x8000_0000).to_be_bytes());
+    wire.extend_from_slice(&1u32.to_be_bytes());
+    wire.extend_from_slice(&compressed);
+    assert!(super::protocol::read_message(&mut wire.as_slice()).await.is_err());
+    wire[4..8].copy_from_slice(&100u32.to_be_bytes());
+    let error = super::protocol::read_message(&mut wire.as_slice()).await.unwrap_err();
+    assert!(!super::manager::should_try_next_address(&error));
+    let body = serde_json::to_vec(&Message::SyncDone).unwrap();
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gzip.write_all(&body).unwrap();
+    let valid = gzip.finish().unwrap();
+    let mut trailing = Vec::new();
+    trailing.extend_from_slice(&((valid.len() as u32 + 4) | 0x8000_0000).to_be_bytes());
+    trailing.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    trailing.extend_from_slice(&valid);
+    assert!(super::protocol::read_message(&mut trailing.as_slice()).await.is_ok());
+    trailing[..4].copy_from_slice(&((valid.len() as u32 + 5) | 0x8000_0000).to_be_bytes());
+    trailing.push(0);
+    assert!(super::protocol::read_message(&mut trailing.as_slice()).await.is_err());
+    let mut too_large = Vec::new();
+    too_large.extend_from_slice(&0x8000_0004u32.to_be_bytes());
+    too_large.extend_from_slice(&(super::protocol::MAX_MESSAGE_BYTES + 1).to_be_bytes());
+    assert!(super::protocol::read_message(&mut too_large.as_slice()).await.is_err());
+}
+
+#[test]
+fn old_hello_defaults_to_uncompressed() {
+    let hello: super::protocol::Hello = serde_json::from_value(json!({
+        "device_uuid":"peer", "device_name":"Peer", "protocol":3, "app_version":"old"
+    })).unwrap();
+    assert!(!hello.compressed_frames);
+    assert!(serde_json::to_value(hello).unwrap().get("z").is_none());
+}
+
+#[tokio::test]
+async fn small_sync_frame_uses_one_write_and_exact_wire_budget() {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::AsyncWrite;
+
+    #[derive(Default)]
+    struct RecordingWriter {
+        bytes: Vec<u8>,
+        writes: usize,
+    }
+    impl AsyncWrite for RecordingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Poll::Ready(Ok(bytes.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    let mut writer = RecordingWriter::default();
+    super::protocol::send_message(&mut writer, Message::Ack { seq: 123 }).await.unwrap();
+    let body = br#"{"type":"ack","seq":123}"#;
+    assert_eq!(writer.writes, 1, "a small frame should fit in one TLS write");
+    assert_eq!(writer.bytes.len(), 28, "wire budget includes the four-byte frame header");
+    assert_eq!(&writer.bytes[..4], &(body.len() as u32).to_be_bytes());
+    assert_eq!(&writer.bytes[4..], body);
+}
+
+#[tokio::test]
 async fn messages_roundtrip_through_the_framer() {
     crate::legal_consent::enable_test_consent();
     use super::protocol::{read_message, send_message};
@@ -2432,8 +2597,9 @@ async fn messages_roundtrip_through_the_framer() {
         app_version: "0.0.0".to_string(),
         activity_receipts: true,
         cleanup_cache: true,
+        compressed_frames: true,
     });
-    let (send, read) = tokio::join!(send_message(&mut client, &hello), async {
+    let (send, read) = tokio::join!(send_message(&mut client, hello), async {
         let message: Message = read_message(&mut server).await.expect("read");
         message
     });
@@ -2528,7 +2694,7 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
         async move {
             send_message(
                 &mut a,
-                &Message::PairRequest {
+                Message::PairRequest {
                     device_uuid: id_a.device_uuid.clone(),
                     device_name: id_a.device_name.clone(),
                     protocol: super::protocol::PROTOCOL_VERSION,
@@ -2558,7 +2724,7 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
             let outcome =
                 pairing::responder_exchange(&mut b, &cipher, msg_b, &identity_b, &device_uuid)
                     .await?;
-            send_message(&mut b, &Message::PairComplete).await?;
+            send_message(&mut b, Message::PairComplete).await?;
             Ok::<_, anyhow::Error>(outcome)
         },
     );
@@ -2585,7 +2751,7 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
         async move {
             send_message(
                 &mut a2,
-                &Message::PairRequest {
+                Message::PairRequest {
                     device_uuid: identity_a2.device_uuid.clone(),
                     device_name: identity_a2.device_name.clone(),
                     protocol: super::protocol::PROTOCOL_VERSION,

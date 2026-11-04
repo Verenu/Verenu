@@ -135,8 +135,6 @@ CREATE TABLE IF NOT EXISTS context_sub_apps (
 );
 CREATE INDEX IF NOT EXISTS idx_context_sub_apps_context_id
   ON context_sub_apps(context_id);
-CREATE INDEX IF NOT EXISTS idx_context_sub_apps_executable
-  ON context_sub_apps(executable);
 CREATE TABLE IF NOT EXISTS context_website_targets (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   context_id   INTEGER NOT NULL REFERENCES contexts(id) ON DELETE CASCADE,
@@ -952,8 +950,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
                      SELECT id, uuid, context_id, executable, app_name, label, title_pattern, match_mode, platform, created_at, updated_at
                        FROM context_sub_apps_v29;
                      DROP TABLE context_sub_apps_v29;
-                     CREATE INDEX IF NOT EXISTS idx_context_sub_apps_context_id ON context_sub_apps(context_id);
-                     CREATE INDEX IF NOT EXISTS idx_context_sub_apps_executable ON context_sub_apps(executable);",
+                     CREATE INDEX IF NOT EXISTS idx_context_sub_apps_context_id ON context_sub_apps(context_id);",
                 )?;
             }
             conn.execute_batch("PRAGMA user_version = 30;")?;
@@ -1077,7 +1074,8 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS dictation_logs (transcription_id INTEGER PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE, payload TEXT NOT NULL)")?;
     conn.execute("INSERT OR IGNORE INTO library_usage_coverage VALUES (1, datetime('now'))", [])?;
     conn.execute_batch(
-        "CREATE VIEW IF NOT EXISTS combined_device_counters AS
+        "DROP INDEX IF EXISTS idx_context_sub_apps_executable;
+         CREATE VIEW IF NOT EXISTS combined_device_counters AS
            SELECT device_id, MAX(total_words) AS total_words, MAX(dictionary_fixes) AS dictionary_fixes
              FROM (SELECT device_id, total_words, dictionary_fixes FROM sync_remote_stats
                    UNION ALL SELECT device_id, total_words, dictionary_fixes FROM backup_device_counters)
@@ -2419,7 +2417,7 @@ pub(super) fn ensure_history_fts(conn: &Connection) {
                 "CREATE VIRTUAL TABLE IF NOT EXISTS transcriptions_fts USING fts5(
                    raw_text, clean_text, app_name,
                    content='transcriptions', content_rowid='id',
-                   tokenize='trigram'
+                   tokenize='trigram', columnsize=0
                  );
                  INSERT OR IGNORE INTO transcription_fts_meta (name, populated)
                  VALUES ('history', 0);",

@@ -91,8 +91,9 @@ test('free GitHub runners execute every owned file once and both full browser pr
       return ids;
     };
     const all = list();
-    const shards = rows.flatMap(row => list(row.shard));
-    assert.ok(rows.every(row => list(row.shard).length > 0));
+    const shardLists = rows.map(row => list(row.shard));
+    const shards = shardLists.flat();
+    assert.ok(shardLists.every(ids => ids.length > 0));
     assert.deepEqual(shards.sort(), all.sort());
     assert.equal(new Set(shards).size, shards.length);
   }

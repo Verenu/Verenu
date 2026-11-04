@@ -319,22 +319,22 @@ pub struct TranscriptionRow {
     pub clean_text: String,
     #[serde(default)]
     pub words: i64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spoken_words: Option<i64>,
     #[serde(default)]
     pub duration_ms: i64,
     #[serde(default)]
     pub api_used: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub website_domain: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_uuid: Option<String>,
     pub created_at: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity_day: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity_hour: Option<i64>,
 }
 
@@ -3064,6 +3064,7 @@ fn hello(uuid: &str, name: &str, app_version: &str) -> Hello {
         app_version: app_version.to_string(),
         activity_receipts: true,
         cleanup_cache: true,
+        compressed_frames: true,
     }
 }
 
@@ -3114,7 +3115,7 @@ where
     let remote = if initiator {
         send_message(
             stream,
-            &Message::Hello(hello(
+            Message::Hello(hello(
                 &host.device_uuid(),
                 &host.device_name(),
                 &host.app_version(),
@@ -3139,7 +3140,7 @@ where
         };
         send_message(
             stream,
-            &Message::HelloAck(hello(
+            Message::HelloAck(hello(
                 &host.device_uuid(),
                 &host.device_name(),
                 &host.app_version(),
@@ -3160,12 +3161,12 @@ where
         let conn = lock(db)?;
         build_stats_exchange(&conn, &host.device_uuid())?
     };
-    let meta = Message::Meta {
+    let mut meta = Some(Message::Meta {
         stats,
         settings: host.settings_payload()?,
-    };
+    });
     if initiator {
-        send_message(stream, &meta).await?;
+        super::protocol::send_message_with_compression(stream, meta.take().unwrap(), remote.compressed_frames).await?;
     }
     let remote_meta = match read_message(stream).await? {
         Message::Meta { stats, settings } => (stats, settings),
@@ -3173,7 +3174,7 @@ where
         _ => return Err(anyhow!("expected Meta")),
     };
     if !initiator {
-        send_message(stream, &meta).await?;
+        super::protocol::send_message_with_compression(stream, meta.take().unwrap(), remote.compressed_frames).await?;
     }
     {
         let conn = lock(db)?;
@@ -3186,11 +3187,15 @@ where
     summary.applied.stats = true;
 
     let mut pulled = ApplySummary::default();
+    let capabilities = TransferCapabilities {
+        cache: remote.cleanup_cache,
+        compression: remote.compressed_frames,
+    };
     if initiator {
         pulled.merge(pull_from_peer(db, host, stream, peer).await?);
-        serve_peer_pulls(db, stream, peer, remote.cleanup_cache).await?;
+        serve_peer_pulls(db, stream, peer, capabilities).await?;
     } else {
-        serve_peer_pulls(db, stream, peer, remote.cleanup_cache).await?;
+        serve_peer_pulls(db, stream, peer, capabilities).await?;
         pulled.merge(pull_from_peer(db, host, stream, peer).await?);
     }
     summary.applied.merge(pulled);
@@ -3201,7 +3206,7 @@ where
         ));
     }
 
-    send_message(stream, &Message::SyncDone).await?;
+    send_message(stream, Message::SyncDone).await?;
     match read_message(stream).await? {
         Message::SyncDone => {}
         _ => return Err(anyhow!("expected sync completion confirmation")),
@@ -3246,7 +3251,7 @@ where
     let snapshot = since == 0;
     send_message(
         stream,
-        &Message::PullRequest(PullRequest {
+        Message::PullRequest(PullRequest {
             since_seq: since,
             snapshot,
         }),
@@ -3266,7 +3271,7 @@ where
                 };
                 summary.merge(applied);
                 let acked = cursor;
-                send_message(stream, &Message::Ack { seq: acked }).await?;
+                send_message(stream, Message::Ack { seq: acked }).await?;
                 if done {
                     if !summary.deferred {
                         let conn = lock(db)?;
@@ -3287,13 +3292,19 @@ where
     Ok(summary)
 }
 
-async fn serve_peer_pulls<S>(db: &DbHandle, stream: &mut S, peer: &SyncPeer, cache_supported: bool) -> Result<()>
+#[derive(Clone, Copy)]
+struct TransferCapabilities {
+    cache: bool,
+    compression: bool,
+}
+
+async fn serve_peer_pulls<S>(db: &DbHandle, stream: &mut S, peer: &SyncPeer, capabilities: TransferCapabilities) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     match super::protocol::read_message(stream).await? {
         Message::PullRequest(request) => {
-            serve_one_pull(db, stream, peer, request.since_seq, request.snapshot, cache_supported).await
+            serve_one_pull(db, stream, peer, request.since_seq, request.snapshot, capabilities).await
         }
         Message::SyncDone => Err(anyhow!("peer ended sync before requesting its pull")),
         Message::Error { message } => Err(anyhow!("peer error: {message}")),
@@ -3307,7 +3318,7 @@ async fn serve_one_pull<S>(
     peer: &SyncPeer,
     since_seq: i64,
     requested_snapshot: bool,
-    cache_supported: bool,
+    capabilities: TransferCapabilities,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -3336,16 +3347,17 @@ where
             }
             (ops, cursor, done)
         };
-        if !cache_supported { ops.retain(|op| !matches!(op.table.as_str(), "cleanup_cache" | "cleanup_cache_rejection")); }
+        if !capabilities.cache { ops.retain(|op| !matches!(op.table.as_str(), "cleanup_cache" | "cleanup_cache_rejection")); }
         let final_cursor = cursor;
-        tokio::time::timeout(std::time::Duration::from_secs(30), send_message(
+        tokio::time::timeout(std::time::Duration::from_secs(30), super::protocol::send_message_with_compression(
             stream,
-            &Message::Ops(OpsBatch {
+            Message::Ops(OpsBatch {
                 ops,
                 cursor: final_cursor,
                 done,
                 snapshot,
             }),
+            capabilities.compression,
         )).await.map_err(|_| anyhow!("timed out while sending sync batch"))??;
         drop(send_guard);
         match read_message(stream).await? {
@@ -4090,6 +4102,7 @@ mod payload_tests {
             app_version: "0.0.0".into(),
             activity_receipts: false,
             cleanup_cache: false,
+            compressed_frames: false,
         };
         assert!(check_hello(&hello, "peer").is_err());
         hello.protocol = PROTOCOL_VERSION;
@@ -4184,7 +4197,7 @@ mod payload_tests {
                 "transcription",
                 json!({
                     "raw_text": "raw café", "clean_text": "Clean café.", "words": 2, "spoken_words": 3,
-                    "duration_ms": 1234, "api_used": "provider/model", "app_name": null,
+                    "duration_ms": 1234, "api_used": "provider/model",
                     "context_uuid": "context", "created_at": "2026-01-01", "activity_day": "2026-01-01", "activity_hour": 0
                 }),
             ),

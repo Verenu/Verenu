@@ -1095,7 +1095,7 @@ impl SyncManager {
         let (spake_state, spake_msg) = pairing::initiator_start(code);
         send_message(
             &mut tls,
-            &Message::PairRequest {
+            Message::PairRequest {
                 device_uuid: identity.device_uuid.clone(),
                 device_name: identity.device_name.clone(),
                 protocol: PROTOCOL_VERSION,
@@ -1152,7 +1152,7 @@ impl SyncManager {
                     if !approve {
                         let _ = send_message(
                             &mut stream,
-                            &Message::PairReject {
+                            Message::PairReject {
                                 reason: "declined".to_string(),
                             },
                         )
@@ -1237,7 +1237,7 @@ impl SyncManager {
                     self.inner.fail_pairing(generation, format!("{err:#}"));
                     let _ = send_message(
                         &mut stream,
-                        &Message::Error {
+                        Message::Error {
                             message: "Could not save paired device trust".to_string(),
                         },
                     )
@@ -1247,7 +1247,7 @@ impl SyncManager {
                 if let Some(route) = route {
                     self.remember_routes(&peer_uuid, &[route]);
                 }
-                send_message(&mut stream, &Message::PairComplete).await?;
+                send_message(&mut stream, Message::PairComplete).await?;
                 self.inner
                     .app
                     .emit(
@@ -1451,7 +1451,7 @@ impl SyncManager {
             if transport::peer_fingerprint(certs)? != peer.cert_fp {
                 return Err(anyhow!("peer identity changed since pairing"));
             }
-            match tokio::time::timeout(CONNECT_TIMEOUT, send_message(&mut tls, &Message::Unpair { device_uuid: self.device_uuid(), pairing_id: pairing_id.clone() })).await {
+            match tokio::time::timeout(CONNECT_TIMEOUT, send_message(&mut tls, Message::Unpair { device_uuid: self.device_uuid(), pairing_id: pairing_id.clone() })).await {
                 Ok(Ok(())) => return Ok(()),
                 Ok(Err(error)) if should_try_next_address(&error) => continue,
                 Ok(Err(error)) => return Err(error),
@@ -2239,7 +2239,7 @@ async fn handle_connection(
         _ => {
             let _ = send_message(
                 &mut tls,
-                &Message::Error {
+                Message::Error {
                     message: "unexpected first message".to_string(),
                 },
             )
@@ -2260,7 +2260,7 @@ async fn handle_incoming_pairing(
     if protocol != PROTOCOL_VERSION {
         let _ = send_message(
             &mut tls,
-            &Message::PairReject {
+            Message::PairReject {
                 reason: format!("protocol version {protocol} not supported"),
             },
         )
@@ -2271,7 +2271,7 @@ async fn handle_incoming_pairing(
     {
         let mut pending = inner.pending.lock().await;
         if pairing_busy(pending.is_some(), &inner.pairing_in_progress) {
-            let _ = send_message(&mut tls, &Message::PairBusy).await;
+            let _ = send_message(&mut tls, Message::PairBusy).await;
             return;
         }
         generation = inner.pairing_generation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -2332,7 +2332,7 @@ async fn handle_sync_hello(
     let Some(peer) = peer else {
         let _ = send_message(
             &mut tls,
-            &Message::Error {
+            Message::Error {
                 message: "not paired with this device".to_string(),
             },
         )
@@ -2346,7 +2346,7 @@ async fn handle_sync_hello(
         );
         let _ = send_message(
             &mut tls,
-            &Message::Error {
+            Message::Error {
                 message: "certificate does not match the paired device".to_string(),
             },
         )
@@ -2356,7 +2356,7 @@ async fn handle_sync_hello(
     if hello.protocol != PROTOCOL_VERSION {
         let _ = send_message(
             &mut tls,
-            &Message::Error {
+            Message::Error {
                 message: format!(
                     "peer speaks sync protocol v{}, this device speaks v{PROTOCOL_VERSION}",
                     hello.protocol
@@ -2373,7 +2373,7 @@ async fn handle_sync_hello(
     if !session_available {
         let _ = send_message(
             &mut tls,
-            &Message::Error {
+            Message::Error {
                 message: "a sync session with this device is already running".to_string(),
             },
         )

@@ -118,7 +118,7 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (ciphertext, nonce) = encrypt_identity(cipher, self_identity)?;
-    send_message(stream, &Message::PairVerify { ciphertext, nonce }).await?;
+    send_message(stream, Message::PairVerify { ciphertext, nonce }).await?;
 
     let outcome = match read_message(stream).await? {
         Message::PairVerify { ciphertext, nonce } => decrypt_identity(cipher, &ciphertext, &nonce)?,
@@ -152,7 +152,7 @@ where
 {
     send_message(
         stream,
-        &Message::PairAccept {
+        Message::PairAccept {
             spake_msg: responder_msg,
         },
     )
@@ -176,7 +176,7 @@ where
     let (my_ciphertext, my_nonce) = encrypt_identity(cipher, &response_identity)?;
     send_message(
         stream,
-        &Message::PairVerify {
+        Message::PairVerify {
             ciphertext: my_ciphertext,
             nonce: my_nonce,
         },

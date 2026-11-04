@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn redundant_sub_app_index_is_removed_on_upgrade_without_losing_rows() {
+    let path = temp_db_path("sub_app_index_upgrade");
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch(
+            "INSERT INTO context_sub_apps(uuid, executable, label, title_pattern)
+             VALUES ('synthetic-id', 'editor', 'Work', 'project');
+             CREATE INDEX idx_context_sub_apps_executable ON context_sub_apps(executable);",
+        ).unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        let redundant: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_context_sub_apps_executable'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(redundant, 0);
+        let label: String = conn.query_row(
+            "SELECT label FROM context_sub_apps WHERE executable = ?1", ["EDITOR"], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(label, "Work");
+        let plan: String = conn.query_row(
+            "EXPLAIN QUERY PLAN SELECT * FROM context_sub_apps WHERE executable = ?1 AND context_id IS NOT NULL AND (?2 IS NULL OR platform IS NULL OR platform = ?2) AND executable NOT LIKE '?::%'",
+            rusqlite::params!["editor", "linux"], |r| r.get(3),
+        ).unwrap();
+        assert!(plan.contains("USING INDEX sqlite_autoindex_context_sub_apps"), "{plan}");
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn agent_audit_records_pending_and_completed_without_change_contents() {
     let db = open(":memory:").unwrap();
     let id = begin_agent_change(&db, "edit_snippet", Some(17), "grant-one").unwrap();
@@ -443,6 +476,90 @@ fn sqlite_disk_maintenance_reclaims_incremental_free_pages() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn compact_history_index_stays_within_fixture_byte_budget() {
+    let db = test_db();
+    let conn = lock_conn(&db).unwrap();
+    assert!(super::transcriptions::history_fts_available(&conn));
+    conn.execute_batch(
+        "BEGIN;
+         WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000)
+         INSERT INTO transcriptions(raw_text,clean_text,app_name)
+           SELECT printf('Synthetic raw entry %04d',x), printf('Synthetic clean entry %04d',x), 'editor' FROM n;
+         COMMIT;",
+    ).unwrap();
+    let (bytes, allocated): (i64, i64) = conn.query_row(
+        "SELECT SUM(payload), SUM(pgsize) FROM dbstat WHERE name GLOB 'transcriptions_fts_*'",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert!(bytes <= 178_053, "history index fixture used {bytes} bytes");
+    assert!(allocated <= 196_608, "history index fixture allocated {allocated} bytes");
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM transcriptions_fts WHERE transcriptions_fts MATCH 'synthetic'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(count, 1000);
+}
+
+#[test]
+fn legacy_history_index_remains_searchable_after_reopen() {
+    let path = temp_db_path("legacy_history_index");
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch(
+            "DROP TRIGGER trg_transcriptions_fts_ins;
+             DROP TRIGGER trg_transcriptions_fts_del;
+             DROP TRIGGER trg_transcriptions_fts_upd;
+             DROP TABLE transcriptions_fts;
+             CREATE VIRTUAL TABLE transcriptions_fts USING fts5(
+               raw_text, clean_text, app_name, content='transcriptions',
+               content_rowid='id', tokenize='trigram');
+             UPDATE transcription_fts_meta SET populated=0 WHERE name='history';",
+        ).unwrap();
+        super::schema::ensure_history_fts(&conn);
+        conn.execute("INSERT INTO transcriptions(raw_text,clean_text,words,duration_ms,api_used) VALUES ('synthetic legacy','synthetic retained',2,1000,'test')", []).unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        let docsize_tables: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='transcriptions_fts_docsize'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(docsize_tables, 1);
+        let hits: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM transcriptions_fts WHERE transcriptions_fts MATCH 'retained'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(hits, 1);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn new_history_index_omits_unused_token_counts_and_preserves_search() {
+    let db = test_db();
+    let conn = lock_conn(&db).unwrap();
+    assert!(super::transcriptions::history_fts_available(&conn));
+    let docsize_tables: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name='transcriptions_fts_docsize'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(docsize_tables, 0, "history search must not store unused token counts");
+    conn.execute("INSERT INTO transcriptions(raw_text,clean_text,words,duration_ms,api_used) VALUES ('synthetic source','synthetic result',2,1000,'test')", []).unwrap();
+    for term in ["source", "result"] {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM transcriptions_fts WHERE transcriptions_fts MATCH ?1",
+            [term], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+    }
+    conn.execute("UPDATE transcriptions SET clean_text='updated result'", []).unwrap();
+    conn.execute("DELETE FROM transcriptions", []).unwrap();
+    conn.execute("INSERT INTO transcriptions_fts(transcriptions_fts,rank) VALUES('integrity-check',1)", []).unwrap();
 }
 
 #[test]
