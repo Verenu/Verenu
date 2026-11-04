@@ -22,19 +22,6 @@ pub(crate) fn storage_full_simulation_enabled() -> bool {
 pub struct SettingsHandle {
     path: Arc<PathBuf>,
     values: Arc<RwLock<Arc<Map<String, Value>>>>,
-    read_only: Arc<AtomicBool>,
-    #[cfg(target_os = "linux")]
-    handoff_baseline: Arc<Mutex<Option<SettingsSnapshot>>>,
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) struct PreparedHandoffSettings(SettingsHandle);
-
-#[cfg(target_os = "linux")]
-impl PreparedHandoffSettings {
-    pub(crate) fn activate(self, _parent_exited: &crate::linux_handoff_transport::ParentExited) {
-        self.0.read_only.store(false, Ordering::Release);
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -43,18 +30,6 @@ pub struct SettingsSnapshot {
 }
 
 impl SettingsSnapshot {
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    pub(crate) fn read_for_handoff(path: &Path) -> Result<Self, String> {
-        let bytes = std::fs::read(path)
-            .map_err(|error| format!("Could not read settings for restart: {error}"))?;
-        let values: Map<String, Value> = serde_json::from_slice(&bytes)
-            .map_err(|error| format!("Could not parse settings for restart: {error}"))?;
-        Ok(Self {
-            values: Arc::new(values),
-        })
-    }
-
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.values.get(key)
     }
@@ -101,9 +76,6 @@ impl SettingsHandle {
         Self {
             path: Arc::new(path),
             values: Arc::new(RwLock::new(Arc::new(Map::new()))),
-            read_only: Arc::new(AtomicBool::new(false)),
-            #[cfg(target_os = "linux")]
-            handoff_baseline: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -116,71 +88,7 @@ impl SettingsHandle {
         Ok(Self {
             path: Arc::new(path),
             values: Arc::new(RwLock::new(Arc::new(values))),
-            read_only: Arc::new(AtomicBool::new(false)),
-            #[cfg(target_os = "linux")]
-            handoff_baseline: Arc::new(Mutex::new(None)),
         })
-    }
-
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    pub(crate) fn open_for_handoff(path: PathBuf) -> Result<Self, String> {
-        let snapshot = SettingsSnapshot::read_for_handoff(&path)?;
-        Ok(Self {
-            path: Arc::new(path),
-            values: Arc::new(RwLock::new(snapshot.values)),
-            read_only: Arc::new(AtomicBool::new(true)),
-            handoff_baseline: Arc::new(Mutex::new(None)),
-        })
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn validate_handoff_snapshot(&self) -> Result<(), String> {
-        let on_disk = SettingsSnapshot::read_for_handoff(&self.path)?;
-        let values = self
-            .values
-            .read()
-            .map_err(|_| "Settings lock was poisoned".to_string())?;
-        if *values != on_disk.values {
-            return Err("Settings changed while preparing the update. Try again.".into());
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn prepare_activation(
-        &self,
-        pause: &crate::linux_activity::Pause,
-        gate: &Arc<crate::linux_activity::ActivityGate>,
-    ) -> Result<PreparedHandoffSettings, String> {
-        if !pause.belongs_to(gate) {
-            return Err("Settings restart gate does not match.".into());
-        }
-        if !self.read_only.load(Ordering::Acquire) {
-            return Err("Settings are already writable during restart.".into());
-        }
-        self.validate_handoff_snapshot()?;
-        let values = self.snapshot()?;
-        *self.handoff_baseline.lock().map_err(|_| "Settings restart lock was poisoned".to_owned())? = Some(values);
-        Ok(PreparedHandoffSettings(self.clone()))
-    }
-
-    fn ensure_writable(&self) -> Result<(), String> {
-        if self.read_only.load(Ordering::Acquire) {
-            return Err("Settings are read-only while the update is starting.".into());
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let mut baseline = self.handoff_baseline.lock().map_err(|_| "Settings restart lock was poisoned".to_owned())?;
-            if let Some(expected) = baseline.as_ref() {
-                let current = SettingsSnapshot::read_for_handoff(&self.path)?;
-                if current.values != expected.values {
-                    return Err("Settings changed on disk during restart. Quit and reopen Verenu before changing settings.".into());
-                }
-                *baseline = None;
-            }
-        }
-        Ok(())
     }
 
     pub fn snapshot(&self) -> Result<SettingsSnapshot, String> {
@@ -218,7 +126,6 @@ impl SettingsHandle {
     }
 
     pub fn set(&self, key: impl Into<String>, value: Value) -> Result<(), String> {
-        self.ensure_writable()?;
         let mut settings = self
             .values
             .write()
@@ -228,7 +135,6 @@ impl SettingsHandle {
     }
 
     pub fn delete(&self, key: &str) -> Result<Option<Value>, String> {
-        self.ensure_writable()?;
         let mut settings = self
             .values
             .write()
@@ -237,7 +143,6 @@ impl SettingsHandle {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        self.ensure_writable()?;
         let values = self
             .values
             .read()
@@ -262,7 +167,6 @@ impl SettingsHandle {
         I: IntoIterator<Item = (K, Value)>,
         K: Into<String>,
     {
-        self.ensure_writable()?;
         let pending: Vec<(String, Value)> = values
             .into_iter()
             .map(|(key, value)| (key.into(), value))
@@ -297,7 +201,6 @@ impl SettingsHandle {
         I: IntoIterator<Item = (K, Value)>,
         K: Into<String>,
     {
-        self.ensure_writable()?;
         let pending: Vec<(String, Value)> = values
             .into_iter()
             .map(|(key, value)| (key.into(), value))
@@ -366,7 +269,6 @@ impl SettingsHandle {
     where
         F: FnOnce() -> bool,
     {
-        self.ensure_writable()?;
         let mut settings = self
             .values
             .write()

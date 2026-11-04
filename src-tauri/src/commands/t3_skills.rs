@@ -115,8 +115,6 @@ pub async fn get_t3_skills(app: AppHandle) -> Result<Status, String> {
 
 #[tauri::command]
 pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, String> {
-    #[cfg(target_os = "linux")]
-    let activity = linux_activity(&app).await;
     if cfg!(target_os = "android") {
         return Err("T3 skill pairing requires desktop Verenu.".into());
     }
@@ -173,11 +171,7 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
     };
     let value = serde_json::to_value(&current).map_err(|_| "Cannot save T3 connection.")?;
     let app_copy = app.clone();
-    #[cfg(target_os = "linux")]
-    let save_activity = activity.clone();
     run_blocking("commit_t3_pairing", move || {
-        #[cfg(target_os = "linux")]
-        let _activity = save_activity;
         let _guard = guard;
         let previous_token = crate::data::credentials::get(store::T3_INTEGRATION);
         commit_pairing(
@@ -214,8 +208,6 @@ fn commit_pairing(
 
 #[tauri::command]
 pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Status, String> {
-    #[cfg(target_os = "linux")]
-    let _activity = linux_activity(&app).await;
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let Some(mut current) = connection(&settings.snapshot()?) else {
@@ -286,8 +278,6 @@ fn apply_refresh_result(
 
 #[tauri::command]
 pub async fn select_t3_catalog(app: AppHandle, catalog_id: String) -> Result<Status, String> {
-    #[cfg(target_os = "linux")]
-    let _activity = linux_activity(&app).await;
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let mut current = connection(&settings.snapshot()?).ok_or("Connect T3 first.")?;
@@ -312,8 +302,6 @@ pub async fn set_t3_excluded_skills(
     app: AppHandle,
     names: Vec<String>,
 ) -> Result<Status, String> {
-    #[cfg(target_os = "linux")]
-    let _activity = linux_activity(&app).await;
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let mut current = connection(&settings.snapshot()?).ok_or("Connect T3 first.")?;
@@ -335,8 +323,6 @@ pub async fn set_t3_excluded_skills(
 
 #[tauri::command]
 pub async fn disconnect_t3(app: AppHandle) -> Result<Status, String> {
-    #[cfg(target_os = "linux")]
-    let activity = linux_activity(&app).await;
     if cfg!(target_os = "android") {
         return Err("T3 skill pairing requires desktop Verenu.".into());
     }
@@ -346,11 +332,7 @@ pub async fn disconnect_t3(app: AppHandle) -> Result<Status, String> {
     let guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let transaction_settings = settings.clone();
-    #[cfg(target_os = "linux")]
-    let delete_activity = activity.clone();
     run_blocking("delete_t3_credential", move || {
-        #[cfg(target_os = "linux")]
-        let _activity = delete_activity;
         let _guard = guard;
         commit_disconnect(&transaction_settings, || {
             crate::data::credentials::delete(store::T3_INTEGRATION)
@@ -411,33 +393,6 @@ mod tests {
         )])
     }
 
-    #[cfg(all(target_os = "linux", feature = "native-testing"))]
-    #[test]
-    #[ignore = "requires an isolated graphical session"]
-    fn excluded_skills_wait_for_restart_pause_to_end() {
-        let path = std::env::temp_dir().join(format!("verenu-t3-pause-{}.json", uuid::Uuid::new_v4()));
-        let settings = store::SettingsHandle::empty_for_test(path.clone());
-        settings.save_value(store::T3_CONNECTION, serde_json::to_value(sample()).unwrap()).unwrap();
-        let before = std::fs::read(&path).unwrap();
-        let gate = std::sync::Arc::new(crate::linux_activity::ActivityGate::default());
-        let app = tauri::Builder::default().any_thread().manage(settings.clone()).manage(gate.clone())
-            .build(tauri::generate_context!()).unwrap();
-        tauri::async_runtime::block_on(async {
-            let pause = gate.pause().await.unwrap();
-            let app_handle = app.handle().clone();
-            let change = tokio::spawn(async move {
-                set_t3_excluded_skills(app_handle, vec!["babysit-pr".into()]).await
-            });
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            assert!(!change.is_finished());
-            assert_eq!(std::fs::read(&path).unwrap(), before);
-            drop(pause);
-            tokio::time::timeout(std::time::Duration::from_secs(5), change).await.unwrap().unwrap().unwrap();
-            assert_eq!(connection(&settings.snapshot().unwrap()).unwrap().excluded_skills, ["babysit-pr"]);
-        });
-        drop(app);
-        std::fs::remove_file(path).unwrap();
-    }
     #[test]
     fn t3_catalog_is_scoped_to_destination_and_context_and_captured_immutably() {
         let mut value = sample();

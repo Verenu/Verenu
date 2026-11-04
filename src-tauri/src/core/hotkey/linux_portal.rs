@@ -25,7 +25,7 @@ pub(super) async fn request<T, E: std::fmt::Display>(
     }
 }
 
-pub(super) async fn connect() -> Result<(GlobalShortcuts, zbus::Connection), Failure> {
+pub(super) async fn connect() -> Result<GlobalShortcuts, Failure> {
     // A fresh connection lets reconnects register again. Registration must
     // precede all portal calls, and must use the same connection as shortcuts.
     let connection = request("Connecting to the desktop", zbus::Connection::session()).await?;
@@ -57,12 +57,11 @@ pub(super) async fn connect() -> Result<(GlobalShortcuts, zbus::Connection), Fai
             log::info!("linux hotkey: desktop portal uses legacy app identity discovery");
         }
     }
-    let shortcuts = request(
+    request(
         "Opening global shortcuts",
-        GlobalShortcuts::with_connection(connection.clone()),
+        GlobalShortcuts::with_connection(connection),
     )
-    .await?;
-    Ok((shortcuts, connection))
+    .await
 }
 
 #[derive(Debug)]
@@ -120,77 +119,6 @@ impl Failure {
 #[cfg(test)]
 mod tests {
     use super::Failure;
-
-    #[cfg(feature = "native-testing")]
-    struct Registry;
-
-    #[cfg(feature = "native-testing")]
-    #[zbus::interface(name = "org.freedesktop.host.portal.Registry")]
-    impl Registry {
-        fn register(
-            &self,
-            _app_id: &str,
-            _options: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
-        ) {
-        }
-    }
-
-    #[cfg(feature = "native-testing")]
-    struct Shortcuts;
-
-    #[cfg(feature = "native-testing")]
-    #[zbus::interface(name = "org.freedesktop.portal.GlobalShortcuts")]
-    impl Shortcuts {
-        #[zbus(property)]
-        fn version(&self) -> u32 {
-            1
-        }
-    }
-
-    #[cfg(feature = "native-testing")]
-    #[tokio::test]
-    async fn closing_portal_connection_disconnects_even_with_a_live_proxy() {
-        let _portal = zbus::connection::Builder::session()
-            .unwrap()
-            .name("org.freedesktop.portal.Desktop")
-            .unwrap()
-            .serve_at("/org/freedesktop/portal/desktop", Registry)
-            .unwrap()
-            .serve_at("/org/freedesktop/portal/desktop", Shortcuts)
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        let (proxy, connection) = super::connect().await.unwrap();
-        let name = connection.unique_name().unwrap().to_string();
-        let observer = zbus::Connection::session().await.unwrap();
-        async fn has_owner(observer: &zbus::Connection, name: &str) -> bool {
-            observer
-                .call_method(
-                    Some("org.freedesktop.DBus"),
-                    "/org/freedesktop/DBus",
-                    Some("org.freedesktop.DBus"),
-                    "NameHasOwner",
-                    &(name,),
-                )
-                .await
-                .unwrap()
-                .body()
-                .deserialize()
-                .unwrap()
-        }
-        assert!(has_owner(&observer, &name).await);
-        connection.close().await.unwrap();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while has_owner(&observer, &name).await {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "portal connection did not close"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        drop(proxy);
-    }
 
     #[test]
     fn missing_identity_reports_the_cause_and_repair_instead_of_a_conflict() {

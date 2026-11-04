@@ -442,7 +442,7 @@ pub async fn get_github_commits(
             };
             let value =
                 serde_json::to_value(cache).map_err(|_| "Could not cache GitHub counts.")?;
-            let committed = run_app_blocking(&app, "cache_github_commits", move || {
+            let committed = run_blocking("cache_github_commits", move || {
                 settings.save_value_if_owner_matches_when(
                     store::GITHUB_USERNAME,
                     &serde_json::json!(username),

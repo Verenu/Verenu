@@ -37,19 +37,6 @@ mod data;
 mod dev_session;
 mod local_llm;
 mod local_stt;
-#[cfg(target_os = "linux")]
-mod linux_activity;
-#[cfg(target_os = "linux")]
-mod linux_handoff;
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-mod linux_handoff_callbacks;
-#[cfg(target_os = "linux")]
-mod linux_handoff_child;
-#[cfg(target_os = "linux")]
-mod linux_handoff_transport;
-#[cfg(target_os = "linux")]
-mod linux_single_instance;
 mod media;
 mod model_performance;
 mod pipeline;
@@ -94,46 +81,14 @@ pub(crate) use app_setup::{
 pub(crate) use app_setup::{cleanup_update_helper_if_requested, wait_for_relaunch_parent_exit};
 pub(crate) use app_tray::apply_runtime_icons;
 
-#[cfg(target_os = "linux")]
-fn linux_app_builder() -> tauri::Builder<tauri::Wry> {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_shell::init())
-        .manage(Arc::new(linux_activity::ActivityGate::default()))
-        .manage(linux_handoff_transport::PendingRestart::default())
-        .on_page_load(|webview, payload| {
-            if payload.event() == tauri::webview::PageLoadEvent::Started {
-                if let Some(readiness) = webview.app_handle().try_state::<FrontendReadiness>() {
-                    match webview.label() {
-                        "main" => readiness.main_page_started(),
-                        "pill" => readiness.pill_page_started(),
-                        _ => {}
-                    }
-                }
-            }
-        })
-}
-
-fn seed_startup_dictionary(db: &DbHandle) {
-    if let Err(error) = db::seed_default_dictionary_entries(db) {
-        log::warn!("failed to seed default dictionary entries: {error}");
-    }
-}
-
 fn start_storage_maintenance(
     app: tauri::AppHandle,
     db: DbHandle,
     settings: crate::data::store::SettingsHandle,
-) -> tauri::async_runtime::JoinHandle<()> {
-    #[cfg(target_os = "linux")]
-    let gate = app.state::<Arc<linux_activity::ActivityGate>>().inner().clone();
+) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
-            #[cfg(target_os = "linux")]
-            let Some(activity) = gate.try_enter() else {
-                continue;
-            };
             let retention_days = settings
                 .get(crate::data::store::HISTORY_RETENTION)
                 .and_then(|value| {
@@ -145,8 +100,6 @@ fn start_storage_maintenance(
             let settings_for_work = settings.clone();
             let app_for_work = app.clone();
             let _ = tauri::async_runtime::spawn_blocking(move || {
-                #[cfg(target_os = "linux")]
-                let _activity = activity;
                 if let Err(err) = db::cleanup_cache_prune_expired(&db_for_work) {
                     log::warn!("maintenance: cleanup cache prune failed: {err}");
                 }
@@ -183,115 +136,7 @@ fn start_storage_maintenance(
             })
             .await;
         }
-    })
-}
-
-fn start_runtime_maintenance(
-    app: tauri::AppHandle,
-    capture_state: pipeline::SharedState,
-    local_stt_manager: local_stt::LocalTranscriptionManager,
-    local_llm_manager: local_llm::LocalLlmManager,
-) -> tauri::async_runtime::JoinHandle<()> {
-    #[cfg(target_os = "linux")]
-    let gate = app.state::<Arc<linux_activity::ActivityGate>>().inner().clone();
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    let mut memory_reclaimer = crate::system::memory::IdleMemoryReclaimer::new(
-        app.state::<DbHandle>().inner().clone(),
-    );
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        let app_handle = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut sigterm = match signal(SignalKind::terminate()) {
-                Ok(sigterm) => sigterm,
-                Err(err) => {
-                    log::warn!("could not register SIGTERM handler: {err}");
-                    return;
-                }
-            };
-            sigterm.recv().await;
-            log::info!("received SIGTERM; exiting cleanly");
-            app_handle.exit(0);
-        });
-    }
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-            #[cfg(target_os = "linux")]
-            let Some(_activity) = gate.try_enter() else {
-                continue;
-            };
-            pipeline::release_expired_capture_audio(&capture_state);
-            if local_stt_manager.shutdown_signal.load(std::sync::atomic::Ordering::Relaxed)
-                && local_llm_manager.shutdown_signal.load(std::sync::atomic::Ordering::Relaxed)
-            {
-                break;
-            }
-            let idle_stt = local_stt_manager.clone();
-            let idle_llm = local_llm_manager.clone();
-            let idle_app = app.clone();
-            let idle_state = capture_state.clone();
-            if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
-                let stt_guard = idle_stt.preload_gate.try_write().ok();
-                let llm_guard = idle_llm.preload_gate.try_write().ok();
-                let (stt, llm) = {
-                    let state = idle_state.lock().map_err(|_| anyhow::anyhow!("recording state lock poisoned"))?;
-                    if !state.lifecycle.is_recording() {
-                        let stt = if stt_guard.is_some() { idle_stt.take_if_idle(&idle_app) } else { Ok(None) };
-                        let llm = if llm_guard.is_some() { idle_llm.take_if_idle(&idle_app) } else { Ok(None) };
-                        (stt, llm)
-                    } else {
-                        (Ok(None), Ok(None))
-                    }
-                };
-                drop(stt?);
-                drop(llm?);
-                Ok::<(), anyhow::Error>(())
-            }).await.unwrap_or_else(|error| Err(anyhow::anyhow!(error))) {
-                log::warn!("local models: idle unload maintenance failed: {error}");
-            }
-            if crate::media::realtime_reuse::is_loaded() {
-                let reuse_app = app.clone();
-                let _ = tauri::async_runtime::spawn_blocking(move || {
-                    let policy = crate::data::store::settings_snapshot(&reuse_app).ok()
-                        .map(|settings| crate::data::store::load_pipeline_config(&settings).local_model_memory_policy)
-                        .unwrap_or_else(|| "unload_after_5m".into());
-                    let pressure = crate::system::memory::gpu_vram_statuses().iter().any(|gpu| {
-                        gpu.index == 0 && gpu.total_mb > 0 &&
-                            (gpu.total_mb.saturating_sub(gpu.used_mb) < 512 || gpu.used_mb.saturating_mul(100) / gpu.total_mb >= 92)
-                    });
-                    crate::media::realtime_reuse::evict_if_idle(&policy, pressure);
-                }).await;
-            }
-            let stt_loaded = local_stt_manager.current_model_id.lock()
-                .map(|guard| guard.is_some()).unwrap_or(false);
-            let llm_loaded = local_llm_manager.current_model_id.lock()
-                .map(|guard| guard.is_some()).unwrap_or(false);
-            if stt_loaded || llm_loaded {
-                let pressure = tauri::async_runtime::spawn_blocking(
-                    crate::system::memory::detect_resource_pressure,
-                ).await.unwrap_or(None);
-                if let Some(reason) = pressure {
-                    log::warn!("local models: system resource pressure detected ({reason}), unloading proactively");
-                    let pressure_stt = local_stt_manager.clone();
-                    let pressure_llm = local_llm_manager.clone();
-                    let pressure_app = app.clone();
-                    let _ = tauri::async_runtime::spawn_blocking(move || {
-                        pressure_stt.unload_for_resource_pressure(&pressure_app);
-                        pressure_llm.unload_for_resource_pressure(&pressure_app);
-                    }).await;
-                }
-            }
-            #[cfg(all(target_os = "linux", target_env = "gnu"))]
-            {
-                let main_hidden = app.get_webview_window("main")
-                    .and_then(|window| window.is_visible().ok())
-                    .is_some_and(|visible| !visible);
-                memory_reclaimer.reclaim(&capture_state, main_hidden).await;
-            }
-        }
-    })
+    });
 }
 
 #[cfg(target_os = "android")]
@@ -319,8 +164,35 @@ fn init_android_audio_context() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn new_shared_state() -> SharedState {
-    Arc::new(Mutex::new(AppState {
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    #[cfg(target_os = "linux")]
+    crate::core::hyprland::initialize_app_identity();
+    #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+    dev_session::prepare().expect("failed to prepare isolated dev session");
+    #[cfg(target_os = "linux")]
+    configure_hyprland_webkit_renderer();
+
+    #[cfg(target_os = "windows")]
+    {
+        cleanup_update_helper_if_requested();
+        if crate::commands::run_update_helper_if_requested() {
+            return;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = crate::system::mac_app::set_process_name("Verenu");
+    }
+
+    #[cfg(target_os = "windows")]
+    wait_for_relaunch_parent_exit();
+
+    #[cfg(target_os = "windows")]
+    let single_instance = (!is_dev_session()).then(crate::single_instance::acquire);
+
+    let shared: SharedState = Arc::new(Mutex::new(AppState {
         lifecycle: pipeline::DictationLifecycle::Idle,
         analytics_run_id: None,
         target: WindowTarget::default(),
@@ -338,19 +210,516 @@ fn new_shared_state() -> SharedState {
         failover_session_id: None,
         failover_reuse_id: false,
         failover_started_at_unix: 0,
-    }))
-}
+    }));
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn start_nvidia_check(app: &tauri::AppHandle) {
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = crate::media::nvidia_reuse::nvidia_reuse_check(handle).await;
-    });
-}
+    crate::system::logger::init_early();
+    pipeline::failover::restore_into_state(&shared);
+    let local_cleanup_manager = crate::local_llm::LocalLlmManager::new();
+    let local_transcription_manager = crate::local_stt::LocalTranscriptionManager::new();
+    let frontend_readiness = FrontendReadiness::default();
 
-fn app_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_shell::init());
+    #[cfg(all(feature = "native-testing", debug_assertions, desktop))]
+    {
+        builder = builder
+            .plugin(tauri_plugin_wdio::init())
+            .plugin(tauri_plugin_wdio_webdriver::init());
+    }
+    #[cfg(target_os = "android")]
+    {
+        builder = builder.plugin(crate::android::permissions_plugin::init());
+        builder = builder.plugin(crate::android::security_plugin::init());
+        builder = builder.plugin(crate::android::updater::init());
+        builder = builder.append_invoke_initialization_script(
+            "Object.defineProperty(window, '__VERENU_ANDROID__', { value: true, configurable: false });",
+        );
+    }
+    #[cfg(desktop)]
+    if !is_dev_session() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            #[cfg(target_os = "linux")]
+            if _argv.iter().any(|arg| arg == "--verenu-hotkey-release") {
+                crate::core::hotkey::notify_release();
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            if _argv.iter().any(|arg| arg == "--verenu-hotkey-handsfree") {
+                crate::core::hotkey::notify_handless();
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            if _argv.iter().any(|arg| arg == "--verenu-capture-sub-app") {
+                crate::core::hotkey::notify_capture_sub_app();
+                return;
+            }
+            show_main_window(app);
+        }));
+    }
+
+    builder = builder
+        .manage(shared.clone())
+        .manage(local_cleanup_manager.clone())
+        .manage(local_transcription_manager.clone())
+        .manage(frontend_readiness.clone());
+
+    #[cfg(target_os = "windows")]
+    if let Some(single_instance) = single_instance {
+        builder = builder.manage(single_instance);
+    }
+
+    builder
+        .setup(move |app| {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            tauri::async_runtime::spawn(async { let _ = crate::media::nvidia_reuse::nvidia_reuse_check().await; });
+            #[cfg(target_os = "linux")]
+            if std::env::args().any(|arg| {
+                arg == "--verenu-hotkey-release"
+                    || arg == "--verenu-hotkey-handsfree"
+                    || arg == "--verenu-capture-sub-app"
+            }) {
+                app.handle().exit(0);
+                return Ok(());
+            }
+            #[cfg(target_os = "windows")]
+            if !is_dev_session() {
+                crate::single_instance::listen_for_takeover(app.handle());
+            }
+            #[cfg(target_os = "android")]
+            {
+                init_android_audio_context()?;
+                crate::android::local_ai::initialize()?;
+            }
+            #[cfg(target_os = "android")]
+            {
+                let data_dir = app
+                    .path()
+                    .app_data_dir()
+                    .map_err(std::io::Error::other)?;
+                std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", data_dir);
+            }
+            std::fs::create_dir_all(app_data_dir()).map_err(std::io::Error::other)?;
+            let db_handle: DbHandle = match db::open_with_recovery(app_db_path()) {
+                Ok(db) => db,
+                Err(err) => fatal_startup_error(&format!("failed to open database: {err}")),
+            };
+            let _ = db::cleanup_cache_prune_expired(&db_handle);
+            let _ = db::prune_auto_learn_retention(&db_handle);
+            if let Err(e) = db::seed_default_dictionary_entries(&db_handle) {
+                log::warn!("failed to seed default dictionary entries: {e}");
+            }
+            crate::system::diagnostic_journal::start(db_handle.clone());
+            app.manage(db_handle);
+            crate::system::logger::attach_app(app.handle());
+            #[cfg(target_os = "linux")]
+            if !is_dev_session() {
+                if let Err(error) = crate::core::hyprland::ensure_window_rules() {
+                    log::error!("Linux window setup failed: {error}");
+                }
+            }
+            let build_mode = if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            };
+            log::info!(
+                "verenu {} starting — {} {}, {} build — verbose logging {}",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                build_mode,
+                if crate::system::logger::is_verbose() {
+                    "on"
+                } else {
+                    "off"
+                }
+            );
+            let settings = crate::data::store::SettingsHandle::open(app.handle())
+                .map_err(std::io::Error::other)?;
+            let cache_enabled = settings.get(crate::data::store::CLEANUP_CACHE_ENABLED)
+                .and_then(|value| value.as_bool()).unwrap_or(true);
+            db::cleanup_cache_set_enabled(app.state::<DbHandle>().inner(), cache_enabled)
+                .map_err(std::io::Error::other)?;
+            if !is_dev_session() {
+                crate::data::credentials::migrate_from_store(app.handle(), &settings);
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                crate::system::linux_webview::configure_window(&window);
+            }
+            #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+            if is_dev_session() {
+                app.manage(settings.clone());
+                dev_session::start(app.handle().clone())?;
+                if std::env::var("VERENU_AGENT_TEST_SYNTHETIC").as_deref() == Ok("1") {
+                    agent_api::start(app.handle().clone())?;
+                }
+                return Ok(());
+            }
+            if let Err(error) = crate::data::store::migrate_contextual_formatting(&settings) {
+                log::warn!("Failed to migrate contextual formatting setting: {error}");
+            }
+            let first_launch = {
+                if let Some(value) = settings.get(crate::data::store::HOTKEY) {
+                    if let Ok(codes) = serde_json::from_value::<Vec<String>>(value) {
+                        let normalized = crate::core::hotkey::normalize_codes(&codes);
+                        let ids = normalized.as_ref().ok().and_then(|codes| {
+                            crate::core::hotkey::mapped_codes(codes).ok()
+                        });
+                        if ids.as_ref().is_none_or(|ids| crate::core::hotkey::update_keys(ids).is_err()) {
+                            #[cfg(target_os = "macos")]
+                            let defaults = ["AltLeft", "Space"];
+                            #[cfg(not(target_os = "macos"))]
+                            let defaults = ["ControlLeft", "MetaLeft"];
+                            if let Err(error) = settings.save_value(
+                                crate::data::store::HOTKEY,
+                                serde_json::json!(defaults),
+                            ) {
+                                log::warn!("Failed to migrate unsupported hotkey: {error}");
+                            }
+                            let default_codes = defaults
+                                .iter()
+                                .map(|code| (*code).to_string())
+                                .collect::<Vec<_>>();
+                            match crate::core::hotkey::mapped_codes(&default_codes) {
+                                Ok(default_ids) => {
+                                    if let Err(error) =
+                                        crate::core::hotkey::update_keys(&default_ids)
+                                    {
+                                        log::warn!("Failed to apply default hotkey after migration: {error}");
+                                    }
+                                }
+                                Err(error) => {
+                                    log::warn!("Failed to map default hotkey after migration: {error}");
+                                }
+                            }
+                        }
+                    }
+                }
+                let retention_value = settings.get(crate::data::store::HISTORY_RETENTION);
+                let retention = retention_value
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("30 days");
+                if let Some(days) = crate::data::store::history_retention_days(retention) {
+                    let db = app.state::<DbHandle>().inner().clone();
+                    let app_handle = app.handle().clone();
+                    let settings = settings.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        match db::prune_transcriptions_for_retention(&db, &settings, days) {
+                            Ok(deleted) if deleted > 0 => {
+                                let _ = app_handle.emit("verenu:history-pruned", ());
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to prune old transcriptions during startup: {e:?}"
+                                );
+                            }
+                        }
+                    });
+                }
+                let first_launch = !settings
+                    .get(crate::data::store::SETUP_COMPLETE)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                app.manage(settings.clone());
+                #[cfg(desktop)]
+                app.manage(crate::analytics::Analytics::new(
+                    settings
+                        .get(crate::data::store::ANALYTICS_ENABLED)
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(true),
+                    crate::app_data_dir(),
+                ));
+                first_launch
+            };
+
+            #[cfg(desktop)]
+            if let Err(error) = agent_api::start(app.handle().clone()) {
+                log::warn!("Agent access is unavailable: {error}");
+            }
+
+            #[cfg(desktop)]
+            if !is_dev_session() {
+                match app.path().home_dir() {
+                    Ok(home) => {
+                        if let Err(error) = agent_discovery::register(&home, &app_data_dir()) {
+                            log::warn!("Could not register agent discovery skill: {error}");
+                        }
+                    }
+                    Err(error) => log::warn!("Could not locate home for agent discovery: {error}"),
+                }
+            }
+
+            #[cfg(desktop)]
+            if !crate::is_dev_session() {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = commands::reconcile_autostart(app_handle).await {
+                        log::warn!("Failed to reconcile autostart at startup: {error}");
+                    }
+                });
+            }
+
+            #[cfg(desktop)]
+            if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
+                analytics.install_panic_hook();
+                let context_group_count = app
+                    .try_state::<crate::DbHandle>()
+                    .and_then(|db| crate::data::db::count_user_contexts(db.inner()).ok())
+                    .unwrap_or(0);
+                analytics.app_launched(first_launch, &settings, context_group_count);
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                match app_tray::prepare_windows_shell_icon(app.handle()) {
+                    Ok(shell_icon) => {
+                        crate::system::notify::prepare_windows_notification_identity(
+                            &shell_icon,
+                        );
+                    }
+                    Err(err) => {
+                        log::warn!("Continuing without a themed shell icon: {err}");
+                    }
+                }
+            }
+
+            app.manage(sync::SyncManager::start(
+                app.handle().clone(),
+                app.state::<DbHandle>().inner().clone(),
+            ));
+            #[cfg(target_os = "android")]
+            {
+                match crate::android::bridge::start_bridge(app.handle().clone()) {
+                    Ok(addr) => log::info!("android bridge listening on {addr}"),
+                    Err(error) => log::warn!("android bridge failed to start: {error}"),
+                }
+            }
+            start_storage_maintenance(
+                app.handle().clone(),
+                app.state::<DbHandle>().inner().clone(),
+                settings.clone(),
+            );
+
+            #[cfg(desktop)]
+            app_tray::setup_tray(app)?;
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                crate::system::linux_titlebar::enable(&window).map_err(|error| {
+                    let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
+                    tauri::Error::Setup(source.into())
+                })?;
+            }
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                let theme = window.theme().ok();
+                crate::system::windows_titlebar::enable(&window, theme)
+                    .map_err(|error| {
+                        let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
+                        tauri::Error::Setup(source.into())
+                    })?;
+                app_tray::apply_runtime_icons(app.handle(), theme);
+            }
+            app_hotkey::setup_hotkey(app, shared.clone());
+            media::mic_mute_trigger::setup(app, shared.clone());
+            #[cfg(target_os = "macos")]
+            {
+                crate::system::mac_app::set_accessory_activation_policy_on_main_thread(
+                    app.handle(),
+                );
+            }
+            start_frontend_watchdog(app.handle(), frontend_readiness.clone());
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut sigterm = match signal(SignalKind::terminate()) {
+                        Ok(sigterm) => sigterm,
+                        Err(err) => {
+                            log::warn!("could not register SIGTERM handler: {err}");
+                            return;
+                        }
+                    };
+                    sigterm.recv().await;
+                    log::info!("received SIGTERM; exiting cleanly");
+                    app_handle.exit(0);
+                });
+            }
+            let local_stt_manager = local_transcription_manager.clone();
+            let local_llm_manager = local_cleanup_manager.clone();
+            let capture_state = shared.clone();
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            let mut memory_reclaimer = crate::system::memory::IdleMemoryReclaimer::new(
+                app.state::<DbHandle>().inner().clone(),
+            );
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    pipeline::release_expired_capture_audio(&capture_state);
+                    if local_stt_manager
+                        .shutdown_signal
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        && local_llm_manager
+                            .shutdown_signal
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        break;
+                    }
+                    let idle_stt = local_stt_manager.clone();
+                    let idle_llm = local_llm_manager.clone();
+                    let idle_app = app_handle.clone();
+                    let idle_state = capture_state.clone();
+                    if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+                        let stt_guard = idle_stt.preload_gate.try_write().ok();
+                        let llm_guard = idle_llm.preload_gate.try_write().ok();
+                        let (stt, llm) = {
+                            let state = idle_state.lock().map_err(|_| anyhow::anyhow!("recording state lock poisoned"))?;
+                            if !state.lifecycle.is_recording() {
+                                let stt = if stt_guard.is_some() { idle_stt.take_if_idle(&idle_app) } else { Ok(None) };
+                                let llm = if llm_guard.is_some() { idle_llm.take_if_idle(&idle_app) } else { Ok(None) };
+                                (stt, llm)
+                            } else {
+                                (Ok(None), Ok(None))
+                            }
+                        };
+                        drop(stt?);
+                        drop(llm?);
+                        Ok::<(), anyhow::Error>(())
+                    })
+                    .await
+                    .unwrap_or_else(|error| Err(anyhow::anyhow!(error)))
+                    {
+                        log::warn!("local models: idle unload maintenance failed: {error}");
+                    }
+
+                    if crate::media::realtime_reuse::is_loaded() {
+                        let reuse_app = app_handle.clone();
+                        let _ = tauri::async_runtime::spawn_blocking(move || {
+                            let policy = crate::data::store::settings_snapshot(&reuse_app).ok()
+                                .map(|settings| crate::data::store::load_pipeline_config(&settings).local_model_memory_policy)
+                                .unwrap_or_else(|| "unload_after_5m".into());
+                            let pressure = crate::system::memory::gpu_vram_statuses().iter().any(|gpu| {
+                                gpu.index == 0 && gpu.total_mb > 0 &&
+                                    (gpu.total_mb.saturating_sub(gpu.used_mb) < 512 || gpu.used_mb.saturating_mul(100) / gpu.total_mb >= 92)
+                            });
+                            crate::media::realtime_reuse::evict_if_idle(&policy, pressure);
+                        }).await;
+                    }
+
+                    let stt_loaded = local_stt_manager
+                        .current_model_id
+                        .lock()
+                        .map(|guard| guard.is_some())
+                        .unwrap_or(false);
+                    let llm_loaded = local_llm_manager
+                        .current_model_id
+                        .lock()
+                        .map(|guard| guard.is_some())
+                        .unwrap_or(false);
+                    if stt_loaded || llm_loaded {
+                        let pressure = tauri::async_runtime::spawn_blocking(
+                            crate::system::memory::detect_resource_pressure,
+                        )
+                        .await
+                        .unwrap_or(None);
+                        if let Some(reason) = pressure {
+                            log::warn!(
+                                "local models: system resource pressure detected ({reason}), unloading proactively"
+                            );
+                            let pressure_stt = local_stt_manager.clone();
+                            let pressure_llm = local_llm_manager.clone();
+                            let pressure_app = app_handle.clone();
+                            let _ = tauri::async_runtime::spawn_blocking(move || {
+                                pressure_stt.unload_for_resource_pressure(&pressure_app);
+                                pressure_llm.unload_for_resource_pressure(&pressure_app);
+                            })
+                            .await;
+                        }
+                    }
+                    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+                    {
+                        let main_hidden = app_handle.get_webview_window("main")
+                            .and_then(|window| window.is_visible().ok())
+                            .is_some_and(|visible| !visible);
+                        memory_reclaimer.reclaim(&capture_state, main_hidden).await;
+                    }
+                }
+            });
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        if crate::system::session::system_is_shutting_down() {
+                            return;
+                        }
+                        api.prevent_close();
+                        #[cfg(target_os = "macos")]
+                        {
+                            hide_main_window(window.app_handle());
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            window.hide().ok();
+                        }
+                    }
+                    #[cfg(target_os = "macos")]
+                    tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
+                        crate::system::mac_app::set_regular_activation_policy_on_main_thread(
+                            window.app_handle(),
+                        );
+                    }
+                    tauri::WindowEvent::Focused(true) => {
+                        #[cfg(target_os = "windows")]
+                        apply_runtime_icons(window.app_handle(), window.theme().ok());
+                        #[cfg(target_os = "macos")]
+                        {
+                            crate::system::mac_app::set_regular_activation_policy_on_main_thread(
+                                window.app_handle(),
+                            );
+                        }
+                    }
+                    tauri::WindowEvent::ThemeChanged(theme) => {
+                        let app = window.app_handle();
+                        #[cfg(target_os = "windows")]
+                        if let Some(webview) = app.get_webview_window("main") {
+                            crate::system::windows_titlebar::refresh(&webview, Some(*theme));
+                        }
+                        if app_tray::appearance_mode(app)
+                            .as_deref()
+                            .unwrap_or("system")
+                            == "system"
+                        {
+                            apply_runtime_icons(app, Some(*theme));
+                        }
+                    }
+                    #[cfg(target_os = "windows")]
+                    tauri::WindowEvent::Moved(_) => {
+                    }
+                    #[cfg(target_os = "windows")]
+                    tauri::WindowEvent::Resized(_) => {
+                        schedule_settled_titlebar_refresh(window.app_handle());
+                    }
+                    #[cfg(target_os = "windows")]
+                    tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                        if let Some(webview) = window.app_handle().get_webview_window("main") {
+                            crate::system::windows_titlebar::refresh(&webview, window.theme().ok());
+                            apply_runtime_icons(window.app_handle(), window.theme().ok());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
             #[cfg(desktop)] agent_api::agent_pending_request,
             #[cfg(desktop)] agent_api::agent_respond,
             #[cfg(desktop)] agent_api::agent_revoke_all,
@@ -417,10 +786,6 @@ fn app_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
             commands::open_microphone_settings,
             commands::restart_app,
             commands::frontend_ready,
-            #[cfg(target_os = "linux")] commands::frontend_settings_ready,
-            #[cfg(target_os = "linux")] commands::frontend_home_ready,
-            #[cfg(target_os = "linux")] commands::frontend_settings_generation,
-            #[cfg(all(target_os = "linux", feature = "native-testing", debug_assertions))] commands::native_main_settings_ready,
             commands::reset_macos_core_permissions,
             commands::get_recent,
             commands::get_dictation_log,
@@ -564,496 +929,29 @@ fn app_invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Sen
             commands::android_width_class,
             commands::android_insert_text_result,
             commands::android_on_permission_revoked,
-    ]
-}
-
-fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
-    if window.label() != "main" {
-        return;
-    }
-    match event {
-        tauri::WindowEvent::CloseRequested { api, .. } => {
-            if crate::system::session::system_is_shutting_down() {
-                return;
-            }
-            api.prevent_close();
-            #[cfg(target_os = "macos")]
-            hide_main_window(window.app_handle());
-            #[cfg(not(target_os = "macos"))]
-            { window.hide().ok(); }
-        }
-        #[cfg(target_os = "macos")]
-        tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
-            crate::system::mac_app::set_regular_activation_policy_on_main_thread(window.app_handle());
-        }
-        tauri::WindowEvent::Focused(true) => {
-            #[cfg(target_os = "windows")]
-            apply_runtime_icons(window.app_handle(), window.theme().ok());
-            #[cfg(target_os = "macos")]
-            crate::system::mac_app::set_regular_activation_policy_on_main_thread(window.app_handle());
-        }
-        tauri::WindowEvent::ThemeChanged(theme) => {
-            let app = window.app_handle();
-            #[cfg(target_os = "windows")]
-            if let Some(webview) = app.get_webview_window("main") {
-                crate::system::windows_titlebar::refresh(&webview, Some(*theme));
-            }
-            if app_tray::appearance_mode(app).as_deref().unwrap_or("system") == "system" {
-                apply_runtime_icons(app, Some(*theme));
-            }
-        }
-        #[cfg(target_os = "windows")]
-        tauri::WindowEvent::Moved(_) => {}
-        #[cfg(target_os = "windows")]
-        tauri::WindowEvent::Resized(_) => schedule_settled_titlebar_refresh(window.app_handle()),
-        #[cfg(target_os = "windows")]
-        tauri::WindowEvent::ScaleFactorChanged { .. } => {
-            if let Some(webview) = window.app_handle().get_webview_window("main") {
-                crate::system::windows_titlebar::refresh(&webview, window.theme().ok());
-                apply_runtime_icons(window.app_handle(), window.theme().ok());
-            }
-        }
-        _ => {}
-    }
-}
-
-fn handle_run_event(_app: &tauri::AppHandle, _event: tauri::RunEvent) {
-    #[cfg(target_os = "macos")]
-    if let tauri::RunEvent::Reopen { .. } = _event {
-        show_main_window(_app);
-    }
-    if let tauri::RunEvent::ExitRequested { ref api, .. } = _event {
-        log::info!("app exit requested");
-        #[cfg(target_os = "linux")]
-        if let Some(pending) = _app.try_state::<linux_handoff_transport::PendingRestart>() {
-            if let Err(error) = pending.check_exit() {
-                api.prevent_exit();
-                use tauri::Emitter;
-                let _ = _app.emit("verenu:error", error);
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = api;
-    }
-    if let tauri::RunEvent::Exit = _event {
-        crate::media::sound::release_all_mutes_on_exit();
-        log::info!("app exiting; unloading local models");
-        crate::media::realtime_reuse::evict_if_idle("unload_immediately", true);
-        crate::pipeline::failover::flush_on_exit(_app);
-        crate::system::shutdown_local_models(_app);
-        #[cfg(target_os = "windows")]
-        app_tray::cleanup_runtime_icon_files();
-        log::info!("app shutdown complete");
-        log::logger().flush();
-        #[cfg(target_os = "linux")]
-        if let Some(pending) = _app.try_state::<linux_handoff_transport::PendingRestart>() {
-            pending.finish_exit();
-        }
-    }
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    #[cfg(target_os = "linux")]
-    match linux_handoff_transport::Child::from_environment(std::time::Duration::from_secs(30)) {
-        Ok(Some(child)) => {
-            linux_handoff_child::run(child);
-            return;
-        }
-        Ok(None) => recover_output_volume(),
-        Err(error) => {
-            eprintln!("Could not start update replacement: {error}");
-            return;
-        }
-    }
-    #[cfg(target_os = "linux")]
-    crate::core::hyprland::initialize_app_identity();
-    #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
-    dev_session::prepare().expect("failed to prepare isolated dev session");
-    #[cfg(target_os = "linux")]
-    configure_hyprland_webkit_renderer();
-
-    #[cfg(target_os = "windows")]
-    {
-        cleanup_update_helper_if_requested();
-        if crate::commands::run_update_helper_if_requested() {
-            return;
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let _ = crate::system::mac_app::set_process_name("Verenu");
-    }
-
-    #[cfg(target_os = "windows")]
-    wait_for_relaunch_parent_exit();
-
-    #[cfg(target_os = "windows")]
-    let single_instance = (!is_dev_session()).then(crate::single_instance::acquire);
-
-    let shared = new_shared_state();
-
-    crate::system::logger::init_early();
-    pipeline::failover::restore_into_state(&shared);
-    let local_cleanup_manager = crate::local_llm::LocalLlmManager::new();
-    let local_transcription_manager = crate::local_stt::LocalTranscriptionManager::new();
-    let frontend_readiness = FrontendReadiness::default();
-
-    #[cfg(target_os = "linux")]
-    let mut builder = linux_app_builder();
-    #[cfg(not(target_os = "linux"))]
-    #[allow(unused_mut)]
-    let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_shell::init());
-    #[cfg(all(feature = "native-testing", debug_assertions, desktop))]
-    {
-        builder = builder
-            .plugin(tauri_plugin_wdio::init())
-            .plugin(tauri_plugin_wdio_webdriver::init());
-    }
-    #[cfg(target_os = "android")]
-    {
-        builder = builder.plugin(crate::android::permissions_plugin::init());
-        builder = builder.plugin(crate::android::security_plugin::init());
-        builder = builder.plugin(crate::android::updater::init());
-        builder = builder.append_invoke_initialization_script(
-            "Object.defineProperty(window, '__VERENU_ANDROID__', { value: true, configurable: false });",
-        );
-    }
-    #[cfg(target_os = "linux")]
-    if !is_dev_session() {
-        builder = builder.plugin(crate::linux_single_instance::plugin());
-    }
-    #[cfg(all(desktop, not(target_os = "linux")))]
-    if !is_dev_session() {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            show_main_window(app);
-        }));
-    }
-
-    builder = builder
-        .manage(shared.clone())
-        .manage(local_cleanup_manager.clone())
-        .manage(local_transcription_manager.clone())
-        .manage(frontend_readiness.clone());
-
-    #[cfg(target_os = "windows")]
-    if let Some(single_instance) = single_instance {
-        builder = builder.manage(single_instance);
-    }
-
-    builder
-        .setup(move |app| {
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            crate::start_nvidia_check(app.handle());
-            #[cfg(target_os = "linux")]
-            if std::env::args().any(|arg| {
-                arg == "--verenu-hotkey-release"
-                    || arg == "--verenu-hotkey-handsfree"
-                    || arg == "--verenu-capture-sub-app"
-            }) {
-                app.handle().exit(0);
-                return Ok(());
-            }
-            #[cfg(target_os = "windows")]
-            if !is_dev_session() {
-                crate::single_instance::listen_for_takeover(app.handle());
-            }
-            #[cfg(target_os = "android")]
-            {
-                init_android_audio_context()?;
-                crate::android::local_ai::initialize()?;
-            }
-            #[cfg(target_os = "android")]
-            {
-                let data_dir = app
-                    .path()
-                    .app_data_dir()
-                    .map_err(std::io::Error::other)?;
-                std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", data_dir);
-            }
-            std::fs::create_dir_all(app_data_dir()).map_err(std::io::Error::other)?;
-            let db_handle: DbHandle = match db::open_with_recovery(app_db_path()) {
-                Ok(db) => db,
-                Err(err) => fatal_startup_error(&format!("failed to open database: {err}")),
-            };
-            let _ = db::cleanup_cache_prune_expired(&db_handle);
-            let _ = db::prune_auto_learn_retention(&db_handle);
-            seed_startup_dictionary(&db_handle);
-            #[cfg(target_os = "linux")]
-            drop(crate::system::diagnostic_journal::start(
-                db_handle.clone(),
-                app.state::<Arc<linux_activity::ActivityGate>>().inner().clone(),
-            ));
-            #[cfg(not(target_os = "linux"))]
-            drop(crate::system::diagnostic_journal::start(db_handle.clone()));
-            app.manage(db_handle);
-            crate::system::logger::attach_app(app.handle());
-            #[cfg(target_os = "linux")]
-            if !is_dev_session() {
-                if let Err(error) = crate::core::hyprland::ensure_window_rules() {
-                    log::error!("Linux window setup failed: {error}");
-                }
-            }
-            let build_mode = if cfg!(debug_assertions) {
-                "debug"
-            } else {
-                "release"
-            };
-            log::info!(
-                "verenu {} starting — {} {}, {} build — verbose logging {}",
-                env!("CARGO_PKG_VERSION"),
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-                build_mode,
-                if crate::system::logger::is_verbose() {
-                    "on"
-                } else {
-                    "off"
-                }
-            );
-            let settings = crate::data::store::SettingsHandle::open(app.handle())
-                .map_err(std::io::Error::other)?;
-            let cache_enabled = settings.get(crate::data::store::CLEANUP_CACHE_ENABLED)
-                .and_then(|value| value.as_bool()).unwrap_or(true);
-            db::cleanup_cache_set_enabled(app.state::<DbHandle>().inner(), cache_enabled)
-                .map_err(std::io::Error::other)?;
-            if !is_dev_session() {
-                crate::data::credentials::migrate_from_store(app.handle(), &settings);
-            }
-            #[cfg(target_os = "linux")]
-            if let Some(window) = app.get_webview_window("main") {
-                crate::system::linux_webview::configure_window(&window);
-            }
-            #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
-            if is_dev_session() {
-                app.manage(settings.clone());
-                dev_session::start(app.handle().clone())?;
-                if std::env::var("VERENU_AGENT_TEST_SYNTHETIC").as_deref() == Ok("1") {
-                    agent_api::start(app.handle().clone())?;
-                }
-                return Ok(());
-            }
-            if let Err(error) = crate::data::store::migrate_contextual_formatting(&settings) {
-                log::warn!("Failed to migrate contextual formatting setting: {error}");
-            }
-            let first_launch = {
-                if let Some(value) = settings.get(crate::data::store::HOTKEY) {
-                    if let Ok(codes) = serde_json::from_value::<Vec<String>>(value) {
-                        let normalized = crate::core::hotkey::normalize_codes(&codes);
-                        let ids = normalized.as_ref().ok().and_then(|codes| {
-                            crate::core::hotkey::mapped_codes(codes).ok()
-                        });
-                        if ids.as_ref().is_none_or(|ids| crate::core::hotkey::update_keys(ids).is_err()) {
-                            #[cfg(target_os = "macos")]
-                            let defaults = ["AltLeft", "Space"];
-                            #[cfg(not(target_os = "macos"))]
-                            let defaults = ["ControlLeft", "MetaLeft"];
-                            if let Err(error) = settings.save_value(
-                                crate::data::store::HOTKEY,
-                                serde_json::json!(defaults),
-                            ) {
-                                log::warn!("Failed to migrate unsupported hotkey: {error}");
-                            }
-                            let default_codes = defaults
-                                .iter()
-                                .map(|code| (*code).to_string())
-                                .collect::<Vec<_>>();
-                            match crate::core::hotkey::mapped_codes(&default_codes) {
-                                Ok(default_ids) => {
-                                    if let Err(error) =
-                                        crate::core::hotkey::update_keys(&default_ids)
-                                    {
-                                        log::warn!("Failed to apply default hotkey after migration: {error}");
-                                    }
-                                }
-                                Err(error) => {
-                                    log::warn!("Failed to map default hotkey after migration: {error}");
-                                }
-                            }
-                        }
-                    }
-                }
-                let retention_value = settings.get(crate::data::store::HISTORY_RETENTION);
-                let retention = retention_value
-                    .as_ref()
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("30 days");
-                if let Some(days) = crate::data::store::history_retention_days(retention) {
-                    let db = app.state::<DbHandle>().inner().clone();
-                    let app_handle = app.handle().clone();
-                    let settings = settings.clone();
-                    #[cfg(target_os = "linux")]
-                    let gate = app.state::<Arc<linux_activity::ActivityGate>>().inner().clone();
-                    tauri::async_runtime::spawn_blocking(move || {
-                        #[cfg(target_os = "linux")]
-                        let Some(_activity) = gate.try_enter() else {
-                            return;
-                        };
-                        match db::prune_transcriptions_for_retention(&db, &settings, days) {
-                            Ok(deleted) if deleted > 0 => {
-                                let _ = app_handle.emit("verenu:history-pruned", ());
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                log::warn!(
-                                    "Failed to prune old transcriptions during startup: {e:?}"
-                                );
-                            }
-                        }
-                    });
-                }
-                let first_launch = !settings
-                    .get(crate::data::store::SETUP_COMPLETE)
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                app.manage(settings.clone());
-                #[cfg(desktop)]
-                app.manage(crate::analytics::Analytics::new(
-                    settings
-                        .get(crate::data::store::ANALYTICS_ENABLED)
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(true),
-                    crate::app_data_dir(),
-                ));
-                first_launch
-            };
-
-            #[cfg(desktop)]
-            if let Err(error) = agent_api::start(app.handle().clone()) {
-                log::warn!("Agent access is unavailable: {error}");
-            }
-
-            #[cfg(desktop)]
-            if !is_dev_session() {
-                match app.path().home_dir() {
-                    Ok(home) => {
-                        if let Err(error) = agent_discovery::register(&home, &app_data_dir()) {
-                            log::warn!("Could not register agent discovery skill: {error}");
-                        }
-                    }
-                    Err(error) => log::warn!("Could not locate home for agent discovery: {error}"),
-                }
-            }
-
-            #[cfg(desktop)]
-            if !crate::is_dev_session() {
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(error) = commands::reconcile_autostart(app_handle).await {
-                        log::warn!("Failed to reconcile autostart at startup: {error}");
-                    }
-                });
-            }
-
-            #[cfg(desktop)]
-            if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
-                analytics.install_panic_hook();
-                let context_group_count = app
-                    .try_state::<crate::DbHandle>()
-                    .and_then(|db| crate::data::db::count_user_contexts(db.inner()).ok())
-                    .unwrap_or(0);
-                analytics.app_launched(first_launch, &settings, context_group_count);
-            }
-
-            #[cfg(target_os = "windows")]
-            {
-                match app_tray::prepare_windows_shell_icon(app.handle()) {
-                    Ok(shell_icon) => {
-                        crate::system::notify::prepare_windows_notification_identity(
-                            &shell_icon,
-                        );
-                    }
-                    Err(err) => {
-                        log::warn!("Continuing without a themed shell icon: {err}");
-                    }
-                }
-            }
-
-            app.manage(sync::SyncManager::start(
-                app.handle().clone(),
-                app.state::<DbHandle>().inner().clone(),
-            ));
-            #[cfg(target_os = "android")]
-            {
-                match crate::android::bridge::start_bridge(app.handle().clone()) {
-                    Ok(addr) => log::info!("android bridge listening on {addr}"),
-                    Err(error) => log::warn!("android bridge failed to start: {error}"),
-                }
-            }
-            drop(start_storage_maintenance(
-                app.handle().clone(),
-                app.state::<DbHandle>().inner().clone(),
-                settings.clone(),
-            ));
-
-            #[cfg(all(desktop, target_os = "linux"))]
-            app_tray::setup_tray(app.handle())?;
-            #[cfg(all(desktop, not(target_os = "linux")))]
-            app_tray::setup_tray(app)?;
-            #[cfg(target_os = "linux")]
-            if let Some(window) = app.get_webview_window("main") {
-                crate::system::linux_titlebar::enable(&window).map_err(|error| {
-                    let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
-                    tauri::Error::Setup(source.into())
-                })?;
-            }
-            #[cfg(target_os = "windows")]
-            if let Some(window) = app.get_webview_window("main") {
-                let theme = window.theme().ok();
-                crate::system::windows_titlebar::enable(&window, theme)
-                    .map_err(|error| {
-                        let source: Box<dyn std::error::Error> = Box::new(std::io::Error::other(error));
-                        tauri::Error::Setup(source.into())
-                    })?;
-                app_tray::apply_runtime_icons(app.handle(), theme);
-            }
-            app_hotkey::setup_hotkey(app.handle(), shared.clone());
-            media::mic_mute_trigger::setup(app.handle(), shared.clone());
-            #[cfg(target_os = "macos")]
-            {
-                crate::system::mac_app::set_accessory_activation_policy_on_main_thread(
-                    app.handle(),
-                );
-            }
-            start_frontend_watchdog(app.handle(), frontend_readiness.clone());
-            drop(start_runtime_maintenance(
-                app.handle().clone(), shared.clone(), local_transcription_manager.clone(),
-                local_cleanup_manager.clone(),
-            ));
-
-            #[cfg(all(target_os = "linux", feature = "native-testing", debug_assertions))]
-            if let Some(path) = std::env::var_os("VERENU_HANDOFF_TEST_TRIGGER") {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    let trigger = std::path::PathBuf::from(path);
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-                    while !trigger.exists() && std::time::Instant::now() < deadline {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    if trigger.exists() {
-                        let result = tauri::async_runtime::block_on(async {
-                            if std::env::var_os("VERENU_UPDATE_TEST_LOCAL_URL").is_some() {
-                                commands::install_update(handle.clone(), "https://github.com/Verenu/Verenu/releases/download/v0.21.0/Verenu_0.21.0-beta.1_x86_64.AppImage".into()).await?;
-                            }
-                            commands::restart_app(handle).await
-                        });
-                        if let Err(error) = result {
-                            let _ = std::fs::write(trigger.with_extension("error"), error);
-                        }
-                    }
-                });
-            }
-
-            Ok(())
-        })
-        .on_window_event(handle_window_event)
-        .invoke_handler(app_invoke_handler())
+        ])
         .build(tauri::generate_context!())
         .expect("error building Verenu")
-        .run(handle_run_event);
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_main_window(_app);
+            }
+            if let tauri::RunEvent::ExitRequested { .. } = _event {
+                log::info!("app exit requested");
+            }
+            if let tauri::RunEvent::Exit = _event {
+                crate::media::sound::release_all_mutes_on_exit();
+                log::info!("app exiting; unloading local models");
+                crate::media::realtime_reuse::evict_if_idle("unload_immediately", true);
+                crate::pipeline::failover::flush_on_exit(_app);
+                crate::system::shutdown_local_models(_app);
+                #[cfg(target_os = "windows")]
+                app_tray::cleanup_runtime_icon_files();
+                log::info!("app shutdown complete");
+                log::logger().flush();
+            }
+        });
 }
 
 #[cfg(target_os = "linux")]
@@ -1094,42 +992,6 @@ mod linux_webkit_renderer_tests {
         assert!(!should_force_hyprland_webkit_shm(true, true, true, false));
         assert!(!should_force_hyprland_webkit_shm(true, true, false, true));
         assert!(!should_force_hyprland_webkit_shm(true, true, true, true));
-    }
-}
-
-#[cfg(all(test, target_os = "linux", feature = "native-testing"))]
-mod linux_runtime_maintenance_tests {
-    use super::*;
-    use std::time::{Duration, Instant};
-
-    #[test]
-    #[ignore = "requires an isolated graphical session and two maintenance intervals"]
-    fn maintenance_waits_for_restart_pause_before_releasing_expired_audio() {
-        let gate = Arc::new(linux_activity::ActivityGate::default());
-        let app = tauri::Builder::default().any_thread().manage(gate.clone())
-            .build(tauri::generate_context!()).unwrap();
-        let state = new_shared_state();
-        state.lock().unwrap().cancelled_capture = Some(pipeline::CancelledCapture {
-            audio: pipeline::CapturedAudio::from_samples(vec![0.25], 16_000, 1),
-            captured_at: Instant::now() - Duration::from_secs(3600),
-            id: "synthetic-maintenance-test".into(),
-            origin: pipeline::CaptureOrigin::UserCancelled,
-            created_at_rfc3339: String::new(),
-            started_at_unix: 0,
-            target: core::window_geometry::WindowTarget::default(),
-            context: core::context::ResolvedContextIdentity::everywhere(),
-        });
-        let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-        drop(start_runtime_maintenance(app.handle().clone(), state.clone(),
-            local_stt::LocalTranscriptionManager::new(), local_llm::LocalLlmManager::new()));
-        std::thread::sleep(Duration::from_secs(32));
-        assert_eq!(state.lock().unwrap().cancelled_capture.as_ref().unwrap().audio.samples_16k.len(), 1);
-        drop(pause);
-        let deadline = Instant::now() + Duration::from_secs(35);
-        while !state.lock().unwrap().cancelled_capture.as_ref().unwrap().audio.samples_16k.is_empty() {
-            assert!(Instant::now() < deadline, "maintenance did not resume after the pause");
-            std::thread::sleep(Duration::from_millis(100));
-        }
     }
 }
 #[cfg(target_os = "windows")]

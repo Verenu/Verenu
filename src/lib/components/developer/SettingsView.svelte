@@ -122,7 +122,7 @@
       <button class="btn-ghost btn-compact" onclick={globalMessage}>Global message</button>
       <button class="btn-ghost btn-compact" onclick={driveFull}>Drive full</button>
       <button class="btn-ghost btn-compact" data-setting-target="developer-notifications" onclick={() => void notify()}>Notification</button>
-      <button class="btn-ghost btn-compact" data-setting-target="developer-installer" disabled={appStore.updateReinstall.busy} onclick={() => void reinstallLatestUpdate(appStore.updateReinstall)}>{appStore.updateReinstall.installedVersion ? 'Retry restart' : 'Reinstall stable'}</button>
+      <button class="btn-ghost btn-compact" data-setting-target="developer-installer" disabled={appStore.updateReinstall.busy} onclick={() => void reinstallLatestUpdate(appStore.updateReinstall)}>Reinstall latest</button>
       <button class="btn-ghost btn-compact" data-setting-target="developer-status" onclick={() => void providerStatus()}>Check providers</button>
     </div>
     {#if message}<p class="msg" transition:fade={{ duration: motionMs(MOTION_MS.fast) }}>{message}</p>{/if}

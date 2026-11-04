@@ -539,29 +539,6 @@ try {
   const identity = await browser.execute('return { native: !!window.__TAURI_INTERNALS__, mocks: !!window.__wdio_mocks__ && Object.keys(window.__wdio_mocks__).length > 0 };');
   assert.equal(identity.native, true); assert.equal(identity.mocks, false);
   if (process.platform === 'linux') {
-    const startupDeadline = Date.now() + 15_000;
-    while (!await invoke('native_main_settings_ready')) {
-      assert.ok(Date.now() < startupDeadline, 'Initial main-window settings did not become ready');
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    report.checks.push({ name: 'Main WebView reports settings readiness after initialization', status: 'passed' });
-    const settingsGeneration = await invoke('frontend_settings_generation');
-    const oldPage = await markCurrentNativePage(browser);
-    await refreshAfterNativeNavigation(browser, session);
-    await browser.waitForApp({ navigationMarker: oldPage });
-    const newGeneration = await invoke('frontend_settings_generation');
-    assert.notEqual(newGeneration, settingsGeneration, 'Reload did not invalidate the previous settings readiness');
-    const stale = await browser.executeAsync((generation, done) => {
-      window.__TAURI__.core.invoke('frontend_settings_ready', { generation })
-        .then(() => done({ accepted: true }), error => done({ rejected: String(error) }));
-    }, settingsGeneration);
-    assert.match(stale.rejected ?? '', /earlier page/, 'Stale settings readiness was accepted');
-    const reloadDeadline = Date.now() + 15_000;
-    while (!await invoke('native_main_settings_ready')) {
-      assert.ok(Date.now() < reloadDeadline, 'Reloaded main-window settings did not become ready');
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    report.checks.push({ name: 'Reload rejects stale settings readiness and accepts the new page', status: 'passed' });
     assert.equal(await browser.execute(`
       const button = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Settings');
       button?.click(); return !!button;

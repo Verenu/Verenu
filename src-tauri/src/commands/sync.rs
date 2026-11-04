@@ -43,8 +43,6 @@ pub async fn sync_get_status(app: AppHandle) -> Result<SyncStatusDto, String> {
 
 #[tauri::command]
 pub async fn sync_set_device_name(app: AppHandle, name: String) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = super::linux_activity(&app).await;
     manager(&app)?
         .set_device_name(name)
         .map_err(|e| e.to_string())
@@ -56,8 +54,6 @@ pub async fn sync_set_peer_address(
     device_uuid: String,
     address: String,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = super::linux_activity(&app).await;
     manager(&app)?
         .set_peer_address(&device_uuid, &address)
         .map_err(|e| e.to_string())
@@ -65,15 +61,11 @@ pub async fn sync_set_peer_address(
 
 #[tauri::command]
 pub async fn sync_pair_connection(app: AppHandle, details: String) -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    let _activity = super::linux_activity(&app).await;
     manager(&app)?.pair_connection(&details).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn sync_start_pairing(app: AppHandle, device_uuid: String) -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    let _activity = super::linux_activity(&app).await;
     let result = manager(&app)?
         .start_pairing(device_uuid)
         .await
@@ -110,8 +102,6 @@ pub async fn sync_respond_to_pairing(
     code: String,
     approve: bool,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = super::linux_activity(&app).await;
     manager(&app)?
         .respond_to_pairing(code, approve)
         .await
@@ -120,8 +110,6 @@ pub async fn sync_respond_to_pairing(
 
 #[tauri::command]
 pub async fn sync_cancel_pairing(app: AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = super::linux_activity(&app).await;
     manager(&app)?
         .cancel_pairing()
         .await
@@ -130,8 +118,6 @@ pub async fn sync_cancel_pairing(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn sync_remove_device(app: AppHandle, device_uuid: String) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let _activity = super::linux_activity(&app).await;
     manager(&app)?
         .remove_device(device_uuid)
         .await

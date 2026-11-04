@@ -658,10 +658,6 @@
   onMount(() => {
     const listeners = createListenerScope();
     let mounted = true;
-    const probe = (window as Window & { __VERENU_RESTART_PROBE__?: boolean }).__VERENU_RESTART_PROBE__ === true;
-    const pillGeneration = probe
-      ? import('@tauri-apps/api/core').then(({ invoke }) => invoke<number>('frontend_pill_generation')).catch(() => null)
-      : Promise.resolve(null);
     const onWindowResize = () => { void reportHitRect(true); };
     window.addEventListener('resize', onWindowResize);
 
@@ -857,10 +853,6 @@
         await invoke('frontend_ready').catch((error) => {
           console.error('Failed to complete pill startup handshake:', error);
         });
-        const generation = await pillGeneration;
-        if (mounted && generation !== null) {
-          await invoke('frontend_pill_ready', { generation }).catch(() => {});
-        }
       }
 
     })();

@@ -189,8 +189,8 @@ async fn check_repo(
         return Ok(None);
     }
     let install_hint = match target {
-        UpdateTarget::LinuxArch => Some("Verenu will verify the download, ask for administrator authorization, and restart after updating its pacman package.".into()),
-        UpdateTarget::LinuxAppImage => Some("Verenu will verify and replace this AppImage, keep the previous image beside it, and restart.".into()),
+        UpdateTarget::LinuxArch => Some("Verenu will verify the download and ask for administrator authorization to update its pacman package. Restart Verenu afterward.".into()),
+        UpdateTarget::LinuxAppImage => Some("Verenu will verify and replace this AppImage, keeping the previous image beside it. Restart Verenu afterward.".into()),
         UpdateTarget::LinuxDownload => Some("This installation is managed externally. Download the AppImage, or update Verenu with your package manager.".into()),
         UpdateTarget::AndroidArm64 | UpdateTarget::AndroidX86_64 => Some("Verenu will download and verify the APK. Android will ask you to approve installation. If prompted, allow updates from Verenu, then tap Update Verenu again.".into()),
         _ => None,

@@ -1,124 +1,5 @@
 use super::*;
 
-#[cfg(target_os = "linux")]
-#[test]
-fn handoff_settings_read_does_not_repair_or_replace_invalid_data() {
-    let path = std::env::temp_dir().join(format!("verenu-handoff-{}.json", uuid::Uuid::new_v4()));
-    assert!(SettingsSnapshot::read_for_handoff(&path).is_err());
-    assert!(!path.exists());
-    std::fs::write(&path, b"{invalid synthetic json").unwrap();
-    assert!(SettingsSnapshot::read_for_handoff(&path).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), b"{invalid synthetic json");
-    assert!(!path.with_extension("json.bak").exists());
-    std::fs::write(&path, br#"{"setup_complete":true}"#).unwrap();
-    let snapshot = SettingsSnapshot::read_for_handoff(&path).unwrap();
-    assert_eq!(snapshot.get(SETUP_COMPLETE), Some(&Value::Bool(true)));
-    std::fs::remove_file(path).unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn handoff_settings_reject_all_mutations_without_touching_disk() {
-    let path = unique_tmp_path();
-    let original = br#"{"owner":"test","value":1}"#;
-    std::fs::write(&path, original).unwrap();
-    let settings = SettingsHandle::open_for_handoff(path.clone()).unwrap();
-    assert_eq!(settings.get("value"), Some(json!(1)));
-    assert!(settings.set("value", json!(2)).is_err());
-    assert!(settings.delete("value").is_err());
-    assert!(settings.save().is_err());
-    assert!(settings.save_value("value", json!(1)).is_err());
-    assert!(settings
-        .save_value_if_owner_matches("owner", &json!("test"), "value", json!(2))
-        .is_err());
-    let called = std::cell::Cell::new(false);
-    assert!(settings
-        .save_values_with_commit([("value", json!(1))], |_| Ok(()), || {
-            called.set(true);
-            Ok(())
-        })
-        .is_err());
-    assert!(!called.get());
-    assert_eq!(settings.get("value"), Some(json!(1)));
-    assert_eq!(std::fs::read(&path).unwrap(), original);
-    std::fs::remove_file(path).unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn handoff_rejects_settings_changed_after_the_initial_snapshot() {
-    let path = unique_tmp_path();
-    std::fs::write(&path, br#"{"value":1}"#).unwrap();
-    let settings = SettingsHandle::open_for_handoff(path.clone()).unwrap();
-    std::fs::write(&path, br#"{ "value": 1 }"#).unwrap();
-    settings.validate_handoff_snapshot().unwrap();
-    std::fs::write(&path, br#"{"value":2}"#).unwrap();
-    assert!(settings.validate_handoff_snapshot().is_err());
-    assert_eq!(settings.get("value"), Some(json!(1)));
-    assert_eq!(std::fs::read(&path).unwrap(), br#"{"value":2}"#);
-    std::fs::remove_file(path).unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn handoff_rejects_unsaved_settings_in_the_running_app() {
-    let path = unique_tmp_path();
-    std::fs::write(&path, b"{}").unwrap();
-    let settings = SettingsHandle::empty_for_test(path.clone());
-    settings.set("value", json!(1)).unwrap();
-    assert!(settings.validate_handoff_snapshot().is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), b"{}");
-    settings.save().unwrap();
-    settings.validate_handoff_snapshot().unwrap();
-    std::fs::remove_file(path).unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn handoff_prepares_settings_without_enabling_writes() {
-    let path = unique_tmp_path();
-    std::fs::write(&path, br#"{"value":1}"#).unwrap();
-    let settings = SettingsHandle::open_for_handoff(path.clone()).unwrap();
-    let gate = Arc::new(crate::linux_activity::ActivityGate::default());
-    let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-    let other = Arc::new(crate::linux_activity::ActivityGate::default());
-    let wrong = tauri::async_runtime::block_on(other.pause()).unwrap();
-    assert!(settings.prepare_activation(&wrong, &gate).is_err());
-    std::fs::write(&path, b"invalid synthetic json").unwrap();
-    assert!(settings.prepare_activation(&pause, &gate).is_err());
-    std::fs::write(&path, br#"{"value":1}"#).unwrap();
-    let prepared = settings.prepare_activation(&pause, &gate).unwrap();
-    assert!(settings.save_value("value", json!(2)).is_err());
-    let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-    prepared.activate(&parent_exited);
-    drop(pause);
-    settings.save_value("value", json!(2)).unwrap();
-    assert_eq!(settings.get("value"), Some(json!(2)));
-    std::fs::remove_file(path).unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn handoff_settings_reject_changes_after_preparation_without_overwriting_them() {
-    let path = unique_tmp_path();
-    std::fs::write(&path, br#"{"value":1}"#).unwrap();
-    let settings = SettingsHandle::open_for_handoff(path.clone()).unwrap();
-    let clone = settings.clone();
-    let gate = Arc::new(crate::linux_activity::ActivityGate::default());
-    let pause = tauri::async_runtime::block_on(gate.pause()).unwrap();
-    let prepared = settings.prepare_activation(&pause, &gate).unwrap();
-    assert!(clone.save_value("value", json!(2)).is_err());
-    std::fs::write(&path, br#"{"value":3,"other":true}"#).unwrap();
-    let parent_exited = crate::linux_handoff_transport::parent_exited_for_test();
-    prepared.activate(&parent_exited);
-    drop(pause);
-    assert!(clone.save_value("value", json!(4)).is_err());
-    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(saved["value"], json!(3));
-    assert_eq!(saved["other"], json!(true));
-    std::fs::remove_file(path).unwrap();
-}
-
 #[test]
 fn feature_breadth_counts_voice_commands_and_only_boolean_flags() {
     let commands =
@@ -215,9 +96,6 @@ fn github_cache_persists_and_a_disconnect_rejects_late_refreshes() {
     let handle = SettingsHandle {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(Map::new()))),
-        read_only: Arc::new(AtomicBool::new(false)),
-        #[cfg(target_os = "linux")]
-        handoff_baseline: Arc::new(Mutex::new(None)),
     };
     handle
         .save_value(GITHUB_USERNAME, json!("octocat"))
@@ -341,9 +219,6 @@ fn failed_settings_save_does_not_publish_in_memory_values() {
     let handle = SettingsHandle {
         path: Arc::new(path),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
-        read_only: Arc::new(AtomicBool::new(false)),
-        #[cfg(target_os = "linux")]
-        handoff_baseline: Arc::new(Mutex::new(None)),
     };
 
     assert!(handle
@@ -386,9 +261,6 @@ fn settings_snapshots_share_unchanged_maps_and_skip_noop_writes() {
     let handle = SettingsHandle {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
-        read_only: Arc::new(AtomicBool::new(false)),
-        #[cfg(target_os = "linux")]
-        handoff_baseline: Arc::new(Mutex::new(None)),
     };
 
     let first = handle.snapshot().expect("first snapshot");

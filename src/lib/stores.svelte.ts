@@ -165,7 +165,7 @@ export const appStore = $state({
   updateProgress: '',
   updateInstalled: false,
   updateInstallError: '',
-  updateReinstall: { busy: false, installedVersion: null as string | null, message: '' },
+  updateReinstall: { busy: false, message: '' },
   betaUpdatesEnabled: false,
   providerStatusAlerts: [] as ProviderStatusAlert[],
   providerStatusSimulation: false,

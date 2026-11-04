@@ -12,7 +12,6 @@ type InstallOutcome = 'installed' | 'downloadOpened' | 'installerOpened';
 
 export interface ReinstallState {
   busy: boolean;
-  installedVersion: string | null;
   message: string;
 }
 
@@ -20,26 +19,19 @@ export async function reinstallLatestUpdate(state: ReinstallState): Promise<void
   if (state.busy) return;
   state.busy = true;
   try {
-    if (!state.installedVersion) {
-      state.message = 'Preparing reinstall…';
-      const result = await invoke<{ version: string; outcome: InstallOutcome }>('reinstall_latest_update');
-      if (result.outcome === 'downloadOpened') {
-        state.message = `Download opened for v${result.version}.`;
-        return;
-      }
-      if (result.outcome === 'installerOpened') {
-        state.message = 'Approve the update in the Android installer.';
-        return;
-      }
-      if (result.outcome !== 'installed') throw new Error('The updater returned an unexpected result.');
-      state.installedVersion = result.version;
+    state.message = 'Preparing reinstall…';
+    const result = await invoke<{ version: string; outcome: InstallOutcome }>('reinstall_latest_update');
+    if (result.outcome === 'downloadOpened') {
+      state.message = `Download opened for v${result.version}.`;
+    } else if (result.outcome === 'installerOpened') {
+      state.message = 'Approve the update in the Android installer.';
+    } else if (result.outcome === 'installed') {
+      state.message = `v${result.version} installed. Quit and reopen Verenu to finish.`;
+    } else {
+      throw new Error('The updater returned an unexpected result.');
     }
-    state.message = 'Restarting Verenu…';
-    await invoke('restart_app');
   } catch (error) {
-    state.message = state.installedVersion
-      ? `v${state.installedVersion} installed. Restart failed: ${formatIpcError(error, 'Could not restart Verenu')} Try again or quit and reopen Verenu.`
-      : `Reinstall failed: ${formatIpcError(error, 'Could not install the update')}`;
+    state.message = `Reinstall failed: ${formatIpcError(error, 'Could not install the update')}`;
   } finally {
     state.busy = false;
   }
@@ -58,7 +50,7 @@ export function progressLabel(progress: UpdateProgress): string {
     case 'backing-up': return 'Backing up data…';
     case 'authorizing': return 'Waiting for administrator authorization…';
     case 'installing': return 'Installing…';
-    case 'complete': return 'Update installed. Restart Verenu to finish.';
+    case 'complete': return 'Update installed. Quit and reopen Verenu to finish.';
     default: return 'Updating…';
   }
 }
@@ -69,7 +61,7 @@ export function updateActionLabel(update: UpdateInfo, restart = true): string {
     if (update.assetName.toLowerCase().endsWith('.appimage')) return 'Download AppImage';
     return 'Download Installer';
   }
-  if (isLinuxInstaller(update)) return 'Install & Restart';
+  if (isLinuxInstaller(update)) return 'Update Verenu';
   if (update.assetName.endsWith('.apk')) return 'Update Verenu';
   return restart ? 'Install & Restart' : 'Install Now';
 }
@@ -79,30 +71,11 @@ function isLinuxInstaller(update: UpdateInfo): boolean {
   return name.endsWith('.appimage') || name.endsWith('.pkg.tar.zst');
 }
 
-async function restartInstalledUpdate(): Promise<void> {
-  appStore.updateProgress = 'Restarting Verenu…';
-  try {
-    await invoke('restart_app');
-  } catch (error) {
-    appStore.updateProgress = 'Update installed. Quit and reopen Verenu to finish.';
-    appStore.updateInstallError = formatIpcError(error, 'Could not restart Verenu');
-    throw error;
-  }
-}
-
 export async function installAvailableUpdate(): Promise<void> {
   const update = appStore.updateInfo;
-  if (!update || appStore.updateInstalling) return;
+  if (!update || appStore.updateInstalling || appStore.updateInstalled) return;
   appStore.updateInstalling = true;
   appStore.updateInstallError = '';
-  if (appStore.updateInstalled) {
-    try {
-      await restartInstalledUpdate();
-    } finally {
-      appStore.updateInstalling = false;
-    }
-    return;
-  }
   appStore.updateProgress = update.installMode === 'download' ? 'Opening download…' : 'Preparing update…';
   let stop: (() => void) | undefined;
   try {
@@ -112,7 +85,7 @@ export async function installAvailableUpdate(): Promise<void> {
     const outcome = await invoke<InstallOutcome>('install_update', { downloadUrl: update.downloadUrl });
     if (outcome === 'installed') {
       appStore.updateInstalled = true;
-      await restartInstalledUpdate();
+      appStore.updateProgress = 'Update installed. Quit and reopen Verenu to finish.';
     } else if (outcome === 'downloadOpened') {
       appStore.updateProgress = '';
     } else if (outcome === 'installerOpened') {

@@ -6980,7 +6980,6 @@ dependencies = [
  "coreaudio-rs",
  "cpal",
  "crossbeam-queue",
- "enumflags2",
  "flate2",
  "fs2",
  "futures-util",

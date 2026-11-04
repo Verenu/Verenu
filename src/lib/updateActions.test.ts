@@ -15,11 +15,11 @@ describe('update actions', () => {
     invoke.mockResolvedValue('installed');
   });
   it('labels Linux installation and download actions accurately', () => {
-    expect(updateActionLabel(state.updateInfo!)).toBe('Install & Restart');
+    expect(updateActionLabel(state.updateInfo!)).toBe('Update Verenu');
     expect(updateActionLabel({ ...state.updateInfo!, assetName: 'Verenu_0.21.0_amd64.AppImage', installMode: 'download' })).toBe('Download AppImage');
     expect(updateActionLabel({ ...state.updateInfo!, assetName: 'Verenu_0.21.0_x64-setup.exe' })).toBe('Install & Restart');
   });
-  it('shares one install attempt and starts a restart after installation', async () => {
+  it('shares one install attempt and asks the user to reopen after installation', async () => {
     let resolve!: (outcome: 'installed') => void;
     invoke.mockReturnValueOnce(new Promise<'installed'>((done) => { resolve = done; }));
     const first = installAvailableUpdate();
@@ -30,20 +30,17 @@ describe('update actions', () => {
     await first;
     expect(state.updateInstalling).toBe(false);
     expect(state.updateInstalled).toBe(true);
-    expect(state.updateProgress).toContain('Restarting');
+    expect(state.updateProgress).toContain('Quit and reopen');
     expect(stop).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenLastCalledWith('restart_app');
-    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
-  it('keeps the installed update and offers restart retry after startup fails', async () => {
-    invoke.mockResolvedValueOnce('installed').mockRejectedValueOnce(new Error('Replacement startup failed'));
-    await expect(installAvailableUpdate()).rejects.toThrow('startup failed');
+  it('does not reinstall or restart after an update is installed', async () => {
+    await installAvailableUpdate();
     expect(state.updateInstalled).toBe(true);
     expect(state.updateProgress).toContain('Quit and reopen');
-    expect(state.updateInstallError).toContain('startup failed');
     await installAvailableUpdate();
-    expect(invoke).toHaveBeenCalledTimes(3);
-    expect(invoke).toHaveBeenLastCalledWith('restart_app');
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('install_update', expect.any(Object));
   });
   it('a cancelled or failed installation permits retry and never says installed', async () => {
     invoke.mockRejectedValueOnce(new Error('Update authorization was cancelled.'));
@@ -83,38 +80,31 @@ describe('update actions', () => {
     expect(state.updateInstalled).toBe(false);
     expect(state.updateProgress).toBe('');
   });
-  it('restarts after a completed reinstall and retries restart without reinstalling', async () => {
-    const reinstall = { busy: false, installedVersion: null as string | null, message: '' };
-    invoke.mockResolvedValueOnce({ version: '0.21.0', outcome: 'installed' })
-      .mockRejectedValueOnce(new Error('Replacement startup failed'));
+  it('reports a completed reinstall and asks the user to reopen', async () => {
+    const reinstall = { busy: false, message: '' };
+    invoke.mockResolvedValueOnce({ version: '0.21.0', outcome: 'installed' });
     await reinstallLatestUpdate(reinstall);
-    expect(reinstall.installedVersion).toBe('0.21.0');
-    expect(reinstall.message).toContain('Restart failed');
-    expect(reinstall.message).toContain('quit and reopen');
-    await reinstallLatestUpdate(reinstall);
-    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
-      'reinstall_latest_update', 'restart_app', 'restart_app',
-    ]);
+    expect(reinstall.message).toContain('v0.21.0 installed');
+    expect(reinstall.message).toContain('Quit and reopen');
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual(['reinstall_latest_update']);
     expect(reinstall.busy).toBe(false);
   });
   it('does not restart when reinstall opens a download', async () => {
-    const reinstall = { busy: false, installedVersion: null as string | null, message: '' };
+    const reinstall = { busy: false, message: '' };
     invoke.mockResolvedValueOnce({ version: '0.21.0', outcome: 'downloadOpened' });
     await reinstallLatestUpdate(reinstall);
     expect(reinstall.message).toContain('Download opened');
-    expect(reinstall.installedVersion).toBeNull();
     expect(invoke).toHaveBeenCalledTimes(1);
   });
   it('leaves Android installation to the installer', async () => {
-    const reinstall = { busy: false, installedVersion: null as string | null, message: '' };
+    const reinstall = { busy: false, message: '' };
     invoke.mockResolvedValueOnce({ version: '0.21.0', outcome: 'installerOpened' });
     await reinstallLatestUpdate(reinstall);
     expect(reinstall.message).toContain('Android installer');
-    expect(reinstall.installedVersion).toBeNull();
     expect(invoke).toHaveBeenCalledTimes(1);
   });
   it('prevents overlapping reinstalls', async () => {
-    const reinstall = { busy: false, installedVersion: null as string | null, message: '' };
+    const reinstall = { busy: false, message: '' };
     let finish!: (result: { version: string; outcome: 'downloadOpened' }) => void;
     invoke.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
     const first = reinstallLatestUpdate(reinstall);
@@ -129,5 +119,6 @@ describe('update actions', () => {
     expect(progressLabel({ phase: 'downloading', downloaded: 1048576, total: null })).toBe('Downloading… 1.0 MB');
     expect(progressLabel({ phase: 'authorizing', downloaded: 0, total: null })).toContain('authorization');
     expect(progressLabel({ phase: 'verifying', downloaded: 0, total: null })).toContain('Verifying');
+    expect(progressLabel({ phase: 'complete', downloaded: 0, total: null })).toContain('Quit and reopen');
   });
 });

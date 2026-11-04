@@ -90,12 +90,10 @@ pub async fn install_update(
     #[cfg(target_os = "linux")]
     {
         let channel = selected_update_channel(&app)?;
-        let activity = linux_activity(&app).await;
-        // The installation's blocking filesystem/package-manager work must keep
-        // both guards even if the invoking webview disconnects.
+        // Keep the installation lock until the work finishes, even if the
+        // invoking webview disconnects.
         tokio::spawn(async move {
             let _attempt = _attempt;
-            let _activity = activity;
             crate::system::linux_updater::install(&app, &download_url, channel).await
         })
         .await

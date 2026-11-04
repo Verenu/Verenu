@@ -4,8 +4,7 @@ use super::*;
 pub async fn save_api_key(app: AppHandle, provider: String, key: String) -> Result<(), String> {
     let settings = store::settings_handle(&app)?;
     let expected = custom_endpoint(&settings.snapshot()?, &provider);
-    let command_app = app.clone();
-    run_app_blocking(&command_app, "save_api_key", move || {
+    run_blocking("save_api_key", move || {
         with_custom_endpoint(&settings, &provider, expected.as_ref(), || {
             crate::data::credentials::save(&app, &provider, &key)
         })
@@ -17,8 +16,7 @@ pub async fn save_api_key(app: AppHandle, provider: String, key: String) -> Resu
 pub async fn delete_api_key(app: AppHandle, provider: String) -> Result<(), String> {
     let settings = store::settings_handle(&app)?;
     let expected = custom_endpoint(&settings.snapshot()?, &provider);
-    let command_app = app.clone();
-    run_app_blocking(&command_app, "delete_api_key", move || {
+    run_blocking("delete_api_key", move || {
         with_custom_endpoint(&settings, &provider, expected.as_ref(), || {
             crate::data::credentials::delete_saved(&app, &provider)
         })

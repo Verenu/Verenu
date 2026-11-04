@@ -47,23 +47,21 @@ test('browser session cannot invoke native updater installation', async ({ sessi
   expect(response.status).toBe(403);
 });
 
-test('an installed update shows the restart error and quit fallback', async ({ page }) => {
+test('an installed update asks the user to quit and reopen', async ({ page }) => {
   await page.locator('[data-debug-id="nav.settings"]').click();
   await page.locator('[data-debug-id="settings.about"]:visible, button.settings-tab:visible').filter({ hasText: 'About' }).click();
   await page.evaluate(async () => {
     const { appStore } = await import('/src/lib/stores.svelte.ts');
     appStore.updateInfo = { version: '99.0.0', assetName: 'Verenu_99.0.0_amd64.AppImage', downloadUrl: 'https://example.invalid/synthetic.AppImage', installMode: 'install' };
     appStore.updateInstalled = true;
-    appStore.updateInstallError = 'Synthetic replacement startup failure';
     appStore.updateProgress = 'Update installed. Quit and reopen Verenu to finish.';
   });
   const row = page.locator('[data-setting-target="about-updates"]');
-  await expect(row.getByText('Synthetic replacement startup failure')).toBeVisible();
   await expect(row.getByText('Update installed. Quit and reopen Verenu to finish.')).toBeVisible();
-  await expect(row.getByRole('button', { name: 'Restart', exact: true })).toBeVisible();
+  await expect(row.getByRole('button', { name: 'Installed', exact: true })).toBeDisabled();
 });
 
-test('a late update check cannot hide a failed restart', async ({ page }) => {
+test('a late update check cannot hide the installed update', async ({ page }) => {
   let releaseCheck;
   let checkStarted;
   let checkDelivered;
@@ -80,7 +78,6 @@ test('a late update check cannot hide a failed restart', async ({ page }) => {
       return;
     }
     if (command === 'install_update') return route.fulfill({ status: 200, json: 'installed' });
-    if (command === 'restart_app') return route.fulfill({ status: 500, json: { error: 'Synthetic replacement failure' } });
     return route.fallback();
   });
   await page.locator('[data-debug-id="nav.settings"]').click();
@@ -94,15 +91,16 @@ test('a late update check cannot hide a failed restart', async ({ page }) => {
   await checkArrived;
   await page.locator('[data-debug-id="nav.back"]').click();
   await page.locator('.update-btn').click();
-  await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstallError)).toContain('Synthetic replacement failure');
+  await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstalled)).toBe(true);
   releaseCheck();
   await checkReturned;
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  await expect(page.locator('.update-btn')).toHaveText('Restart');
-  await expect(page.locator('.update-banner')).toContainText('Synthetic replacement failure');
+  await expect(page.locator('.update-btn')).toHaveText('Installed');
+  await expect(page.locator('.update-btn')).toBeDisabled();
+  await expect(page.locator('.update-banner')).toContainText('Quit and reopen');
 });
 
-test('a late dismissal cannot hide a failed restart', async ({ page }) => {
+test('a late dismissal cannot hide the installed update', async ({ page }) => {
   let releaseDismissal;
   let dismissalStarted;
   let dismissalDelivered;
@@ -119,7 +117,6 @@ test('a late dismissal cannot hide a failed restart', async ({ page }) => {
       return;
     }
     if (command === 'install_update') return route.fulfill({ status: 200, json: 'installed' });
-    if (command === 'restart_app') return route.fulfill({ status: 500, json: { error: 'Synthetic replacement failure' } });
     return route.fallback();
   });
   await page.evaluate(async () => {
@@ -130,15 +127,15 @@ test('a late dismissal cannot hide a failed restart', async ({ page }) => {
   await banner.getByRole('button', { name: 'Dismiss', exact: true }).click();
   await dismissalArrived;
   await banner.locator('.update-btn').click();
-  await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstallError)).toContain('Synthetic replacement failure');
+  await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstalled)).toBe(true);
   releaseDismissal();
   await dismissalReturned;
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  await expect(banner.getByRole('button', { name: 'Restart', exact: true })).toBeVisible();
-  await expect(banner).toContainText('Synthetic replacement failure');
+  await expect(banner.getByRole('button', { name: 'Installed', exact: true })).toBeDisabled();
+  await expect(banner).toContainText('Quit and reopen');
 });
 
-test('a late beta setting save cannot hide a failed restart', async ({ page }) => {
+test('a late beta setting save cannot hide the installed update', async ({ page }) => {
   let releaseSave;
   let saveStarted;
   let saveReturned;
@@ -165,7 +162,6 @@ test('a late beta setting save cannot hide a failed restart', async ({ page }) =
       return;
     }
     if (command === 'install_update') return route.fulfill({ status: 200, json: 'installed' });
-    if (command === 'restart_app') return route.fulfill({ status: 500, json: { error: 'Synthetic replacement failure' } });
     return route.fallback();
   });
   try {
@@ -180,19 +176,20 @@ test('a late beta setting save cannot hide a failed restart', async ({ page }) =
     await saveArrived;
     await page.locator('[data-debug-id="nav.back"]').click();
     await page.locator('.update-btn').click();
-    await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstallError)).toContain('Synthetic replacement failure');
+    await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstalled)).toBe(true);
     releaseSave();
     await returned;
     await notification;
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    await expect(page.locator('.update-btn')).toHaveText('Restart');
-    await expect(page.locator('.update-banner')).toContainText('Synthetic replacement failure');
+    await expect(page.locator('.update-btn')).toHaveText('Installed');
+    await expect(page.locator('.update-btn')).toBeDisabled();
+    await expect(page.locator('.update-banner')).toContainText('Quit and reopen');
   } finally {
     releaseSave();
   }
 });
 
-test('developer reinstall offers a restart retry without reinstalling', async ({ page }) => {
+test('developer reinstall survives navigation and asks the user to reopen', async ({ page }) => {
   let installs = 0;
   let restarts = 0;
   let completeInstall;
@@ -224,12 +221,12 @@ test('developer reinstall offers a restart retry without reinstalling', async ({
   await page.getByRole('tab', { name: 'Developer Settings' }).click();
   await expect(button).toBeDisabled();
   completeInstall();
-  await expect(button).toHaveText('Retry restart');
-  await expect(page.getByRole('status').filter({ hasText: 'Restart failed' })).toContainText('quit and reopen');
+  await expect(button).toBeEnabled();
+  await expect(page.getByRole('status').filter({ hasText: 'installed' })).toContainText('Quit and reopen');
   await page.getByRole('tab', { name: 'Overview', exact: true }).click();
   await page.getByRole('tab', { name: 'Developer Settings' }).click();
-  await expect(button).toHaveText('Retry restart');
-  await button.click();
-  await expect.poll(() => restarts).toBe(2);
+  await expect(button).toHaveText('Reinstall latest');
+  await expect(page.getByRole('status').filter({ hasText: 'installed' })).toContainText('Quit and reopen');
+  expect(restarts).toBe(0);
   expect(installs).toBe(1);
 });

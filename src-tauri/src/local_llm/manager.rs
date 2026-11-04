@@ -97,7 +97,7 @@ impl LocalLlmManager {
     }
 
     pub fn list_models(&self) -> anyhow::Result<Vec<LocalLlmModelInfo>> {
-        let root = Self::models_root();
+        let root = self.prepare_models_dir()?;
         let downloading_model_id = self
             .download_task
             .lock()
@@ -145,8 +145,6 @@ impl LocalLlmManager {
     }
 
     pub fn download_model(&self, app: &AppHandle, model_id: &str) -> anyhow::Result<()> {
-        #[cfg(target_os = "linux")]
-        let activity = crate::commands::linux_try_activity(app).map_err(anyhow::Error::msg)?;
         let manifest = manifest_by_id(model_id)
             .ok_or_else(|| anyhow::anyhow!("unknown local cleanup model: {model_id}"))?;
         let root = self.prepare_models_dir()?;
@@ -183,8 +181,6 @@ impl LocalLlmManager {
         let manager = self.clone();
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
-            #[cfg(target_os = "linux")]
-            let _activity = activity;
             let started_at = Instant::now();
             let result = download_model(&app_handle, &manifest, &root, Arc::clone(&cancel)).await;
             if let Ok(mut guard) = manager.download_task.lock() {
@@ -262,8 +258,6 @@ impl LocalLlmManager {
     }
 
     pub fn download_runtime(&self, app: &AppHandle) -> anyhow::Result<()> {
-        #[cfg(target_os = "linux")]
-        let activity = crate::commands::linux_try_activity(app).map_err(anyhow::Error::msg)?;
         if super::binary::is_runtime_installed(&super::binary::runtime_root()) {
             let _ = app.emit(
                 "local-llm-runtime-download-complete",
@@ -287,8 +281,6 @@ impl LocalLlmManager {
         let manager = self.clone();
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
-            #[cfg(target_os = "linux")]
-            let _activity = activity;
             let started_at = Instant::now();
             let result = ensure_llama_server_binary(&app_handle, &cancel).await;
             if let Ok(mut guard) = manager.runtime_download.lock() {
@@ -353,8 +345,6 @@ impl LocalLlmManager {
     }
 
     pub async fn delete_runtime(&self, app: &AppHandle) -> anyhow::Result<()> {
-        #[cfg(target_os = "linux")]
-        let _activity = crate::commands::linux_try_activity(app).map_err(anyhow::Error::msg)?;
         self.cancel_runtime_download()?;
         let _gate = self.preload_gate.write().await;
         self.unload(app);
