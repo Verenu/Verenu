@@ -79,6 +79,14 @@ export async function nativeChecks({ dataDir, settings, env = process.env, platf
     }
   }
   await walk(join(dataDir, 'models'), 0);
+  for (const model of builtIn.speech || []) {
+    if (!model.directory) continue;
+    const root = join(dataDir, 'models', 'stt', model.install);
+    try {
+      const info = await lstat(root);
+      if (!info.isDirectory() || info.isSymbolicLink() || (await readdir(root)).length === 0) partial = true;
+    } catch (error) { if (error.code !== 'ENOENT') partial = true; }
+  }
   for (const bundle of builtIn.bundles || []) {
     const root = join(dataDir, 'models', 'stt', bundle.id);
     let info;

@@ -3,6 +3,7 @@ import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 async function hashFile(path) {
   const hash = createHash('sha256');
@@ -79,6 +80,9 @@ export async function fix(dataDir, id, { typedYes = false } = {}) {
     const root = join(dataDir, 'models');
     const backupModels = join(backup, 'models');
     const moved = [];
+    const manifest = JSON.parse(await readFile(fileURLToPath(new URL('../model-manifest.json', import.meta.url)), 'utf8'));
+    const hashes = new Map(manifest.files.map(file => [file.name, file.sha256]));
+    const bundleHashes = new Map((manifest.bundles || []).flatMap(bundle => bundle.files.map(file => [join('stt', bundle.id, file.path), file.sha256])));
     async function movePartials(dir, target, depth) {
       if (depth > 8) throw new Error('Model directory nesting is too deep');
       let entries;
@@ -87,7 +91,9 @@ export async function fix(dataDir, id, { typedYes = false } = {}) {
         const source = join(dir, entry.name), destination = join(target, entry.name);
         const info = await lstat(source);
         if (info.isSymbolicLink()) continue;
-        if (/\.(partial|tmp)$/i.test(entry.name) || (info.isFile() && info.size === 0)) {
+        const expected = bundleHashes.get(source.slice(root.length + 1)) || hashes.get(entry.name);
+        const badHash = info.isFile() && expected && await hashFile(source) !== expected;
+        if (/\.(partial|tmp)$/i.test(entry.name) || (info.isFile() && info.size === 0) || badHash) {
           await mkdir(target, {recursive: true, mode: 0o700});
           await rename(source, destination);
           moved.push(source.slice(root.length + 1));

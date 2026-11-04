@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, open } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
 import { checks } from '../src/checks/index.js';
@@ -147,6 +147,42 @@ test('failed recovery keeps a corrupt original and its backup', async t => {
   assert.equal(await readFile(db, 'utf8'), 'synthetic corrupt database');
   const backups = await (await import('node:fs/promises')).readdir(join(dataDir, 'triage-backups'));
   assert.equal(await readFile(join(dataDir, 'triage-backups', backups[0], 'verenu.db'), 'utf8'), 'synthetic corrupt database');
+});
+
+test('database actions refuse an active holder without changing data', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
+  const db = join(dataDir, 'verenu.db');
+  assert.equal(spawnSync('sqlite3', [db, 'CREATE TABLE example (id INTEGER);']).status, 0);
+  const original = await readFile(db);
+  const handle = await open(db, 'r');
+  try {
+    for (const id of ['checkpoint-db', 'recover-db']) await assert.rejects(fix(dataDir, id, {typedYes: true}), /active holders/);
+    assert.deepEqual(await readFile(db), original);
+  } finally { await handle.close(); }
+});
+
+test('recovery refuses sidecars without changing the database', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
+  const db = join(dataDir, 'verenu.db');
+  assert.equal(spawnSync('sqlite3', [db, 'CREATE TABLE example (id INTEGER);']).status, 0);
+  const original = await readFile(db);
+  await writeFile(`${db}-wal`, 'fixture');
+  await assert.rejects(fix(dataDir, 'recover-db', {typedYes: true}), /sidecars/);
+  assert.deepEqual(await readFile(db), original);
+  assert.equal(await readFile(`${db}-wal`, 'utf8'), 'fixture');
+});
+
+test('model cleanup backs up a known artifact with a checksum mismatch', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
+  const models = join(dataDir, 'models');
+  await mkdir(models);
+  await writeFile(join(models, 'ggml-small.bin'), 'invalid fixture');
+  const backup = await fix(dataDir, 'clear-partial-models');
+  assert.equal(await readFile(join(backup, 'models', 'ggml-small.bin'), 'utf8'), 'invalid fixture');
+  await assert.rejects(readFile(join(models, 'ggml-small.bin')));
 });
 
 test('settings reset restores the newest valid backed-up settings', async t => {
