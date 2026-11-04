@@ -18,6 +18,9 @@ const FRAME_MEMORY_UNIT_BYTES: usize = 64 * 1024;
 const FRAME_MEMORY_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 const FRAME_MEMORY_PERMITS: u32 = (FRAME_MEMORY_BUDGET_BYTES / FRAME_MEMORY_UNIT_BYTES) as u32;
 const OUTGOING_MEMORY_PERMITS: u32 = FRAME_MEMORY_PERMITS + 1;
+const MUTE_CONTROL_MEMORY_PERMITS: usize = 64;
+const MAX_MUTE_DEVICE_UUID_BYTES: usize = 128;
+const MAX_MUTE_CONTROL_BYTES: usize = 1024;
 
 pub const MESSAGE_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -34,6 +37,13 @@ fn outgoing_frame_memory() -> Arc<Semaphore> {
     static MEMORY: OnceLock<Arc<Semaphore>> = OnceLock::new();
     MEMORY
         .get_or_init(|| Arc::new(Semaphore::new(OUTGOING_MEMORY_PERMITS as usize)))
+        .clone()
+}
+
+fn outgoing_mute_control_memory() -> Arc<Semaphore> {
+    static MEMORY: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    MEMORY
+        .get_or_init(|| Arc::new(Semaphore::new(MUTE_CONTROL_MEMORY_PERMITS)))
         .clone()
 }
 
@@ -263,7 +273,58 @@ pub async fn send_message_with_compression<W: AsyncWrite + Unpin>(
     compression: bool,
 ) -> Result<()> {
     let _consent = crate::legal_consent::network_permit().await?;
-    send_message_with_budget(writer, message, compression, outgoing_frame_memory()).await
+    crate::legal_consent::while_consented(timeout(
+        Duration::from_secs(30),
+        send_message_with_budgets(
+            writer,
+            message,
+            compression,
+            outgoing_frame_memory(),
+            outgoing_mute_control_memory(),
+        ),
+    ))
+    .await?
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timed out while writing sync message",
+        )
+    })?
+}
+
+async fn send_message_with_budgets<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    message: Message,
+    compression: bool,
+    bulk_budget: Arc<Semaphore>,
+    control_budget: Arc<Semaphore>,
+) -> Result<()> {
+    let is_mute_control = match &message {
+        Message::DictationMute { device_uuid } => device_uuid.len() <= MAX_MUTE_DEVICE_UUID_BYTES,
+        Message::DictationMuteAck { .. }
+        | Message::DictationMuteHeartbeat
+        | Message::DictationMuteEnd => true,
+        _ => false,
+    };
+    if !is_mute_control {
+        return send_message_with_budget(writer, message, compression, bulk_budget).await;
+    }
+    // Keep bounded mute frames independent of bulk writes and blocking workers.
+    let _memory = control_budget
+        .acquire_owned()
+        .await
+        .map_err(|_| anyhow!("outgoing mute control memory budget unavailable"))?;
+    let mut frame = LimitedBuffer {
+        bytes: Vec::new(),
+        limit: MAX_MUTE_CONTROL_BYTES + 4,
+    };
+    frame.write_all(&[0; 4])?;
+    serde_json::to_writer(&mut frame, &message).context("encode mute control")?;
+    let len = (frame.bytes.len() - 4) as u32;
+    frame.bytes[..4].copy_from_slice(&len.to_be_bytes());
+    writer.write_all(&frame.bytes).await?;
+    writer.flush().await?;
+    Ok(())
 }
 
 async fn send_message_with_budget<W: AsyncWrite + Unpin>(
@@ -353,12 +414,8 @@ async fn send_message_with_budget<W: AsyncWrite + Unpin>(
     })
     .await
     .context("message encoding task failed")??;
-    crate::legal_consent::while_consented(timeout(Duration::from_secs(30), async {
-        writer.write_all(&frame).await?;
-        writer.flush().await
-    }))
-    .await?
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out while writing sync message"))??;
+    writer.write_all(&frame).await?;
+    writer.flush().await?;
     drop(memory);
     Ok(())
 }
@@ -449,7 +506,8 @@ async fn read_message_inner<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Mess
 #[cfg(test)]
 mod tests {
     use super::{
-        send_message_with_budget, LimitedBuffer, Message, Semaphore, Write, MAX_MESSAGE_BYTES,
+        send_message_with_budget, send_message_with_budgets, LimitedBuffer, Message, Semaphore,
+        Write, MAX_MESSAGE_BYTES,
     };
     use std::sync::Arc;
     use tokio::io::AsyncReadExt;
@@ -560,6 +618,99 @@ mod tests {
             .unwrap();
         assert!(!drain.await.unwrap().is_empty());
         assert_eq!(budget.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn mute_heartbeat_does_not_wait_for_a_blocked_bulk_frame() {
+        let bulk = Arc::new(Semaphore::new(1));
+        let control = Arc::new(Semaphore::new(1));
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        let first_bulk = bulk.clone();
+        let first_control = control.clone();
+        let first = tokio::spawn(async move {
+            send_message_with_budgets(
+                &mut writer,
+                Message::Error {
+                    message: "x".repeat(32 * 1024),
+                },
+                false,
+                first_bulk,
+                first_control,
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while bulk.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut prefix = [0; 1];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            reader.read_exact(&mut prefix),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            !first.is_finished(),
+            "bulk frame must still be blocked on its writer"
+        );
+        let mut sink = tokio::io::sink();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            send_message_with_budgets(
+                &mut sink,
+                Message::DictationMuteHeartbeat,
+                false,
+                bulk.clone(),
+                control.clone(),
+            ),
+        )
+        .await
+        .expect("heartbeat was blocked by bulk sync")
+        .unwrap();
+        assert_eq!(bulk.available_permits(), 0);
+        assert_eq!(control.available_permits(), 1);
+        send_message_with_budgets(
+            &mut sink,
+            Message::DictationMute {
+                device_uuid: "\0".repeat(super::MAX_MUTE_DEVICE_UUID_BYTES),
+            },
+            false,
+            bulk.clone(),
+            control.clone(),
+        )
+        .await
+        .expect("bounded mute control should fit its reserved path");
+        let oversized_control = send_message_with_budgets(
+            &mut sink,
+            Message::DictationMute {
+                device_uuid: "x".repeat(super::MAX_MUTE_DEVICE_UUID_BYTES + 1),
+            },
+            false,
+            bulk.clone(),
+            control.clone(),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), oversized_control)
+                .await
+                .is_err()
+        );
+        assert_eq!(control.available_permits(), 1);
+        let drain = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).await.unwrap();
+            bytes
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(30), first)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!drain.await.unwrap().is_empty());
     }
 
     #[tokio::test]

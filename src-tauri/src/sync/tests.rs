@@ -2480,6 +2480,7 @@ fn context_app_matching_uses_local_name_and_rejects_weak_matches() {
 
 #[tokio::test]
 async fn compressed_sync_batch_has_a_wire_budget_and_round_trips() {
+    crate::legal_consent::enable_test_consent();
     use super::protocol::{read_message, send_message_with_compression, OpsBatch, SyncOp};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let ops = (0..100).map(|i| SyncOp {
@@ -2508,6 +2509,7 @@ async fn compressed_sync_batch_has_a_wire_budget_and_round_trips() {
 
 #[tokio::test]
 async fn compressed_frames_reject_expansion_past_declared_size() {
+    crate::legal_consent::enable_test_consent();
     use std::io::Write;
     let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     gzip.write_all(b"oversized").unwrap();
@@ -2549,6 +2551,7 @@ fn old_hello_defaults_to_uncompressed() {
 
 #[tokio::test]
 async fn small_sync_frame_uses_one_write_and_exact_wire_budget() {
+    crate::legal_consent::enable_test_consent();
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::io::AsyncWrite;
