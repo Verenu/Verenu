@@ -21,7 +21,9 @@ test('Context and settings accessibility does not regress against reviewed contr
   await audit('context', '[role="dialog"]');
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.locator('[data-debug-id="nav.settings"]').click();
+  await expect(page.locator('.settings-page .language-code')).toBeVisible();
   await audit('general', '.settings-page');
   await page.locator('[data-debug-id="settings.privacy"]').click();
+  await expect(page.getByRole('heading', { name: 'Privacy', exact: true })).toBeVisible();
   await audit('privacy', '.settings-page');
 });
