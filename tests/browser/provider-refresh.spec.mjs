@@ -31,7 +31,7 @@ test('an older Models snapshot cannot restore a renamed provider', async ({ page
   const finished = new Promise(resolve => { finish = resolve; });
   try {
     await session.invoke('save_setting', { key: 'custom_providers', value: [provider] });
-    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.locator('[data-debug-id="nav.settings"]').click();
     await expect(page.getByRole('heading', { name: 'General', exact: true })).toBeVisible();
     armed = true;
     let first = true;
@@ -44,10 +44,10 @@ test('an older Models snapshot cannot restore a renamed provider', async ({ page
       await route.fulfill({ response });
       finish();
     });
-    await page.getByRole('button', { name: 'Models', exact: true }).click();
+    await page.locator('[data-debug-id="settings.models"]').click();
     await started;
     expect(initiators[0]?.some(path => path.endsWith('/ModelsSection.svelte'))).toBe(true);
-    await page.getByRole('button', { name: 'Providers', exact: true }).click();
+    await page.locator('[data-debug-id="settings.keys"]').click();
     await page.getByRole('button', { name: 'Edit Synthetic old', exact: true }).click();
     await page.getByLabel('Name', { exact: true }).fill('Synthetic new');
     await page.getByRole('button', { name: 'Save provider', exact: true }).click();
@@ -67,11 +67,7 @@ test('an older Models snapshot cannot restore a renamed provider', async ({ page
     try {
       await page.unroute('**/__verenu_dev/invoke');
     } finally {
-      try {
-        await session.invoke('save_setting', { key: 'custom_providers', value: original });
-      } finally {
-        await cdp.detach();
-      }
+      await session.invoke('save_setting', { key: 'custom_providers', value: original });
     }
   }
 });
