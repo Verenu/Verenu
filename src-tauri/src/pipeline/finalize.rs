@@ -204,20 +204,12 @@ pub(super) async fn finalize_pipeline_completion(
         ctx.raw,
         &private_text,
     );
-    if !calls.is_empty() {
+    let api_calls_task = if !calls.is_empty() {
         let db_for_calls = db_handle.inner().clone();
-        match tokio::task::spawn_blocking(move || db::insert_api_calls(&db_for_calls, &calls)).await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                log::warn!(
-                    "pipeline: failed to record api usage rows: {}",
-                    trim_err(&e.to_string())
-                )
-            }
-            Err(e) => log::warn!("pipeline: api usage recording task panicked: {e}"),
-        }
-    }
+        Some(tokio::task::spawn_blocking(move || db::insert_api_calls(&db_for_calls, &calls)))
+    } else {
+        None
+    };
 
     if let Ok(mut st) = lock_state(state) {
         if st.retry_capture.as_ref().map(|v| v.captured_at) == Some(ctx.captured_at) {
@@ -319,6 +311,19 @@ pub(super) async fn finalize_pipeline_completion(
             }
         }
     };
+    if let Some(task) = api_calls_task {
+        match task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                log::warn!(
+                    "pipeline: failed to record api usage rows: {}",
+                    trim_err(&e.to_string())
+                )
+            }
+            Err(e) => log::warn!("pipeline: api usage recording task panicked: {e}"),
+        }
+    }
+
     let injected_text = injected.text;
     if let Some(telemetry) = ctx.telemetry {
         match injected.case_decision {

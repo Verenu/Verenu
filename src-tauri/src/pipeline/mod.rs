@@ -721,6 +721,15 @@ async fn run_pipeline_with_delivery(
         }
     }
 
+    let vad_samples = captured_audio.samples_16k.clone();
+    let vad_handle = tokio::task::spawn_blocking(move || {
+        crate::media::vad::analyze_speech_with_sensitivity(
+            &vad_samples,
+            active_gain,
+            sensitivity_level,
+        )
+    });
+
     let stage_config = std::time::Instant::now();
     let config_span = diagnostics::start_span(
         trace_guard.trace_id(),
@@ -777,15 +786,6 @@ async fn run_pipeline_with_delivery(
 
     let vad_span = diagnostics::start_span(trace_guard.trace_id(), "vad_gate", Some("vad"), None);
     telemetry.start_stage(Stage::Vad);
-    let vad_samples = captured_audio.samples_16k.clone();
-    let vad_handle = tokio::task::spawn_blocking(move || {
-        crate::media::vad::analyze_speech_with_sensitivity(
-            &vad_samples,
-            active_gain,
-            sensitivity_level,
-        )
-    });
-
     let vad_result = tokio::select! {
         result = vad_handle => match result {
             Ok(Ok(result)) => Some(result),
