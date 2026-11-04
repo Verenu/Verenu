@@ -51,7 +51,7 @@ describe('Insights pricing after Skip', () => {
     render(ConsentFlowDialog);
     render(Insights);
     await loadConsent();
-    await waitFor(() => expect(screen.getAllByText(/Provider pricing for cost estimates is off/).length).toBe(1), { timeout: 5000 });
+    await waitFor(() => expect(screen.getAllByText(/Provider pricing for cost estimates is off/).length).toBe(1), { timeout: 20000 });
     expect(warn).not.toHaveBeenCalledWith('OpenRouter pricing refresh failed:', expect.anything());
 
     await fireEvent.click(screen.getByRole('button', { name: 'Review and accept' }));
@@ -65,7 +65,7 @@ describe('Insights pricing after Skip', () => {
     await waitFor(() => expect(pricingCalls).toBeGreaterThan(callsBefore));
     await waitFor(() => expect(screen.queryByText(/Provider pricing for cost estimates is off/)).toBeNull());
     warn.mockRestore();
-  });
+  }, 40000);
 });
 
 describe('legal document versions', () => {

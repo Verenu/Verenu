@@ -23,12 +23,28 @@ export function currentVersions(): { termsVersion: string; privacyVersion: strin
   };
 }
 
+const PENDING_FLAG = 'verenu.deletion-was-pending';
+
+/**
+ * The backend restarts Verenu once the server confirms a deletion, so the app cannot watch the
+ * status change in one process. The webview's localStorage survives the wipe, so it carries the
+ * fact that a deletion was pending across that restart.
+ */
+function noteDeletionProgress(status: ConsentState['status']): void {
+  try {
+    if (status === 'deletion_pending') {
+      localStorage.setItem(PENDING_FLAG, '1');
+    } else if (localStorage.getItem(PENDING_FLAG)) {
+      localStorage.removeItem(PENDING_FLAG);
+      consentStore.deletionConfirmed = true;
+    }
+  } catch { /* storage unavailable: the confirmation notice is optional */ }
+}
+
 export async function loadConsent(): Promise<void> {
   try {
     const next = await api.getConsentState();
-    if (consentStore.state?.status === 'deletion_pending' && next.status !== 'deletion_pending') {
-      consentStore.deletionConfirmed = true;
-    }
+    noteDeletionProgress(next.status);
     consentStore.state = next;
     consentStore.error = '';
   } catch (err) {

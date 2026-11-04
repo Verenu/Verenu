@@ -63,6 +63,7 @@ beforeEach(() => {
   Element.prototype.animate = function () {
     return { cancel() {}, effect: null as unknown, set onfinish(fn: () => void) { queueMicrotask(fn); } } as unknown as Animation;
   };
+  localStorage.clear();
   calls = []; acceptRejects = null; acceptReturns = null; deleteMode = 'pending';
   serverVersions = { terms: TERMS_VERSION, privacy: PRIVACY_VERSION };
   resetConsentStoreForTests();
@@ -248,10 +249,16 @@ describe('deletion pending screen', () => {
   it('tells the user on the next consent screen that deletion was confirmed', async () => {
     rust('deletion_pending');
     await loadConsent();
+    // The server confirms, the backend restarts Verenu: a new process, the same webview storage.
+    resetConsentStoreForTests();
     current = st('unanswered');
     await loadConsent();
     render(LegalConsentScreen);
     expect(screen.getByTestId('deletion-confirmed').textContent).toMatch(/Deletion confirmed/);
+    // Shown once: a later launch does not repeat it.
+    resetConsentStoreForTests();
+    await loadConsent();
+    expect(consentStore.deletionConfirmed).toBe(false);
   });
 
   it('keeps polling on a timer', async () => {
