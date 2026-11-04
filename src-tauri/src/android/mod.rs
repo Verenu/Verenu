@@ -100,6 +100,13 @@ pub mod security_plugin {
             .await.map_err(|error| error.to_string())?;
         Ok(())
     }
+
+    pub async fn restart_for_deletion<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+        let _: serde_json::Value = app.state::<SecurityHandle<R>>().0
+            .run_mobile_plugin_async("restartForDeletion", serde_json::json!({}))
+            .await.map_err(|error| error.to_string())?;
+        Ok(())
+    }
 }
 
 use std::collections::{HashMap, HashSet};

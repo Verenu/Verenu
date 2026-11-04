@@ -3,6 +3,8 @@ use std::path::Path;
 const MARKER: &str = "legal-deletion-pending";
 const WIPE_COMPLETE: &str = "legal-local-wipe-complete";
 const REMOTE_CONFIRMED: &str = "legal-remote-delete-confirmed";
+const ANDROID_WIPE_COMPLETE: &str = "legal-android-wipe-complete";
+const ANDROID_ORIGIN: &str = "legal-deletion-origin-pid";
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RemoteDelete {
@@ -65,7 +67,7 @@ pub(crate) fn write_marker(data_dir: &Path, id: &str, needs_remote: bool) -> Res
     }
     std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
     if read_marker(data_dir)?.is_none() {
-        for name in [WIPE_COMPLETE, REMOTE_CONFIRMED] {
+        for name in [WIPE_COMPLETE, REMOTE_CONFIRMED, ANDROID_WIPE_COMPLETE] {
             match std::fs::remove_file(data_dir.join(name)) {
                 Ok(()) => {},
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
@@ -116,8 +118,11 @@ fn read_pending(data_dir: &Path) -> Result<Option<(String, bool)>, String> {
 pub(crate) fn wipe_directory(data_dir: &Path, preserve_dev_secret: bool) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
-        let _ = (data_dir, preserve_dev_secret);
-        return Err("Android data deletion is not available yet".into());
+        let _ = preserve_dev_secret;
+        if read_marker(data_dir)?.is_none() || !data_dir.join(ANDROID_WIPE_COMPLETE).is_file() {
+            return Err("Waiting for Android deletion recovery".into());
+        }
+        Ok(())
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -177,7 +182,7 @@ pub(crate) fn mark_remote_delete_confirmed(data_dir: &Path) -> Result<(), String
 
 pub(crate) fn clear_markers(data_dir: &Path) -> Result<(), String> {
     // Remove the confirmation last so a crash cannot lose proof of remote deletion.
-    for name in [MARKER, WIPE_COMPLETE, REMOTE_CONFIRMED] {
+    for name in [MARKER, WIPE_COMPLETE, ANDROID_WIPE_COMPLETE, ANDROID_ORIGIN, REMOTE_CONFIRMED] {
         match std::fs::remove_file(data_dir.join(name)) {
             Ok(()) => {},
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},

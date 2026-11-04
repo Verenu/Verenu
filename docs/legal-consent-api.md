@@ -3,7 +3,7 @@
 Implementation in progress: `get_install_id`, `get_consent_state`,
 `skip_legal`, `accept_legal`, and `delete_my_data` are registered. Skip does
 not yet have end-to-end verification for every provider. Deletion recovery is
-under development and is not verified; Android local deletion is unavailable.
+under development and has not been verified end to end on Android or desktop.
 Acceptance and sync are not yet verified end to end.
 
 Network-dependent operations must reject with the string `consent_required`

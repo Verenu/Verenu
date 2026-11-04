@@ -193,13 +193,6 @@ async fn skip_legal_locked(app: AppHandle) -> Result<ConsentState, String> {
 
 #[tauri::command]
 pub(crate) async fn delete_my_data(app: AppHandle) -> Result<ConsentState, String> {
-    #[cfg(target_os = "android")]
-    {
-        let _ = app;
-        return Err("Android data deletion is not available yet".into());
-    }
-    #[cfg(not(target_os = "android"))]
-    {
     let _delete_guard = DELETE_LOCK.lock().await;
     let data_dir = crate::app_data_dir();
     crate::legal_deletion::validate_data_directory(&app, &data_dir)?;
@@ -214,6 +207,13 @@ pub(crate) async fn delete_my_data(app: AppHandle) -> Result<ConsentState, Strin
     let _check_guard = crate::media::nvidia_reuse::hold_checks_for_deletion().await;
     let settings = crate::data::store::settings_handle(&app)?;
     let needs_remote = possible_prior_acceptance(&settings.snapshot()?);
+    #[cfg(target_os = "android")]
+    {
+        use std::io::Write;
+        let mut origin = std::fs::File::create(data_dir.join("legal-deletion-origin-pid")).map_err(|error| error.to_string())?;
+        write!(origin, "{}", std::process::id()).map_err(|error| error.to_string())?;
+        origin.sync_all().map_err(|error| error.to_string())?;
+    }
     crate::legal_deletion::write_marker(&data_dir, &id, needs_remote)?;
     {
         use tauri::Manager;
@@ -234,14 +234,18 @@ pub(crate) async fn delete_my_data(app: AppHandle) -> Result<ConsentState, Strin
         if let Some(manager) = app.try_state::<crate::local_llm::LocalLlmManager>() { manager.unload(&app); }
         if let Some(manager) = app.try_state::<crate::local_stt::LocalTranscriptionManager>() { manager.unload(&app); }
     }
+    #[cfg(target_os = "android")]
+    crate::legal_deletion::delete_nonlegal_credentials(&app, &settings.snapshot()?).await?;
     crate::system::logger::stop_for_deletion()?;
     let state = get_consent_state(app.clone()).await?;
+    #[cfg(target_os = "android")]
+    crate::android::security_plugin::restart_for_deletion(&app).await?;
+    #[cfg(not(target_os = "android"))]
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         app.restart();
     });
     Ok(state)
-    }
 }
 
 pub(crate) async fn retry_pending_deletion(app: AppHandle) -> Result<(), String> {
@@ -290,8 +294,13 @@ pub(crate) async fn retry_pending_deletion(app: AppHandle) -> Result<(), String>
         #[cfg(not(target_os = "android"))]
         crate::data::credentials::delete_saved(&app, crate::data::store::LEGAL_INSTALL_SECRET)?;
     }
+    #[cfg(target_os = "android")]
+    crate::android::security_plugin::restart_for_deletion(&app).await?;
     crate::legal_deletion::clear_markers(&data_dir)?;
+    #[cfg(not(target_os = "android"))]
     app.restart();
+    #[cfg(target_os = "android")]
+    Ok(())
 }
 
 #[tauri::command]

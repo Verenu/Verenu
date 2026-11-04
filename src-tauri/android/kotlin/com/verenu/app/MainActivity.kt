@@ -63,6 +63,10 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    if (java.io.File(dataDir, "legal-deletion-pending").isFile) {
+      VerenuKeystore(this).deleteProviderCredentials()
+    }
+    VerenuPendingDeletion.wipeBeforeWebView(dataDir, android.os.Process.myPid())
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     // Portrait only: Verenu has no landscape layout. (Android 16 ignores this on
