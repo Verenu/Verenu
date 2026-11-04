@@ -1,6 +1,6 @@
 import { formatIpcError } from '../errors';
 import * as api from './consent';
-import { isConsentBlocked, isConsentRequiredError } from './consent';
+import { isConsentBlocked, isConsentRequiredError, isVersionConflictError, NOT_ACCEPTED_NOTICE, PRIVACY_VERSION, TERMS_VERSION, VERSION_CONFLICT_NOTICE } from './consent';
 import type { ConsentState } from './consent';
 
 /** Shared reactive consent state for the gate, Settings, and gated-feature hints. */
@@ -9,7 +9,17 @@ export const consentStore = $state<{
   loaded: boolean;
   busy: boolean;
   error: string;
-}>({ state: null, loaded: false, busy: false, error: '' });
+  /** Explains a rejected acceptance. Cleared on the next attempt. */
+  notice: string;
+}>({ state: null, loaded: false, busy: false, error: '', notice: '' });
+
+/** The document versions to show and send: the backend's current ones, else the built-in pair. */
+export function currentVersions(): { termsVersion: string; privacyVersion: string } {
+  return {
+    termsVersion: consentStore.state?.termsVersion ?? TERMS_VERSION,
+    privacyVersion: consentStore.state?.privacyVersion ?? PRIVACY_VERSION,
+  };
+}
 
 export async function loadConsent(): Promise<void> {
   try {
@@ -22,22 +32,35 @@ export async function loadConsent(): Promise<void> {
   }
 }
 
-async function run(action: () => Promise<ConsentState>): Promise<boolean> {
+async function run(action: () => Promise<ConsentState>, expect?: ConsentState['status']): Promise<boolean> {
   if (consentStore.busy) return false;
   consentStore.busy = true;
   consentStore.error = '';
+  consentStore.notice = '';
   try {
-    consentStore.state = await action();
+    const next = await action();
+    // Only the backend's answer moves the state. A reply that is not the expected status
+    // (for example update_required) is a refusal, so nothing unlocks.
+    consentStore.state = next;
+    if (expect && next.status !== expect) {
+      consentStore.notice = next.status === 'update_required' ? VERSION_CONFLICT_NOTICE : NOT_ACCEPTED_NOTICE;
+      return false;
+    }
     return true;
   } catch (err) {
-    consentStore.error = formatIpcError(err);
+    if (isVersionConflictError(err)) {
+      consentStore.notice = VERSION_CONFLICT_NOTICE;
+      await loadConsent();
+    } else {
+      consentStore.error = formatIpcError(err);
+    }
     return false;
   } finally {
     consentStore.busy = false;
   }
 }
 
-export const acceptConsent = () => run(api.accept);
+export const acceptConsent = () => run(() => api.accept(currentVersions()), 'accepted');
 export const skipConsent = () => run(api.skip);
 export const requestDataDeletion = () => run(api.deleteMyData);
 
@@ -63,6 +86,7 @@ export function requireConsent(thenEnable: () => void | Promise<void>): boolean 
     return true;
   }
   consentStore.error = '';
+  consentStore.notice = '';
   consentFlow.pending = thenEnable;
   consentFlow.open = true;
   return false;
@@ -93,6 +117,7 @@ export function dismissConsentFlow() {
   consentFlow.open = false;
   consentFlow.pending = null;
   consentStore.error = '';
+  consentStore.notice = '';
 }
 
 export function resetConsentStoreForTests() {
@@ -102,4 +127,5 @@ export function resetConsentStoreForTests() {
   consentStore.loaded = false;
   consentStore.busy = false;
   consentStore.error = '';
+  consentStore.notice = '';
 }

@@ -69,6 +69,7 @@
       {#if status === 'skipped'}Analytics and online features are off until you accept.{/if}
     </div>
     <div class="consent-links"><LegalLinks /></div>
+    {#if consentStore.notice}<div class="desc consent-error" role="alert" data-testid="consent-notice">{consentStore.notice}</div>{/if}
     {#if consentStore.error}<div class="desc consent-error" role="alert">{consentStore.error}</div>{/if}
   </div>
   {#if canAccept}

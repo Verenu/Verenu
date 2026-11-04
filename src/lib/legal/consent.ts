@@ -27,7 +27,12 @@ export interface ConsentState {
 }
 
 export const getConsentState = () => invoke<ConsentState>('get_consent_state');
-export const accept = () => invoke<ConsentState>('accept_legal');
+/**
+ * Sends the versions the user was shown, so the service can refuse a stale screen
+ * instead of recording acceptance of text the user never saw.
+ */
+export const accept = (shown: { termsVersion: string; privacyVersion: string }) =>
+  invoke<ConsentState>('accept_legal', { termsVersion: shown.termsVersion, privacyVersion: shown.privacyVersion });
 export const skip = () => invoke<ConsentState>('skip_legal');
 export const deleteMyData = () => invoke<ConsentState>('delete_my_data');
 export const getInstallId = () => invoke<string>('get_install_id');
@@ -66,3 +71,20 @@ export function isConsentRequiredError(err: unknown): boolean {
     : typeof err === 'object' && err !== null ? JSON.stringify(err) : '';
   return /consent_required|accept the (current )?terms and privacy policy/i.test(text);
 }
+
+/** Public address of a legal document at a specific version. */
+export const termsUrl = (version: string) => `https://verenu.com/legal/terms/${version}`;
+export const privacyUrl = (version: string) => `https://verenu.com/legal/privacy/${version}`;
+
+/** The service rejected the acceptance because the shown versions are obsolete (HTTP 409). */
+export function isVersionConflictError(err: unknown): boolean {
+  const text = typeof err === 'string' ? err
+    : err instanceof Error ? err.message
+    : typeof err === 'object' && err !== null ? JSON.stringify(err) : '';
+  return /consent_version_conflict|\b409\b|obsolete (terms|privacy|version)/i.test(text);
+}
+
+export const VERSION_CONFLICT_NOTICE =
+  'The Terms or Privacy Policy changed while this was open. Nothing was accepted. Review the latest versions below and accept again.';
+export const NOT_ACCEPTED_NOTICE =
+  'Your acceptance was not recorded, so online features stay off. Review the latest versions and try again.';

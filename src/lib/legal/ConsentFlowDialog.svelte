@@ -28,6 +28,7 @@
         This feature needs your acceptance first. If you accept, analytics and online features turn on. Dictated audio, transcripts, prompts, clipboard contents, and credentials are never collected. If you dismiss this, the feature stays off.
       </p>
       <div class="flow-links"><LegalLinks /></div>
+      {#if consentStore.notice}<Callout severity="warning" compact data-testid="consent-notice">{consentStore.notice}</Callout>{/if}
       {#if consentStore.error}<Callout severity="error" compact>Could not save your choice. {consentStore.error}</Callout>{/if}
     </div>
     <div class="ui-modal-foot">

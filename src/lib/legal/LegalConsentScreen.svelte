@@ -3,12 +3,13 @@
   import Callout from '../components/Callout.svelte';
   import LegalLinks from './LegalLinks.svelte';
   import { acceptConsent, consentStore, skipConsent } from './consentStore.svelte';
-  import { PRIVACY_VERSION, TERMS_VERSION } from './consent';
+  import { currentVersions } from './consentStore.svelte';
 
   /** `first` is the onboarding step. `update` is the re-prompt after a version change. */
   let { mode = 'first' }: { mode?: 'first' | 'update' } = $props();
 
   const update = $derived(mode === 'update');
+  const versions = $derived(currentVersions());
 </script>
 
 <SetupShell step={0} totalSteps={0} onDotClick={() => {}}>
@@ -28,7 +29,7 @@
       </h2>
       <p class="legal-lede">
         {update
-          ? `We updated the Terms of Service and Privacy Policy (version ${TERMS_VERSION}). Please review them and choose whether to accept.`
+          ? `We updated the Terms of Service and Privacy Policy (Terms ${versions.termsVersion}, Privacy ${versions.privacyVersion}). Please review them and choose whether to accept.`
           : 'Review the Terms of Service and Privacy Policy, then choose whether to accept.'}
       </p>
     </div>
@@ -36,7 +37,7 @@
     <div class="legal-card">
       <div class="legal-block">
         <span class="legal-heading">If you accept</span>
-        <span>Verenu records your acceptance of the Terms (version {TERMS_VERSION}) and Privacy Policy (version {PRIVACY_VERSION}), tied to a random install ID. Product analytics and online features turn on.</span>
+        <span>Verenu records your acceptance of the Terms (version {versions.termsVersion}) and Privacy Policy (version {versions.privacyVersion}), tied to a random install ID. Product analytics and online features turn on.</span>
       </div>
       <div class="legal-block">
         <span class="legal-heading">What we never collect</span>
@@ -49,6 +50,7 @@
       <LegalLinks />
     </div>
 
+    {#if consentStore.notice}<Callout severity="warning" compact data-testid="consent-notice">{consentStore.notice}</Callout>{/if}
     {#if consentStore.error}
       <Callout severity="error" compact>Could not save your choice. {consentStore.error}</Callout>
     {/if}

@@ -16,7 +16,7 @@ import { PRIVACY_URL, TERMS_URL, type ConsentState, type ConsentStatus } from '.
 const INSTALL_ID = 'inst-1234';
 function state(status: ConsentStatus, extra: Partial<ConsentState> = {}): ConsentState {
   return {
-    status, termsVersion: '2026-11-03', privacyVersion: '2026-11-03',
+    status, termsVersion: '2026-11-03', privacyVersion: '2026-11-03.1',
     acceptedAt: status === 'accepted' ? Date.UTC(2026, 10, 3, 12) : null, syncPending: false, ...extra,
   };
 }
@@ -65,7 +65,7 @@ describe('onboarding consent screen', () => {
     render(LegalConsentScreen);
     await fireEvent.click(screen.getByRole('button', { name: 'Accept and continue' }));
     await waitFor(() => expect(consentStore.state?.status).toBe('accepted'));
-    expect(invoke).toHaveBeenCalledWith('accept_legal');
+    expect(invoke).toHaveBeenCalledWith('accept_legal', { termsVersion: '2026-11-03', privacyVersion: '2026-11-03.1' });
   });
 
   it('skip calls skip_legal and stores the skipped state', async () => {
