@@ -46,7 +46,8 @@ export async function nativeChecks({ dataDir, settings, env = process.env, platf
   const keys = result('provider-keys', missing ? 'fail' : unknown || !settings ? 'warn' : 'pass', missing ? 'A configured provider has no saved key. Add it in Settings > Providers.' : unknown || !settings ? 'Some provider credentials could not be checked.' : 'Configured provider credentials are present or not required.');
   const builtIn = JSON.parse(await readFile(fileURLToPath(new URL('../model-manifest.json', import.meta.url)), 'utf8'));
   const expectedHashes = new Map(builtIn.files.map(file => [file.name, file.sha256]));
-  let partial = false, inspected = 0, verified = 0;
+  for (const model of builtIn.speech || []) if (model.archive && model.sha256) expectedHashes.set(model.archive, model.sha256);
+  let partial = false, inspected = 0, verified = 0, missingMarker = false;
   async function walk(dir, depth) {
     if (depth > 8) return;
     for (const entry of await names(dir)) {
@@ -84,7 +85,25 @@ export async function nativeChecks({ dataDir, settings, env = process.env, platf
     const root = join(dataDir, 'models', 'stt', model.install);
     try {
       const info = await lstat(root);
-      if (!info.isDirectory() || info.isSymbolicLink() || (await readdir(root)).length === 0) partial = true;
+      if (!info.isDirectory() || info.isSymbolicLink()) { partial = true; continue; }
+      try { if (await readFile(join(root, '.verenu-extracted'), 'utf8') !== model.id) missingMarker = true; } catch { missingMarker = true; }
+      const modelFiles = name => [`${name}.int8.onnx`, `${name}.onnx`];
+      const streaming = name => [`${name}.int8.ort`, `${name}.ort`, `${name}.int8.onnx`, `${name}.onnx`];
+      const required = {
+        Parakeet: [modelFiles('encoder-model'), modelFiles('decoder_joint-model'), ['nemo128.onnx'], ['vocab.txt']],
+        Moonshine: [modelFiles('encoder_model'), modelFiles('decoder_model_merged'), ['tokenizer.json']],
+        MoonshineStreaming: [['streaming_config.json'], ['tokenizer.bin'], ...['frontend', 'encoder', 'adapter', 'cross_kv', 'decoder_kv'].map(streaming)],
+        SenseVoice: [modelFiles('model'), ['tokens.txt']],
+        GigaAm: [modelFiles('model'), ['vocab.txt']],
+        Canary: [modelFiles('encoder-model'), modelFiles('decoder-model'), ['nemo128.onnx'], ['vocab.txt']],
+        Cohere: [['cohere-encoder.int8.onnx', 'encoder_model.int8.onnx', 'onnx/cohere-encoder.int8.onnx', 'onnx/encoder_model.int8.onnx'], ['cohere-decoder.int8.onnx', 'decoder_model_merged.int8.onnx', 'onnx/cohere-decoder.int8.onnx', 'onnx/decoder_model_merged.int8.onnx'], ['tokens.txt', 'vocabulary.txt', 'onnx/tokens.txt', 'onnx/vocabulary.txt']],
+      }[model.engine];
+      if (!required) { missingMarker = true; continue; }
+      for (const alternatives of required) {
+        let found = false;
+        for (const name of alternatives) { try { const entry = await lstat(join(root, name)); if (entry.isFile() && !entry.isSymbolicLink() && entry.size > 0) found = true; } catch {} }
+        if (!found) partial = true;
+      }
     } catch (error) { if (error.code !== 'ENOENT') partial = true; }
   }
   for (const bundle of builtIn.bundles || []) {
@@ -105,7 +124,7 @@ export async function nativeChecks({ dataDir, settings, env = process.env, platf
       }
     } catch { partial = true; }
   }
-  const models = result('models', partial ? 'fail' : inspected ? 'warn' : 'pass', partial ? 'Partial, empty, or invalid model artifact found. Retry the download in Settings.' : inspected ? `${verified} manifest artifacts verified; other installed files may not be verified.` : 'No local model files found.');
+  const models = result('models', partial ? 'fail' : inspected || missingMarker ? 'warn' : 'pass', partial ? 'Partial, empty, or invalid model artifact found. Retry the download in Settings.' : missingMarker ? 'An extracted model has no matching marker; older installations may predate markers.' : inspected ? `${verified} manifest artifacts verified; other installed files may not be verified.` : 'No local model files found.');
   if (partial) models.fix = 'clear-partial-models';
   let port;
   try { port = JSON.parse(await readFile(join(dataDir, 'agent-session.json'), 'utf8')).port; } catch {}

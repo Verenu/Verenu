@@ -21,6 +21,20 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
 
 jobs:
+  triage-cli:
+    name: Triage CLI fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install SQLite and holder inspection tools
+        run: sudo apt-get update && sudo apt-get install -y sqlite3 lsof
+      - name: Test triage CLI
+        run: npm test --prefix packages/verenu-cli
+
   frontend:
     name: Frontend checks
     runs-on: ubuntu-24.04

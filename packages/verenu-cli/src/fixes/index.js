@@ -61,8 +61,14 @@ async function backupDatabase(dataDir, backup) {
   for (const source of files) await cp(source, join(backup, source.slice(dataDir.length + 1)), { errorOnExist: true, force: false });
   return files;
 }
+export const fixIds = Object.freeze(['clear-caches', 'reset-settings', 'checkpoint-db', 'recover-db', 'clear-stale-pids', 'clear-partial-models']);
+export async function applyFix(dataDir, id, { approved = false, typedYes = false } = {}) {
+  if (!fixIds.includes(id)) throw new Error('Unknown fix');
+  if (!approved) return null;
+  return fix(dataDir, id, {typedYes});
+}
 export async function fix(dataDir, id, { typedYes = false } = {}) {
-  if (!['clear-caches', 'reset-settings', 'checkpoint-db', 'recover-db', 'clear-stale-pids', 'clear-partial-models'].includes(id)) throw new Error('Unknown fix');
+  if (!fixIds.includes(id)) throw new Error('Unknown fix');
   if (['checkpoint-db', 'recover-db'].includes(id) && !typedYes) throw new Error('Typed yes required');
   const backupRoot = join(dataDir, 'triage-backups');
   await mkdir(backupRoot, { recursive: true, mode: 0o700 });
@@ -82,6 +88,7 @@ export async function fix(dataDir, id, { typedYes = false } = {}) {
     const moved = [];
     const manifest = JSON.parse(await readFile(fileURLToPath(new URL('../model-manifest.json', import.meta.url)), 'utf8'));
     const hashes = new Map(manifest.files.map(file => [file.name, file.sha256]));
+    for (const model of manifest.speech || []) if (model.archive && model.sha256) hashes.set(model.archive, model.sha256);
     const bundleHashes = new Map((manifest.bundles || []).flatMap(bundle => bundle.files.map(file => [join('stt', bundle.id, file.path), file.sha256])));
     async function movePartials(dir, target, depth) {
       if (depth > 8) throw new Error('Model directory nesting is too deep');

@@ -5,7 +5,8 @@ import { nativeChecks } from './native.js';
 const result = (name, status, message, fix) => ({ name, status, message, ...(fix ? { fix } : {}) });
 const exists = async p => stat(p).then(() => true, () => false);
 const list = async p => readdir(p).catch(() => []);
-export async function checks({ dataDir: dir, checkNetwork = false, fetcher = globalThis.fetch, env = process.env }) {
+export const checkIds = Object.freeze(['settings', 'sqlite', 'cache', 'terms', 'network', 'launch', 'keyring', 'provider-keys', 'models', 'process', 'logs']);
+export async function checks({ dataDir: dir, checkNetwork = false, fetcher = globalThis.fetch, env = process.env, platform, run }) {
   const out = [];
   const settings = join(dir, 'settings.json');
   let settingsValue;
@@ -32,7 +33,7 @@ export async function checks({ dataDir: dir, checkNetwork = false, fetcher = glo
     try { const parsed = new URL(url); if (parsed.protocol !== 'https:') throw Error(); const response = await fetcher(parsed.origin, { method: 'HEAD', signal: AbortSignal.timeout(5000), redirect: 'error' }); out.push(result('network', response.ok ? 'pass' : 'warn', response.ok ? 'Convex endpoint reachable.' : 'Convex endpoint returned an error. Check network and service status.')); }
     catch { out.push(result('network', 'fail', 'Convex endpoint unreachable or invalid. Check network and configuration.')); }
   }
-  out.push(...await nativeChecks({ dataDir: dir, settings: settingsValue, env, networkAllowed: consent || checkNetwork }));
+  out.push(...await nativeChecks({ dataDir: dir, settings: settingsValue, env, platform, run, networkAllowed: consent || checkNetwork }));
   const files = await list(join(dir, 'logs'));
   let errors = 0;
   for (const file of files.slice(0, 20)) { try { const p = join(dir, 'logs', file); const info = await stat(p); if (info.isFile() && info.size < 5_000_000) errors += ((await readFile(p, 'utf8')).match(/\b(?:error|fatal)\b/gi) || []).length; } catch {} }
