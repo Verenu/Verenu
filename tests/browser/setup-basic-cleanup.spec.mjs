@@ -128,7 +128,11 @@ test('Setup preserves an agent change and offers to reload on a save conflict', 
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 4, provider: 'local' } });
     await session.invoke('save_setting', { key: 'transcription_provider', value: 'local' });
     await session.invoke('save_setting', { key: 'transcription_default_model', value: 'local/whisper-small' });
+    const progressLoaded = page.waitForResponse(response => response.url().endsWith('/__verenu_dev/invoke')
+      && response.request().postDataJSON()?.command === 'get_setting'
+      && response.request().postDataJSON()?.args?.key === 'setup_progress');
     await page.reload();
+    await progressLoaded;
     await expect(page.getByRole('button', { name: 'Use local Transcription only' })).toBeAttached();
     await page.evaluate(async () => {
       const { localSttStore } = await import('/src/lib/localSttStore.svelte.ts');
