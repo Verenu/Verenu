@@ -1,0 +1,1 @@
+{"name":"verenu","version":"0.1.0","type":"module","bin":{"verenu":"bin/verenu.js"},"scripts":{"test":"node --test"},"files":["bin","src","README.md"]}

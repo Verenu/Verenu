@@ -82,6 +82,8 @@ For more details: [Your First Dictation](docs/FIRST_DICTATION.md) and [Architect
 
 ## Data And Privacy
 
+For experimental local diagnostics, see [Verenu triage](packages/verenu-cli/README.md).
+
 Verenu's own server (`api.verenu.com`) serves only public app metadata — release info, download links, and provider status. Your dictated audio and text either stay on your device or go directly to the third-party providers you choose; they never touch a Verenu server.
 
 ### Stays on your device

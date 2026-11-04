@@ -1,0 +1,11 @@
+# Verenu triage (experimental)
+
+From the repository run `npx --prefix packages/verenu-cli verenu triage`, or run `npx . triage` from this directory. No npm publication is needed. Node.js 20 or newer and the `sqlite3` command are recommended.
+
+Use `--data-dir PATH` or `VERENU_DATA_DIR` to select a data directory. `--json` emits a machine-readable report. `--yes` approves cache and invalid-settings fixes without prompting. Each fix backs up its inputs to `triage-backups`. Database recovery and checkpointing require typing `yes` in an interactive terminal, even with `--yes`. Close Verenu and all other database clients before applying fixes.
+
+`--bundle` writes `verenu-triage-bundle.json` in the current directory without overwriting an existing file. It contains only check identifiers and statuses, never logs or settings. Inspect it before sharing.
+
+Network access is disabled unless `terms-consent.json` in the data directory contains `{"accepted":true}`, or `--check-network` explicitly opts in. This file is a provisional integration contract; installations without it report unknown consent. Set `VERENU_CONVEX_URL` to an HTTPS endpoint to check its origin. No credentials are sent.
+
+The executable check searches PATH; set `VERENU_BINARY` to the installed binary when it is elsewhere. Linux credential checks require `secret-tool` and `dbus-send`. Other platforms report secure storage as unsupported. The CLI verifies retained archives against published hashes and checks extracted speech models for required nonempty loader files and `.verenu-extracted`. Older installs can lack the marker. Archive hashes do not establish extracted-file integrity; FluidAudio files have their own checksums. Confirmed partial and empty model cleanup moves artifacts into the backup directory and records them in `model-cleanup.json`. Close Verenu first to avoid interrupting an active download. Android app-private storage is not accessible to this desktop command. SQLite verification requires `sqlite3`; recovery needs a build with working `.recover` support. Some distribution builds advertise `.recover` without the required database-page extension. The CLI probes the tools on PATH and reports when none can recover a synthetic database. Database actions need `lsof` and are unavailable on Windows. Recovery refuses database sidecars, and neither action removes them.
