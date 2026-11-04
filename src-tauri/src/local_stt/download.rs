@@ -237,6 +237,7 @@ fn extract_archive(
     flatten_single_nested_dir(&extracting_dir)?;
 
     ensure_not_cancelled(cancel)?;
+    write_extraction_marker(&extracting_dir, manifest.id)?;
     if final_dir.exists() {
         if final_dir.is_dir() {
             std::fs::remove_dir_all(&final_dir)?;
@@ -257,6 +258,14 @@ fn extract_archive(
         None,
     );
     Ok(())
+}
+
+fn write_extraction_marker(dir: &Path, model_id: &str) -> std::io::Result<()> {
+    let mut marker = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(".verenu-extracted"))?;
+    std::io::Write::write_all(&mut marker, model_id.as_bytes())
 }
 
 pub fn cleanup_incomplete_artifacts(root: &Path) {
@@ -485,7 +494,7 @@ pub fn cleanup_failed_download_artifacts(
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_incomplete_artifacts, flatten_single_nested_dir};
+    use super::{cleanup_incomplete_artifacts, flatten_single_nested_dir, write_extraction_marker};
     use std::fs;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -496,6 +505,22 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn extraction_marker_records_id_without_overwriting_existing_file() {
+        let dir = temp_dir("extraction-marker");
+        write_extraction_marker(&dir, "fixture-model").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.join(".verenu-extracted")).unwrap(),
+            "fixture-model"
+        );
+        assert!(write_extraction_marker(&dir, "other").is_err());
+        assert_eq!(
+            fs::read_to_string(dir.join(".verenu-extracted")).unwrap(),
+            "fixture-model"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

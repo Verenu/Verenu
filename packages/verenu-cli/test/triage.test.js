@@ -108,6 +108,22 @@ test('model manifest hash and size mismatches are reported', async t => {
   assert.equal((await check()).status, 'fail');
 });
 
+test('extracted model entries and extraction marker are checked', async t => {
+  const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
+  t.after(() => rm(dataDir, {recursive: true, force: true}));
+  const root = join(dataDir, 'models', 'stt', 'sense-voice-int8');
+  await mkdir(root, {recursive: true});
+  await writeFile(join(root, '.verenu-extracted'), 'sense-voice');
+  await writeFile(join(root, 'model.int8.onnx'), 'fixture');
+  await writeFile(join(root, 'tokens.txt'), 'fixture');
+  const check = async () => (await nativeChecks({dataDir, env: {}, platform: 'other'})).find(r => r.name === 'models');
+  assert.notEqual((await check()).status, 'fail');
+  await rm(join(root, '.verenu-extracted'));
+  assert.match((await check()).message, /marker/);
+  await rm(join(root, 'tokens.txt'));
+  assert.equal((await check()).status, 'fail');
+});
+
 test('generated model manifest matches Rust source', async () => {
   assert.equal(await readFile(new URL('../src/model-manifest.json', import.meta.url), 'utf8'), await generate());
 });

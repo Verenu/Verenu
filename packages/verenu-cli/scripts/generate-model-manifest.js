@@ -14,7 +14,8 @@ export async function generate() {
     const block = match[1];
     const name = block.match(/filename:\s*"([^"]+)"/), sha = block.match(/sha256:\s*Some\("([a-f0-9]{64})"\)/);
     const id = block.match(/\bid:\s*"([^"]+)"/), install = block.match(/install_name:\s*"([^"]+)"/);
-    if (id && install) speech.push({ id: id[1], install: install[1], archive: name?.[1] || null, sha256: sha?.[1] || null, directory: /is_directory:\s*true/.test(block) });
+    const engine = block.match(/engine_type:\s*LocalSttEngineType::(\w+)/);
+    if (id && install) speech.push({ id: id[1], install: install[1], engine: engine?.[1] || null, archive: name?.[1] || null, sha256: sha?.[1] || null, directory: /is_directory:\s*true/.test(block) });
     if (name && sha && /is_directory:\s*false/.test(block)) files.push({ name: name[1], sha256: sha[1] });
   }
   if (files.length < 10) throw new Error('Model manifest extraction incomplete');

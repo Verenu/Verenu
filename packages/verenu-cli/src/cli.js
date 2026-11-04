@@ -3,7 +3,7 @@ import path from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { checks } from './checks/index.js';
-import { fix } from './fixes/index.js';
+import { applyFix } from './fixes/index.js';
 import { bundle } from './bundle.js';
 import { report } from './report.js';
 
@@ -30,7 +30,7 @@ export async function main(args) {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       try { const answer = (await rl.question(transcriptAction ? `Back up and apply ${id}, which touches transcript data? Type yes to confirm: ` : `Back up and apply ${id}? [y/N] `)).trim(); approved = transcriptAction ? answer === 'yes' : answer.toLowerCase() === 'y'; } finally { rl.close(); }
     }
-    if (approved) { try { actions.push({ fix: id, backup: await fix(dataDir, id, { typedYes: transcriptAction }) }); } catch (error) { actions.push({ fix: id, error: error.message }); process.exitCode = 1; } }
+    if (approved) { try { actions.push({ fix: id, backup: await applyFix(dataDir, id, { approved, typedYes: transcriptAction }) }); } catch (error) { actions.push({ fix: id, error: error.message }); process.exitCode = 1; } }
   }
   if (makeBundle) { const target = path.resolve('verenu-triage-bundle.json'); await writeFile(target, bundle(results), { flag: 'wx', mode: 0o600 }); actions.push({ bundle: target }); }
   if (json) console.log(JSON.stringify({ results, actions }, null, 2));
