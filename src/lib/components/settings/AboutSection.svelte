@@ -56,6 +56,7 @@
   }
 
   async function checkForUpdateManual() {
+    if (appStore.updateInstalling || appStore.updateInstalled) return;
     const generation = ++checkGeneration;
     updateCheckState = 'checking';
     updateCheckError = '';
@@ -91,7 +92,7 @@
   let betaUpdatesError = $state(false);
 
   async function setBetaUpdates(value: boolean) {
-    if (savingBetaUpdates) return;
+    if (savingBetaUpdates || appStore.updateInstalling || appStore.updateInstalled) return;
     const previous = betaUpdatesEnabled;
     savingBetaUpdates = true;
     betaUpdatesEnabled = value;
@@ -109,6 +110,7 @@
 
       try { await saveSetting('update_dismissed_version', null); } catch {}
       try { await saveSetting('update_notified_version', null); } catch {}
+      if (appStore.updateInstalling || appStore.updateInstalled) return;
       appStore.updateInfo = null;
       checkGeneration += 1;
       updateCheckState = 'idle';

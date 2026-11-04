@@ -138,6 +138,60 @@ test('a late dismissal cannot hide a failed restart', async ({ page }) => {
   await expect(banner).toContainText('Synthetic replacement failure');
 });
 
+test('a late beta setting save cannot hide a failed restart', async ({ page }) => {
+  let releaseSave;
+  let saveStarted;
+  let saveReturned;
+  let notificationSaved;
+  const pendingSave = new Promise(resolve => { releaseSave = resolve; });
+  const saveArrived = new Promise(resolve => { saveStarted = resolve; });
+  const returned = new Promise(resolve => { saveReturned = resolve; });
+  const notification = new Promise(resolve => { notificationSaved = resolve; });
+  await page.route('**/__verenu_dev/invoke', async route => {
+    const { command, args } = route.request().postDataJSON() ?? {};
+    if (command === 'get_setting' && args?.key === 'beta_updates_enabled') {
+      return route.fulfill({ status: 200, json: false });
+    }
+    if (command === 'save_setting' && args?.key === 'beta_updates_enabled') {
+      saveStarted();
+      await pendingSave;
+      await route.fulfill({ status: 200, json: null });
+      saveReturned();
+      return;
+    }
+    if (command === 'save_setting' && args?.key === 'update_notified_version') {
+      await route.fulfill({ status: 200, json: null });
+      notificationSaved();
+      return;
+    }
+    if (command === 'install_update') return route.fulfill({ status: 200, json: 'installed' });
+    if (command === 'restart_app') return route.fulfill({ status: 500, json: { error: 'Synthetic replacement failure' } });
+    return route.fallback();
+  });
+  try {
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.about"]').click();
+    await page.evaluate(async () => {
+      const { appStore } = await import('/src/lib/stores.svelte.ts');
+      appStore.updateInfo = { version: '99.0.0', assetName: 'Verenu_99.0.0_amd64.AppImage', downloadUrl: 'https://example.invalid/synthetic.AppImage', installMode: 'install' };
+    });
+    await page.getByRole('switch', { name: 'Beta updates' }).click();
+    await page.getByRole('button', { name: 'Enable beta updates' }).click();
+    await saveArrived;
+    await page.locator('[data-debug-id="nav.back"]').click();
+    await page.locator('.update-btn').click();
+    await expect.poll(() => page.evaluate(async () => (await import('/src/lib/stores.svelte.ts')).appStore.updateInstallError)).toContain('Synthetic replacement failure');
+    releaseSave();
+    await returned;
+    await notification;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.locator('.update-btn')).toHaveText('Restart');
+    await expect(page.locator('.update-banner')).toContainText('Synthetic replacement failure');
+  } finally {
+    releaseSave();
+  }
+});
+
 test('developer reinstall offers a restart retry without reinstalling', async ({ page }) => {
   let installs = 0;
   let restarts = 0;
