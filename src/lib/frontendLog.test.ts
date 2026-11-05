@@ -35,6 +35,20 @@ describe('createForwardLimiter', () => {
     now = 1500;
     expect(allow()).toBe(true);
   });
+
+  it('slides, so a burst across a window boundary still counts against the limit', () => {
+    let now = 0;
+    const allow = createForwardLimiter(2, 1000, () => now);
+    expect(allow()).toBe(true);
+    now = 600;
+    expect(allow()).toBe(true);
+    now = 999;
+    expect(allow()).toBe(false);
+    now = 1000;
+    expect(allow()).toBe(true);
+    now = 1599;
+    expect(allow()).toBe(false);
+  });
 });
 
 function fakeTarget() {

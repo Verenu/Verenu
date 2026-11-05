@@ -116,6 +116,14 @@ pub fn unsubscribe_log_stream() {
     });
 }
 
+/// Panic-path logging. It writes straight to the session-log channel, which is a
+/// non-blocking send. It takes neither the buffer lock nor the diagnostics store, so a
+/// panic raised while either is held cannot deadlock the panic hook.
+pub(crate) fn record_panic_line(line: &str) {
+    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    super::log_files::append(&format!("[{timestamp}] ERROR [verenu::panic] {line}"));
+}
+
 /// One startup line naming the setup that triage needs: session type, desktop, and the
 /// selected providers and models. Callers pass names and ids only, never keys.
 pub fn environment_summary(fields: &[(&str, Option<String>)]) -> String {

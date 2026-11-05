@@ -27,26 +27,27 @@ export function formatForwardedArgs(args: unknown[]): string {
   return args.map(formatForwardedValue).join(' ');
 }
 
-/** Allows `limit` forwarded messages per window, so a failure loop cannot flood the log. */
+/**
+ * Allows at most `limit` forwarded messages in any `windowMs` span. The window slides, so a
+ * burst at the end of one window and the start of the next still counts against the limit.
+ * Each allowed send counts, including sends that re-enter the forwarder, so the limiter also
+ * bounds any feedback loop.
+ */
 export function createForwardLimiter(limit = FRONTEND_LOG_LIMIT, windowMs = FRONTEND_LOG_WINDOW_MS, now = Date.now) {
-  let windowStart = now();
-  let count = 0;
+  const sent: number[] = [];
   return (): boolean => {
     const at = now();
-    if (at - windowStart >= windowMs) {
-      windowStart = at;
-      count = 0;
-    }
-    if (count >= limit) return false;
-    count += 1;
+    while (sent.length > 0 && at - sent[0] >= windowMs) sent.shift();
+    if (sent.length >= limit) return false;
+    sent.push(at);
     return true;
   };
 }
 
 /**
  * Installs the forwarders once. `console.error` and `console.warn` keep printing to the
- * devtools console, and each forwarded call is guarded so a failing forward cannot
- * recurse into another forward.
+ * devtools console. A failing forward is ignored, and the rate limiter bounds any loop
+ * that a failing forward could start.
  */
 export function installFrontendLogForwarding(
   send: (level: 'error' | 'warn', source: FrontendLogSource, message: string) => Promise<unknown> = (level, source, message) =>
@@ -54,17 +55,13 @@ export function installFrontendLogForwarding(
   target: Pick<Window, 'addEventListener'> & { console: Console } = window as Window & { console: Console },
 ): void {
   const allow = createForwardLimiter();
-  let forwarding = false;
 
   const forward = (level: 'error' | 'warn', source: FrontendLogSource, message: string) => {
-    if (forwarding || !allow()) return;
-    forwarding = true;
+    if (!allow()) return;
     try {
       void Promise.resolve(send(level, source, message)).catch(() => {});
     } catch {
       // Forwarding is best effort. The devtools console still shows the original message.
-    } finally {
-      forwarding = false;
     }
   };
 

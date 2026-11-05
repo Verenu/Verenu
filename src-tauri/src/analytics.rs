@@ -357,7 +357,10 @@ impl Analytics {
         std::panic::set_hook(Box::new(move |info| {
             // The session log keeps where the panic happened, so triage can find
             // it without a terminal. The payload is left out: it can carry user text.
-            log::error!("{}", panic_log_line(std::thread::current().name(), info.location()));
+            crate::system::logger::record_panic_line(&panic_log_line(
+                std::thread::current().name(),
+                info.location(),
+            ));
             if let Some(analytics) = PANIC_ANALYTICS.get() {
                 analytics.capture_sanitized_exception(ErrorReport {
                     domain: ErrorDomain::Backend,
