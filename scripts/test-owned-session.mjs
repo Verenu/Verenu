@@ -62,6 +62,10 @@ try {
     const browserStarted = performance.now();
     session = await startOwnedSession({ id, fixtures, directory, synthetic: true });
     report.timing.browserStartupMs = Math.round(performance.now() - browserStarted);
+    // Dev sessions clear inherited legal state, so accept the current versions
+    // locally. The dev backend does not send this acceptance to the live API.
+    const consent = await invokeSession(session, 'get_consent_state');
+    await invokeSession(session, 'accept_legal', { termsVersion: consent.termsVersion, privacyVersion: consent.privacyVersion });
     const env = { ...process.env, VERENU_SESSION_ACCESS_FILE: session.accessFile, VERENU_DEV_REQUIRE_LIVE: args.includes('--live') ? '1' : '0' };
     const browserEnv = args.includes('--update-snapshots') ? { ...env, VERENU_SNAPSHOT_SOURCE_FINGERPRINT: identity.fingerprint } : env;
     const playwright = await run(process.execPath, [playwrightCli, 'test', '--config', 'tests/browser/playwright.config.mjs', ...(partition.project === 'all' ? [] : [`--project=${partition.project}`]), ...(partition.count === 1 ? [] : [`--shard=${partition.index}/${partition.count}`]), ...(args.includes('--update-snapshots') ? ['--update-snapshots=all'] : [])], { directory, name: 'playwright', env: browserEnv });
