@@ -1,14 +1,31 @@
 import os from 'node:os';
 import path from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { checks } from './checks/index.js';
 import { applyFix } from './fixes/index.js';
 import { bundle } from './bundle.js';
 import { report } from './report.js';
 
+export const usage = `Usage: verenu triage [options]
+
+Options:
+  --data-dir PATH     Verenu data directory (default: the platform app data directory)
+  --json              Print a machine-readable report
+  --yes               Approve cache and settings fixes without prompting
+  --bundle            Write verenu-triage-bundle.json with check names and statuses only
+  --check-network     Run the network check without recorded Terms consent
+  -h, --help          Show this help and exit
+  -v, --version       Show the CLI version and exit`;
+
+async function version() {
+  return JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
+}
+
 export async function main(args) {
-  if (args.shift() !== 'triage') { console.error('Usage: verenu triage [--data-dir PATH] [--yes] [--json] [--bundle] [--check-network]'); process.exitCode = 2; return; }
+  if (args[0] === '--help' || args[0] === '-h') { console.log(usage); return; }
+  if (args[0] === '--version' || args[0] === '-v') { console.log(await version()); return; }
+  if (args.shift() !== 'triage') { console.error(usage); process.exitCode = 2; return; }
   let dataDir = process.env.VERENU_DATA_DIR || (process.platform === 'win32' ? path.join(process.env.APPDATA || os.homedir(), 'Verenu') : process.platform === 'darwin' ? path.join(os.homedir(), 'Library/Application Support/Verenu') : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'Verenu'));
   let yes = false, json = false, makeBundle = false, checkNetwork = false;
   while (args.length) {
@@ -18,7 +35,8 @@ export async function main(args) {
     else if (arg === '--json') json = true;
     else if (arg === '--bundle') makeBundle = true;
     else if (arg === '--check-network') checkNetwork = true;
-    else { console.error(`Unknown or incomplete option: ${arg}`); process.exitCode = 2; return; }
+    else if (arg === '--help' || arg === '-h') { console.log(usage); return; }
+    else { console.error(`Unknown or incomplete option: ${arg}\nRun \`verenu triage --help\` for the options.`); process.exitCode = 2; return; }
   }
   const results = await checks({ dataDir, checkNetwork });
   const actions = [];
