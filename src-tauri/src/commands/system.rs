@@ -1099,6 +1099,63 @@ pub fn get_recent_logs(limit: Option<usize>) -> Vec<String> {
     crate::system::logger::recent(limit)
 }
 
+const FRONTEND_LOG_CHARS: usize = 500;
+const FRONTEND_LOG_SOURCES: &[&str] = &[
+    "window.error",
+    "unhandledrejection",
+    "console.error",
+    "console.warn",
+];
+
+/// One line of webview text, bounded and with control characters flattened, so a
+/// message cannot forge extra session-log lines.
+pub(crate) fn frontend_log_text(message: &str) -> String {
+    message
+        .chars()
+        .take(FRONTEND_LOG_CHARS)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Forward a webview error to the session log under `verenu::frontend`, so triage can
+/// see frontend failures next to backend ones. Only allowlisted sources and levels are
+/// accepted. The message is bounded, and it should never carry dictated text.
+#[tauri::command]
+pub fn frontend_log(level: String, source: String, message: String) -> Result<(), String> {
+    if !FRONTEND_LOG_SOURCES.contains(&source.as_str()) {
+        return Err("unknown frontend log source".to_owned());
+    }
+    let line = format!("{source}: {}", frontend_log_text(&message));
+    match level.as_str() {
+        "error" => log::error!(target: "verenu::frontend", "{line}"),
+        "warn" => log::warn!(target: "verenu::frontend", "{line}"),
+        _ => return Err("frontend log level must be error or warn".to_owned()),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod frontend_log_tests {
+    use super::*;
+
+    #[test]
+    fn frontend_text_is_one_bounded_line() {
+        assert_eq!(frontend_log_text("first\nsecond\tthird\r\u{7}"), "first second third");
+        let long = "x".repeat(2_000);
+        assert_eq!(frontend_log_text(&long).chars().count(), FRONTEND_LOG_CHARS);
+    }
+
+    #[test]
+    fn unknown_sources_and_levels_are_rejected() {
+        assert!(frontend_log("error".into(), "made.up".into(), "x".into()).is_err());
+        assert!(frontend_log("info".into(), "console.error".into(), "x".into()).is_err());
+        assert!(frontend_log("error".into(), "console.error".into(), "boom".into()).is_ok());
+    }
+}
+
 #[tauri::command]
 pub fn subscribe_log_stream() {
     crate::system::logger::subscribe_log_stream();

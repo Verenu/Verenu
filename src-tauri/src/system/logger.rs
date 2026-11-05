@@ -116,6 +116,31 @@ pub fn unsubscribe_log_stream() {
     });
 }
 
+/// Panic-path logging. It writes straight to the session-log channel, which is a
+/// non-blocking send. It takes neither the buffer lock nor the diagnostics store, so a
+/// panic raised while either is held cannot deadlock the panic hook.
+pub(crate) fn record_panic_line(line: &str) {
+    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    super::log_files::append(&format!("[{timestamp}] ERROR [verenu::panic] {line}"));
+}
+
+/// One startup line naming the setup that triage needs: session type, desktop, and the
+/// selected providers and models. Callers pass names and ids only, never keys.
+pub fn environment_summary(fields: &[(&str, Option<String>)]) -> String {
+    fields
+        .iter()
+        .map(|(name, value)| {
+            let value = value
+                .as_deref()
+                .map(|v| v.chars().filter(|c| !c.is_control() && !c.is_whitespace()).take(80).collect::<String>())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "unset".to_owned());
+            format!("{name}={value}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn export_header() -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
     let verbose = if is_verbose() { "on" } else { "off" };
@@ -530,6 +555,22 @@ mod tests {
         let lines = buffer_lines();
         assert!(lines.iter().any(|l| l.contains("verbose logging enabled")));
         assert!(lines.iter().any(|l| l.contains("verbose logging disabled")));
+    }
+
+    #[test]
+    fn environment_summary_names_each_field_and_drops_whitespace() {
+        let line = super::environment_summary(&[
+            ("session", Some("wayland".to_owned())),
+            ("desktop", None),
+            ("transcription_provider", Some("groq\nextra".to_owned())),
+            ("cleanup_model", Some(" ".to_owned())),
+        ]);
+        assert_eq!(
+            line,
+            "session=wayland desktop=unset transcription_provider=groqextra cleanup_model=unset"
+        );
+        let long = super::environment_summary(&[("model", Some("m".repeat(200)))]);
+        assert_eq!(long, format!("model={}", "m".repeat(80)));
     }
 
     #[test]

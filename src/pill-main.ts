@@ -4,11 +4,13 @@ import { invoke, listen } from './lib/tauri';
 import { initializeDevSession, isBrowserDevSession } from './lib/devSession';
 import { ACCENT_CHANGE_EVENT, applyAccentTheme, normalizeAccentColor } from './lib/accentTheme';
 import { disableBrowserContextMenu } from './lib/disable-context-menu';
+import { installFrontendLogForwardingIfTauri } from './lib/frontendLog';
 import { OMARCHY_THEME_EVENT, applyOmarchyPalette, effectiveAccent, isOmarchyTheme, resolvePalette, type OmarchyTheme } from './lib/omarchyTheme';
 import { CUSTOM_THEME_CHANGE_EVENT, normalizeCustomTheme, type CustomTheme } from './lib/customTheme';
 import './theme.css';
 
 disableBrowserContextMenu();
+installFrontendLogForwardingIfTauri();
 
 type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
 const isAppearanceMode = (value: unknown): value is AppearanceMode =>
