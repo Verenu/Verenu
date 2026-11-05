@@ -16,11 +16,11 @@ function run(args, options = {}) {
 test('--help prints usage and exits 0 without running checks', async t => {
   const dataDir = await mkdtemp(join(os.tmpdir(), 'verenu-triage-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
-  for (const args of [['--help'], ['-h'], ['triage', '--help'], ['triage', '-h'], ['triage', '--json', '--help']]) {
+  for (const args of [['--help'], ['-h'], ['triage', '--help'], ['triage', '-h'], ['triage', '--agent', 'claude', '--help']]) {
     const invoked = run([...args, '--data-dir', dataDir]);
     assert.equal(invoked.status, 0, args.join(' '));
     assert.match(invoked.stdout, /^Usage: verenu triage \[options\]/, args.join(' '));
-    assert.match(invoked.stdout, /--check-network/);
+    assert.match(invoked.stdout, /--agent claude\|codex/);
     assert.doesNotMatch(invoked.stdout, /"results"|PASS|FAIL|WARN/, args.join(' '));
     assert.equal(invoked.stderr, '', args.join(' '));
   }

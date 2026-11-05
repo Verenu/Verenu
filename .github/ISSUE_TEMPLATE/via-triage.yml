@@ -1,0 +1,65 @@
+name: Filed via triage
+description: Issue drafted by `verenu triage` with a coding agent
+title: ""
+labels:
+  - via-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue was drafted by `verenu triage` with a coding agent. Check that it contains no API keys, dictated text, transcripts, clipboard contents, private screenshots, email addresses, or full local paths before you post.
+  - type: input
+    id: version
+    attributes:
+      label: Verenu version
+      description: Use the version shown in the app, installer, or package.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and install type
+      description: For example, "Linux (Omarchy), installer" or "macOS Apple Silicon, development build".
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The user's description, in their own words.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnosis
+    attributes:
+      label: Diagnosis
+      description: What the investigation found, with the evidence it relied on. Quote only the error lines, redacted.
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro steps
+      description: Use fake sample text if dictation content matters.
+      placeholder: |
+        1. Open Verenu
+        2. Hold the hotkey in a text editor
+        3. Say "fake sample text"
+        4. Release the hotkey
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Check results from the triage context, with secrets and private text removed.
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues
+      description: Existing issues the agent found, if any.
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and model
+      description: The agent CLI and model that wrote this issue, for example "Claude Code, claude-opus-5-5".
+    validations:
+      required: true
