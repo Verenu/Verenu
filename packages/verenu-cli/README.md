@@ -2,6 +2,8 @@
 
 From the repository run `npx --prefix packages/verenu-cli verenu triage`, or run `npx . triage` from this directory. No npm publication is needed. Node.js 20 or newer and the `sqlite3` command are recommended.
 
+Run `verenu triage --help` for the option list. `verenu --version` prints the CLI version. Help and version do not run any check.
+
 Use `--data-dir PATH` or `VERENU_DATA_DIR` to select a data directory. `--json` emits a machine-readable report. `--yes` approves cache and invalid-settings fixes without prompting. Each fix backs up its inputs to `triage-backups`. Database recovery and checkpointing require typing `yes` in an interactive terminal, even with `--yes`. Close Verenu and all other database clients before applying fixes.
 
 `--bundle` writes `verenu-triage-bundle.json` in the current directory without overwriting an existing file. It contains only check identifiers and statuses, never logs or settings. Inspect it before sharing.
