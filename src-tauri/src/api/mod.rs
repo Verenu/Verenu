@@ -377,6 +377,12 @@ fn response_request_id(resp: &reqwest::Response) -> String {
         .to_string()
 }
 
+/// One session-log line per provider response: which provider and model answered, the
+/// HTTP status, and the provider's request id. No body, headers, or keys.
+fn provider_response_line(provider: &str, model: &str, status: u16, request_id: &str) -> String {
+    format!("provider response provider={provider} model={model} status={status} request_id={request_id}")
+}
+
 async fn ensure_provider_success(
     resp: reqwest::Response,
     quota_label: &str,
@@ -384,6 +390,15 @@ async fn ensure_provider_success(
 ) -> Result<reqwest::Response, ProviderHttpError> {
     let status = resp.status();
     let request_id = response_request_id(&resp);
+    let (provider, model) = match auth {
+        Some((provider, model)) => (provider, model),
+        None => (quota_label, "-"),
+    };
+    log::info!(
+        target: "verenu::api",
+        "{}",
+        provider_response_line(provider, model, status.as_u16(), &request_id)
+    );
 
     if status.as_u16() == 429 {
         return Err(ProviderHttpError::Quota(quota_bail(quota_label)));
@@ -691,6 +706,14 @@ fn extract_http_status_code(msg: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn provider_response_line_names_provider_model_status_and_request_id() {
+        assert_eq!(
+            super::provider_response_line("Groq", "whisper-large-v3-turbo", 200, "req_1"),
+            "provider response provider=Groq model=whisper-large-v3-turbo status=200 request_id=req_1"
+        );
+    }
+
     #[tokio::test]
     async fn provider_error_contexts_preserve_status_auth_and_quota_contracts() {
         use std::io::{Read, Write};

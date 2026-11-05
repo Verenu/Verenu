@@ -12,6 +12,16 @@ static PANIC_ANALYTICS: OnceLock<Analytics> = OnceLock::new();
 static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 static DELIVERY_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+/// One session-log line for a panic: the thread and the source location.
+/// The payload is deliberately absent, because it can carry user text.
+pub(crate) fn panic_log_line(thread: Option<&str>, location: Option<&std::panic::Location<'_>>) -> String {
+    let thread = thread.unwrap_or("unnamed");
+    let place = location
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+        .unwrap_or_else(|| "unknown location".to_owned());
+    format!("thread '{thread}' panicked at {place}")
+}
+
 #[derive(Clone, Copy)]
 enum DeliveryKind {
     Event,
@@ -345,6 +355,9 @@ impl Analytics {
         }
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            // The session log keeps where the panic happened, so triage can find
+            // it without a terminal. The payload is left out: it can carry user text.
+            log::error!("{}", panic_log_line(std::thread::current().name(), info.location()));
             if let Some(analytics) = PANIC_ANALYTICS.get() {
                 analytics.capture_sanitized_exception(ErrorReport {
                     domain: ErrorDomain::Backend,
@@ -1727,6 +1740,18 @@ fn is_official_version(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn panic_log_line_names_thread_and_location_without_payload() {
+        let location = std::panic::Location::caller();
+        let line = super::panic_log_line(Some("pipeline-worker"), Some(location));
+        assert!(line.starts_with("thread 'pipeline-worker' panicked at "));
+        assert!(line.contains("analytics.rs:"));
+        assert_eq!(
+            super::panic_log_line(None, None),
+            "thread 'unnamed' panicked at unknown location"
+        );
+    }
+
     use super::*;
 
     #[test]

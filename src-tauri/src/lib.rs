@@ -338,6 +338,32 @@ pub fn run() {
             );
             let settings = crate::data::store::SettingsHandle::open(app.handle())
                 .map_err(std::io::Error::other)?;
+            let setting_text = |key: &str| {
+                settings
+                    .get(key)
+                    .and_then(|value| value.as_str().map(str::to_owned))
+            };
+            log::info!(
+                "verenu environment: {}",
+                crate::system::logger::environment_summary(&[
+                    ("session", std::env::var("XDG_SESSION_TYPE").ok()),
+                    ("desktop", std::env::var("XDG_CURRENT_DESKTOP").ok()),
+                    (
+                        "transcription_provider",
+                        setting_text(crate::data::store::TRANSCRIPTION_PROVIDER)
+                    ),
+                    (
+                        "transcription_model",
+                        setting_text(crate::data::store::TRANSCRIPTION_MODEL)
+                    ),
+                    ("cleanup_provider", setting_text(crate::data::store::CLEANUP_PROVIDER)),
+                    ("cleanup_model", setting_text(crate::data::store::CLEANUP_MODEL)),
+                    (
+                        "model_selection",
+                        setting_text(crate::data::store::MODEL_SELECTION_MODE)
+                    ),
+                ])
+            );
             let cache_enabled = settings.get(crate::data::store::CLEANUP_CACHE_ENABLED)
                 .and_then(|value| value.as_bool()).unwrap_or(true);
             db::cleanup_cache_set_enabled(app.state::<DbHandle>().inner(), cache_enabled)
@@ -892,6 +918,7 @@ pub fn run() {
             commands::check_verenu_api_health,
             commands::check_connectivity,
             commands::get_recent_logs,
+            commands::frontend_log,
             commands::subscribe_log_stream,
             commands::unsubscribe_log_stream,
             commands::download_logs,

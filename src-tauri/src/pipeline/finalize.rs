@@ -313,6 +313,17 @@ pub(super) async fn finalize_pipeline_completion(
         }
     };
     let injection_elapsed = inject_stage.elapsed();
+    // One line per dictation, with the outcome and timings but no text, so triage can
+    // see how each dictation ended without opening the database.
+    log::info!(
+        "pipeline: dictation outcome id={} result={} event_only={} words={} duration_ms={} inject_ms={}",
+        entry.id,
+        injected.case_decision,
+        ctx.event_only,
+        entry.words,
+        ctx.duration_ms,
+        injection_elapsed.as_millis()
+    );
     let injected_text = injected.text;
     let history_log = if let Some(telemetry) = ctx.telemetry {
         match injected.case_decision {

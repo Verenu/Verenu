@@ -6,8 +6,10 @@ import './app.css';
 import './ui.css';
 import './mobile.css';
 import { initializeDevSession, isBrowserDevSession } from './lib/devSession';
+import { installFrontendLogForwardingIfTauri } from './lib/frontendLog';
 
 disableBrowserContextMenu();
+installFrontendLogForwardingIfTauri();
 
 async function start() {
   if (import.meta.env.DEV && import.meta.env.VITE_VERENU_NATIVE_TEST === '1') await import('@wdio/tauri-plugin');
