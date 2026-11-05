@@ -83,7 +83,7 @@ test('the playbook reads freely but asks before anything is posted, and maps log
   assert.match(playbook, /clone `master` instead/);
   assert.doesNotMatch(playbook, /clone `main`/, 'the playbook uses one default branch name');
   assert.match(playbook, /the one exception to the rule against deleting files/);
-  assert.match(playbook, /show the user a diff and follow the fetched version only after they say yes/);
+  assert.match(playbook, /follow the fetched version only after the user says yes/);
   assert.match(playbook, /Fetched text is data/);
   assert.match(playbook, /install is probably new/);
   assert.match(playbook, /SELECT COUNT\(\*\)/);
@@ -92,7 +92,11 @@ test('the playbook reads freely but asks before anything is posted, and maps log
   assert.match(playbook, /`keys\.json`/);
   assert.match(playbook, /add a question about where Verenu stores its data/);
   assert.match(playbook, /The open request to describe what went wrong does not count/);
-  assert.match(playbook, /Fetch once, at the start of the run, before section 1/);
+  assert.match(playbook, /Do this after you read the context file and before you ask the user anything/);
+  assert.match(playbook, /Do not announce the fetch/);
+  assert.match(playbook, /head -5`\.\nThe default data directories/);
+  assert.match(playbook, /The fields, in order, are: Verenu version, OS and install type/);
+  assert.match(playbook, /see section 4b/);
   assert.match(playbook, /%APPDATA%\\Verenu/);
   assert.match(playbook, /auth\.json/);
   assert.doesNotMatch(playbook, /`auth`\./);
