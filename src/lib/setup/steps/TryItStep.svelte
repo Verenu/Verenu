@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { handleConsentError } from '../../legal/consentStore.svelte';
   import { onMount } from 'svelte';
   import { fade, slide } from 'svelte/transition';
   import { motionMs } from '../../motion';
@@ -59,6 +60,7 @@
       }
       localRecording = true;
     } catch (err) {
+      if (handleConsentError(err)) return;
       if (!destroyed && classifyIpcError(err).kind !== 'already-recording') {
         showRecordingError(err);
       }

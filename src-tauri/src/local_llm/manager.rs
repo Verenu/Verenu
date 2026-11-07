@@ -344,6 +344,17 @@ impl LocalLlmManager {
         Ok(())
     }
 
+    pub(crate) async fn wait_for_downloads_to_stop(&self) -> anyhow::Result<()> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let model_active = self.download_task.lock().map_err(|_| anyhow::anyhow!("download state lock poisoned"))?.is_some();
+                let runtime_active = self.runtime_download.lock().map_err(|_| anyhow::anyhow!("runtime download state lock poisoned"))?.is_some();
+                if !model_active && !runtime_active { return Ok(()); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.map_err(|_| anyhow::anyhow!("downloads did not stop"))?
+    }
+
     pub async fn delete_runtime(&self, app: &AppHandle) -> anyhow::Result<()> {
         self.cancel_runtime_download()?;
         let _gate = self.preload_gate.write().await;

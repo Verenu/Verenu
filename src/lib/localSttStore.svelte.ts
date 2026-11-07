@@ -11,6 +11,7 @@ import {
 } from './tauri';
 import { ensureNotificationPermission } from './notifications';
 import { formatIpcError } from './errors';
+import { consentBlocked, handleConsentError, requireConsent } from './legal/consentStore.svelte';
 
 export const localSttStore = $state({
   models: [] as LocalSttModelInfo[],
@@ -42,6 +43,10 @@ export async function refreshLocalState() {
 }
 
 export async function downloadLocalModel(modelIdValue: string): Promise<boolean> {
+  if (consentBlocked()) {
+    requireConsent(() => { void downloadLocalModel(modelIdValue); });
+    return false;
+  }
   try {
     ensureNotificationPermission().catch(() => {});
     await invoke('download_local_stt_model', { modelId: modelIdValue });
@@ -50,6 +55,7 @@ export async function downloadLocalModel(modelIdValue: string): Promise<boolean>
     return true;
   } catch (err) {
     console.error('download local model failed', err);
+    if (handleConsentError(err, () => { void downloadLocalModel(modelIdValue); })) return false;
     emit('verenu:error', formatIpcError(err, 'Could not start the transcription model download'));
     return false;
   }

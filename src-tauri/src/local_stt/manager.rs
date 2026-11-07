@@ -62,6 +62,31 @@ pub struct LocalTranscriptionState {
 }
 
 impl LocalTranscriptionManager {
+    #[cfg(test)]
+    pub(crate) fn start_fixture_download(
+        &self,
+        app: AppHandle,
+        manifest: super::model::LocalSttModelManifest,
+        root: PathBuf,
+    ) -> (Arc<AtomicBool>, tokio::task::JoinHandle<anyhow::Result<()>>) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let completion = Arc::new(tokio::sync::Notify::new());
+        *self.download_task.lock().unwrap() = Some(DownloadTaskState {
+            model_id: manifest.id.into(),
+            cancel: cancel.clone(),
+            completion: completion.clone(),
+        });
+        let manager = self.clone();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            let result = download_model(&app, &manifest, &root, task_cancel).await;
+            *manager.download_task.lock().unwrap() = None;
+            completion.notify_waiters();
+            result
+        });
+        (cancel, task)
+    }
+
     pub fn new() -> Self {
         Self {
             engine: Arc::new(Mutex::new(None)),
@@ -171,9 +196,13 @@ impl LocalTranscriptionManager {
     pub fn download_model(&self, app: &AppHandle, model_id: &str) -> anyhow::Result<()> {
         let manifest = manifest_by_id(model_id)
             .ok_or_else(|| anyhow::anyhow!("unknown local model: {model_id}"))?;
-        let url = manifest.url.ok_or_else(|| {
-            anyhow::anyhow!("{} cannot be downloaded automatically", manifest.name)
-        })?;
+        let has_bundle = super::fluid_download::has_bundle(manifest.id);
+        anyhow::ensure!(
+            manifest.url.is_some() || has_bundle,
+            "{} is not available for download yet.",
+            manifest.name
+        );
+        let source = manifest.url.unwrap_or("Hugging Face bundle");
         anyhow::ensure!(
             manifest.is_supported(),
             "This speech engine is unsupported on this platform"
@@ -222,7 +251,7 @@ impl LocalTranscriptionManager {
             });
         }
 
-        log::info!("local-stt: download begin id={} url={}", model_id, url);
+        log::info!("local-stt: download begin id={} source={}", model_id, source);
         let started_at = Instant::now();
         let manager = self.clone();
         let app_handle = app.clone();
@@ -321,6 +350,16 @@ impl LocalTranscriptionManager {
             );
         }
         Ok(())
+    }
+
+    pub(crate) async fn wait_for_downloads_to_stop(&self) -> anyhow::Result<()> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let active = self.download_task.lock().map_err(|_| anyhow::anyhow!("download state lock poisoned"))?.is_some();
+                if !active { return Ok(()); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await.map_err(|_| anyhow::anyhow!("downloads did not stop"))?
     }
 
     pub async fn delete_model(&self, app: &AppHandle, model_id: &str) -> anyhow::Result<()> {

@@ -250,6 +250,9 @@ pub(super) fn reserve_provided_capture(state: &SharedState) -> Result<u64, Strin
 }
 
 pub fn reserve_starting(state: &SharedState) -> Result<(), String> {
+    if !matches!(crate::legal_deletion::marker_path(&crate::app_data_dir()).try_exists(), Ok(false)) {
+        return Err("deletion_pending".into());
+    }
     let mut st = lock_state(state).map_err(|e| e.to_string())?;
     if !st.lifecycle.is_idle() {
         return Err("Already recording".to_string());

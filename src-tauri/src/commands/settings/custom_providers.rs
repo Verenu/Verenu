@@ -116,6 +116,11 @@ pub async fn delete_custom_provider(app: AppHandle, provider: String) -> Result<
                 changes.push((map_key.to_string(), serde_json::json!(map)));
             }
         }
+        let enables_network = changes.iter().any(|(key, value)|
+            matches!(key.as_str(), store::TRANSCRIPTION_PROVIDER | store::CLEANUP_PROVIDER) && enables_network_setting(key, value));
+        let _consent = if enables_network {
+            Some(crate::legal_consent::network_permit_now().map_err(|error| error.to_string())?)
+        } else { None };
         settings
             .save_values_with_commit(
                 changes,

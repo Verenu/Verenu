@@ -124,6 +124,7 @@ async fn bounded_json(mut response: reqwest::Response) -> Result<Value, String> 
 }
 
 pub async fn descriptor(base: &Url) -> Result<Value, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     validate_base_url(base)?;
     let result = bounded_json(
         client()?
@@ -159,6 +160,7 @@ pub async fn descriptor(base: &Url) -> Result<Value, String> {
 }
 
 pub async fn exchange(target: &PairingTarget) -> Result<(String, u64), String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     let result = bounded_json(
         client()?
             .post(
@@ -212,6 +214,7 @@ pub async fn fetch_catalogs(
     environment_id: &str,
     refresh: bool,
 ) -> Result<Vec<Catalog>, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     tokio::time::timeout(TIMEOUT, async {
         let ticket = bounded_json(client()?.post(base.join("api/auth/websocket-ticket").map_err(|_| "Invalid T3 address.")?)
             .bearer_auth(token).send().await.map_err(|_| "Cannot authenticate the T3 skill pull.")?).await?;

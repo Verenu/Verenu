@@ -37,6 +37,10 @@ mod data;
 mod dev_session;
 mod local_llm;
 mod local_stt;
+#[allow(dead_code)]
+mod legal_consent;
+#[allow(dead_code)]
+mod legal_deletion;
 mod media;
 mod model_performance;
 mod pipeline;
@@ -213,7 +217,9 @@ pub fn run() {
     }));
 
     crate::system::logger::init_early();
-    pipeline::failover::restore_into_state(&shared);
+    if matches!(crate::legal_deletion::marker_path(&app_data_dir()).try_exists(), Ok(false)) {
+        pipeline::failover::restore_into_state(&shared);
+    }
     let local_cleanup_manager = crate::local_llm::LocalLlmManager::new();
     let local_transcription_manager = crate::local_stt::LocalTranscriptionManager::new();
     let frontend_readiness = FrontendReadiness::default();
@@ -272,8 +278,6 @@ pub fn run() {
 
     builder
         .setup(move |app| {
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            tauri::async_runtime::spawn(async { let _ = crate::media::nvidia_reuse::nvidia_reuse_check().await; });
             #[cfg(target_os = "linux")]
             if std::env::args().any(|arg| {
                 arg == "--verenu-hotkey-release"
@@ -301,6 +305,28 @@ pub fn run() {
                 std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", data_dir);
             }
             std::fs::create_dir_all(app_data_dir()).map_err(std::io::Error::other)?;
+            if crate::legal_deletion::read_marker(&app_data_dir()).map_err(std::io::Error::other)?.is_some() {
+                crate::system::logger::stop_for_deletion().map_err(std::io::Error::other)?;
+                let db_handle = db::open(":memory:").map_err(std::io::Error::other)?;
+                app.manage(db_handle);
+                let settings = crate::data::store::SettingsHandle::open(app.handle()).map_err(std::io::Error::other)?;
+                crate::legal_consent::install_network_settings(settings.clone());
+                app.manage(settings);
+                #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+                if is_dev_session() { dev_session::start(app.handle().clone())?; }
+                let deletion_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let _ = crate::legal_consent::retry_pending_deletion(deletion_app.clone()).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
+                });
+                #[cfg(desktop)]
+                if !is_dev_session() { show_main_window(app.handle()); }
+                return Ok(());
+            }
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            tauri::async_runtime::spawn(async { let _ = crate::media::nvidia_reuse::nvidia_reuse_check().await; });
             let db_handle: DbHandle = match db::open_with_recovery(app_db_path()) {
                 Ok(db) => db,
                 Err(err) => fatal_startup_error(&format!("failed to open database: {err}")),
@@ -338,6 +364,7 @@ pub fn run() {
             );
             let settings = crate::data::store::SettingsHandle::open(app.handle())
                 .map_err(std::io::Error::other)?;
+            crate::legal_consent::install_network_settings(settings.clone());
             let setting_text = |key: &str| {
                 settings
                     .get(key)
@@ -452,12 +479,20 @@ pub fn run() {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 app.manage(settings.clone());
+                let legal_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        crate::legal_consent::retry_pending_acceptance(legal_app.clone()).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
+                });
                 #[cfg(desktop)]
                 app.manage(crate::analytics::Analytics::new(
-                    settings
+                    settings.snapshot().is_ok_and(|snapshot| crate::legal_consent::permits_network(&snapshot))
+                        && settings
                         .get(crate::data::store::ANALYTICS_ENABLED)
                         .and_then(|value| value.as_bool())
-                        .unwrap_or(true),
+                        .unwrap_or(false),
                     crate::app_data_dir(),
                 ));
                 first_launch
@@ -769,6 +804,11 @@ pub fn run() {
             commands::request_notification_permission,
             commands::check_keychain_access,
             commands::save_setting,
+            legal_consent::get_install_id,
+            legal_consent::get_consent_state,
+            legal_consent::skip_legal,
+            legal_consent::accept_legal,
+            legal_consent::delete_my_data,
             commands::save_model_settings_if_unchanged,
             commands::save_setting_if_unchanged,
             commands::analytics_setup_event,

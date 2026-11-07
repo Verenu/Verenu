@@ -96,6 +96,7 @@ fn github_cache_persists_and_a_disconnect_rejects_late_refreshes() {
     let handle = SettingsHandle {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(Map::new()))),
+        deletion_locked: Arc::new(AtomicBool::new(false)),
     };
     handle
         .save_value(GITHUB_USERNAME, json!("octocat"))
@@ -219,6 +220,7 @@ fn failed_settings_save_does_not_publish_in_memory_values() {
     let handle = SettingsHandle {
         path: Arc::new(path),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
+        deletion_locked: Arc::new(AtomicBool::new(false)),
     };
 
     assert!(handle
@@ -261,6 +263,7 @@ fn settings_snapshots_share_unchanged_maps_and_skip_noop_writes() {
     let handle = SettingsHandle {
         path: Arc::new(path.clone()),
         values: Arc::new(std::sync::RwLock::new(Arc::new(initial))),
+        deletion_locked: Arc::new(AtomicBool::new(false)),
     };
 
     let first = handle.snapshot().expect("first snapshot");

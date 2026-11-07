@@ -293,11 +293,14 @@ pub async fn download_model(
     root: &Path,
     cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
+    let _consent = crate::legal_consent::network_permit().await?;
+    crate::commands::settings::ensure_local_model_downloads_enabled(app)?;
     let overall_started_at = Instant::now();
     if matches!(
         manifest.engine_type,
         super::model::LocalSttEngineType::FluidAudio | super::model::LocalSttEngineType::CtcBooster
-    ) {
+    ) || (manifest.url.is_none() && super::fluid_download::has_bundle(manifest.id))
+    {
         return super::fluid_download::download(app, manifest, root, cancel).await;
     }
     let url = manifest
@@ -325,11 +328,11 @@ pub async fn download_model(
     let mut response: Option<reqwest::Response> = None;
 
     if partial_size > 0 {
-        let probe = download_client()
+        let request = download_client()
             .get(url)
             .header(reqwest::header::RANGE, format!("bytes={partial_size}-"))
-            .send()
-            .await?;
+            .send();
+        let probe = crate::legal_consent::while_consented(request).await??;
         match probe.status() {
             reqwest::StatusCode::PARTIAL_CONTENT => {
                 resumed = true;
@@ -358,13 +361,8 @@ pub async fn download_model(
             }
         }
     } else {
-        response = Some(
-            download_client()
-                .get(url)
-                .send()
-                .await?
-                .error_for_status()?,
-        );
+        let request = download_client().get(url).send();
+        response = Some(crate::legal_consent::while_consented(request).await??.error_for_status()?);
     }
 
     let total_bytes = if already_complete {
@@ -405,8 +403,9 @@ pub async fn download_model(
             .await?;
 
         loop {
+            crate::legal_consent::require_local_download()?;
             ensure_not_cancelled(&cancel)?;
-            let Some(chunk) = response.chunk().await? else {
+            let Some(chunk) = crate::legal_consent::while_local_download(response.chunk()).await?? else {
                 break;
             };
             file.write_all(&chunk).await?;

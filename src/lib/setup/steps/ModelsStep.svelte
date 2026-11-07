@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ConsentHint from '../../legal/ConsentHint.svelte';
   import Callout from '../../components/Callout.svelte';
   import { onMount } from 'svelte';
   import { invoke } from '../../tauri';
@@ -176,6 +177,7 @@
 </script>
 
 <div class="step models-step">
+  <ConsentHint feature="Model downloads and cloud models" />
   {#if provider === 'local' && (platformLocalSupport === 'checking' || (platformLocalSupport === 'unsupported' && !speechListSettled))}
     <p class="models-note" role="status">Checking whether on-device models are available…</p>
   {:else if provider === 'local' && platformLocalSupport === 'unsupported' && !systemSpeechOnly}

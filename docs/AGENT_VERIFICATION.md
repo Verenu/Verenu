@@ -43,8 +43,9 @@ then launch `sh /project/scripts/verification/container/omarchy-virtual-mic.sh
 desktop with physical audio devices.
 
 Before starting the desktop, run `sh scripts/verification/container/stage-parakeet.sh`
-on the host. It downloads the public Parakeet V3 archive into ignored test
-artifacts and checks its pinned checksum. In the desktop, run
+on the host. It downloads the public Parakeet V3 files from Hugging Face at a
+pinned commit into ignored test artifacts and checks each file's pinned
+checksum. In the desktop, run
 `sh /project/scripts/verification/container/install-parakeet.sh` to verify it
 again and install it into the disposable profile. The helper refuses to overwrite
 an existing model. Select Parakeet V3 in Verenu and disable cloud cleanup for an

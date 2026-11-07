@@ -16,6 +16,8 @@ pub async fn download_local_llm_model(
     manager: tauri::State<'_, crate::local_llm::LocalLlmManager>,
     model_id: String,
 ) -> Result<(), String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
+    crate::commands::settings::ensure_local_model_downloads_enabled(&app).map_err(|e| e.to_string())?;
     if crate::system::platform::is_macos_intel() {
         return Err(LOCAL_MODELS_UNAVAILABLE_ON_MACOS_INTEL.to_string());
     }
@@ -75,6 +77,8 @@ pub async fn download_local_llm_runtime(
     app: AppHandle,
     manager: tauri::State<'_, crate::local_llm::LocalLlmManager>,
 ) -> Result<(), String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
+    crate::commands::settings::ensure_local_model_downloads_enabled(&app).map_err(|e| e.to_string())?;
     if crate::system::platform::is_macos_intel() {
         return Err(LOCAL_MODELS_UNAVAILABLE_ON_MACOS_INTEL.to_string());
     }

@@ -68,6 +68,7 @@ async fn download(
     path: &std::path::Path,
     expected: &str,
 ) -> Result<(), String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     const LIMIT: u64 = 1024 * 1024 * 1024;
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
@@ -75,11 +76,11 @@ async fn download(
         .timeout(std::time::Duration::from_secs(30 * 60))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut response = client
+    let request = client
         .get(url)
         .header("User-Agent", "verenu")
-        .send()
-        .await
+        .send();
+    let mut response = crate::legal_consent::while_consented(request).await.map_err(|error| error.to_string())?
         .map_err(|e| crate::api::updater::request_error_message(&e))?
         .error_for_status()
         .map_err(|e| crate::api::updater::request_error_message(&e))?;
@@ -97,9 +98,8 @@ async fn download(
     let mut downloaded = 0;
     let mut last_event = std::time::Instant::now();
     progress(app, "downloading", 0, total);
-    while let Some(chunk) = response
-        .chunk()
-        .await
+    while let Some(chunk) = crate::legal_consent::while_consented(response.chunk())
+        .await.map_err(|error| error.to_string())?
         .map_err(|e| crate::api::updater::request_error_message(&e))?
     {
         downloaded += chunk.len() as u64;

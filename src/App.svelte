@@ -14,6 +14,11 @@
   import Settings from './lib/views/Settings.svelte';
   import SubAppSheet from './lib/components/SubAppSheet.svelte';
   import Callout from './lib/components/Callout.svelte';
+  import LegalConsentScreen from './lib/legal/LegalConsentScreen.svelte';
+  import { consentStore, handleConsentError, loadConsent } from './lib/legal/consentStore.svelte';
+  import ConsentFlowDialog from './lib/legal/ConsentFlowDialog.svelte';
+  import DeletionPendingScreen from './lib/legal/DeletionPendingScreen.svelte';
+  import { needsConsentPrompt } from './lib/legal/consent';
   import { contextsStore, loadContexts } from './lib/contextsStore.svelte';
   import { SUB_APP_CAPTURED_EVENT, SUB_APP_CAPTURE_FAILED_EVENT, type SubAppCapture } from './lib/subApps';
   import { startSyncListeners, syncStore } from './lib/syncStore.svelte';
@@ -212,6 +217,8 @@
     }
   });
 
+  const deletionPending = $derived(consentStore.loaded && consentStore.state?.status === 'deletion_pending');
+  const consentPrompt = $derived(consentStore.loaded && needsConsentPrompt(consentStore.state));
   let prevSetupComplete = appStore.setupComplete;
   $effect(() => {
     const complete = appStore.setupComplete;
@@ -425,7 +432,7 @@
     }
 
     (async () => {
-      await reloadGlobalSettings();
+      await Promise.all([reloadGlobalSettings(), loadConsent()]);
       if (!mounted) return;
       try { stopSyncListeners = startSyncListeners(); }
       catch (error) { console.error('Failed to start sync listeners:', error); }
@@ -619,6 +626,7 @@
 
 
 {#if isBrowserDevSession()}<DeferredView view={devPanel} />{/if}
+<ConsentFlowDialog />
 {#if !isAndroid}<AgentApproval />{/if}
 
 <div
@@ -633,12 +641,16 @@
   {#if isLinuxDesktop}
     <div class="native-drag-region" data-tauri-drag-region aria-hidden="true"></div>
   {/if}
-  {#if appStore.setupComplete === false}
+  {#if deletionPending}
+    <DeletionPendingScreen />
+  {:else if consentPrompt}
+    <LegalConsentScreen mode={consentStore.state?.status === 'update_required' ? 'update' : 'first'} />
+  {:else if appStore.setupComplete === false && consentStore.loaded}
     <div inert={appStore.settingsOpen} style:visibility={appStore.settingsOpen ? 'hidden' : 'visible'}>
       <DeferredView view={setup} />
     </div>
   {/if}
-  <div class="body" inert={appStore.setupComplete === false}>
+  <div class="body" inert={appStore.setupComplete === false || consentPrompt || deletionPending}>
     <div class="rail">
       <Sidebar />
     </div>
@@ -696,7 +708,7 @@
         severity={errorToastKind ? severityForKind(errorToastKind) : 'error'}
         role="alert"
         action={errorToastKind && settingsSectionForKind(errorToastKind)
-          ? { label: fixLabelForKind(errorToastKind) ?? 'Fix in Settings', onclick: () => openSettingsSection(settingsSectionForKind(errorToastKind!)!) }
+          ? { label: fixLabelForKind(errorToastKind) ?? 'Fix in Settings', onclick: () => errorToastKind === 'consent-required' ? handleConsentError('consent_required') : openSettingsSection(settingsSectionForKind(errorToastKind!)!) }
           : undefined}
         onDismiss={() => { errorToast = ''; errorToastKind = null; clearTimeout(toastTimer); }}
       >{errorToast}</Callout>

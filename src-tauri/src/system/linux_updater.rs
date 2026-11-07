@@ -119,17 +119,18 @@ async fn download_file(
     expected: &str,
     mut report: impl FnMut(&'static str, u64, Option<u64>),
 ) -> Result<(), String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .read_timeout(std::time::Duration::from_secs(60))
         .timeout(std::time::Duration::from_secs(30 * 60))
         .build()
         .map_err(|e| e.to_string())?;
-    let mut response = client
+    let request = client
         .get(url)
         .header("User-Agent", "verenu")
-        .send()
-        .await
+        .send();
+    let mut response = crate::legal_consent::while_consented(request).await.map_err(|error| error.to_string())?
         .map_err(|error| crate::api::updater::request_error_message(&error))?
         .error_for_status()
         .map_err(|error| crate::api::updater::request_error_message(&error))?;
@@ -148,9 +149,8 @@ async fn download_file(
     let mut downloaded = 0;
     let mut last_event = std::time::Instant::now();
     report("downloading", 0, total);
-    while let Some(chunk) = response
-        .chunk()
-        .await
+    while let Some(chunk) = crate::legal_consent::while_consented(response.chunk())
+        .await.map_err(|error| error.to_string())?
         .map_err(|error| crate::api::updater::request_error_message(&error))?
     {
         downloaded += chunk.len() as u64;

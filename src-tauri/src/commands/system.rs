@@ -1061,6 +1061,7 @@ fn run_launchctl(args: &[&str]) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn check_connectivity() -> bool {
+    if crate::legal_consent::require_consent().is_err() { return false; }
     if let Some(true) = native_connectivity_check().await {
         crate::system::connectivity::note_online();
         return true;

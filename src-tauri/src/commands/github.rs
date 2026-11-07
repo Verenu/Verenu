@@ -265,7 +265,9 @@ fn command_username(program: &str, args: &[&str], seconds: u64) -> Option<String
 
 #[tauri::command]
 pub async fn get_github_username_suggestion() -> Result<Option<GithubUsernameSuggestion>, String> {
-    run_blocking("github_username_suggestion", || {
+    let consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
+    run_blocking("github_username_suggestion", move || {
+        let _consent = consent;
         #[cfg(not(target_os = "android"))]
         {
             let args = ["api", "--hostname", "github.com", "user", "--jq", ".login"];
@@ -370,6 +372,7 @@ pub async fn get_github_commits(
     app: AppHandle,
     refresh: Option<bool>,
 ) -> Result<Option<CommitSnapshot>, String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     let settings = store::settings_handle(&app)?;
     let username = settings
         .get(store::GITHUB_USERNAME)

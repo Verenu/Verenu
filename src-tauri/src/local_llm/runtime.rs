@@ -148,9 +148,11 @@ async fn wait_until_ready(
     endpoint: &str,
     child: &mut Child,
 ) -> anyhow::Result<()> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let started_at = Instant::now();
     let url = format!("{endpoint}/v1/models");
     loop {
+        crate::legal_consent::require_consent()?;
         if started_at.elapsed() > Duration::from_secs(45) {
             let _ = child.kill();
             let _ = child.wait();
@@ -162,10 +164,10 @@ async fn wait_until_ready(
             )
         }
 
-        match crate::api::client::get().get(&url).send().await {
+        match crate::legal_consent::while_consented(crate::api::client::get().get(&url).send()).await? {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             Ok(_) | Err(_) => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                crate::legal_consent::while_consented(tokio::time::sleep(Duration::from_millis(250))).await?;
             }
         }
     }
@@ -176,6 +178,7 @@ pub async fn start_server(
     manifest: &LocalLlmModelManifest,
     root: &Path,
 ) -> anyhow::Result<ManagedLocalLlmServer> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let binary = resolve_llama_server_binary(app)?;
     let model_path = manifest.primary_model_path(root);
     if !model_path.is_file() {
@@ -244,15 +247,16 @@ struct ChatAttempt {
 }
 
 async fn send_chat_completion(endpoint: &str, body: &ChatReq) -> anyhow::Result<ChatAttempt> {
+    let _consent = crate::legal_consent::network_permit().await?;
     let url = format!("{endpoint}/v1/chat/completions");
-    let response = crate::api::client::get()
+    let request = crate::api::client::get()
         .post(&url)
         .json(body)
-        .send()
-        .await?;
+        .send();
+    let response = crate::legal_consent::while_consented(request).await??;
     let status = response.status();
     let response = response.error_for_status()?;
-    let parsed: ChatResp = response.json().await?;
+    let parsed: ChatResp = crate::legal_consent::while_consented(response.json()).await??;
     let choice = parsed.choices.into_iter().next();
     let content = choice
         .as_ref()

@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -20,6 +20,30 @@ const MAX_LINE_BYTES: usize = 16 * 1024;
 enum Message {
     Line(String),
     Flush(SyncSender<()>),
+    Stop(SyncSender<()>),
+}
+
+pub(super) fn stop() -> Result<(), String> {
+    static STOP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = STOP_LOCK.lock().map_err(|_| "log writer stop lock failed".to_string())?;
+    if STOPPED.load(Ordering::Acquire) { return Ok(()); }
+    let Some(sink) = SINK.get() else { return Ok(()) };
+    let (tx, rx) = mpsc::sync_channel(1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut message = Message::Stop(tx);
+    loop {
+        match sink.tx.try_send(message) {
+            Ok(()) => break,
+            Err(mpsc::TrySendError::Full(returned)) if Instant::now() < deadline => {
+                message = returned;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return Err("log writer is unavailable".into()),
+        }
+    }
+    rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "log writer did not stop".to_string())?;
+    STOPPED.store(true, Ordering::Release);
+    Ok(())
 }
 
 struct Sink {
@@ -28,6 +52,7 @@ struct Sink {
 }
 
 static SINK: OnceLock<Sink> = OnceLock::new();
+static STOPPED: AtomicBool = AtomicBool::new(false);
 static DROPPED_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) fn dropped_total() -> usize {
@@ -52,6 +77,7 @@ pub(super) fn init(directory: PathBuf) {
 }
 
 pub(super) fn append(line: &str) {
+    if STOPPED.load(Ordering::Acquire) { return; }
     if let Some(sink) = SINK.get() {
         let end = line.floor_char_boundary(line.len().min(MAX_LINE_BYTES));
         let mut bounded = line[..end].to_owned();
@@ -193,6 +219,11 @@ fn run(directory: PathBuf, rx: Receiver<Message>, dropped: Arc<AtomicUsize>) {
                 }
             }
             Ok(Message::Flush(tx)) => ack = Some(tx),
+            Ok(Message::Stop(tx)) => {
+                drop(writer);
+                let _ = tx.send(());
+                return;
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -335,6 +366,24 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn stop_closes_writer_and_rejects_later_messages() {
+        let dir = Directory::new();
+        let (tx, rx) = mpsc::sync_channel(16);
+        let directory = dir.0.clone();
+        let worker = std::thread::spawn(move || run(directory, rx, Arc::new(AtomicUsize::new(0))));
+        tx.send(Message::Line("synthetic".into())).unwrap();
+        let (flush_tx, flush_rx) = mpsc::sync_channel(1);
+        tx.send(Message::Flush(flush_tx)).unwrap();
+        flush_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (stop_tx, stop_rx) = mpsc::sync_channel(1);
+        tx.send(Message::Stop(stop_tx)).unwrap();
+        stop_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        assert!(tx.send(Message::Line("after stop".into())).is_err());
+        fs::remove_dir_all(&dir.0).unwrap();
     }
 
     #[test]

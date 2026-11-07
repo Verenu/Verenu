@@ -2,6 +2,9 @@ use super::*;
 
 #[tauri::command]
 pub async fn save_api_key(app: AppHandle, provider: String, key: String) -> Result<(), String> {
+    let _consent = if !key.trim().is_empty() {
+        Some(crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?)
+    } else { None };
     let settings = store::settings_handle(&app)?;
     let expected = custom_endpoint(&settings.snapshot()?, &provider);
     run_blocking("save_api_key", move || {
@@ -128,6 +131,7 @@ pub async fn validate_api_key(
     provider: String,
     key: String,
 ) -> Result<KeyValidationResult, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return Ok(KeyValidationResult {
@@ -218,7 +222,9 @@ fn models_list_request(
             .get("https://api.openai.com/v1/models")
             .bearer_auth(key),
         store::XAI => client.get("https://api.x.ai/v1/models").bearer_auth(key),
-        store::OPENROUTER => client.get("https://openrouter.ai/api/v1/models").query(&[("output_modalities", "all")]),
+        store::OPENROUTER => client
+            .get("https://openrouter.ai/api/v1/models")
+            .query(&[("output_modalities", "all")]),
         store::GOOGLE => {
             let mut request = client
                 .get("https://generativelanguage.googleapis.com/v1beta/models")
@@ -301,6 +307,7 @@ pub async fn list_provider_models(
     _app: AppHandle,
     provider: String,
 ) -> Result<Vec<String>, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
     if provider == store::ASSEMBLYAI {
         return Ok(ASSEMBLYAI_MODELS.iter().map(|m| m.to_string()).collect());
     }

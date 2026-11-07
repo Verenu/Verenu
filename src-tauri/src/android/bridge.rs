@@ -366,7 +366,7 @@ fn state_payload(state: &BridgeState) -> Value {
     let analytics_enabled = settings
         .as_ref()
         .map(analytics_enabled_value)
-        .unwrap_or(true);
+        .unwrap_or(false);
     let sync_muting_enabled = sync_muting_enabled_value(settings.as_ref());
     let pill_position = settings
         .as_ref()
@@ -519,10 +519,10 @@ fn analytics_settings_payload(app: &AppHandle) -> Value {
 }
 
 fn analytics_enabled_value(settings: &crate::data::store::SettingsSnapshot) -> bool {
-    settings
+    crate::legal_consent::permits_network(settings) && settings
         .get(crate::data::store::ANALYTICS_ENABLED)
         .and_then(Value::as_bool)
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 fn pill_stage_cell() -> &'static Mutex<String> {
@@ -676,6 +676,7 @@ async fn handle_request(state: &BridgeState, req: HttpRequest) -> Vec<u8> {
 
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/v1/state") => ok(state_payload(state)),
+        ("GET", "/v1/legal-consent") => ok(json!({ "allowed": crate::legal_consent::require_consent().is_ok() })),
         ("POST", "/v1/focus") => {
             let report = FocusReport {
                 keyboard_visible: bool_field("keyboardVisible"),
@@ -1181,13 +1182,18 @@ mod tests {
     }
 
     #[test]
-    fn analytics_defaults_on_and_preserves_an_explicit_opt_out() {
-        assert!(analytics_enabled_value(&SettingsSnapshot::from_pairs([])));
+    fn analytics_defaults_off_and_preserves_an_explicit_opt_out() {
+        assert!(!analytics_enabled_value(&SettingsSnapshot::from_pairs([])));
         let disabled = SettingsSnapshot::from_pairs([(
             crate::data::store::ANALYTICS_ENABLED.to_string(),
             json!(false),
         )]);
         assert!(!analytics_enabled_value(&disabled));
+        let enabled_without_consent = SettingsSnapshot::from_pairs([(
+            crate::data::store::ANALYTICS_ENABLED.to_string(),
+            json!(true),
+        )]);
+        assert!(!analytics_enabled_value(&enabled_without_consent));
     }
 
     #[test]

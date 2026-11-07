@@ -8,6 +8,9 @@
   import { presetForUrl, displayHost } from '../../customProviderPresets';
   import { presetLogoHtml } from '../../customProviderLogos';
   import { invoke } from '../../tauri';
+  import { handleConsentError } from '../../legal/consentStore.svelte';
+  import GatedButton from '../../legal/GatedButton.svelte';
+  import ConsentHint from '../../legal/ConsentHint.svelte';
   import { isAndroid } from '../../platform';
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
   import { refreshCatalog } from '../../modelCatalogStore.svelte';
@@ -68,6 +71,7 @@
       const result = await invoke<{ status: 'valid' | 'invalid' | 'unknown'; message: string }>('validate_api_key', { provider, key });
       validation = { status: result.status, message: result.message };
     } catch (err) {
+      if (handleConsentError(err)) return { error: 'Accept the Terms and Privacy Policy, then try again.' };
       validation = { status: 'unknown', message: formatIpcError(err, 'Could not verify this API key') };
     }
     if (validation.status === 'invalid') return { error: validation.message || 'The provider rejected this key.' };
@@ -140,11 +144,12 @@
 
 <div class="page-head">
   <h2 class="settings-h page-title">Providers</h2>
-  <button class="btn-primary btn-compact add" type="button" data-setting-target="custom-providers" onclick={() => drawer?.openPicker()}>
+  <GatedButton class="btn-primary btn-compact add" data-setting-target="custom-providers" onclick={() => drawer?.openPicker()}>
     <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>
     Add provider
-  </button>
+  </GatedButton>
 </div>
+<ConsentHint feature="Adding or changing cloud providers" thenEnable={() => drawer?.openPicker()} />
 <p class="panel-note">{isAndroid ? 'Keys are encrypted in the Android Keystore.' : 'Keys stay on this device and are never shown again.'}</p>
 
 {#if count}
@@ -155,7 +160,7 @@
         <div class="info"><span class="name">{item.label}</span></div>
         <ProviderCaps transcription={item.transcription} cleanup={item.cleanup} />
         <div class="actions">
-          <button type="button" class="icon-btn" aria-label={`Replace ${item.label} key`} title="Replace key" disabled={busy} onclick={() => drawer?.edit({ kind: 'builtin', id: item.id })}>{@render pencil()}</button>
+          <GatedButton class="icon-btn" aria-label={`Replace ${item.label} key`} title="Replace key" disabled={busy} onclick={() => drawer?.edit({ kind: 'builtin', id: item.id })}>{@render pencil()}</GatedButton>
           <button type="button" class="icon-btn danger" aria-label={`Remove ${item.label}`} title="Remove" disabled={busy} onclick={() => (confirming = item.id)}>{@render trash()}</button>
         </div>
         {#if confirming === item.id}
@@ -179,7 +184,7 @@
         </div>
         <ProviderCaps transcription={provider.supports_transcription} cleanup={provider.supports_cleanup} />
         <div class="actions">
-          <button type="button" class="icon-btn" aria-label={`Edit ${provider.name}`} title="Edit" disabled={busy} onclick={() => drawer?.edit({ kind: 'custom', provider })}>{@render pencil()}</button>
+          <GatedButton class="icon-btn" aria-label={`Edit ${provider.name}`} title="Edit" disabled={busy} onclick={() => drawer?.edit({ kind: 'custom', provider })}>{@render pencil()}</GatedButton>
           <button type="button" class="icon-btn danger" aria-label={`Remove ${provider.name}`} title="Remove" disabled={busy} onclick={() => (confirming = provider.id)}>{@render trash()}</button>
         </div>
         {#if confirming === provider.id}
@@ -198,7 +203,7 @@
       <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </span>
     <p class="empty-title">No providers yet</p>
-    <button class="btn-primary btn-compact" type="button" onclick={() => drawer?.openPicker()}>Choose a provider</button>
+    <GatedButton class="btn-primary btn-compact" onclick={() => drawer?.openPicker()}>Choose a provider</GatedButton>
   </div>
 {/if}
 
@@ -220,7 +225,7 @@
 <style>
   .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: var(--settings-h-mb, 20px); }
   .page-head h2.page-title { margin: 0; }
-  .add { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+  :global(.add) { display: inline-flex; align-items: center; gap: 6px; flex: none; }
 
   .list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 8px; }
   .row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-elev); transition: border-color 140ms ease, background 140ms ease; }
@@ -231,12 +236,12 @@
   .pill { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
   .pill.warn { background: var(--warning-bg); color: var(--warning); }
   .actions { display: flex; gap: 2px; flex: none; }
-  .icon-btn { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--ink-mute); cursor: pointer; transition: background 120ms ease, color 120ms ease, transform 120ms ease; }
-  .icon-btn:hover:not(:disabled) { background: var(--control-hover); color: var(--ink); }
-  .icon-btn.danger:hover:not(:disabled) { background: var(--danger-bg); color: var(--danger); }
-  .icon-btn:active:not(:disabled) { transform: scale(0.92); }
-  .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .icon-btn:disabled { opacity: 0.4; cursor: default; }
+  :global(.icon-btn) { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--ink-mute); cursor: pointer; transition: background 120ms ease, color 120ms ease, transform 120ms ease; }
+  :global(.icon-btn):hover:not(:disabled) { background: var(--control-hover); color: var(--ink); }
+  :global(.icon-btn).danger:hover:not(:disabled) { background: var(--danger-bg); color: var(--danger); }
+  :global(.icon-btn):active:not(:disabled) { transform: scale(0.92); }
+  :global(.icon-btn):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  :global(.icon-btn):disabled { opacity: 0.4; cursor: default; }
   .confirm { width: 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--ink-soft); }
   .confirm span { flex: 1 1 200px; }
 

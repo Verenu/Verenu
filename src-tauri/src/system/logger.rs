@@ -73,6 +73,15 @@ pub fn attach_app(app: &AppHandle) {
     log::info!("session logger initialized");
 }
 
+#[allow(dead_code)]
+pub(crate) fn stop_for_deletion() -> Result<(), String> {
+    super::log_files::stop()?;
+    if let Some(buffer) = LOG_BUFFER.get() {
+        buffer.lock().map_err(|_| "log buffer lock failed".to_string())?.clear();
+    }
+    Ok(())
+}
+
 pub fn recent(limit: Option<usize>) -> Vec<String> {
     let Some(buffer) = LOG_BUFFER.get() else {
         return vec![];

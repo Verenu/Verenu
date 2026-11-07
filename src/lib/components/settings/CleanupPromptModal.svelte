@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { consentBlocked, handleConsentError, requireConsent } from '../../legal/consentStore.svelte';
   import { formatIpcError } from '../../errors';
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
@@ -189,6 +191,8 @@
       return;
     }
 
+    if (consentBlocked()) { requireConsent(() => handleSave(false)); return; }
+
     testState = { status: 'testing' };
     try {
       const report = await invoke<PromptTestReport>('test_cleanup_prompt', {
@@ -209,6 +213,7 @@
       }
     } catch (err) {
       if (!isMounted) return;
+      if (handleConsentError(err, () => handleSave(false))) { testState = { status: 'idle' }; return; }
       testState = {
         status: 'failed',
         error: formatIpcError(err, 'Could not test or save this cleanup prompt'),
@@ -307,6 +312,7 @@
             {statusLabel()}
           </span>
         {/if}
+        <ConsentHint feature="Auditing a prompt with a cloud model" />
         <button
           class="prompt-btn-ghost"
           type="button"
@@ -315,6 +321,8 @@
         >Reset</button>
         <button
           class="prompt-btn"
+          class:consent-dim={consentBlocked()}
+          aria-disabled={consentBlocked() || undefined}
           type="button"
           disabled={loading || testState.status === 'testing' || !draft.trim() || draft.length > 20000}
           onclick={() => handleSave(false)}
@@ -368,6 +376,7 @@
 </div>
 
 <style>
+  .consent-dim { opacity: 0.5; }
   .prompt-modal-wrap {
     position: fixed;
     inset: 0;

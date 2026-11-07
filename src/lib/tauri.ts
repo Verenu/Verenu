@@ -36,6 +36,24 @@ export function isTauriRuntime(): boolean {
   return hasTauriInternals();
 }
 
+/**
+ * A command rejected with `consent_required` means the stored consent no longer
+ * permits it. Refresh the consent state so gated controls dim and hints appear.
+ * This never opens the dialog: background calls hit this too, and only a user
+ * action should prompt. Loaded lazily to avoid an import cycle.
+ */
+let consentRefreshQueued = false;
+function noteConsentRejection(command: string, error: unknown): void {
+  if (command === 'get_consent_state' || consentRefreshQueued) return;
+  void import('./legal/consent').then(({ isConsentRequiredError }) => {
+    if (!isConsentRequiredError(error)) return;
+    consentRefreshQueued = true;
+    return import('./legal/consentStore.svelte')
+      .then(({ loadConsent }) => loadConsent())
+      .finally(() => setTimeout(() => { consentRefreshQueued = false; }, 5000));
+  }).catch(() => {});
+}
+
 export function invoke<T = unknown>(command: string, args?: CommandArgs): Promise<T> {
   const started = frontendIpcActivity.start(command);
   let request: Promise<T>;
@@ -45,7 +63,11 @@ export function invoke<T = unknown>(command: string, args?: CommandArgs): Promis
   else request = loadMockRuntime().then((mock) => mock.devInvoke<T>(command, args));
   return request.then(
     (value) => { frontendIpcActivity.finish(command, started, true); return value; },
-    (error) => { frontendIpcActivity.finish(command, started, false, extractIpcErrorMessage(error)); throw error; },
+    (error) => {
+      frontendIpcActivity.finish(command, started, false, extractIpcErrorMessage(error));
+      noteConsentRejection(command, error);
+      throw error;
+    },
   );
 }
 

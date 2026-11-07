@@ -11,8 +11,12 @@ async function seedDevState(page, {
   localLlmModels = {},
   localSttState = null,
   localLlmState = null,
+  // Terms and Privacy consent. Seeded as accepted so fixtures test the app
+  // behind the gate; a consent test passes another status ('unanswered', ...).
+  consent = 'accepted',
 } = {}) {
-  await page.addInitScript(({ settings, snippets, dictionary, localSttModels, localLlmModels, localSttState, localLlmState }) => {
+  await page.addInitScript(({ settings, snippets, dictionary, localSttModels, localLlmModels, localSttState, localLlmState, consent }) => {
+    localStorage.setItem('verenu-dev-consent', consent);
     localStorage.setItem('verenu:dev-settings', JSON.stringify(settings));
     localStorage.setItem('verenu:dev-snippets', JSON.stringify(snippets));
     localStorage.setItem('verenu:dev-dictionary', JSON.stringify(dictionary));
@@ -20,7 +24,7 @@ async function seedDevState(page, {
     localStorage.setItem('verenu:dev-local-llm-models', JSON.stringify(localLlmModels));
     if (localSttState) localStorage.setItem('verenu:dev-local-stt-state', JSON.stringify(localSttState));
     if (localLlmState) localStorage.setItem('verenu:dev-local-llm-state', JSON.stringify(localLlmState));
-  }, { settings, snippets, dictionary, localSttModels, localLlmModels, localSttState, localLlmState });
+  }, { settings, snippets, dictionary, localSttModels, localLlmModels, localSttState, localLlmState, consent });
 }
 
 async function openSettings(page) {

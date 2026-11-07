@@ -1,0 +1,202 @@
+[
+  {
+    "id": "parakeet-v3",
+    "repo": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+    "revision": "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
+    "install_name": "parakeet-tdt-0.6b-v3-int8",
+    "files": [
+      {
+        "path": "config.json",
+        "sha256": "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466",
+        "size": 97
+      },
+      {
+        "path": "decoder_joint-model.int8.onnx",
+        "sha256": "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70",
+        "size": 18202004
+      },
+      {
+        "path": "encoder-model.int8.onnx",
+        "sha256": "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09",
+        "size": 652183999
+      },
+      {
+        "path": "nemo128.onnx",
+        "sha256": "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f",
+        "size": 139764
+      },
+      {
+        "path": "vocab.txt",
+        "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+        "size": 93939
+      }
+    ]
+  },
+  {
+    "id": "parakeet-v2",
+    "repo": "istupakov/parakeet-tdt-0.6b-v2-onnx",
+    "revision": "0bbb45a3365852604aef28b538a8f066f4ccaa85",
+    "install_name": "parakeet-tdt-0.6b-v2-int8",
+    "files": [
+      {
+        "path": "config.json",
+        "sha256": "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466",
+        "size": 97
+      },
+      {
+        "path": "decoder_joint-model.int8.onnx",
+        "sha256": "a449f49acd68979d418651dd2dcb737cc0f1bf0225e009e29ee326354edbf7d3",
+        "size": 8998286
+      },
+      {
+        "path": "encoder-model.int8.onnx",
+        "sha256": "3e0581fda6ab843888b51e56d7ee78b6d5bc3237ec113af1f732d1d5286aa155",
+        "size": 652184014
+      },
+      {
+        "path": "nemo128.onnx",
+        "sha256": "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f",
+        "size": 139764
+      },
+      {
+        "path": "vocab.txt",
+        "sha256": "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d",
+        "size": 9384
+      }
+    ]
+  },
+  {
+    "id": "moonshine-base",
+    "repo": "moonshine-ai/moonshine",
+    "revision": "48b4e427b587bcf67797a5be706d6ddc4a298149",
+    "install_name": "moonshine-base",
+    "files": [
+      {
+        "path": "encoder_model.onnx",
+        "sha256": "e6645050b45f5281214fd2788f3d6226cc94149a55c9d503f8b880acb99826a6",
+        "size": 31027744,
+        "source": "onnx/merged/base/quantized_4bit/encoder_model.onnx"
+      },
+      {
+        "path": "decoder_model_merged.onnx",
+        "sha256": "29bd47951f72e593e0d09aecb81905d20b7892d4574bf23d16e79c0cb2a91e82",
+        "size": 42427308,
+        "source": "onnx/merged/base/quantized_4bit/decoder_model_merged.onnx"
+      },
+      {
+        "path": "tokenizer.json",
+        "sha256": "ad3a2ceb0e84e4da57451d86fa337f8116dcff5f5d106434f8aa0b0de89718b9",
+        "size": 3761751,
+        "source": "onnx/merged/base/float/tokenizer.json"
+      }
+    ]
+  },
+  {
+    "id": "gigaam-v3",
+    "repo": "istupakov/gigaam-v3-onnx",
+    "revision": "322c3b29492673eb7d0b434bfa9dfb8653e34d02",
+    "install_name": "giga-am-v3-int8",
+    "files": [
+      {
+        "path": "model.int8.onnx",
+        "sha256": "2e3fcb7a7b66030336fd10c2fcfb033bd1dc7e1bf238fe5cfd83b1d0cfc9d28e",
+        "size": 224893347,
+        "source": "v3_e2e_ctc.int8.onnx"
+      },
+      {
+        "path": "vocab.txt",
+        "sha256": "142de7570b3de5b3035ce111a89c228e80e6085273731d944093ddf24fa539cd",
+        "size": 2007,
+        "source": "v3_e2e_ctc_vocab.txt"
+      }
+    ]
+  },
+  {
+    "id": "canary-180m-flash",
+    "repo": "istupakov/canary-180m-flash-onnx",
+    "revision": "92c2231a4e2b2524277fea759be967d2e6edfc49",
+    "install_name": "canary-180m-flash",
+    "files": [
+      {
+        "path": "config.json",
+        "sha256": "f90ace8e35326dcd47c7330b230644fa0835083ed1e89e2f59aa08ba10d74f54",
+        "size": 68
+      },
+      {
+        "path": "encoder-model.int8.onnx",
+        "sha256": "996d1c89e6cbc891a7c88bf410884c178ffa474f7b13084522ac74a5e144cc81",
+        "size": 133710896
+      },
+      {
+        "path": "decoder-model.int8.onnx",
+        "sha256": "9dd9c447872088c912e916d73751f9621a54085d5bc46788454fe904db51a914",
+        "size": 79520211
+      },
+      {
+        "path": "vocab.txt",
+        "sha256": "2dae6fc7815f9640645e0c765522b278ee0cef49b482d91f6913e334628d3e77",
+        "size": 53555
+      },
+      {
+        "path": "nemo128.onnx",
+        "sha256": "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f",
+        "size": 139764,
+        "repo": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+        "revision": "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce"
+      }
+    ]
+  },
+  {
+    "id": "canary-1b-v2",
+    "repo": "istupakov/canary-1b-v2-onnx",
+    "revision": "5ebc1520cef7b6b318b3526ad17adbfe00bc1bfc",
+    "install_name": "canary-1b-v2",
+    "files": [
+      {
+        "path": "config.json",
+        "sha256": "f90ace8e35326dcd47c7330b230644fa0835083ed1e89e2f59aa08ba10d74f54",
+        "size": 68
+      },
+      {
+        "path": "encoder-model.int8.onnx",
+        "sha256": "6d96e9945898e5ace48f4efecd459ca1df81859730be27b8af6b197639403ee1",
+        "size": 859078138
+      },
+      {
+        "path": "decoder-model.int8.onnx",
+        "sha256": "52d83aa7aad41fbbe4f9dfcd341d784735a6eb4c6eb0d3290fc27a0d8ac39abf",
+        "size": 170040374
+      },
+      {
+        "path": "vocab.txt",
+        "sha256": "2c9efe6104fd29522ea27ce0e3aef5d37c690af4e5a4232e643e23ca403ffea3",
+        "size": 208022
+      },
+      {
+        "path": "nemo128.onnx",
+        "sha256": "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f",
+        "size": 139764,
+        "repo": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+        "revision": "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce"
+      }
+    ]
+  },
+  {
+    "id": "sense-voice",
+    "repo": "nocmt/SenseVoiceSmall-INT8-ONNX",
+    "revision": "8252588d202c1f74e859010434b2128655d903d0",
+    "install_name": "sense-voice-int8",
+    "files": [
+      {
+        "path": "model.int8.onnx",
+        "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+        "size": 239233841
+      },
+      {
+        "path": "tokens.txt",
+        "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+        "size": 315894
+      }
+    ]
+  }
+]

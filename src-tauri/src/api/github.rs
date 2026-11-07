@@ -111,6 +111,7 @@ fn status_error(status: u16) -> String {
 }
 
 async fn request(path: &str) -> Result<reqwest::Response, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     let response = super::client::hardened()
         .get(format!("https://api.github.com/{path}"))
         .header("User-Agent", "Verenu")
@@ -127,6 +128,7 @@ async fn request(path: &str) -> Result<reqwest::Response, String> {
 }
 
 pub async fn fetch_commits(username: &str) -> Result<CommitSnapshot, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     if !valid_username(username) {
         return Err(
             "Enter a GitHub username using letters, numbers, and single hyphens.".to_owned(),
@@ -168,6 +170,7 @@ async fn fetch_profile_html(
     start: NaiveDate,
     end: NaiveDate,
 ) -> Result<String, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     let mut url = reqwest::Url::parse(&format!(
         "https://github.com/users/{username}/contributions"
     ))

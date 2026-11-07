@@ -61,11 +61,13 @@ pub async fn sync_set_peer_address(
 
 #[tauri::command]
 pub async fn sync_pair_connection(app: AppHandle, details: String) -> Result<String, String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     manager(&app)?.pair_connection(&details).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn sync_start_pairing(app: AppHandle, device_uuid: String) -> Result<String, String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     let result = manager(&app)?
         .start_pairing(device_uuid)
         .await
@@ -102,6 +104,7 @@ pub async fn sync_respond_to_pairing(
     code: String,
     approve: bool,
 ) -> Result<(), String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     manager(&app)?
         .respond_to_pairing(code, approve)
         .await
@@ -126,6 +129,7 @@ pub async fn sync_remove_device(app: AppHandle, device_uuid: String) -> Result<(
 
 #[tauri::command]
 pub async fn sync_now(app: AppHandle, device_uuid: Option<String>) -> Result<(), String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     let sync_manager = manager(&app)?;
     if let Some(analytics) = app.try_state::<crate::analytics::Analytics>() {
         analytics.sync_event("sync_started", "started");
