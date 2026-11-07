@@ -1,12 +1,14 @@
 import { invoke } from './tauri';
 import { formatIpcError } from './errors';
 import { startPolling } from './polling';
+import type { T3DictionarySync } from './components/settings/t3Dictionary';
 
 export type T3Skill = { name: string; displayName?: string; description?: string };
 export type T3Catalog = { id: string; label: string; providerInstanceId: string; workspaceId: string; revision: string; skills: T3Skill[] };
 export type T3Connection = {
   id: string; label: string; version: string; expiresAt: number; fetchedAt: number;
-  selectedCatalog: string | null; catalogs: T3Catalog[]; error: string | null; excludedSkills?: string[];
+  selectedCatalog: string | null; catalogs: T3Catalog[]; error: string | null;
+  excludedSkills?: string[]; scopes?: string[]; dictionary?: T3DictionarySync;
 };
 export type T3Status = { minimumVersion: string; connection: T3Connection | null; skills: T3Skill[] };
 export const t3State = $state({

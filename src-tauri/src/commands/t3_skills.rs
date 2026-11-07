@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
     api::t3,
-    system::t3_skills::{merged_catalog, Catalog, Skill, MIN_T3_VERSION},
+    system::{
+        t3_dictionary,
+        t3_skills::{merged_catalog, Catalog, Skill, MIN_T3_VERSION},
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -9,6 +12,20 @@ use std::sync::OnceLock;
 fn operation_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// What Verenu last shared into T3's shared dictionary.
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DictionarySync {
+    /// Terms Verenu wrote, so a later sync can replace them without touching
+    /// entries added in T3.
+    pub synced_terms: Vec<String>,
+    pub fingerprint: String,
+    pub synced_at: u64,
+    pub attempted_at: u64,
+    pub skipped: usize,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -27,6 +44,17 @@ pub struct Connection {
     pub error: Option<String>,
     #[serde(default)]
     pub excluded_skills: Vec<String>,
+    /// Scopes T3 granted to the stored credential.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub dictionary: DictionarySync,
+}
+
+impl Connection {
+    pub fn can_share_dictionary(&self) -> bool {
+        self.scopes.iter().any(|scope| scope == t3::SETTINGS_SCOPE)
+    }
 }
 
 #[derive(Serialize)]
@@ -45,6 +73,55 @@ fn refresh_due(connection: &Connection, timestamp: u64, force: bool) -> bool {
     force
         || (timestamp.saturating_sub(connection.fetched_at) >= 86400
             && timestamp.saturating_sub(connection.attempted_at) >= 900)
+}
+
+fn dictionary_due(connection: &Connection, fingerprint: &str, timestamp: u64, force: bool) -> bool {
+    if !connection.can_share_dictionary() {
+        return false;
+    }
+    let state = &connection.dictionary;
+    let retry_gap = if state.error.is_some() { 900 } else { 30 };
+    force
+        || (timestamp.saturating_sub(state.attempted_at) >= retry_gap
+            && (state.fingerprint != fingerprint
+                || timestamp.saturating_sub(state.synced_at) >= 86400))
+}
+
+/// Everything in Verenu's dictionary, newest first, shaped for T3.
+async fn wanted_dictionary(app: &AppHandle) -> Result<Vec<t3_dictionary::Entry>, String> {
+    let entries = run_db(app, "t3_dictionary", db::query_dictionary).await?;
+    Ok(entries
+        .iter()
+        .filter_map(|entry| {
+            let mistakes: Vec<&str> = entry
+                .corrections
+                .iter()
+                .map(|correction| correction.mistake.as_str())
+                .chain(entry.mistake.as_deref())
+                .flat_map(db::dictionary_mistake_variants)
+                .collect();
+            t3_dictionary::entry(&entry.term, mistakes)
+        })
+        .collect())
+}
+
+fn record_dictionary_result(
+    state: &mut DictionarySync,
+    fingerprint: &str,
+    result: Result<t3::DictionarySync, String>,
+    timestamp: u64,
+) {
+    state.attempted_at = timestamp;
+    match result {
+        Ok(synced) => {
+            state.synced_terms = synced.synced_terms;
+            state.skipped = synced.skipped;
+            state.fingerprint = fingerprint.to_string();
+            state.synced_at = timestamp;
+            state.error = None;
+        }
+        Err(error) => state.error = Some(error),
+    }
 }
 
 fn connection(settings: &store::SettingsSnapshot) -> Option<Connection> {
@@ -129,7 +206,8 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
         .get("environmentId")
         .and_then(serde_json::Value::as_str)
         .ok_or("T3 did not identify its environment.")?;
-    let (token, expires_in) = t3::exchange(&target).await?;
+    let exchange = t3::exchange(&target).await?;
+    let token = exchange.token.clone();
     let catalogs = t3::fetch_catalogs(&target.base_url, &token, environment, true).await?;
     let settings = store::settings_handle(&app)?;
     let previous_snapshot = settings.snapshot()?;
@@ -138,6 +216,24 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     let previous = connection(&previous_snapshot);
+    let mut dictionary = previous
+        .as_ref()
+        .filter(|old| old.environment_id == environment)
+        .map(|old| old.dictionary.clone())
+        .unwrap_or_default();
+    if exchange.scopes.iter().any(|scope| scope == t3::SETTINGS_SCOPE) {
+        let result = match wanted_dictionary(&app).await {
+            Ok(wanted) => {
+                let fingerprint = t3_dictionary::fingerprint(&wanted);
+                let synced =
+                    t3::sync_dictionary(&target.base_url, &token, &dictionary.synced_terms, &wanted)
+                        .await;
+                (fingerprint, synced)
+            }
+            Err(error) => (String::new(), Err(error)),
+        };
+        record_dictionary_result(&mut dictionary, &result.0, result.1, now());
+    }
     let selected = previous
         .as_ref()
         .filter(|old| old.environment_id == environment)
@@ -158,7 +254,7 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_string(),
-        expires_at: now().saturating_add(expires_in),
+        expires_at: now().saturating_add(exchange.expires_in),
         fetched_at: now(),
         attempted_at: now(),
         selected_catalog: selected,
@@ -169,6 +265,8 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
             .filter(|old| old.environment_id == environment)
             .map(|old| old.excluded_skills.clone())
             .unwrap_or_default(),
+        scopes: exchange.scopes,
+        dictionary,
     };
     let value = serde_json::to_value(&current).map_err(|_| "Cannot save T3 connection.")?;
     let app_copy = app.clone();
@@ -215,11 +313,25 @@ pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Statu
     let Some(mut current) = connection(&settings.snapshot()?) else {
         return Ok(status(&settings.snapshot()?));
     };
-    if !refresh_due(&current, now(), force.unwrap_or(false)) {
+    let force = force.unwrap_or(false);
+    let skills_due = refresh_due(&current, now(), force);
+    let wanted = if current.can_share_dictionary() {
+        wanted_dictionary(&app).await.ok()
+    } else {
+        None
+    };
+    let fingerprint = wanted.as_deref().map(t3_dictionary::fingerprint);
+    let dictionary_due = fingerprint
+        .as_deref()
+        .is_some_and(|fingerprint| dictionary_due(&current, fingerprint, now(), force));
+    if !skills_due && !dictionary_due {
         return Ok(status(&settings.snapshot()?));
     }
-    current.attempted_at = now();
-    let result = async {
+    let timestamp = now();
+    if skills_due {
+        current.attempted_at = timestamp;
+    }
+    let access = async {
         if current.expires_at <= now() {
             return Err("T3 pairing expired. Reconnect with a fresh pairing link.".to_string());
         }
@@ -244,10 +356,28 @@ pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Statu
                 "This address now belongs to another T3 environment. Pair it again.".into(),
             );
         }
-        t3::fetch_catalogs(&base, &token, &current.environment_id, true).await
+        Ok((base, token))
     }
     .await;
-    apply_refresh_result(&mut current, result, now());
+    if skills_due {
+        let result = match &access {
+            Ok((base, token)) => {
+                t3::fetch_catalogs(base, token, &current.environment_id, true).await
+            }
+            Err(error) => Err(error.clone()),
+        };
+        apply_refresh_result(&mut current, result, timestamp);
+    }
+    if dictionary_due {
+        let (fingerprint, wanted) = (fingerprint.unwrap_or_default(), wanted.unwrap_or_default());
+        let result = match &access {
+            Ok((base, token)) => {
+                t3::sync_dictionary(base, token, &current.dictionary.synced_terms, &wanted).await
+            }
+            Err(error) => Err(error.clone()),
+        };
+        record_dictionary_result(&mut current.dictionary, &fingerprint, result, timestamp);
+    }
     settings.set(
         store::T3_CONNECTION,
         serde_json::to_value(&current).map_err(|_| "Cannot save T3 skills.")?,
@@ -373,6 +503,8 @@ mod tests {
             selected_catalog: Some("catalog".into()),
             error: None,
             excluded_skills: Vec::new(),
+            scopes: vec![t3::READ_SCOPE.into(), t3::SETTINGS_SCOPE.into()],
+            dictionary: DictionarySync::default(),
             catalogs: vec![Catalog {
                 environment_id: "sample".into(),
                 id: "catalog".into(),
@@ -421,6 +553,47 @@ mod tests {
         assert!(!refresh_due(&value, time + 86401, false));
         assert!(refresh_due(&value, time + 87300, false));
         assert!(refresh_due(&value, time, true));
+    }
+
+    #[test]
+    fn t3_dictionary_sync_needs_settings_scope_and_obeys_change_and_retry_intervals() {
+        let mut value = sample();
+        let time = 1_000_000;
+        assert!(dictionary_due(&value, "a", time, false));
+        value.scopes = vec![t3::READ_SCOPE.into()];
+        assert!(!dictionary_due(&value, "a", time, true));
+        value.scopes.push(t3::SETTINGS_SCOPE.into());
+
+        record_dictionary_result(
+            &mut value.dictionary,
+            "a",
+            Ok(t3::DictionarySync { synced_terms: vec!["Omarchy".into()], skipped: 2 }),
+            time,
+        );
+        assert_eq!(value.dictionary.synced_terms, ["Omarchy"]);
+        assert_eq!(value.dictionary.skipped, 2);
+        assert!(!dictionary_due(&value, "a", time + 60, false));
+        assert!(!dictionary_due(&value, "b", time + 29, false));
+        assert!(dictionary_due(&value, "b", time + 30, false));
+        assert!(dictionary_due(&value, "a", time + 86400, false));
+        assert!(dictionary_due(&value, "a", time, true));
+
+        record_dictionary_result(&mut value.dictionary, "b", Err("down".into()), time + 100);
+        assert_eq!(value.dictionary.error.as_deref(), Some("down"));
+        assert_eq!(value.dictionary.synced_terms, ["Omarchy"]);
+        assert_eq!(value.dictionary.fingerprint, "a");
+        assert!(!dictionary_due(&value, "b", time + 999, false));
+        assert!(dictionary_due(&value, "b", time + 1000, false));
+    }
+
+    #[test]
+    fn t3_connection_saved_before_dictionary_sharing_loads_without_scopes() {
+        let mut json = serde_json::to_value(sample()).unwrap();
+        json.as_object_mut().unwrap().remove("scopes");
+        json.as_object_mut().unwrap().remove("dictionary");
+        let loaded: Connection = serde_json::from_value(json).unwrap();
+        assert!(!loaded.can_share_dictionary());
+        assert!(loaded.dictionary.synced_terms.is_empty());
     }
 
     #[test]
