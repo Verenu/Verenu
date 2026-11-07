@@ -26,6 +26,14 @@ pub(crate) async fn delete_remote(endpoint: &str, id: &str, secret: &str) -> Rem
 
 pub(crate) async fn confirm_remote_delete(data_dir: &Path, endpoint: &str, id: &str, secret: &str) -> Result<RemoteDelete, String> {
     let result = delete_remote(endpoint, id, secret).await;
+    log::info!(
+        "legal: remote deletion {}",
+        match result {
+            RemoteDelete::Confirmed => "confirmed by the server",
+            RemoteDelete::Rejected => "rejected by the server; not retried with this secret",
+            RemoteDelete::Retry => "not confirmed; will retry",
+        }
+    );
     if result == RemoteDelete::Confirmed { mark_remote_delete_confirmed(data_dir)?; }
     Ok(result)
 }

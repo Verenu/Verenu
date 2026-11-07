@@ -567,6 +567,10 @@ pub const UPDATE_DISMISSED_VERSION: &str = "update_dismissed_version";
 pub const UPDATE_NOTIFIED_VERSION: &str = "update_notified_version";
 pub const BETA_UPDATES_ENABLED: &str = "beta_updates_enabled";
 pub const VERENU_SERVICE_CHECKS_ENABLED: &str = "verenu_service_checks_enabled";
+/// Fetches model capability labels from models.dev. Defaults on.
+pub const MODEL_DETAILS_ONLINE: &str = "model_details_online";
+/// Allows downloads of local speech and cleanup models and their runtimes. Defaults on.
+pub const LOCAL_MODEL_DOWNLOADS_ENABLED: &str = "local_model_downloads_enabled";
 pub const HISTORY_RETENTION: &str = "history_retention";
 pub const GITHUB_USERNAME: &str = "github_username";
 pub(crate) const T3_CONNECTION: &str = "t3_connection";

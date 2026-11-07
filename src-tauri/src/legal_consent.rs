@@ -3,7 +3,7 @@ use rand::RngCore;
 use serde::Serialize;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use tauri::AppHandle;
 
 pub(crate) const TERMS_VERSION: &str = "2026-11-03";
@@ -25,6 +25,11 @@ static FORCED_OFF: AtomicBool = AtomicBool::new(false);
 static NETWORK_SETTINGS: OnceLock<crate::data::store::SettingsHandle> = OnceLock::new();
 
 pub(crate) fn install_network_settings(settings: crate::data::store::SettingsHandle) {
+    if let Ok(snapshot) = settings.snapshot() {
+        set_local_downloads_allowed(crate::commands::settings::privacy_toggle_enabled(
+            snapshot.get(crate::data::store::LOCAL_MODEL_DOWNLOADS_ENABLED).cloned(),
+        ));
+    }
     let _ = NETWORK_SETTINGS.set(settings);
 }
 
@@ -61,12 +66,40 @@ pub(crate) fn network_permit_now() -> anyhow::Result<tokio::sync::RwLockReadGuar
 }
 
 pub(crate) async fn while_consented<F: std::future::Future>(future: F) -> anyhow::Result<F::Output> {
+    while_checked(require_consent, future).await
+}
+
+/// Mirrors the Settings > Privacy toggle for local model downloads. Defaults on.
+static LOCAL_DOWNLOADS_ALLOWED: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn set_local_downloads_allowed(allowed: bool) {
+    LOCAL_DOWNLOADS_ALLOWED.store(allowed, Ordering::Release);
+}
+
+/// Consent plus the local-download toggle. Used by speech, cleanup, and runtime downloads only.
+pub(crate) fn require_local_download() -> anyhow::Result<()> {
     require_consent()?;
+    if LOCAL_DOWNLOADS_ALLOWED.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        anyhow::bail!("Local model downloads are turned off. Turn them on in Settings > Privacy.")
+    }
+}
+
+pub(crate) async fn while_local_download<F: std::future::Future>(future: F) -> anyhow::Result<F::Output> {
+    while_checked(require_local_download, future).await
+}
+
+async fn while_checked<F: std::future::Future>(
+    check: fn() -> anyhow::Result<()>,
+    future: F,
+) -> anyhow::Result<F::Output> {
+    check()?;
     tokio::pin!(future);
     loop {
         tokio::select! {
             result = &mut future => return Ok(result),
-            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => require_consent()?,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => check()?,
         }
     }
 }
@@ -75,7 +108,26 @@ fn consent_result(allowed: bool) -> anyhow::Result<()> {
     if allowed {
         Ok(())
     } else {
+        record_refusal();
         anyhow::bail!("consent_required")
+    }
+}
+
+static LAST_REFUSAL_LOG: AtomicI64 = AtomicI64::new(0);
+static REFUSALS_SINCE_LOG: AtomicU64 = AtomicU64::new(0);
+
+/// Logs refused network work at most once a minute, with a count, so streaming loops stay quiet.
+fn record_refusal() {
+    REFUSALS_SINCE_LOG.fetch_add(1, Ordering::Relaxed);
+    let now = chrono::Utc::now().timestamp();
+    let last = LAST_REFUSAL_LOG.load(Ordering::Relaxed);
+    if now - last >= 60
+        && LAST_REFUSAL_LOG
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        let count = REFUSALS_SINCE_LOG.swap(0, Ordering::Relaxed);
+        log::info!("legal: refused {count} network operation(s) because current consent is absent");
     }
 }
 
@@ -142,6 +194,7 @@ pub(crate) async fn skip_legal(app: AppHandle) -> Result<ConsentState, String> {
 }
 
 async fn skip_legal_locked(app: AppHandle) -> Result<ConsentState, String> {
+    log::info!("legal: user skipped consent; online features are off");
     struct ResetRevoking;
     impl Drop for ResetRevoking { fn drop(&mut self) { REVOKING.store(false, Ordering::Release); } }
     FORCED_OFF.store(true, Ordering::Release);
@@ -347,6 +400,14 @@ pub(crate) async fn accept_legal(app: AppHandle, terms_version: String, privacy_
         (SYNC_PENDING, serde_json::json!(result != AcceptanceResult::Synced)),
         (EVER_ACCEPTED, serde_json::json!(true)),
     ])?;
+    log::info!(
+        "legal: acceptance saved locally; server record {}",
+        match result {
+            AcceptanceResult::Synced => "confirmed",
+            AcceptanceResult::Pending => "pending retry",
+            AcceptanceResult::Conflict => "conflict",
+        }
+    );
     FORCED_OFF.store(false, Ordering::Release);
     {
         use tauri::Manager;
@@ -560,6 +621,16 @@ pub(crate) fn permits_network(settings: &SettingsSnapshot) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_download_toggle_blocks_downloads_even_with_consent() {
+        enable_test_consent();
+        set_local_downloads_allowed(false);
+        let error = require_local_download().expect_err("toggle off must block downloads");
+        assert!(error.to_string().contains("Local model downloads are turned off"));
+        set_local_downloads_allowed(true);
+        require_local_download().expect("toggle on with consent allows downloads");
+    }
+
     use super::*;
     use serde_json::json;
 

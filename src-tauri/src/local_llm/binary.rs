@@ -251,7 +251,7 @@ async fn download_to_file(
     let mut last_emit = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
-    while let Some(chunk) = crate::legal_consent::while_consented(response.chunk()).await?? {
+    while let Some(chunk) = crate::legal_consent::while_local_download(response.chunk()).await?? {
         ensure_not_cancelled(cancel)?;
         file.write_all(&chunk).await?;
         *aggregate_downloaded += chunk.len() as u64;

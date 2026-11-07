@@ -17,6 +17,7 @@ pub async fn download_local_stt_model(
     model_id: String,
 ) -> Result<(), String> {
     let _consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
+    crate::commands::settings::ensure_local_model_downloads_enabled(&app).map_err(|e| e.to_string())?;
     let portable_whisper =
         crate::local_stt::model::manifest_by_id(&model_id).is_some_and(|model| {
             model.engine_type == crate::local_stt::model::LocalSttEngineType::Whisper

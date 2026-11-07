@@ -196,9 +196,13 @@ impl LocalTranscriptionManager {
     pub fn download_model(&self, app: &AppHandle, model_id: &str) -> anyhow::Result<()> {
         let manifest = manifest_by_id(model_id)
             .ok_or_else(|| anyhow::anyhow!("unknown local model: {model_id}"))?;
-        let url = manifest.url.ok_or_else(|| {
-            anyhow::anyhow!("{} cannot be downloaded automatically", manifest.name)
-        })?;
+        let has_bundle = super::fluid_download::has_bundle(manifest.id);
+        anyhow::ensure!(
+            manifest.url.is_some() || has_bundle,
+            "{} is not available for download yet.",
+            manifest.name
+        );
+        let source = manifest.url.unwrap_or("Hugging Face bundle");
         anyhow::ensure!(
             manifest.is_supported(),
             "This speech engine is unsupported on this platform"
@@ -247,7 +251,7 @@ impl LocalTranscriptionManager {
             });
         }
 
-        log::info!("local-stt: download begin id={} url={}", model_id, url);
+        log::info!("local-stt: download begin id={} source={}", model_id, source);
         let started_at = Instant::now();
         let manager = self.clone();
         let app_handle = app.clone();

@@ -188,6 +188,8 @@ setting_specs! {
     BETA_UPDATES_ENABLED: Bool = true,
     ANALYTICS_ENABLED: Bool = true,
     VERENU_SERVICE_CHECKS_ENABLED: Bool = true,
+    MODEL_DETAILS_ONLINE: Bool = true,
+    LOCAL_MODEL_DOWNLOADS_ENABLED: Bool = true,
     HISTORY_RETENTION: HistoryRetention = true,
     GITHUB_USERNAME: GithubUsername = false,
     LOCAL_MODEL_MEMORY_POLICY: LocalModelMemoryPolicy = true,
@@ -1108,6 +1110,8 @@ async fn save_setting_inner(
     };
     let credential_app = app.clone();
     let key_clone = key.clone();
+    let local_downloads_setting = (key == store::LOCAL_MODEL_DOWNLOADS_ENABLED)
+        .then(|| value.as_bool().unwrap_or(true));
     let save_result = run_blocking("save_setting", move || {
         if store::storage_full_simulation_enabled() {
             return Err(format!(
@@ -1188,6 +1192,9 @@ async fn save_setting_inner(
     })
     .await;
     save_result?;
+    if let Some(allowed) = local_downloads_setting {
+        crate::legal_consent::set_local_downloads_allowed(allowed);
+    }
     #[cfg(desktop)]
     if let (Some(enabled), Some(analytics)) = (analytics_enabled, app.try_state::<crate::analytics::Analytics>()) {
         analytics.set_enabled(enabled && crate::legal_consent::require_consent().is_ok());
@@ -1270,8 +1277,31 @@ async fn save_setting_inner(
     Ok(())
 }
 
+/// A Settings > Privacy toggle. Missing or non-boolean values count as on, which is the default.
+pub(crate) fn privacy_toggle_enabled(value: Option<serde_json::Value>) -> bool {
+    value.and_then(|value| value.as_bool()).unwrap_or(true)
+}
+
+/// Settings > Privacy toggle. Defaults on, and consent still applies.
+pub(crate) fn model_details_online(app: &AppHandle) -> bool {
+    privacy_toggle_enabled(store::settings_handle(app).ok().and_then(|handle| handle.get(store::MODEL_DETAILS_ONLINE)))
+}
+
+/// Settings > Privacy toggle covering speech, cleanup, and runtime downloads. Defaults on.
+pub(crate) fn local_model_downloads_allowed(app: &AppHandle) -> bool {
+    privacy_toggle_enabled(store::settings_handle(app).ok().and_then(|handle| handle.get(store::LOCAL_MODEL_DOWNLOADS_ENABLED)))
+}
+
+pub(crate) fn ensure_local_model_downloads_enabled(app: &AppHandle) -> anyhow::Result<()> {
+    if !local_model_downloads_allowed(app) {
+        log::info!("local-models: download refused; local model downloads are off in Settings > Privacy");
+        anyhow::bail!("Local model downloads are turned off. Turn them on in Settings > Privacy.");
+    }
+    Ok(())
+}
+
 fn enables_network_setting(key: &str, value: &serde_json::Value) -> bool {
-    if matches!(key, store::ANALYTICS_ENABLED | store::SYNC_ENABLED | store::SYNC_MUTING_ENABLED | store::VERENU_SERVICE_CHECKS_ENABLED | store::BETA_UPDATES_ENABLED | store::DUAL_TRANSCRIPTION_ENABLED | store::CLEANUP_ENABLED) {
+    if matches!(key, store::ANALYTICS_ENABLED | store::SYNC_ENABLED | store::SYNC_MUTING_ENABLED | store::VERENU_SERVICE_CHECKS_ENABLED | store::MODEL_DETAILS_ONLINE | store::LOCAL_MODEL_DOWNLOADS_ENABLED | store::BETA_UPDATES_ENABLED | store::DUAL_TRANSCRIPTION_ENABLED | store::CLEANUP_ENABLED) {
         return value == true;
     }
     if key == store::CLEANUP_INTENSITY {
@@ -1297,7 +1327,7 @@ fn enables_network_setting(key: &str, value: &serde_json::Value) -> bool {
 #[test]
 fn network_settings_require_consent_when_enabled() {
     assert_eq!(read_all_settings(&store::SettingsSnapshot::from_pairs([])).analytics_enabled, Some(false));
-    for key in [store::ANALYTICS_ENABLED, store::SYNC_ENABLED, store::SYNC_MUTING_ENABLED, store::VERENU_SERVICE_CHECKS_ENABLED, store::BETA_UPDATES_ENABLED, store::DUAL_TRANSCRIPTION_ENABLED, store::CLEANUP_ENABLED] {
+    for key in [store::ANALYTICS_ENABLED, store::SYNC_ENABLED, store::SYNC_MUTING_ENABLED, store::VERENU_SERVICE_CHECKS_ENABLED, store::MODEL_DETAILS_ONLINE, store::LOCAL_MODEL_DOWNLOADS_ENABLED, store::BETA_UPDATES_ENABLED, store::DUAL_TRANSCRIPTION_ENABLED, store::CLEANUP_ENABLED] {
         assert!(enables_network_setting(key, &serde_json::json!(true)));
         assert!(!enables_network_setting(key, &serde_json::json!(false)));
     }
@@ -1390,6 +1420,8 @@ pub struct AllSettings {
     pub update_notified_version: Option<String>,
     pub beta_updates_enabled: Option<bool>,
     pub verenu_service_checks_enabled: Option<bool>,
+    pub model_details_online: Option<bool>,
+    pub local_model_downloads_enabled: Option<bool>,
     pub hotkey: Option<Vec<String>>,
     pub sub_app_capture_hotkey: Option<String>,
     pub linux_cancel_key: Option<String>,
@@ -1494,6 +1526,8 @@ all_settings! {
     update_notified_version = str_val(store::UPDATE_NOTIFIED_VERSION),
     beta_updates_enabled = bool_val(store::BETA_UPDATES_ENABLED),
     verenu_service_checks_enabled = bool_val(store::VERENU_SERVICE_CHECKS_ENABLED),
+    model_details_online = bool_val(store::MODEL_DETAILS_ONLINE),
+    local_model_downloads_enabled = bool_val(store::LOCAL_MODEL_DOWNLOADS_ENABLED),
     hotkey = str_array_val(store::HOTKEY),
     sub_app_capture_hotkey = str_val(store::SUB_APP_CAPTURE_HOTKEY),
     linux_cancel_key = str_val(store::LINUX_CANCEL_KEY),
@@ -1814,5 +1848,18 @@ pub fn apply_sub_app_capture_hotkey(app: &AppHandle) {
     }));
     if let Err(error) = result {
         log::warn!("Could not apply sub-app shortcut: {error}");
+    }
+}
+
+#[cfg(test)]
+mod privacy_toggle_tests {
+    use super::privacy_toggle_enabled;
+
+    #[test]
+    fn privacy_toggles_default_on_and_respect_an_explicit_off() {
+        assert!(privacy_toggle_enabled(None));
+        assert!(privacy_toggle_enabled(Some(serde_json::json!(true))));
+        assert!(!privacy_toggle_enabled(Some(serde_json::json!(false))));
+        assert!(privacy_toggle_enabled(Some(serde_json::json!("off"))));
     }
 }

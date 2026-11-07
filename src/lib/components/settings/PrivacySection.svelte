@@ -37,6 +37,10 @@
   let historyMenuOpensUp = $state(false);
   let serviceChecksEnabled = $state(true);
   let analyticsEnabled = $state(true);
+  let modelDetailsOnline = $state(true);
+  let localModelDownloads = $state(true);
+  let modelDetailsError = $state(false);
+  let localModelDownloadsError = $state(false);
   const consentOff = $derived(consentBlocked());
   let cleanupCacheEntries = $state(0);
   let cleanupCacheStatus = $state<CleanupCacheStatus>(null);
@@ -51,6 +55,8 @@
       if (settings.history_retention) historyRetention = settings.history_retention;
       serviceChecksEnabled = settings.verenu_service_checks_enabled ?? true;
       analyticsEnabled = settings.analytics_enabled ?? true;
+      modelDetailsOnline = settings.model_details_online ?? true;
+      localModelDownloads = settings.local_model_downloads_enabled ?? true;
       setServiceChecksEnabled(serviceChecksEnabled);
       cleanupCacheEnabled = settings.cleanup_cache_enabled ?? true;
     } catch (err) {
@@ -122,6 +128,30 @@
       analyticsEnabled = previous;
       analyticsError = true;
       console.error('save analytics_enabled failed:', err);
+    }
+  }
+
+  async function handleModelDetails(value: boolean) {
+    const previous = modelDetailsOnline;
+    modelDetailsOnline = value;
+    try {
+      await saveSetting('model_details_online', value);
+    } catch (err) {
+      modelDetailsOnline = previous;
+      modelDetailsError = true;
+      console.error('save model_details_online failed:', err);
+    }
+  }
+
+  async function handleLocalModelDownloads(value: boolean) {
+    const previous = localModelDownloads;
+    localModelDownloads = value;
+    try {
+      await saveSetting('local_model_downloads_enabled', value);
+    } catch (err) {
+      localModelDownloads = previous;
+      localModelDownloadsError = true;
+      console.error('save local_model_downloads_enabled failed:', err);
     }
   }
 
@@ -357,6 +387,22 @@
         <Toggle checked={analyticsEnabled && !consentOff} gated={consentOff} onchange={(v) => (v ? requireConsent(() => handleAnalytics(true)) : handleAnalytics(false))} label="Share pseudonymous product analytics" bind:error={analyticsError} />
 </div>
 
+<div class="setting-row" data-setting-target="privacy-model-details">
+  <div>
+    <div class="label">Model details from models.dev</div>
+    <div class="desc">When you open a cloud provider's model list, Verenu downloads a public model catalog from models.dev to label each model for transcription or cleanup. The request sends your IP address and no dictation or typed text. Turn this off to skip the request. Model labels will be missing.</div>
+  </div>
+  <Toggle checked={modelDetailsOnline && !consentOff} gated={consentOff} onchange={(v) => (v ? requireConsent(() => handleModelDetails(true)) : handleModelDetails(false))} label="Model details from models.dev" bind:error={modelDetailsError} />
+</div>
+
+<div class="setting-row" data-setting-target="privacy-local-downloads">
+  <div>
+    <div class="label">Local model downloads</div>
+    <div class="desc">Downloads speech and cleanup models from Hugging Face, and the local runtime from GitHub, when you choose a local model. Turn this off to block those downloads. Models already on this device keep working.</div>
+  </div>
+  <Toggle checked={localModelDownloads && !consentOff} gated={consentOff} onchange={(v) => (v ? requireConsent(() => handleLocalModelDownloads(true)) : handleLocalModelDownloads(false))} label="Local model downloads" bind:error={localModelDownloadsError} />
+</div>
+
 <h3 class="settings-subhead">Stored on this device</h3>
 <div class="setting-row" data-setting-target="privacy-history">
   <div><div class="label">Transcription history</div><div class="desc">How long to keep past dictations</div></div>
@@ -505,6 +551,8 @@
 {/if}
 
 <style>
+  /* Descriptions on this page use the darker text token to meet WCAG AA contrast. */
+  .setting-row .desc { color: var(--ink-soft); }
   .data-ok { color: var(--success); }
   .data-err { color: var(--accent); }
   .data-status {

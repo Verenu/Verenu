@@ -240,7 +240,7 @@ async fn download_one_artifact(
         .take()
         .expect("response exists when artifact is not already complete");
 
-    while let Some(chunk) = crate::legal_consent::while_consented(response.chunk()).await?? {
+    while let Some(chunk) = crate::legal_consent::while_local_download(response.chunk()).await?? {
         crate::legal_consent::require_consent()?;
         ensure_not_cancelled(cancel)?;
         file.write_all(&chunk).await?;

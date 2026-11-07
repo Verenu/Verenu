@@ -294,11 +294,13 @@ pub async fn download_model(
     cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let _consent = crate::legal_consent::network_permit().await?;
+    crate::commands::settings::ensure_local_model_downloads_enabled(app)?;
     let overall_started_at = Instant::now();
     if matches!(
         manifest.engine_type,
         super::model::LocalSttEngineType::FluidAudio | super::model::LocalSttEngineType::CtcBooster
-    ) {
+    ) || (manifest.url.is_none() && super::fluid_download::has_bundle(manifest.id))
+    {
         return super::fluid_download::download(app, manifest, root, cancel).await;
     }
     let url = manifest
@@ -401,9 +403,9 @@ pub async fn download_model(
             .await?;
 
         loop {
-            crate::legal_consent::require_consent()?;
+            crate::legal_consent::require_local_download()?;
             ensure_not_cancelled(&cancel)?;
-            let Some(chunk) = crate::legal_consent::while_consented(response.chunk()).await?? else {
+            let Some(chunk) = crate::legal_consent::while_local_download(response.chunk()).await?? else {
                 break;
             };
             file.write_all(&chunk).await?;

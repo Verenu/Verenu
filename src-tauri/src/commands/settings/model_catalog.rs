@@ -224,13 +224,26 @@ pub async fn get_provider_model_catalog(
     if !store::PROVIDERS.contains(&provider.as_str()) || provider == store::LOCAL {
         return Err("Unknown cloud provider.".into());
     }
+    // Settings > Privacy can turn off the models.dev lookup. Labels are then omitted.
+    let details_online = crate::commands::settings::model_details_online(&app);
     let mut ids = list_provider_models(app, provider.clone()).await?;
-    let (public, remote) = tokio::join!(public_json(METADATA_URL), public_json(EXCEPTIONS_URL));
-    let mut warning = public.as_ref().err().cloned();
-    let mut metadata = public
-        .as_ref()
-        .map(|value| catalog_metadata(value, &provider, &ids))
-        .unwrap_or_default();
+    let metadata_fetch = async {
+        if details_online {
+            Some(public_json(METADATA_URL).await)
+        } else {
+            log::info!("model-catalog: models.dev lookup skipped; model details are off in Settings > Privacy");
+            None
+        }
+    };
+    let (public, remote) = tokio::join!(metadata_fetch, public_json(EXCEPTIONS_URL));
+    let mut warning = match &public {
+        Some(Err(error)) => Some(error.clone()),
+        _ => None,
+    };
+    let mut metadata = match &public {
+        Some(Ok(value)) => catalog_metadata(value, &provider, &ids),
+        _ => BTreeMap::new(),
+    };
     let overrides = remote
         .as_ref()
         .ok()
