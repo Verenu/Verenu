@@ -78,6 +78,19 @@ fn requested_control_keys() -> [String; 2] {
         .unwrap_or_else(|| ["Escape".into(), "Space".into()])
 }
 static CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Automatic rebinds triggered by the periodic desktop check since the last
+/// settled check or user change. Bounded so a persistent failure cannot loop.
+static DESKTOP_REBINDS: AtomicU64 = AtomicU64::new(0);
+const MAX_DESKTOP_REBINDS: u64 = 5;
+
+/// Minimum session age before the next automatic desktop rebind: none for the
+/// first, then 10s doubling, capped at 5 minutes.
+fn desktop_rebind_backoff(attempts: u64) -> Duration {
+    match attempts {
+        0 => Duration::ZERO,
+        n => Duration::from_secs((10u64 << (n - 1).min(5)).min(300)),
+    }
+}
 static HANDLESS: AtomicBool = AtomicBool::new(false);
 static PROCESSING: AtomicU64 = AtomicU64::new(0);
 static CHORD_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -1194,6 +1207,7 @@ async fn run_portal_session(
     }
     let mut configuration_poll = tokio::time::interval(Duration::from_millis(100));
     let mut desktop_check = Instant::now();
+    let session_started = Instant::now();
     loop {
         tokio::select! {
             _ = owner_changes.next() => {
@@ -1212,8 +1226,26 @@ async fn run_portal_session(
                     desktop_check = Instant::now();
                     desktop_changed = shortcuts_need_rebind();
                     if !desktop_changed {
+                        DESKTOP_REBINDS.store(0, Ordering::SeqCst);
                         register_temporary_controls();
                     }
+                }
+                if desktop_changed {
+                    let attempts = DESKTOP_REBINDS.load(Ordering::SeqCst);
+                    if attempts >= MAX_DESKTOP_REBINDS {
+                        if attempts == MAX_DESKTOP_REBINDS {
+                            DESKTOP_REBINDS.fetch_add(1, Ordering::SeqCst);
+                            log::error!("linux hotkey: giving up automatic rebinds after {MAX_DESKTOP_REBINDS} attempts; change the shortcut or restart Verenu to retry");
+                        }
+                        desktop_changed = false;
+                    } else if session_started.elapsed() < desktop_rebind_backoff(attempts) {
+                        desktop_changed = false;
+                    } else {
+                        DESKTOP_REBINDS.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                if CONFIG_GENERATION.load(Ordering::SeqCst) != generation {
+                    DESKTOP_REBINDS.store(0, Ordering::SeqCst);
                 }
                 if CONFIG_GENERATION.load(Ordering::SeqCst) != generation || desktop_changed {
                     let was_holding = gesture
@@ -1473,6 +1505,16 @@ fn pick_portal_id(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_rebind_backoff_grows_and_is_capped() {
+        use super::{desktop_rebind_backoff as b, Duration};
+        assert_eq!(b(0), Duration::ZERO);
+        assert_eq!(b(1), Duration::from_secs(10));
+        assert_eq!(b(2), Duration::from_secs(20));
+        assert_eq!(b(4), Duration::from_secs(80));
+        assert_eq!(b(50), Duration::from_secs(300));
+    }
+
     #[test]
     fn conflicting_dictation_shortcut_is_not_replaced() {
         let requested = vec![super::CTRL, super::SUPER];
