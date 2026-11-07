@@ -9,7 +9,7 @@ Acceptance and sync are not yet verified end to end.
 Network-dependent operations must reject with the string `consent_required`
 when current consent is absent. The backend implementation is incomplete;
 this is the target contract, not a guarantee that every path is gated.
-An authenticated request to delete an existing Convex record is permitted
+An authenticated request to delete an existing consent record is permitted
 without current consent, including while a deletion is pending. An installation
 with a recorded never-accepted state deletes locally without a request. Older
 identities without that state send an authenticated deletion request because
