@@ -80,6 +80,15 @@ pub(crate) fn prepare() -> anyhow::Result<()> {
         )?;
         fs::write(root.join("seeded"), b"1")?;
     }
+    if !root.join("legal-isolated").exists() {
+        let settings_path = data.join("settings.json");
+        if settings_path.exists() {
+            let mut settings: Value = serde_json::from_slice(&fs::read(&settings_path)?)?;
+            clear_legal_settings(&mut settings)?;
+            fs::write(settings_path, serde_json::to_vec_pretty(&settings)?)?;
+        }
+        fs::write(root.join("legal-isolated"), b"1")?;
+    }
     std::env::set_var("VERENU_APP_DATA_DIR_OVERRIDE", &data);
     Ok(())
 }
@@ -96,6 +105,14 @@ fn sanitize_settings(settings: &mut Value) -> anyhow::Result<()> {
         store::KEY_ASSEMBLYAI,
         store::KEY_OPENROUTER,
         store::KEY_XAI,
+        crate::legal_consent::INSTALL_ID,
+        crate::legal_consent::SKIPPED,
+        crate::legal_consent::ACCEPTED_TERMS,
+        crate::legal_consent::ACCEPTED_PRIVACY,
+        crate::legal_consent::ACCEPTED_AT,
+        crate::legal_consent::SYNC_PENDING,
+        crate::legal_consent::DELETE_PENDING,
+        crate::legal_consent::EVER_ACCEPTED,
     ] {
         settings.remove(key);
     }
@@ -108,6 +125,14 @@ fn sanitize_settings(settings: &mut Value) -> anyhow::Result<()> {
     settings.insert(store::CLIPBOARD_PHRASE_ENABLED.into(), json!(false));
     settings.insert(store::MIC_MUTE_BUTTON_DICTATION.into(), json!(false));
     settings.insert(store::CREDENTIALS_MIGRATED.into(), json!(true));
+    Ok(())
+}
+
+fn clear_legal_settings(settings: &mut Value) -> anyhow::Result<()> {
+    let settings = settings.as_object_mut().ok_or_else(|| anyhow::anyhow!("Settings must be an object"))?;
+    for key in [crate::legal_consent::INSTALL_ID, crate::legal_consent::SKIPPED, crate::legal_consent::ACCEPTED_TERMS, crate::legal_consent::ACCEPTED_PRIVACY, crate::legal_consent::ACCEPTED_AT, crate::legal_consent::SYNC_PENDING, crate::legal_consent::DELETE_PENDING, crate::legal_consent::EVER_ACCEPTED] {
+        settings.remove(key);
+    }
     Ok(())
 }
 
@@ -386,6 +411,11 @@ fn allowed(command: &str) -> bool {
             | "nvidia_reuse_realtime_install"
             | "get_effective_transcription_model"
             | "get_setting"
+            | "get_consent_state"
+            | "accept_legal"
+            | "skip_legal"
+            | "delete_my_data"
+            | "get_install_id"
             | "check_hotkey"
             | "set_hotkey_capture"
             | "save_hotkey"
@@ -983,13 +1013,22 @@ mod tests {
             assert!(!allowed(command), "{command}");
         }
         assert!(allowed("get_contexts"));
+        for command in ["get_consent_state", "accept_legal", "skip_legal", "delete_my_data", "get_install_id"] {
+            assert!(allowed(command), "{command}");
+        }
         assert!(allowed("get_sub_apps"));
         assert!(allowed("create_sub_app"));
         assert!(!allowed("take_pending_sub_app_capture"));
-        let mut settings =
-            json!({crate::data::store::KEY_GROQ: "synthetic-key", "setup_complete": true});
+        let mut settings = json!({
+            crate::data::store::KEY_GROQ: "synthetic-key",
+            crate::legal_consent::INSTALL_ID: "synthetic-install",
+            crate::legal_consent::ACCEPTED_TERMS: "synthetic-version",
+            "setup_complete": true
+        });
         sanitize_settings(&mut settings).unwrap();
         assert!(settings.get(crate::data::store::KEY_GROQ).is_none());
+        assert!(settings.get(crate::legal_consent::INSTALL_ID).is_none());
+        assert!(settings.get(crate::legal_consent::ACCEPTED_TERMS).is_none());
         assert_eq!(settings[crate::data::store::SYNC_ENABLED], false);
     }
     #[test]

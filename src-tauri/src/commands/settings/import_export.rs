@@ -309,6 +309,11 @@ pub async fn import_data(
     let db = db.inner().clone();
     run_blocking("import_data", move || {
         with_import_payload(&json, |payload| {
+            let enables_network = payload.settings.as_object().is_some_and(|values| values.iter().any(|(key, value)|
+                is_exportable_setting_key(key) && validate_setting(key, value).is_ok() && enables_network_setting(key, value)));
+            let _consent = if enables_network {
+                Some(crate::legal_consent::network_permit_now().map_err(|error| error.to_string())?)
+            } else { None };
             let settings = store::settings_handle(&app)?;
             let installed_apps = crate::system::apps::list_installed_apps_cached_with_status().0;
             import_payload(

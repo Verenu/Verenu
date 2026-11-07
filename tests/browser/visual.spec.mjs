@@ -17,6 +17,15 @@ test('Context dialog and privacy settings retain their reviewed appearance', asy
     await page.locator('[data-debug-id="settings.privacy"]').click();
     const privacy = page.locator('.settings-page .panel:visible').last();
     await expect(privacy.getByRole('switch', { name: 'Cleanup cache', exact: true })).toBeVisible();
-    await expect(privacy).toHaveScreenshot('privacy.png', { animations: 'disabled', caret: 'hide', maxDiffPixelRatio: 0.002 });
+    // The acceptance date and install ID change per run, so mask them.
+    await expect(privacy).toHaveScreenshot('privacy.png', {
+      animations: 'disabled',
+      caret: 'hide',
+      maxDiffPixelRatio: 0.002,
+      mask: [
+        privacy.locator('[data-setting-target="privacy-consent-status"] .desc'),
+        privacy.locator('[data-testid="install-id"]'),
+      ],
+    });
   } finally { await session.invoke('save_setting', { key: 'appearance_mode', value: original ?? 'system' }); }
 });

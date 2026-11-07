@@ -3,6 +3,7 @@
   import { modalFocusTrap } from '../../modalFocus';
   import { modalBackdrop, modalCard, MOTION_MS, MOTION_PX, motionMs, motionPx } from '../../motion';
   import { slide } from 'svelte/transition';
+  import { consentBlocked } from '../../legal/consentStore.svelte';
   import { cubicOut } from 'svelte/easing';
 
   let {
@@ -61,6 +62,9 @@
     downloading ? 'Cancel download' : needsDownload ? `Download ${formatSize(downloadMb)}` : '',
   );
 
+  /** Cloud presets and downloads need accepted terms; the click opens the accept dialog via ModelsSection. */
+  const consentDim = $derived(consentBlocked() && (!preset.offline || (needsDownload && !cancelable)));
+
   let confirmDelete = $state(false);
   const showDetails = $derived(detailsOpen);
   const detailsId = `preset-details-${Math.random().toString(36).slice(2, 9)}`;
@@ -93,9 +97,11 @@
     <button class="btn-ghost btn-compact" type="button" onclick={() => onAddKey?.()}>Open API keys</button>
   </div>
 {:else}
-  <div class="preset-row" class:preset-active={active} class:open={showDetails} class:inert-row={needsDownload}>
+  <div class="preset-row" class:preset-active={active} class:open={showDetails} class:inert-row={needsDownload} class:consent-dim={consentBlocked() && !preset.offline}>
     <button
       class="preset-select"
+      class:consent-dim={consentDim}
+      aria-disabled={consentDim || undefined}
       type="button"
       aria-label={`Use ${preset.offline ? 'local ' : ''}${preset.name}`}
       aria-pressed={active}
@@ -116,7 +122,7 @@
       </div>
       <div class="preset-trail">
         {#if actionLabel}
-          <button class="preset-action" class:danger={cancelable} type="button" disabled={busy && !downloading} onclick={handleAction}>{actionLabel}</button>
+          <button class="preset-action" class:danger={cancelable} class:consent-dim={consentDim} aria-disabled={consentDim || undefined} type="button" disabled={busy && !downloading} onclick={handleAction}>{actionLabel}</button>
         {:else if measured}
           <span class="preset-speed">{(measured.latency_ms / 1000).toFixed(1)}s</span>
         {/if}
@@ -192,6 +198,7 @@
 {/if}
 
 <style>
+  .consent-dim { opacity: 0.5; }
   .preset-row {
     position: relative;
     border-bottom: 1px solid var(--line);

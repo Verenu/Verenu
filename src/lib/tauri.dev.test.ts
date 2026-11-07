@@ -18,6 +18,18 @@ function browserStorage() {
   });
 }
 
+it('does not probe a website until consent is accepted', async () => {
+  browserStorage();
+  const fetchMock = vi.fn().mockResolvedValue({});
+  vi.stubGlobal('fetch', fetchMock);
+  await devInvoke('skip_legal');
+  await expect(devInvoke('check_domain_exists', { domain: 'example.test' })).rejects.toThrow('consent_required');
+  expect(fetchMock).not.toHaveBeenCalled();
+  await devInvoke('accept_legal', { termsVersion: '2026-11-03', privacyVersion: '2026-11-03.1' });
+  await expect(devInvoke('check_domain_exists', { domain: 'example.test' })).resolves.toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
 it('keeps a first group-only word out of Everywhere and other groups', async () => {
   browserStorage();
   await devInvoke('create_dictionary_entry', { term: 'LocalOnly', mistake: 'local-only', contextId: 2 });

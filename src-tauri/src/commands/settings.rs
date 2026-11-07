@@ -188,6 +188,8 @@ setting_specs! {
     BETA_UPDATES_ENABLED: Bool = true,
     ANALYTICS_ENABLED: Bool = true,
     VERENU_SERVICE_CHECKS_ENABLED: Bool = true,
+    MODEL_DETAILS_ONLINE: Bool = true,
+    LOCAL_MODEL_DOWNLOADS_ENABLED: Bool = true,
     HISTORY_RETENTION: HistoryRetention = true,
     GITHUB_USERNAME: GithubUsername = false,
     LOCAL_MODEL_MEMORY_POLICY: LocalModelMemoryPolicy = true,
@@ -859,6 +861,9 @@ pub async fn save_model_settings_if_unchanged(
     expected: serde_json::Map<String, serde_json::Value>,
     values: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
+    let _consent = if values.iter().any(|(key, value)| enables_network_setting(key, value)) {
+        Some(crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?)
+    } else { None };
     let settings = store::settings_handle(&app)?;
     let keys: Vec<String> = values.keys().cloned().collect();
     let refresh_icons = keys.iter().any(|key| crate::app_tray::setting_updates_runtime_icons(key));
@@ -1047,6 +1052,10 @@ async fn save_setting_inner(
     expected: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Result<(), String> {
     validate_setting(&key, &value)?;
+    let _consent = if enables_network_setting(&key, &value) {
+        Some(crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?)
+    } else { None };
+    let analytics_enabled = if key == store::ANALYTICS_ENABLED { value.as_bool() } else { None };
     if key == store::HOTKEY {
         let keys: Vec<String> = serde_json::from_value(value).map_err(|_| "Invalid hotkey value")?;
         return match expected {
@@ -1101,6 +1110,8 @@ async fn save_setting_inner(
     };
     let credential_app = app.clone();
     let key_clone = key.clone();
+    let local_downloads_setting = (key == store::LOCAL_MODEL_DOWNLOADS_ENABLED)
+        .then(|| value.as_bool().unwrap_or(true));
     let save_result = run_blocking("save_setting", move || {
         if store::storage_full_simulation_enabled() {
             return Err(format!(
@@ -1181,6 +1192,15 @@ async fn save_setting_inner(
     })
     .await;
     save_result?;
+    if let Some(allowed) = local_downloads_setting {
+        crate::legal_consent::set_local_downloads_allowed(allowed);
+    }
+    #[cfg(desktop)]
+    if let (Some(enabled), Some(analytics)) = (analytics_enabled, app.try_state::<crate::analytics::Analytics>()) {
+        analytics.set_enabled(enabled && crate::legal_consent::require_consent().is_ok());
+    }
+    #[cfg(not(desktop))]
+    let _ = analytics_enabled;
     if disable_cleanup_cache || enable_cleanup_cache {
         let db = db_state(&app);
         run_blocking("set_cleanup_cache_enabled", move || {
@@ -1257,6 +1277,77 @@ async fn save_setting_inner(
     Ok(())
 }
 
+/// A Settings > Privacy toggle. Missing or non-boolean values count as on, which is the default.
+pub(crate) fn privacy_toggle_enabled(value: Option<serde_json::Value>) -> bool {
+    value.and_then(|value| value.as_bool()).unwrap_or(true)
+}
+
+/// Settings > Privacy toggle. Defaults on, and consent still applies.
+pub(crate) fn model_details_online(app: &AppHandle) -> bool {
+    privacy_toggle_enabled(store::settings_handle(app).ok().and_then(|handle| handle.get(store::MODEL_DETAILS_ONLINE)))
+}
+
+/// Settings > Privacy toggle covering speech, cleanup, and runtime downloads. Defaults on.
+pub(crate) fn local_model_downloads_allowed(app: &AppHandle) -> bool {
+    privacy_toggle_enabled(store::settings_handle(app).ok().and_then(|handle| handle.get(store::LOCAL_MODEL_DOWNLOADS_ENABLED)))
+}
+
+pub(crate) fn ensure_local_model_downloads_enabled(app: &AppHandle) -> anyhow::Result<()> {
+    if !local_model_downloads_allowed(app) {
+        log::info!("local-models: download refused; local model downloads are off in Settings > Privacy");
+        anyhow::bail!("Local model downloads are turned off. Turn them on in Settings > Privacy.");
+    }
+    Ok(())
+}
+
+fn enables_network_setting(key: &str, value: &serde_json::Value) -> bool {
+    if matches!(key, store::ANALYTICS_ENABLED | store::SYNC_ENABLED | store::SYNC_MUTING_ENABLED | store::VERENU_SERVICE_CHECKS_ENABLED | store::MODEL_DETAILS_ONLINE | store::LOCAL_MODEL_DOWNLOADS_ENABLED | store::BETA_UPDATES_ENABLED | store::DUAL_TRANSCRIPTION_ENABLED | store::CLEANUP_ENABLED) {
+        return value == true;
+    }
+    if key == store::CLEANUP_INTENSITY {
+        return value.as_str().is_some_and(|intensity| !matches!(intensity, "none" | "rules"));
+    }
+    let is_remote_model = |id: &str| store::parse_model_id(id).is_none_or(|(provider, _)| provider != store::LOCAL);
+    if matches!(key, store::TRANSCRIPTION_DEFAULT_MODEL | store::CLEANUP_DEFAULT_MODEL) {
+        return value.as_str().is_some_and(is_remote_model);
+    }
+    if matches!(key, store::TRANSCRIPTION_FALLBACK_MODELS | store::CLEANUP_FALLBACK_MODELS) {
+        return value.as_array().is_some_and(|models| models.iter().filter_map(|model| model.as_str()).any(is_remote_model));
+    }
+    if matches!(key, store::TRANSCRIPTION_PROVIDER | store::CLEANUP_PROVIDER) {
+        return value.as_str().is_some_and(|provider| provider != store::LOCAL);
+    }
+    if key == store::GITHUB_USERNAME {
+        return value.as_str().is_some_and(|name| !name.trim().is_empty());
+    }
+    key == store::CUSTOM_PROVIDERS && value.as_array().is_some_and(|providers| !providers.is_empty())
+}
+
+#[cfg(test)]
+#[test]
+fn network_settings_require_consent_when_enabled() {
+    assert_eq!(read_all_settings(&store::SettingsSnapshot::from_pairs([])).analytics_enabled, Some(false));
+    for key in [store::ANALYTICS_ENABLED, store::SYNC_ENABLED, store::SYNC_MUTING_ENABLED, store::VERENU_SERVICE_CHECKS_ENABLED, store::MODEL_DETAILS_ONLINE, store::LOCAL_MODEL_DOWNLOADS_ENABLED, store::BETA_UPDATES_ENABLED, store::DUAL_TRANSCRIPTION_ENABLED, store::CLEANUP_ENABLED] {
+        assert!(enables_network_setting(key, &serde_json::json!(true)));
+        assert!(!enables_network_setting(key, &serde_json::json!(false)));
+    }
+    for (key, value) in [
+        (store::TRANSCRIPTION_PROVIDER, serde_json::json!("groq")),
+        (store::CLEANUP_PROVIDER, serde_json::json!("openai")),
+        (store::GITHUB_USERNAME, serde_json::json!("fixture")),
+        (store::CUSTOM_PROVIDERS, serde_json::json!([{}])),
+        (store::TRANSCRIPTION_DEFAULT_MODEL, serde_json::json!("groq/model")),
+        (store::CLEANUP_DEFAULT_MODEL, serde_json::json!("openai/model")),
+        (store::TRANSCRIPTION_FALLBACK_MODELS, serde_json::json!(["local/model", "groq/model"])),
+        (store::CLEANUP_FALLBACK_MODELS, serde_json::json!(["openai/model"])),
+        (store::CLEANUP_INTENSITY, serde_json::json!("medium")),
+    ] {
+        assert!(enables_network_setting(key, &value));
+    }
+    assert!(!enables_network_setting(store::TRANSCRIPTION_DEFAULT_MODEL, &serde_json::json!("local/model")));
+    assert!(!enables_network_setting(store::CLEANUP_INTENSITY, &serde_json::json!("rules")));
+}
+
 #[tauri::command]
 pub async fn get_setting(app: AppHandle, key: String) -> Result<Option<serde_json::Value>, String> {
     if !is_readable_setting_key(&key) {
@@ -1329,6 +1420,8 @@ pub struct AllSettings {
     pub update_notified_version: Option<String>,
     pub beta_updates_enabled: Option<bool>,
     pub verenu_service_checks_enabled: Option<bool>,
+    pub model_details_online: Option<bool>,
+    pub local_model_downloads_enabled: Option<bool>,
     pub hotkey: Option<Vec<String>>,
     pub sub_app_capture_hotkey: Option<String>,
     pub linux_cancel_key: Option<String>,
@@ -1357,6 +1450,7 @@ macro_rules! all_settings {
 
 macro_rules! snapshot_value {
     ($s:ident, bool_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_bool) };
+    ($s:ident, bool_default_off, $key:path) => { Some($s.get($key).and_then(serde_json::Value::as_bool).unwrap_or(false)) };
     ($s:ident, str_val, $key:path) => { $s.get($key).and_then(|v| v.as_str().map(String::from)) };
     ($s:ident, f64_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_f64) };
     ($s:ident, u64_val, $key:path) => { $s.get($key).and_then(serde_json::Value::as_u64) };
@@ -1417,7 +1511,7 @@ all_settings! {
     setup_progress = json_val(store::SETUP_PROGRESS),
     autostart_enabled = bool_val(store::AUTOSTART_ENABLED),
     auto_learn_enabled = bool_val(store::AUTO_LEARN_ENABLED),
-    analytics_enabled = bool_val(store::ANALYTICS_ENABLED),
+    analytics_enabled = bool_default_off(store::ANALYTICS_ENABLED),
     force_setup_on_launch = bool_val(store::FORCE_SETUP_ON_LAUNCH),
     contextual_caps_enabled = bool_val(store::CONTEXTUAL_CAPS),
     auto_spacing_enabled = bool_val(store::AUTO_SPACING),
@@ -1432,6 +1526,8 @@ all_settings! {
     update_notified_version = str_val(store::UPDATE_NOTIFIED_VERSION),
     beta_updates_enabled = bool_val(store::BETA_UPDATES_ENABLED),
     verenu_service_checks_enabled = bool_val(store::VERENU_SERVICE_CHECKS_ENABLED),
+    model_details_online = bool_val(store::MODEL_DETAILS_ONLINE),
+    local_model_downloads_enabled = bool_val(store::LOCAL_MODEL_DOWNLOADS_ENABLED),
     hotkey = str_array_val(store::HOTKEY),
     sub_app_capture_hotkey = str_val(store::SUB_APP_CAPTURE_HOTKEY),
     linux_cancel_key = str_val(store::LINUX_CANCEL_KEY),
@@ -1752,5 +1848,18 @@ pub fn apply_sub_app_capture_hotkey(app: &AppHandle) {
     }));
     if let Err(error) = result {
         log::warn!("Could not apply sub-app shortcut: {error}");
+    }
+}
+
+#[cfg(test)]
+mod privacy_toggle_tests {
+    use super::privacy_toggle_enabled;
+
+    #[test]
+    fn privacy_toggles_default_on_and_respect_an_explicit_off() {
+        assert!(privacy_toggle_enabled(None));
+        assert!(privacy_toggle_enabled(Some(serde_json::json!(true))));
+        assert!(!privacy_toggle_enabled(Some(serde_json::json!(false))));
+        assert!(privacy_toggle_enabled(Some(serde_json::json!("off"))));
     }
 }

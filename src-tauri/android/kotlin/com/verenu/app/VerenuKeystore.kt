@@ -6,12 +6,25 @@ import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import java.util.Locale
+import java.security.SecureRandom
+import java.security.KeyStore
+import java.util.UUID
+
+internal fun writeCredentialWithConsent(key: String, hasConsent: () -> Boolean, write: () -> Unit) {
+    synchronized(VerenuKeystore.consentLock) {
+        check(key.isEmpty() || hasConsent()) { "consent_required" }
+        write()
+    }
+}
 
 class VerenuKeystore(appContext: Context) {
+    private val applicationContext = appContext.applicationContext
     companion object {
         const val TAG = "VerenuKeystore"
         const val PREFS_FILE = "verenu_secrets"
         const val MAX_CREDENTIAL_BYTES = 16 * 1024
+        private val legalIdentityLock = Any()
+        val consentLock = Any()
 
         val KNOWN_PROVIDERS = listOf("groq", "openai", "google", "assemblyai")
 
@@ -19,20 +32,25 @@ class VerenuKeystore(appContext: Context) {
             "api_key_" + provider.trim().lowercase(Locale.ROOT)
     }
 
-    private val prefs: SharedPreferences = try {
-        val masterKey = MasterKey.Builder(appContext)
+    private val masterKey: MasterKey
+    private val prefs: SharedPreferences
+
+    init {
+      try {
+        masterKey = MasterKey.Builder(applicationContext)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
-        EncryptedSharedPreferences.create(
-            appContext,
+        prefs = EncryptedSharedPreferences.create(
+            applicationContext,
             PREFS_FILE,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
-    } catch (e: Exception) {
+      } catch (e: Exception) {
         Log.e(TAG, "Android Keystore unavailable; refusing plaintext fallback", e)
         throw IllegalStateException("Device credential storage is unavailable", e)
+      }
     }
 
     fun save(provider: String, key: String) {
@@ -53,6 +71,36 @@ class VerenuKeystore(appContext: Context) {
     fun read(provider: String): String = prefs.getString(keyFor(provider), "") ?: ""
 
     fun has(provider: String): Boolean = read(provider).isNotEmpty()
+
+    fun legalIdentity(): Pair<String, String> = synchronized(legalIdentityLock) {
+        val oldId = prefs.getString("legal_install_id", null)
+        val oldSecret = prefs.getString("legal_install_secret", null)
+        if (oldId != null && oldSecret != null) return@synchronized Pair(oldId, oldSecret)
+        check(oldId == null && oldSecret == null) { "Incomplete installation identity" }
+        val id = UUID.randomUUID().toString()
+        val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val secret = bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        check(prefs.edit().putString("legal_install_id", id).putString("legal_install_secret", secret).commit())
+        Pair(id, secret)
+    }
+
+    fun deleteProviderCredentials() {
+        val editor = prefs.edit()
+        for (key in prefs.all.keys) {
+            if (key != "legal_install_id" && key != "legal_install_secret") editor.remove(key)
+        }
+        check(editor.commit()) { "Could not remove credentials" }
+    }
+
+    fun deleteLegalIdentity() = synchronized(legalIdentityLock) {
+        check(prefs.edit().clear().commit()) {
+            "Could not remove installation identity"
+        }
+        check(applicationContext.deleteSharedPreferences(PREFS_FILE)) { "Could not remove secure preferences" }
+        val store = KeyStore.getInstance("AndroidKeyStore")
+        store.load(null)
+        store.deleteEntry(MasterKey.DEFAULT_MASTER_KEY_ALIAS)
+    }
 
     fun readAll(): Map<String, String> =
         KNOWN_PROVIDERS.associateWith(::read).filterValues { it.isNotEmpty() }

@@ -675,8 +675,38 @@ function assertDevText(value: unknown, field: string): string {
   return value;
 }
 
+type DevConsentStatus = 'unanswered' | 'skipped' | 'accepted' | 'update_required' | 'deletion_pending';
+const DEV_CONSENT_KEY = 'verenu-dev-consent';
+const DEV_CONSENT_VERSION = '2026-11-03';
+
+/** Set localStorage `verenu-dev-consent` to a status to exercise the prompts. */
+function devConsentState(next?: DevConsentStatus) {
+  if (next) localStorage.setItem(DEV_CONSENT_KEY, next);
+  const status = (localStorage.getItem(DEV_CONSENT_KEY) as DevConsentStatus | null) ?? 'unanswered';
+  return {
+    status,
+    termsVersion: DEV_CONSENT_VERSION,
+    privacyVersion: '2026-11-03.1',
+    acceptedAt: status === 'accepted' ? Date.parse('2026-11-03T12:00:00Z') : null,
+    syncPending: false,
+  };
+}
+
 export async function devInvoke<T>(command: string, args?: CommandArgs): Promise<T> {
   switch (command) {
+    case 'get_consent_state':
+      return devConsentState() as T;
+    case 'accept_legal':
+      if (args?.termsVersion !== DEV_CONSENT_VERSION || args?.privacyVersion !== '2026-11-03.1') {
+        throw new Error('consent_version_conflict');
+      }
+      return devConsentState('accepted') as T;
+    case 'skip_legal':
+      return devConsentState('skipped') as T;
+    case 'delete_my_data':
+      return devConsentState('deletion_pending') as T;
+    case 'get_install_id':
+      return 'dev-00000000-0000-4000-8000-000000000000' as T;
     case 'frontend_ready':
       return undefined as T;
     case 'get_setting':
@@ -979,6 +1009,7 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
       ) as T;
     }
     case 'check_domain_exists': {
+      if (devConsentState().status !== 'accepted') throw new Error('consent_required');
       const domain = String(args?.domain ?? '').trim().toLowerCase();
       if (!domain) return false as T;
       try {

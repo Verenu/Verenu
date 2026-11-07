@@ -115,6 +115,7 @@ pub async fn get_t3_skills(app: AppHandle) -> Result<Status, String> {
 
 #[tauri::command]
 pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
     if cfg!(target_os = "android") {
         return Err("T3 skill pairing requires desktop Verenu.".into());
     }
@@ -208,6 +209,7 @@ fn commit_pairing(
 
 #[tauri::command]
 pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Status, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
     let _guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
     let Some(mut current) = connection(&settings.snapshot()?) else {

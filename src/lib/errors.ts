@@ -40,7 +40,8 @@ export type ErrorKind =
   | 'recording-too-large'
   | 'file-missing'
   | 'clipboard'
-  | 'hotkey';
+  | 'hotkey'
+  | 'consent-required';
 
 interface ClassifiedError {
   kind: ErrorKind;
@@ -48,6 +49,7 @@ interface ClassifiedError {
 }
 
 const KIND_HINTS: ReadonlyArray<readonly [ErrorKind, readonly string[]]> = [
+  ['consent-required', ['consent_required', 'accept the current terms and privacy policy', 'accept the terms and privacy policy to use']],
   ['already-recording', ['already recording']],
   [
     'mic-permission',
@@ -105,6 +107,7 @@ const KIND_HINTS: ReadonlyArray<readonly [ErrorKind, readonly string[]]> = [
 ];
 
 const KIND_MESSAGES: Partial<Record<ErrorKind, string>> = {
+  'consent-required': 'Accept the Terms and Privacy Policy to use online features. Local features keep working.',
   'already-recording': 'Already recording. Finish or cancel the current recording before starting another.',
   'mic-permission': isAndroid
     ? 'Microphone access is blocked. Allow microphone access for Verenu in Android Settings, then try again.'
@@ -307,6 +310,8 @@ export function formatSyncError(err: unknown, action?: string): string {
 
 export function settingsSectionForKind(kind: ErrorKind): SettingsSectionId | null {
   switch (kind) {
+    case 'consent-required':
+      return 'privacy';
     case 'auth-401':
     case 'quota':
     case 'missing-key':
@@ -338,6 +343,7 @@ export function settingsSectionForKind(kind: ErrorKind): SettingsSectionId | nul
 }
 
 const WARNING_KINDS: ReadonlySet<ErrorKind> = new Set([
+  'consent-required',
   'quota',
   'timeout',
   'network',
@@ -361,6 +367,7 @@ export function severityForKind(kind: ErrorKind): 'warning' | 'error' {
 }
 
 const FIX_LABELS: Partial<Record<ErrorKind, string>> = {
+  'consent-required': 'Review terms',
   'missing-key': 'Add API key',
   'auth-401': 'Replace API key',
   quota: 'Review providers',

@@ -105,6 +105,8 @@ pub async fn cleanup_with_alternate_and_evidence(
         return result;
     }
 
+    let _consent = crate::legal_consent::network_permit().await?;
+
     let prompt = super::prompts::get_cleanup_prompt_with_alternate_and_evidence(
         provider_id,
         model,
@@ -284,7 +286,10 @@ struct CompletionDetails {
 }
 
 fn parse_chat_cleanup(data: ChatResp) -> Result<String> {
-    let choice = data.choices.first().ok_or_else(|| anyhow::anyhow!("No choices in cleanup response"))?;
+    let choice = data
+        .choices
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("No choices in cleanup response"))?;
     let finish = match choice.finish_reason.as_deref() {
         Some("length") => "length",
         Some("stop") => "stop",
@@ -296,8 +301,13 @@ fn parse_chat_cleanup(data: ChatResp) -> Result<String> {
     let content = choice.message.content.as_deref().unwrap_or("").trim();
     let incomplete_finish = matches!(finish, "length" | "content_filter" | "tool_calls");
     if incomplete_finish || content.is_empty() {
-        let completion_tokens = data.usage.as_ref().and_then(|usage| usage.completion_tokens);
-        let reasoning_tokens = data.usage.as_ref()
+        let completion_tokens = data
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.completion_tokens);
+        let reasoning_tokens = data
+            .usage
+            .as_ref()
             .and_then(|usage| usage.completion_tokens_details.as_ref())
             .and_then(|details| details.reasoning_tokens);
         log::warn!("cleanup: unusable chat response finish_reason={} final_text_present={} completion_tokens={:?} reasoning_tokens={:?}",
@@ -355,6 +365,7 @@ async fn openai_compat(
         prompt.chars().count()
     );
     let request_started = std::time::Instant::now();
+    crate::legal_consent::require_consent()?;
     let resp = request.send().await?;
     let status = resp.status();
     let request_id = super::response_request_id(&resp);
@@ -584,6 +595,7 @@ async fn anthropic_cleanup(
         model,
         text.chars().count()
     );
+    crate::legal_consent::require_consent()?;
     let resp = wire
         .apply(wire.client().post(url), api_key)
         .json(&body)
@@ -734,6 +746,7 @@ async fn google_cleanup(
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
 
     let request_started = std::time::Instant::now();
+    crate::legal_consent::require_consent()?;
     let resp = super::client::get()
         .post(&url)
         .header("x-goog-api-key", api_key)
@@ -904,26 +917,53 @@ mod tests {
     #[tokio::test]
     #[ignore = "uses an explicitly selected custom provider and its native credential; may incur API cost"]
     async fn live_custom_t3_skill_resolution() {
-        let path = std::env::var("VERENU_LIVE_SETTINGS_PATH").expect("explicit settings path required");
-        let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        let (id, model) = settings["cleanup_default_model"].as_str()
-            .expect("configured cleanup model required").split_once('/')
+        let path =
+            std::env::var("VERENU_LIVE_SETTINGS_PATH").expect("explicit settings path required");
+        let settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let (id, model) = settings["cleanup_default_model"]
+            .as_str()
+            .expect("configured cleanup model required")
+            .split_once('/')
             .expect("provider/model selection required");
         let custom = super::super::custom::parse_stored(settings.get("custom_providers"))
-            .into_iter().find(|p| p.id == id).unwrap();
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap();
         let key = crate::data::credentials::get(id);
-        assert!(!custom.requires_key || !key.is_empty(), "native credential unavailable");
+        assert!(
+            !custom.requires_key || !key.is_empty(),
+            "native credential unavailable"
+        );
         let catalog: crate::system::t3_skills::Catalog = serde_json::from_value(serde_json::json!({
             "environmentId":"synthetic", "id":"synthetic", "label":"Synthetic", "providerInstanceId":"synthetic", "workspaceId":"synthetic", "revision":"1",
             "skills":[{"name":"babysit-pr"},{"name":"pr-babysit"}]
         })).unwrap();
         let (rules, evidence) = catalog.prompt_parts().unwrap();
         let output = super::cleanup_with_alternate_and_evidence(
-            "Use my babysit PR skill please.", super::super::Target::Custom(Box::new(custom)),
-            &key, model, "very_casual", "medium", &rules, &evidence, None, None, None, 1,
-        ).await.expect("configured cleanup must return final text");
-        assert!(output.contains("$babysit-pr"), "exact-order skill was not resolved");
-        assert!(!output.contains("$pr-babysit"), "reordered skill was selected");
+            "Use my babysit PR skill please.",
+            super::super::Target::Custom(Box::new(custom)),
+            &key,
+            model,
+            "very_casual",
+            "medium",
+            &rules,
+            &evidence,
+            None,
+            None,
+            None,
+            1,
+        )
+        .await
+        .expect("configured cleanup must return final text");
+        assert!(
+            output.contains("$babysit-pr"),
+            "exact-order skill was not resolved"
+        );
+        assert!(
+            !output.contains("$pr-babysit"),
+            "reordered skill was selected"
+        );
         assert!(catalog.validates_output("Use my babysit PR skill please.", &output));
     }
 
@@ -935,13 +975,19 @@ mod tests {
 
     #[test]
     fn chat_cleanup_accepts_final_text_without_requiring_usage_metadata() {
-        let data = serde_json::from_value(serde_json::json!({"choices":[{"message":{"content":" Use $babysit-pr. "}}]})).unwrap();
+        let data = serde_json::from_value(
+            serde_json::json!({"choices":[{"message":{"content":" Use $babysit-pr. "}}]}),
+        )
+        .unwrap();
         assert_eq!(super::parse_chat_cleanup(data).unwrap(), "Use $babysit-pr.");
     }
 
     #[test]
     fn chat_cleanup_reports_reasoning_exhaustion_without_exposing_response_text() {
-        for content in [serde_json::Value::Null, serde_json::json!("private partial answer")] {
+        for content in [
+            serde_json::Value::Null,
+            serde_json::json!("private partial answer"),
+        ] {
             let data = serde_json::from_value(serde_json::json!({
                 "choices":[{"finish_reason":"length","message":{"content":content,"reasoning":"private reasoning"}}],
                 "usage":{"completion_tokens":128,"completion_tokens_details":{"reasoning_tokens":128}}
@@ -1054,12 +1100,8 @@ mod tests {
             None,
             None,
         );
-        let request = build_openai_compat_request(
-            "Use the matching skill.",
-            "synthetic-model",
-            &prompt,
-            256,
-        );
+        let request =
+            build_openai_compat_request("Use the matching skill.", "synthetic-model", &prompt, 256);
         let serialized = serde_json::to_value(request).unwrap();
         assert_eq!(serialized["messages"][0]["role"], "system");
         let system = serialized["messages"][0]["content"].as_str().unwrap();

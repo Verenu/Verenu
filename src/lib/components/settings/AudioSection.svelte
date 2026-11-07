@@ -4,6 +4,8 @@
 </script>
 
 <script lang="ts">
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { consentBlocked, handleConsentError, requireConsent } from '../../legal/consentStore.svelte';
   import { slide } from 'svelte/transition';
   import { onDestroy } from 'svelte';
   import Toggle from '../Toggle.svelte';
@@ -77,16 +79,19 @@
   }
 
   async function installReuse() {
+    if (consentBlocked()) { requireConsent(() => installReuse()); return; }
     if (reuseTimer) clearTimeout(reuseTimer);
     try { await invoke('nvidia_reuse_install'); await refreshReuseStatus(); }
     catch (err) {
       enableReuseAfterSetup = false;
+      if (handleConsentError(err, installReuse)) { void refreshReuseStatus(); return; }
       reuseStatus = { state: 'error', message: reuseErrorMessage(err, 'Could not start runtime setup.') };
       if (!reuseDisposed) reuseTimer = setTimeout(() => void refreshReuseStatus(), 10000);
     }
   }
 
   async function checkReuse() {
+    if (consentBlocked()) { requireConsent(() => checkReuse()); return; }
     if (reuseTimer) clearTimeout(reuseTimer);
     reuseStatus = { state: 'checking', message: 'Testing the GPU and model…' };
     try { await invoke('nvidia_reuse_check'); await refreshReuseStatus(); }
@@ -116,6 +121,7 @@
   async function changeRealtime(value: boolean) {
     if (!value) realtimeSetupError = false;
     if (value && !realtimeReady) {
+      if (consentBlocked()) { requireConsent(() => changeRealtime(true)); return; }
       realtimeSetupError = false;
       enableRealtimeAfterSetup = true;
       if (reuseTimer) clearTimeout(reuseTimer);
@@ -161,6 +167,7 @@
       if (realtimeEnabled) return;
     }
     if (value && reuseStatus.state !== 'ready') {
+      if (consentBlocked()) { requireConsent(() => changeReuse(true)); return; }
       enableReuseAfterSetup = true;
       await installReuse();
       return;
@@ -374,8 +381,9 @@
         <div>
           <div class="label">NVIDIA RE-USE <span class="reuse-tag">Experimental</span></div>
           <div class="desc">{reuseDesc}</div>
+          {#if reuseStatus.state !== 'ready'}<ConsentHint feature="The NVIDIA runtime download" thenEnable={() => changeReuse(true)} />{/if}
         </div>
-        <Toggle checked={reuseEnabled} onchange={changeReuse} label="Use NVIDIA RE-USE" disabled={reuseBusy} bind:error={reuseError} />
+        <Toggle checked={reuseEnabled} gated={consentBlocked() && reuseStatus.state !== 'ready'} onchange={changeReuse} label="Use NVIDIA RE-USE" disabled={reuseBusy} bind:error={reuseError} />
       {/if}
       {#if reuseBusy}
         <div class="reuse-progress" transition:slide={{ duration: motionMs(MOTION_MS.base) }} role="status" aria-live="polite">

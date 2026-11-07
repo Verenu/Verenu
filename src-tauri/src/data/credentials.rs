@@ -33,6 +33,7 @@ fn user_for(provider: &str) -> Option<String> {
             store::OPENROUTER => store::KEY_OPENROUTER,
             store::XAI => store::KEY_XAI,
             store::T3_INTEGRATION => store::KEY_T3_INTEGRATION,
+            store::LEGAL_INSTALL_SECRET => store::KEY_LEGAL_INSTALL_SECRET,
             _ => return None,
         }
         .to_string(),

@@ -36,9 +36,32 @@ struct Bundle {
 }
 #[derive(Deserialize)]
 struct Artifact {
+    /// Local file name, relative to the installed model folder.
     path: String,
     sha256: String,
     size: u64,
+    /// Path inside the Hugging Face repo, when it differs from `path`.
+    #[serde(default)]
+    source: Option<String>,
+    /// Repo and revision for this file, when it differs from the bundle.
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    revision: Option<String>,
+}
+
+/// Bundles for FluidAudio (CoreML) models and for speech models hosted on Hugging Face.
+fn load_bundles() -> anyhow::Result<Vec<Bundle>> {
+    let mut bundles: Vec<Bundle> = serde_json::from_str(include_str!("fluid_assets.json"))?;
+    bundles.extend(serde_json::from_str::<Vec<Bundle>>(include_str!(
+        "speech_assets.json"
+    ))?);
+    Ok(bundles)
+}
+
+/// True when a model is installed from pinned Hugging Face files instead of an archive.
+pub fn has_bundle(id: &str) -> bool {
+    load_bundles().is_ok_and(|bundles| bundles.iter().any(|bundle| bundle.id == id))
 }
 
 pub async fn download(
@@ -47,7 +70,8 @@ pub async fn download(
     root: &Path,
     cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    let bundles: Vec<Bundle> = serde_json::from_str(include_str!("fluid_assets.json"))?;
+    let _consent = crate::legal_consent::network_permit().await?;
+    let bundles = load_bundles()?;
     let bundle = bundles
         .into_iter()
         .find(|bundle| bundle.id == manifest.id)
@@ -61,6 +85,7 @@ pub async fn download(
     let mut progress = ProgressThrottle::default();
     let client = reqwest::Client::new();
     for file in &bundle.files {
+        crate::legal_consent::require_local_download()?;
         anyhow::ensure!(!cancel.load(Ordering::Relaxed), "model download cancelled");
         anyhow::ensure!(
             Path::new(&file.path)
@@ -68,16 +93,22 @@ pub async fn download(
                 .all(|part| matches!(part, std::path::Component::Normal(_))),
             "invalid model artifact path"
         );
+        let source = file.source.as_deref().unwrap_or(&file.path);
+        anyhow::ensure!(
+            Path::new(source)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_))),
+            "invalid model source path"
+        );
+        let repo = file.repo.as_deref().unwrap_or(&bundle.repo);
+        let revision = file.revision.as_deref().unwrap_or(&bundle.revision);
         let path = staging.join(&file.path);
         tokio::fs::create_dir_all(path.parent().unwrap()).await?;
         let mut output = tokio::fs::File::create(path).await?;
         let mut response = cancellable_io(
             &cancel,
             client
-                .get(format!(
-                    "https://huggingface.co/{}/resolve/{}/{}",
-                    bundle.repo, bundle.revision, file.path
-                ))
+                .get(format!("https://huggingface.co/{repo}/resolve/{revision}/{source}"))
                 .send(),
         )
         .await?
@@ -85,6 +116,7 @@ pub async fn download(
         let mut hash = Sha256::new();
         let mut received = 0;
         while let Some(chunk) = cancellable_io(&cancel, response.chunk()).await? {
+            crate::legal_consent::require_local_download()?;
             anyhow::ensure!(!cancel.load(Ordering::Relaxed), "model download cancelled");
             received += chunk.len() as u64;
             anyhow::ensure!(
@@ -127,7 +159,7 @@ pub async fn download(
         &cancel,
         async {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            {
+            if manifest.engine_type == super::model::LocalSttEngineType::FluidAudio {
                 let validation_path = staging.clone();
                 let model_id = manifest.id.to_string();
                 let validation_cancel = cancel.clone();
@@ -157,7 +189,7 @@ async fn cancellable_io<T>(
         _ = async {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                if cancel.load(Ordering::Acquire) {
+                if cancel.load(Ordering::Acquire) || crate::legal_consent::require_local_download().is_err() {
                     break;
                 }
             }
@@ -289,8 +321,8 @@ mod tests {
             repo: String::new(),
             revision: String::new(),
             files: vec![
-                super::Artifact { path: "synthetic".into(), sha256: String::new(), size: 40 },
-                super::Artifact { path: "second".into(), sha256: String::new(), size: 60 },
+                super::Artifact { path: "synthetic".into(), sha256: String::new(), size: 40, source: None, repo: None, revision: None },
+                super::Artifact { path: "second".into(), sha256: String::new(), size: 60, source: None, repo: None, revision: None },
             ],
         };
         let error = super::prepare_staging(&bundle, &root, &staging, |checked_root, total| {
@@ -381,7 +413,7 @@ mod tests {
 }
 
 pub fn installed(manifest: &super::model::LocalSttModelManifest, root: &Path) -> bool {
-    let Ok(bundles) = serde_json::from_str::<Vec<Bundle>>(include_str!("fluid_assets.json")) else {
+    let Ok(bundles) = load_bundles() else {
         return false;
     };
     let Some(bundle) = bundles.iter().find(|bundle| bundle.id == manifest.id) else {
@@ -403,7 +435,7 @@ pub(super) fn verify_cached_integrity(
     path: &Path,
     cache: &mut super::integrity_cache::IntegrityCache,
 ) -> anyhow::Result<()> {
-    let bundles: Vec<Bundle> = serde_json::from_str(include_str!("fluid_assets.json"))?;
+    let bundles = load_bundles()?;
     let bundle = bundles
         .iter()
         .find(|bundle| bundle.id == id)
@@ -419,7 +451,7 @@ pub(super) fn verify_cached_integrity(
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn verify_integrity(id: &str, path: &Path) -> anyhow::Result<()> {
-    let bundles: Vec<Bundle> = serde_json::from_str(include_str!("fluid_assets.json"))?;
+    let bundles = load_bundles()?;
     let bundle = bundles
         .iter()
         .find(|bundle| bundle.id == id)
@@ -434,4 +466,64 @@ pub fn verify_integrity(id: &str, path: &Path) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod speech_manifest_tests {
+    use super::load_bundles;
+    use crate::local_stt::model::{built_in_model_manifests, manifest_by_id, LocalSttEngineType};
+
+    /// Speech models with no verified Hugging Face source. They stay listed but cannot be downloaded.
+    const UNAVAILABLE: &[&str] = &["moonshine-tiny", "moonshine-small", "moonshine-medium", "cohere"];
+
+    fn is_lower_hex(value: &str, len: usize) -> bool {
+        value.len() == len && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    }
+
+    #[test]
+    fn speech_bundles_are_pinned_files_under_their_manifest() {
+        for bundle in load_bundles().expect("bundles parse") {
+            if bundle.id.starts_with("fluid") {
+                continue;
+            }
+            let manifest = manifest_by_id(&bundle.id)
+                .unwrap_or_else(|| panic!("no manifest for bundle {}", bundle.id));
+            assert!(manifest.url.is_none(), "{} must not download from a URL", bundle.id);
+            assert!(is_lower_hex(&bundle.revision, 40), "{} needs a commit SHA", bundle.id);
+            let mut seen = std::collections::HashSet::new();
+            for file in &bundle.files {
+                assert!(seen.insert(file.path.clone()), "duplicate file {}", file.path);
+                assert!(
+                    !file.path.contains('/') && file.path != "." && file.path != "..",
+                    "{} must be a plain file name",
+                    file.path
+                );
+                assert!(is_lower_hex(&file.sha256, 64), "{} needs a SHA-256", file.path);
+                assert!(file.size > 0, "{} has no size", file.path);
+                if let Some(revision) = &file.revision {
+                    assert!(is_lower_hex(revision, 40), "{} needs a commit SHA", file.path);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_speech_model_without_a_url_is_bundled_or_listed_as_unavailable() {
+        for manifest in built_in_model_manifests() {
+            if manifest.url.is_some() || matches!(
+                manifest.engine_type,
+                LocalSttEngineType::FluidAudio | LocalSttEngineType::CtcBooster | LocalSttEngineType::AppleSpeech
+            ) {
+                continue;
+            }
+            assert!(
+                super::has_bundle(manifest.id) || UNAVAILABLE.contains(&manifest.id),
+                "{} has no download source",
+                manifest.id
+            );
+        }
+        for id in UNAVAILABLE {
+            assert!(!super::has_bundle(id), "{id} should not have a bundle yet");
+        }
+    }
 }

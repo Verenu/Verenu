@@ -1,6 +1,8 @@
 <script lang="ts">
   import ContextIcon from '../components/ContextIcon.svelte';
   import { onMount } from 'svelte';
+  import ConsentHint from '../legal/ConsentHint.svelte';
+  import { isConsentRequiredError } from '../legal/consent';
   import { fade, fly } from 'svelte/transition';
   import { expoOut } from 'svelte/easing';
   import { invoke, listen } from '../tauri';
@@ -90,18 +92,22 @@
     load();
   }
 
+  async function loadPricing() {
+    try {
+      const snapshot = await invoke<PricingSnapshot>('get_insights_pricing');
+      if (mounted) pricing = snapshot;
+    } catch (err) {
+      // Without accepted terms the hint under the cost card explains why pricing is missing.
+      if (!isConsentRequiredError(err)) console.warn('OpenRouter pricing refresh failed:', err);
+    }
+  }
+
   onMount(() => {
     mounted = true;
     void refreshGithub();
     void loadContexts();
     load();
-    invoke<PricingSnapshot>('get_insights_pricing')
-      .then((snapshot) => {
-        if (mounted) pricing = snapshot;
-      })
-      .catch((err) => {
-        console.warn('OpenRouter pricing refresh failed:', err);
-      });
+    void loadPricing();
     const poll = startPolling(() => load({ silent: true }), 60_000, { immediate: false });
     let unlisten: (() => void) | undefined;
     let unlistenSync: (() => void) | undefined;
@@ -259,6 +265,7 @@
         <StreakHeatmap daily={data.streak_daily} streak={data.streak} historyStartedOn={data.history_started_on} />
         <HourStrip hourly={data.hourly} />
         <WordStats words={data.words} cleanup={data.cleanup} totals={data.totals} />
+        <ConsentHint feature="Provider pricing for cost estimates" thenEnable={loadPricing} />
         <CostBreakdown providers={data.providers} {rangeLabel} {pricing} />
       </div>
     {/key}

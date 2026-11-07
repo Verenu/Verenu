@@ -136,6 +136,8 @@ export type SettingsValueMap = {
   update_notified_version: string | null;
   beta_updates_enabled: boolean;
   verenu_service_checks_enabled: boolean;
+  model_details_online: boolean;
+  local_model_downloads_enabled: boolean;
   appearance_mode: AppearanceMode;
   sub_app_capture_hotkey: string | null;
   linux_cancel_key: string | null;

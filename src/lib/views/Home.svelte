@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { handleConsentError } from '../legal/consentStore.svelte';
   import { formatIpcError } from '../errors';
   import { onMount } from 'svelte';
   import { invoke, getVersion, listen, emit } from '../tauri';
@@ -120,7 +121,7 @@
       await invoke('retry_transcription');
     } catch (err) {
       console.error('Retry failed:', err);
-      void emit('verenu:error', formatIpcError(err, 'Could not retry this dictation'));
+      if (!handleConsentError(err, retryTranscription)) void emit('verenu:error', formatIpcError(err, 'Could not retry this dictation'));
     } finally {
       retrying = false;
     }

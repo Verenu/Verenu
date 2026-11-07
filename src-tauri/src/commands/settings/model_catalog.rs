@@ -22,6 +22,7 @@ pub struct ProviderModelCatalog {
 }
 
 async fn public_json(url: &'static str) -> Result<serde_json::Value, String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     type Snapshot = (std::time::Instant, Result<serde_json::Value, String>);
     static CACHE: std::sync::OnceLock<tokio::sync::Mutex<BTreeMap<&'static str, Snapshot>>> =
         std::sync::OnceLock::new();
@@ -219,16 +220,30 @@ pub async fn get_provider_model_catalog(
     app: AppHandle,
     provider: String,
 ) -> Result<ProviderModelCatalog, String> {
+    crate::legal_consent::require_consent().map_err(|e| e.to_string())?;
     if !store::PROVIDERS.contains(&provider.as_str()) || provider == store::LOCAL {
         return Err("Unknown cloud provider.".into());
     }
+    // Settings > Privacy can turn off the models.dev lookup. Labels are then omitted.
+    let details_online = crate::commands::settings::model_details_online(&app);
     let mut ids = list_provider_models(app, provider.clone()).await?;
-    let (public, remote) = tokio::join!(public_json(METADATA_URL), public_json(EXCEPTIONS_URL));
-    let mut warning = public.as_ref().err().cloned();
-    let mut metadata = public
-        .as_ref()
-        .map(|value| catalog_metadata(value, &provider, &ids))
-        .unwrap_or_default();
+    let metadata_fetch = async {
+        if details_online {
+            Some(public_json(METADATA_URL).await)
+        } else {
+            log::info!("model-catalog: models.dev lookup skipped; model details are off in Settings > Privacy");
+            None
+        }
+    };
+    let (public, remote) = tokio::join!(metadata_fetch, public_json(EXCEPTIONS_URL));
+    let mut warning = match &public {
+        Some(Err(error)) => Some(error.clone()),
+        _ => None,
+    };
+    let mut metadata = match &public {
+        Some(Ok(value)) => catalog_metadata(value, &provider, &ids),
+        _ => BTreeMap::new(),
+    };
     let overrides = remote
         .as_ref()
         .ok()

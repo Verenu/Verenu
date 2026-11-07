@@ -828,6 +828,7 @@ pub async fn get_site_icon_data_uri(app: &tauri::AppHandle, domain: &str) -> Opt
 }
 
 async fn fetch_favicon(host: &str) -> (Option<Vec<u8>>, bool) {
+    let Ok(_consent) = crate::legal_consent::network_permit().await else { return (None, false); };
     let url = format!(
         "https://www.google.com/s2/favicons?sz=64&domain={}",
         urlencoding_host(host)

@@ -22,6 +22,7 @@ pub(crate) fn storage_full_simulation_enabled() -> bool {
 pub struct SettingsHandle {
     path: Arc<PathBuf>,
     values: Arc<RwLock<Arc<Map<String, Value>>>>,
+    deletion_locked: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -70,24 +71,45 @@ pub fn analytics_feature_breadth(settings: &SettingsSnapshot, context_group_coun
     enabled_flags + i64::from(context_group_count > 0)
 }
 
+#[cfg(test)]
+#[test]
+fn deletion_freeze_clears_settings_and_blocks_all_clones() {
+    let path = std::env::temp_dir().join(format!("verenu-settings-delete-test-{}.json", uuid::Uuid::new_v4()));
+    let settings = SettingsHandle::empty_for_test(path.clone());
+    settings.save_value("synthetic_private", Value::String("fixture".into())).unwrap();
+    let clone = settings.clone();
+    settings.freeze_for_deletion("synthetic-id").unwrap();
+    assert!(clone.get("synthetic_private").is_none());
+    assert_eq!(clone.get(crate::legal_consent::DELETE_PENDING), Some(Value::Bool(true)));
+    assert_eq!(clone.save_value("later", Value::Bool(true)), Err("deletion_pending".into()));
+    assert_eq!(clone.set("later", Value::Bool(true)), Err("deletion_pending".into()));
+    let _ = std::fs::remove_file(path);
+}
+
 impl SettingsHandle {
+    pub(crate) fn data_directory(&self) -> Option<&Path> {
+        self.path.parent()
+    }
+
     #[cfg(test)]
     pub(crate) fn empty_for_test(path: PathBuf) -> Self {
         Self {
             path: Arc::new(path),
             values: Arc::new(RwLock::new(Arc::new(Map::new()))),
+            deletion_locked: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn open(app: &AppHandle) -> Result<Self, String> {
         let path = settings_path(app)?;
-        if !crate::is_dev_session() {
+        if !crate::is_dev_session() && matches!(crate::legal_deletion::marker_path(&crate::app_data_dir()).try_exists(), Ok(false)) {
             migrate_legacy_settings_file(&path);
         }
         let values = read_settings_file(&path)?;
         Ok(Self {
             path: Arc::new(path),
             values: Arc::new(RwLock::new(Arc::new(values))),
+            deletion_locked: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -130,6 +152,7 @@ impl SettingsHandle {
             .values
             .write()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
+        self.ensure_writable()?;
         Arc::make_mut(&mut *settings).insert(key.into(), value);
         Ok(())
     }
@@ -139,6 +162,7 @@ impl SettingsHandle {
             .values
             .write()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
+        self.ensure_writable()?;
         Ok(Arc::make_mut(&mut *settings).remove(key))
     }
 
@@ -147,6 +171,7 @@ impl SettingsHandle {
             .values
             .read()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
+        self.ensure_writable()?;
         write_settings_file(&self.path, &values)
     }
 
@@ -175,6 +200,7 @@ impl SettingsHandle {
             .values
             .write()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
+        self.ensure_writable()?;
         if pending
             .iter()
             .all(|(key, value)| settings.get(key) == Some(value))
@@ -209,6 +235,7 @@ impl SettingsHandle {
             .values
             .write()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
+        self.ensure_writable()?;
         prepare(&SettingsSnapshot {
             values: settings.clone(),
         })?;
@@ -273,6 +300,7 @@ impl SettingsHandle {
             .values
             .write()
             .map_err(|_| "Settings lock was poisoned".to_string())?;
+        self.ensure_writable()?;
         if !should_commit() || settings.get(owner_key) != Some(owner) {
             return Ok(false);
         }
@@ -281,6 +309,21 @@ impl SettingsHandle {
         write_settings_file(&self.path, &next)?;
         *settings = Arc::new(next);
         Ok(true)
+    }
+
+    fn ensure_writable(&self) -> Result<(), String> {
+        if self.deletion_locked.load(Ordering::Acquire) { Err("deletion_pending".into()) } else { Ok(()) }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn freeze_for_deletion(&self, id: &str) -> Result<(), String> {
+        let mut values = self.values.write().map_err(|_| "Settings lock was poisoned".to_string())?;
+        let mut pending = Map::new();
+        pending.insert(crate::legal_consent::INSTALL_ID.into(), Value::String(id.into()));
+        pending.insert(crate::legal_consent::DELETE_PENDING.into(), Value::Bool(true));
+        self.deletion_locked.store(true, Ordering::Release);
+        *values = Arc::new(pending);
+        Ok(())
     }
 }
 
@@ -524,6 +567,10 @@ pub const UPDATE_DISMISSED_VERSION: &str = "update_dismissed_version";
 pub const UPDATE_NOTIFIED_VERSION: &str = "update_notified_version";
 pub const BETA_UPDATES_ENABLED: &str = "beta_updates_enabled";
 pub const VERENU_SERVICE_CHECKS_ENABLED: &str = "verenu_service_checks_enabled";
+/// Fetches model capability labels from models.dev. Defaults on.
+pub const MODEL_DETAILS_ONLINE: &str = "model_details_online";
+/// Allows downloads of local speech and cleanup models and their runtimes. Defaults on.
+pub const LOCAL_MODEL_DOWNLOADS_ENABLED: &str = "local_model_downloads_enabled";
 pub const HISTORY_RETENTION: &str = "history_retention";
 pub const GITHUB_USERNAME: &str = "github_username";
 pub(crate) const T3_CONNECTION: &str = "t3_connection";
@@ -535,6 +582,8 @@ pub const CAPS_LOCK_UPPERCASE: &str = "caps_lock_uppercase_enabled";
 pub const DEFAULT_CLIPBOARD_PHRASE: &str = "paste clipboard here";
 pub const LOCAL_MODEL_MEMORY_POLICY: &str = "local_model_memory_policy";
 pub const ANALYTICS_ENABLED: &str = "analytics_enabled";
+pub(crate) const LEGAL_INSTALL_SECRET: &str = "legal_install_secret";
+pub(crate) const KEY_LEGAL_INSTALL_SECRET: &str = "key_legal_install_secret";
 
 pub const DEFAULT_TONES: &[&str] = &["casual", "formal", "very_casual"];
 pub const CLEANUP_INTENSITIES: &[&str] = &["none", "rules", "light", "medium", "high"];

@@ -57,6 +57,8 @@ class VerenuBridge(appContext: Context) {
 
     @Volatile private var cached: BridgeConnection? = null
 
+    fun hasNetworkConsent(): Boolean = request("GET", "/v1/legal-consent")?.optBoolean("allowed", false) == true
+
     fun invalidate() {
         cached = null
     }
@@ -143,7 +145,7 @@ class VerenuBridge(appContext: Context) {
                 )
             },
             targetPackage = json.optString("targetPackage", ""),
-            analyticsEnabled = json.optBoolean("analyticsEnabled", true),
+            analyticsEnabled = json.optBoolean("analyticsEnabled", false),
             pillPosition = VerenuPillPlacement.sanitizePosition(json.optString("pillPosition")),
             pillDockPosition = VerenuPillPlacement.sanitizeDockPosition(json.optString("pillDockPosition")),
             coverKeyboardMic = json.optBoolean("coverKeyboardMic", true),

@@ -36,9 +36,17 @@ pub fn load_identity_key(app_data_dir: &std::path::Path) -> Option<Vec<u8>> {
     }
 }
 
-#[cfg(test)]
-pub fn delete_identity_key(app_data_dir: &std::path::Path) {
-    let _ = std::fs::remove_file(fallback_path(app_data_dir));
+#[allow(dead_code)]
+pub fn delete_identity_key(app_data_dir: &std::path::Path) -> Result<(), String> {
+    #[cfg(all(target_os = "windows", not(test)))]
+    win_store::delete(WIN_TARGET)?;
+    #[cfg(all(target_os = "macos", not(test)))]
+    mac_store::delete(MAC_SERVICE, MAC_ACCOUNT)?;
+    match std::fs::remove_file(fallback_path(app_data_dir)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("sync identity removal failed: {error}")),
+    }
 }
 
 fn fallback_path(app_data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -82,7 +90,7 @@ mod win_store {
     use std::path::Path;
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Security::Credentials::{
-        CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+        CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
     };
 
     fn encode(bytes: &[u8]) -> Vec<u16> {
@@ -110,6 +118,15 @@ mod win_store {
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn delete(target: &str) -> Result<(), String> {
+        let target = wide(target);
+        match unsafe { CredDeleteW(PCWSTR(target.as_ptr()), CRED_TYPE_GENERIC, Some(0)) } {
+            Ok(()) => Ok(()),
+            Err(error) if error.code().0 == 0x80070490_u32 as i32 => Ok(()),
+            Err(error) => Err(format!("sync identity removal failed: {error}")),
+        }
     }
 
     pub fn store(target: &str, app_data_dir: &Path, key_der: &[u8]) -> Result<(), String> {
@@ -166,6 +183,14 @@ mod mac_store {
         delete_generic_password, get_generic_password, set_generic_password,
     };
     use std::path::Path;
+
+    pub fn delete(service: &str, account: &str) -> Result<(), String> {
+        match delete_generic_password(service, account) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == -25300 => Ok(()),
+            Err(error) => Err(format!("sync identity removal failed: {error}")),
+        }
+    }
 
     pub fn store(
         service: &str,

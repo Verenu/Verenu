@@ -54,6 +54,10 @@ test('provided audio captures shared T3 skills without workspace selection only 
       const response = await request('/invoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args }) });
       assert.equal(response.status, 200, command); return response.json();
     };
+    // Custom providers and non-local models are consent-gated. This session is
+    // not seeded by the runner, so accept the current versions locally first.
+    const consent = await invoke('get_consent_state');
+    await invoke('accept_legal', { termsVersion: consent.termsVersion, privacyVersion: consent.privacyVersion });
     const id = 'custom:12345678-1234-1234-8234-123456789014';
     const provider = { id, name: 'Public skill regression', protocol: 'openai', base_url: `http://127.0.0.1:${server.address().port}/v1`, requires_key: false, supports_transcription: true, supports_cleanup: true, auth_header: null, extra_headers: {}, body_overrides: null, transcription_models: ['public-speech'], cleanup_models: ['public-cleanup'] };
     for (const [key, value] of Object.entries({ custom_providers: [provider], transcription_default_model: `${id}/public-speech`, cleanup_default_model: `${id}/public-cleanup`, transcription_fallback_models: [], cleanup_fallback_models: [], dual_transcription_enabled: false, cleanup_enabled: true, cleanup_cache_enabled: false })) await invoke('save_setting', { key, value });

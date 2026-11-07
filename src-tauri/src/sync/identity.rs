@@ -185,13 +185,13 @@ mod tests {
             "certificate (and pin) must survive restart"
         );
 
-        secrets::delete_identity_key(&dir);
+        secrets::delete_identity_key(&dir).unwrap();
         let reissued = load_or_create(&dir, Some(first.uuid.clone())).expect("reissue");
         assert_eq!(reissued.uuid, first.uuid, "uuid survives key loss");
 
         drop(reissued);
         drop(first);
-        secrets::delete_identity_key(&dir);
+        secrets::delete_identity_key(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

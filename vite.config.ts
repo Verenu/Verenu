@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { svelteTesting } from '@testing-library/svelte/vite';
 import pkg from './package.json';
 
 const allowedDevHosts = process.env.VERENU_DEV_ORIGINS?.split(',').flatMap((origin) => {
@@ -30,6 +31,13 @@ const emitPrivateErrorTrackingMaps = process.env.VERENU_POSTHOG_SOURCE_MAPS === 
 
 export default defineConfig({
   plugins: [svelte()],
+  test: {
+    // Component tests mount Svelte in a DOM and need the browser build; SSR render tests keep the default.
+    projects: [
+      { extends: true, test: { name: 'unit', include: ['src/**/*.test.ts'], exclude: ['src/**/*.dom.test.ts'] } },
+      { extends: true, plugins: [svelteTesting()], test: { name: 'dom', include: ['src/**/*.dom.test.ts'], environment: 'happy-dom' } },
+    ],
+  },
   clearScreen: false,
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),

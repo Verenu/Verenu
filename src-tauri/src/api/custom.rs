@@ -471,6 +471,7 @@ mod tests {
 
     #[tokio::test]
     async fn anthropic_new_version_rejects_removed_sampling_before_sending() {
+        crate::legal_consent::enable_test_consent();
         for parameter in ["temperature", "top_p", "top_k"] {
             let mut p = sample();
             p.protocol = CustomProtocol::Anthropic;
@@ -672,6 +673,7 @@ mod tests {
     }
 
     fn server(status: &str, body: &str) -> (String, std::thread::JoinHandle<String>) {
+        crate::legal_consent::enable_test_consent();
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();

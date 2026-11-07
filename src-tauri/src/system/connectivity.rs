@@ -116,7 +116,10 @@ pub async fn confirm_offline(verenu_checks_enabled: bool) -> bool {
     if recently_confirmed_offline() {
         return true;
     }
-    if verenu_checks_enabled && probe("https://api.verenu.com/v1/health", PROBE_TIMEOUT).await {
+    if verenu_checks_enabled
+        && crate::legal_consent::require_consent().is_ok()
+        && probe("https://api.verenu.com/v1/health", PROBE_TIMEOUT).await
+    {
         note_online();
         return false;
     }
@@ -126,6 +129,7 @@ pub async fn confirm_offline(verenu_checks_enabled: bool) -> bool {
 }
 
 async fn probe(url: &str, timeout: std::time::Duration) -> bool {
+    let Ok(_consent) = crate::legal_consent::network_permit().await else { return false; };
     crate::api::client::get()
         .get(url)
         .header("User-Agent", "verenu")

@@ -1,5 +1,7 @@
 <script lang="ts">
   import Toggle from '../../components/Toggle.svelte';
+  import ConsentHint from '../../legal/ConsentHint.svelte';
+  import { consentBlocked } from '../../legal/consentStore.svelte';
 
   let {
     enabled,
@@ -28,9 +30,11 @@
       <div>
         <div class="analytics-label">Share privacy-preserving product analytics</div>
         <p class="analytics-desc">Enabled by default. You can turn this off now or anytime in Settings → Privacy.</p>
+        <ConsentHint feature="Product analytics" />
       </div>
       <Toggle
         checked={enabled}
+        gated={consentBlocked()}
         onchange={onchange}
         label="Share privacy-preserving product analytics"
         bind:error={error}

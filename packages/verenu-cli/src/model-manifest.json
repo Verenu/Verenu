@@ -95,7 +95,7 @@
       "install": "parakeet-tdt-0.6b-v3-int8",
       "engine": "Parakeet",
       "archive": "parakeet-v3-int8.tar.gz",
-      "sha256": "43d37191602727524a7d8c6da0eef11c4ba24320f5b4730f1a2497befc2efa77",
+      "sha256": null,
       "directory": true
     },
     {
@@ -103,7 +103,7 @@
       "install": "parakeet-tdt-0.6b-v2-int8",
       "engine": "Parakeet",
       "archive": "parakeet-v2-int8.tar.gz",
-      "sha256": "ac9b9429984dd565b25097337a887bb7f0f8ac393573661c651f0e7d31563991",
+      "sha256": null,
       "directory": true
     },
     {
@@ -111,7 +111,7 @@
       "install": "moonshine-base",
       "engine": "Moonshine",
       "archive": "moonshine-base.tar.gz",
-      "sha256": "04bf6ab012cfceebd4ac7cf88c1b31d027bbdd3cd704649b692e2e935236b7e8",
+      "sha256": null,
       "directory": true
     },
     {
@@ -119,7 +119,7 @@
       "install": "moonshine-tiny-streaming-en",
       "engine": "MoonshineStreaming",
       "archive": "moonshine-tiny-streaming-en.tar.gz",
-      "sha256": "465addcfca9e86117415677dfdc98b21edc53537210333a3ecdb58509a80abaf",
+      "sha256": null,
       "directory": true
     },
     {
@@ -127,7 +127,7 @@
       "install": "moonshine-small-streaming-en",
       "engine": "MoonshineStreaming",
       "archive": "moonshine-small-streaming-en.tar.gz",
-      "sha256": "dbb3e1c1832bd88a4ac712f7449a136cc2c9a18c5fe33a12ed1b7cb1cfe9cdd5",
+      "sha256": null,
       "directory": true
     },
     {
@@ -135,7 +135,7 @@
       "install": "moonshine-medium-streaming-en",
       "engine": "MoonshineStreaming",
       "archive": "moonshine-medium-streaming-en.tar.gz",
-      "sha256": "07a66f3bff1c77e75a2f637e5a263928a08baae3c29c4c053fc968a9a9373d13",
+      "sha256": null,
       "directory": true
     },
     {
@@ -143,7 +143,7 @@
       "install": "sense-voice-int8",
       "engine": "SenseVoice",
       "archive": "sense-voice-int8.tar.gz",
-      "sha256": "171d611fe5d353a50bbb741b6f3ef42559b1565685684e9aa888ef563ba3e8a4",
+      "sha256": null,
       "directory": true
     },
     {
@@ -151,7 +151,7 @@
       "install": "giga-am-v3-int8",
       "engine": "GigaAm",
       "archive": "giga-am-v3-int8.tar.gz",
-      "sha256": "d872462268430db140b69b72e0fc4b787b194c1dbe51b58de39444d55b6da45b",
+      "sha256": null,
       "directory": true
     },
     {
@@ -159,7 +159,7 @@
       "install": "canary-180m-flash",
       "engine": "Canary",
       "archive": "canary-180m-flash.tar.gz",
-      "sha256": "6d9cfca6118b296e196eaedc1c8fa9788305a7b0f1feafdb6dc91932ab6e53f7",
+      "sha256": null,
       "directory": true
     },
     {
@@ -167,7 +167,7 @@
       "install": "canary-1b-v2",
       "engine": "Canary",
       "archive": "canary-1b-v2.tar.gz",
-      "sha256": "02305b2a25f9cf3e7deaffa7f94df00efa44f442cd55c101c2cb9c000f904666",
+      "sha256": null,
       "directory": true
     },
     {
@@ -175,7 +175,7 @@
       "install": "cohere-int8",
       "engine": "Cohere",
       "archive": "cohere-int8.tar.gz",
-      "sha256": "ea2257d52434f3644574f187dcdcf666e302cd11b92866116ab8e14cd9c887f0",
+      "sha256": null,
       "directory": true
     }
   ],

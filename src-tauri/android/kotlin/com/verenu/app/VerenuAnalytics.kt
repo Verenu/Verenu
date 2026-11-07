@@ -53,6 +53,7 @@ object VerenuAnalytics {
   @Synchronized
   fun setEnabled(value: Boolean) {
     if (!initialized || enabled == value) return
+    if (value && appContext?.let { VerenuBridge(it).hasNetworkConsent() } != true) return
     enabled = value
     if (value) {
       activateIdentity()

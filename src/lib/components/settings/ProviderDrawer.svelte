@@ -8,6 +8,7 @@
   import { presetLogoHtml } from '../../customProviderLogos';
   import { CUSTOM_PROVIDER_PRESETS, POPULAR_PRESET_IDS, displayHost, presetById, presetForUrl, type CustomProviderPreset } from '../../customProviderPresets';
   import { invoke } from '../../tauri';
+  import { handleConsentError } from '../../legal/consentStore.svelte';
   import { saveSetting } from '../../settings';
   import { formatIpcError } from '../../errors';
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
@@ -217,6 +218,7 @@
           if (validation.status === 'invalid') throw new Error(validation.message);
           await invoke('save_api_key', { provider: provider.id, key: key.trim() });
         } catch (keyError) {
+          if (handleConsentError(keyError)) { error = 'Accept the Terms and Privacy Policy, then save the key again.'; await onchange(); return; }
           error = `The provider was saved, but its API key was not. ${formatIpcError(keyError, 'The key could not be saved.')}`;
           await onchange();
           return;

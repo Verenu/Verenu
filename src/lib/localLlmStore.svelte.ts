@@ -13,6 +13,7 @@ import {
 } from './tauri';
 import { ensureNotificationPermission } from './notifications';
 import { formatIpcError } from './errors';
+import { consentBlocked, handleConsentError, requireConsent } from './legal/consentStore.svelte';
 
 export const localLlmStore = $state({
   models: [] as LocalLlmModelInfo[],
@@ -60,11 +61,16 @@ export async function refreshLocalLlmRuntimeInfo() {
 }
 
 export async function downloadLocalLlmRuntime() {
+  if (consentBlocked()) {
+    requireConsent(() => { void downloadLocalLlmRuntime(); });
+    return;
+  }
   try {
     await invoke('download_local_llm_runtime');
     await refreshLocalLlmRuntimeInfo();
   } catch (err) {
     console.error('download local cleanup runtime failed', err);
+    if (handleConsentError(err, () => { void downloadLocalLlmRuntime(); })) return;
     emit('verenu:error', formatIpcError(err, 'Could not download the local cleanup engine'));
   }
 }
@@ -92,6 +98,10 @@ export async function deleteLocalLlmRuntime() {
 }
 
 export async function downloadLocalLlmModel(modelIdValue: string): Promise<boolean> {
+  if (consentBlocked()) {
+    requireConsent(() => { void downloadLocalLlmModel(modelIdValue); });
+    return false;
+  }
   try {
     ensureNotificationPermission().catch(() => {});
     await invoke('download_local_llm_model', { modelId: modelIdValue });
@@ -99,6 +109,7 @@ export async function downloadLocalLlmModel(modelIdValue: string): Promise<boole
     return true;
   } catch (err) {
     console.error('download local cleanup model failed', err);
+    if (handleConsentError(err, () => { void downloadLocalLlmModel(modelIdValue); })) return false;
     emit('verenu:error', formatIpcError(err, 'Could not start the cleanup model download'));
     return false;
   }
