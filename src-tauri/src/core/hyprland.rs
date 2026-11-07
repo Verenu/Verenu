@@ -408,10 +408,64 @@ pub(crate) fn ensure_window_rules() -> Result<(), String> {
     }
     let output = std::process::Command::new("hyprctl").arg("configerrors").output()
         .map_err(|e| format!("cannot validate Hyprland window rules: {e}"))?;
-    if !output.status.success() || !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+    let lines: Vec<String> = String::from_utf8_lossy(&output.stdout).lines().map(str::to_string).collect();
+    if !output.status.success() || verenu_config_errors_present(&lines) {
         return Err("Hyprland reports configuration errors. Run hyprctl configerrors to inspect them.".into());
     }
     Ok(())
+}
+
+/// True when a `hyprctl configerrors` entry is caused by Verenu's own
+/// generated config. Errors from other files, such as a broken Omarchy
+/// script, must not count as Verenu failures or Verenu retries and reloads
+/// forever. An entry counts when it names Verenu or a `_verenu_` binding, or
+/// points at a line of `bindings.lua` inside a Verenu managed block.
+#[cfg(target_os = "linux")]
+pub(crate) fn verenu_config_error(error: &str, bindings_lua: &str) -> bool {
+    let lower = error.to_lowercase();
+    if lower.contains("verenu") {
+        return true;
+    }
+    if !lower.contains("bindings.lua") {
+        return false;
+    }
+    let digits: String = lower
+        .split_once("bindings.lua")
+        .map(|(_, rest)| rest)
+        .unwrap_or("")
+        .trim_start_matches(|c: char| c == ':' || c.is_whitespace() || c.is_alphabetic())
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let Ok(line) = digits.parse::<usize>() else {
+        return true;
+    };
+    let mut inside = false;
+    for (index, text) in bindings_lua.lines().enumerate() {
+        if text.contains("-- >>> Verenu") {
+            inside = true;
+        }
+        if index + 1 == line {
+            return inside;
+        }
+        if text.contains("-- <<< End Verenu") {
+            inside = false;
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn verenu_config_errors_present(errors: &[String]) -> bool {
+    let bindings = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config")))
+        .and_then(|dir| fs::read_to_string(dir.join("hypr/bindings.lua")).ok())
+        .unwrap_or_default();
+    errors
+        .iter()
+        .filter(|error| !error.trim().is_empty())
+        .any(|error| verenu_config_error(error, &bindings))
 }
 
 #[cfg(target_os = "linux")]
@@ -722,6 +776,19 @@ pub(crate) fn active_window() -> Option<()> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn config_errors_only_count_when_they_are_verenus() {
+        use crate::core::hyprland::verenu_config_error;
+        let file = "a\n-- >>> Verenu managed global shortcut (do not edit) <<<\nhl.bind()\n-- <<< End Verenu managed global shortcut >>>\nz\n";
+        let other = "/home/u/.local/share/omarchy/default/hypr/monitor-workspaces.lua:336: HLMonitor.set_workspace: expected a workspace object";
+        assert!(!verenu_config_error(other, file));
+        assert!(!verenu_config_error("/home/u/.config/hypr/bindings.lua:1: oops", file));
+        assert!(verenu_config_error("/home/u/.config/hypr/bindings.lua:3: oops", file));
+        assert!(verenu_config_error("bad _verenu_copy_binding", file));
+        assert!(verenu_config_error("Config error in file bindings.lua", file));
+    }
+
     #[test]
     fn socket_exchange_sends_exact_command_and_reads_all_response_fragments() {
         use std::io::{Read, Write};

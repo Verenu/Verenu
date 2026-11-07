@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed a Linux Hyprland loop where an unrelated config error made Verenu rebind and reload Hyprland every few seconds. Only config errors from Verenu's own bindings count as failures, and automatic rebinds now back off and stop after five attempts.
 - Arch package upgrades repair inaccessible runtime directories left by older releases.
 - Linux updates and developer reinstalls report when installation finishes and prompt users to quit and reopen Verenu.
 - Isolated development sessions no longer send desktop cleanup-failure notifications; the in-app notice remains available.

@@ -29,7 +29,7 @@ pub(super) fn ensure_copy_binding(portal_id: &str, chord: &str) -> Result<(), St
         .map_err(|e| format!("cannot validate Hyprland bindings: {e}"))?;
     let errors: Vec<String> = serde_json::from_slice(&errors.stdout)
         .map_err(|_| "cannot read Hyprland config validation".to_string())?;
-    if errors.iter().any(|error| !error.trim().is_empty()) {
+    if crate::core::hyprland::verenu_config_errors_present(&errors) {
         return Err("Hyprland reports configuration errors after shortcut registration".into());
     }
     Ok(())
@@ -127,6 +127,53 @@ pub(super) fn temporary_controls(name: &str, key: &str, id: Option<&str>, descri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fake `hyprctl` that logs each call and reports `ERRORS` from configerrors.
+    fn run_with_fake_hyprctl(errors: &str, bindings: &str) -> (Result<(), String>, String) {
+        use std::os::unix::fs::PermissionsExt;
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("verenu-fake-hyprctl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("hypr")).unwrap();
+        fs::write(dir.join("hypr/bindings.lua"), bindings).unwrap();
+        let calls = dir.join("calls.log");
+        let script = dir.join("hyprctl");
+        fs::write(&script, format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\n[ \"$2\" = configerrors ] && echo '{}'\nexit 0\n",
+            calls.display(), errors
+        )).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let (old_path, old_cfg) = (std::env::var_os("PATH"), std::env::var_os("XDG_CONFIG_HOME"));
+        std::env::set_var("PATH", format!("{}:{}", dir.display(), old_path.clone().unwrap_or_default().to_string_lossy()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let result = ensure_copy_binding("app:copy", "Ctrl+Alt+C");
+        std::env::set_var("PATH", old_path.unwrap_or_default());
+        match old_cfg { Some(v) => std::env::set_var("XDG_CONFIG_HOME", v), None => std::env::remove_var("XDG_CONFIG_HOME") }
+        let log = fs::read_to_string(&calls).unwrap_or_default();
+        let _ = fs::remove_dir_all(&dir);
+        (result, log)
+    }
+
+    #[test]
+    fn unrelated_config_errors_do_not_fail_copy_registration() {
+        let (result, log) = run_with_fake_hyprctl(
+            r#"["/omarchy/monitor-workspaces.lua:336: expected a workspace object"]"#,
+            "-- user config\n",
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(log.matches("reload").count(), 1);
+    }
+
+    #[test]
+    fn errors_in_the_verenu_block_still_fail_copy_registration() {
+        let (result, _) = run_with_fake_hyprctl(
+            r#"["/x/hypr/bindings.lua:3: bad bind"]"#,
+            "-- user config\n",
+        );
+        // The block is appended after the user's one line, so line 3 is inside it.
+        assert!(result.is_err());
+    }
 
     #[test]
     #[ignore = "requires a Lua interpreter; executes generated control lifecycle"]
