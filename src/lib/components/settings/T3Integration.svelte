@@ -9,6 +9,7 @@
   import IntegrationConfirmDialog from './IntegrationConfirmDialog.svelte';
   import T3SkillsDialog from './T3SkillsDialog.svelte';
   import { isSkillExcluded, sortedSkillNames, timeAgo } from './t3SkillNames';
+  import { dictionaryStatus } from './t3Dictionary';
   import t3Icon from '../../../assets/integrations/t3-code.svg';
 
   let draft = $state('');
@@ -38,6 +39,7 @@
     if (!skillCount && !t3State.loading) return 'T3 Code did not report any skills. Enable skills in T3 Code, then pull now.';
     return '';
   });
+  const dictionary = $derived(connection ? dictionaryStatus(connection, now) : null);
   const updating = $derived(t3State.loading && !t3State.connecting);
   const menuItems = $derived([
     { label: 'Pull now', icon: icons.refresh, disabled: t3State.loading, onselect: pullNow },
@@ -81,7 +83,7 @@
 
 <IntegrationRow name="T3 Code" label="T3 Code integration" target="t3-integration" busy={t3State.loading || t3State.connecting}>
   {#snippet icon()}<img src={t3Icon} alt="" />{/snippet}
-  {#snippet description()}Turn spoken skill requests into exact <code>$skill-name</code> mentions.{/snippet}
+  {#snippet description()}Turn spoken skill requests into exact <code>$skill-name</code> mentions, and share your dictionary with T3 Code dictation.{/snippet}
   {#snippet actions()}
     {#if connection}
       <IntegrationMenu label="T3 Code actions" triggerId="t3-integration-menu" items={menuItems} />
@@ -101,6 +103,7 @@
       <span class="int-meta">Pulled {timeAgo(connection.fetchedAt, now)}</span>
     </div>
     {#if attention && !replacing}<p class="int-note" role="status">{attention}</p>{/if}
+    {#if dictionary && !replacing}<p class={dictionary.warn ? 'int-note' : 'int-fine'} role="status" data-testid="t3-dictionary-status">{dictionary.text}</p>{/if}
     {#if !replacing}<p class="int-fine">Only skill names reach your cleanup provider. Your pairing stays in your credential store.</p>{/if}
   {/if}
 

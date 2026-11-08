@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn t3_skill_pull_negotiates_protocol_two_and_uses_ticket_rpc() {
+    crate::legal_consent::enable_test_consent();
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
@@ -56,6 +57,62 @@ async fn t3_skill_pull_negotiates_protocol_two_and_uses_ticket_rpc() {
         .unwrap();
     server.await.unwrap();
     assert_eq!(catalogs[0].skills[0].name, "babysit-pr");
+}
+
+#[tokio::test]
+async fn t3_dictionary_sync_merges_into_shared_dictionary_and_writes_only_changes() {
+    crate::legal_consent::enable_test_consent();
+    use crate::system::t3_dictionary::Entry;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let server = tokio::spawn(async move {
+        let mut updates = Vec::new();
+        for round in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buffer).await.unwrap();
+            let body = r#"{"ticket":"t","expiresAt":"2099-01-01T00:00:00Z"}"#;
+            tokio::io::AsyncWriteExt::write_all(&mut stream, format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            drop(stream);
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // Round 0: T3 holds a native entry plus a stale Verenu entry. Round 1: already merged.
+            let existing = if round == 0 {
+                json!([{"term":"Kubernetes","aliases":[]},{"term":"Stale","aliases":[]}])
+            } else {
+                json!([{"term":"Kubernetes","aliases":[]},{"term":"Omarchy","aliases":["omar key"]}])
+            };
+            loop {
+                let Some(Ok(message)) = socket.next().await else { break };
+                let Ok(text) = message.to_text() else { continue };
+                let request: Value = serde_json::from_str(text).unwrap();
+                let value = match request["tag"].as_str().unwrap() {
+                    "server.getConfig" => json!({"settings":{"speechProjectCustomWords":existing}}),
+                    "server.updateSettings" => {
+                        updates.push(request["payload"].clone());
+                        json!({})
+                    }
+                    other => panic!("unexpected {other}"),
+                };
+                socket.send(Message::Text(json!({"_tag":"Exit","requestId":request["id"],"exit":{"_tag":"Success","value":value}}).to_string().into())).await.unwrap();
+                if request["id"] == "2" || (round == 1 && request["id"] == "1") {
+                    break;
+                }
+            }
+        }
+        updates
+    });
+    let wanted = [Entry { term: "Omarchy".into(), aliases: vec!["omar key".into()] }];
+    let first = sync_dictionary(&base, "tok", &["Stale".into()], &wanted).await.unwrap();
+    assert_eq!(first.synced_terms, ["Omarchy"]);
+    let second = sync_dictionary(&base, "tok", &first.synced_terms, &wanted).await.unwrap();
+    assert_eq!(second.skipped, 0);
+    let updates = server.await.unwrap();
+    assert_eq!(updates.len(), 1, "the unchanged second sync must not write");
+    assert_eq!(
+        updates[0],
+        json!({"patch":{"speechProjectCustomWords":[{"term":"Kubernetes","aliases":[]},{"term":"Omarchy","aliases":["omar key"]}]}})
+    );
 }
 
 #[test]

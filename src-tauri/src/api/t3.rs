@@ -1,13 +1,22 @@
-use crate::system::t3_skills::{self, Catalog, Skill};
+use crate::system::{
+    t3_dictionary,
+    t3_skills::{self, Catalog, Skill},
+};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, Url};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, time::Duration};
-use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
+use tokio::net::TcpStream;
+use tokio_tungstenite::{
+    tungstenite::{protocol::WebSocketConfig, Message},
+    MaybeTlsStream, WebSocketStream,
+};
 
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(20);
+pub const READ_SCOPE: &str = "orchestration:read";
+pub const SETTINGS_SCOPE: &str = "settings:write";
 
 pub struct PairingTarget {
     pub base_url: Url,
@@ -159,7 +168,13 @@ pub async fn descriptor(base: &Url) -> Result<Value, String> {
     Ok(result)
 }
 
-pub async fn exchange(target: &PairingTarget) -> Result<(String, u64), String> {
+pub struct Exchange {
+    pub token: String,
+    pub expires_in: u64,
+    pub scopes: Vec<String>,
+}
+
+pub async fn exchange(target: &PairingTarget) -> Result<Exchange, String> {
     let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     let result = bounded_json(
         client()?
@@ -183,7 +198,7 @@ pub async fn exchange(target: &PairingTarget) -> Result<(String, u64), String> {
                     "requested_token_type",
                     "urn:ietf:params:oauth:token-type:access_token",
                 ),
-                ("scope", "orchestration:read"),
+                ("scope", &format!("{READ_SCOPE} {SETTINGS_SCOPE}")),
                 ("client_label", "Verenu skill integration"),
                 ("client_device_type", "desktop"),
             ])
@@ -205,7 +220,97 @@ pub async fn exchange(target: &PairingTarget) -> Result<(String, u64), String> {
         .get("expires_in")
         .and_then(Value::as_u64)
         .ok_or("T3 did not report credential expiry.")?;
-    Ok((token, expires))
+    let scopes = result
+        .get("scope")
+        .and_then(Value::as_str)
+        .map(|scope| scope.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_else(|| vec![READ_SCOPE.to_string()]);
+    Ok(Exchange {
+        token,
+        expires_in: expires,
+        scopes,
+    })
+}
+
+type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+async fn open_socket(base: &Url, token: &str, failure: &str) -> Result<Socket, String> {
+    let ticket = bounded_json(
+        client()?
+            .post(
+                base.join("api/auth/websocket-ticket")
+                    .map_err(|_| "Invalid T3 address.")?,
+            )
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_| "Cannot authenticate the T3 connection.")?,
+    )
+    .await?;
+    let mut url = base.join("ws").map_err(|_| "Invalid T3 address.")?;
+    url.set_scheme(if base.scheme() == "https" { "wss" } else { "ws" })
+        .map_err(|_| "Invalid T3 address.")?;
+    url.query_pairs_mut().append_pair(
+        "wsTicket",
+        ticket
+            .get("ticket")
+            .and_then(Value::as_str)
+            .ok_or("T3 did not issue a connection ticket.")?,
+    );
+    url.query_pairs_mut()
+        .append_pair("orchestrationProtocol", "2");
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(MAX_RESPONSE))
+        .max_frame_size(Some(MAX_RESPONSE));
+    let (socket, _) = tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), false)
+        .await
+        .map_err(|_| failure.to_string())?;
+    Ok(socket)
+}
+
+/// Sends one RPC request and returns its success value. `failure` is the
+/// message shown when T3 answers with anything other than success.
+async fn call(
+    socket: &mut Socket,
+    id: &str,
+    method: &str,
+    payload: Value,
+    failure: &str,
+) -> Result<Value, String> {
+    socket
+        .send(Message::Text(
+            json!({"_tag":"Request","id":id,"tag":method,"payload":payload,"headers":[]})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|_| "Could not send the T3 request.")?;
+    loop {
+        let message = socket
+            .next()
+            .await
+            .ok_or("T3 closed the connection.")?
+            .map_err(|_| "T3 interrupted the request.")?;
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let response: Value =
+            serde_json::from_str(&text).map_err(|_| "T3 returned unsupported RPC data.")?;
+        if response.get("_tag").and_then(Value::as_str) == Some("Ping") {
+            socket
+                .send(Message::Text(json!({"_tag":"Pong"}).to_string().into()))
+                .await
+                .map_err(|_| "T3 connection interrupted.")?;
+            continue;
+        }
+        if response.get("requestId").and_then(Value::as_str) != Some(id) {
+            continue;
+        }
+        if response.pointer("/exit/_tag").and_then(Value::as_str) != Some("Success") {
+            return Err(failure.to_string());
+        }
+        return Ok(response.pointer("/exit/value").cloned().unwrap_or(Value::Null));
+    }
 }
 
 pub async fn fetch_catalogs(
@@ -216,36 +321,60 @@ pub async fn fetch_catalogs(
 ) -> Result<Vec<Catalog>, String> {
     let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     tokio::time::timeout(TIMEOUT, async {
-        let ticket = bounded_json(client()?.post(base.join("api/auth/websocket-ticket").map_err(|_| "Invalid T3 address.")?)
-            .bearer_auth(token).send().await.map_err(|_| "Cannot authenticate the T3 skill pull.")?).await?;
-        let mut url = base.join("ws").map_err(|_| "Invalid T3 address.")?;
-        url.set_scheme(if base.scheme() == "https" { "wss" } else { "ws" }).map_err(|_| "Invalid T3 address.")?;
-        url.query_pairs_mut().append_pair("wsTicket", ticket.get("ticket").and_then(Value::as_str).ok_or("T3 did not issue a connection ticket.")?);
-        url.query_pairs_mut().append_pair("orchestrationProtocol", "2");
-        let config = WebSocketConfig::default().max_message_size(Some(MAX_RESPONSE)).max_frame_size(Some(MAX_RESPONSE));
-        let (mut socket, _) = tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), false).await
-            .map_err(|_| "Could not open the T3 skill connection. Check the T3 version and pairing address.")?;
-        let requests: &[(&str, &str)] = if refresh { &[("1", "server.refreshProviders"), ("2", "server.getConfig")] } else { &[("2", "server.getConfig")] };
-        let mut config_value = None;
-        for (id, method) in requests {
-            socket.send(Message::Text(json!({"_tag":"Request","id":id,"tag":method,"payload":{},"headers":[]}).to_string().into())).await.map_err(|_| "Could not request T3 skills.")?;
-            loop {
-                let message = socket.next().await.ok_or("T3 closed the skill connection.")?.map_err(|_| "T3 interrupted the skill pull.")?;
-                let Message::Text(text) = message else { continue; };
-                let response: Value = serde_json::from_str(&text).map_err(|_| "T3 returned unsupported RPC data.")?;
-                if response.get("_tag").and_then(Value::as_str) == Some("Ping") {
-                    socket.send(Message::Text(json!({"_tag":"Pong"}).to_string().into())).await.map_err(|_| "T3 connection interrupted.")?;
-                    continue;
-                }
-                if response.get("requestId").and_then(Value::as_str) != Some(id) { continue; }
-                if response.pointer("/exit/_tag").and_then(Value::as_str) != Some("Success") { return Err("T3 could not read skill metadata. Check provider availability and pairing permissions.".into()); }
-                if *method == "server.getConfig" { config_value = response.pointer("/exit/value").cloned(); }
-                break;
-            }
+        let mut socket = open_socket(base, token, "Could not open the T3 skill connection. Check the T3 version and pairing address.").await?;
+        let failure = "T3 could not read skill metadata. Check provider availability and pairing permissions.";
+        if refresh {
+            call(&mut socket, "1", "server.refreshProviders", json!({}), failure).await?;
+        }
+        let config = call(&mut socket, "2", "server.getConfig", json!({}), failure).await?;
+        let _ = socket.close(None).await;
+        parse_catalogs(&config, environment_id)
+    }).await.map_err(|_| "T3 skill pull timed out. Your previous catalog is retained.".to_string())?
+}
+
+pub struct DictionarySync {
+    pub synced_terms: Vec<String>,
+    pub skipped: usize,
+}
+
+fn shared_dictionary(config: &Value) -> Result<Vec<t3_dictionary::Entry>, String> {
+    let value = config
+        .pointer("/settings/speechProjectCustomWords")
+        .ok_or("This T3 version has no shared dictionary. Update T3 Code to share your dictionary.")?;
+    serde_json::from_value(value.clone()).map_err(|_| "T3 returned an unsupported dictionary.".into())
+}
+
+/// Writes Verenu's vocabulary into T3's shared dictionary, keeping every entry
+/// that Verenu did not write earlier. T3 is only updated when the merged list
+/// differs from what it already has.
+pub async fn sync_dictionary(
+    base: &Url,
+    token: &str,
+    previously_synced: &[String],
+    wanted: &[t3_dictionary::Entry],
+) -> Result<DictionarySync, String> {
+    let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
+    tokio::time::timeout(TIMEOUT, async {
+        let mut socket = open_socket(base, token, "Could not open the T3 connection. Check the T3 version and pairing address.").await?;
+        let config = call(&mut socket, "1", "server.getConfig", json!({}), "T3 could not read its settings. Reconnect with a fresh pairing link.").await?;
+        let existing = shared_dictionary(&config)?;
+        let merged = t3_dictionary::merge(&existing, previously_synced, wanted);
+        if merged.entries != existing {
+            call(
+                &mut socket,
+                "2",
+                "server.updateSettings",
+                json!({"patch": {"speechProjectCustomWords": merged.entries}}),
+                "T3 refused the dictionary update. Reconnect with a pairing link that allows settings changes.",
+            )
+            .await?;
         }
         let _ = socket.close(None).await;
-        parse_catalogs(&config_value.ok_or("T3 did not return its skill catalog.")?, environment_id)
-    }).await.map_err(|_| "T3 skill pull timed out. Your previous catalog is retained.".to_string())?
+        Ok(DictionarySync {
+            synced_terms: merged.synced_terms,
+            skipped: merged.skipped,
+        })
+    }).await.map_err(|_| "Sharing your dictionary with T3 timed out. It will retry.".to_string())?
 }
 
 pub fn parse_catalogs(config: &Value, environment_id: &str) -> Result<Vec<Catalog>, String> {
