@@ -62,6 +62,16 @@ async function reachPermissionsStep(page) {
     }
 
     const settingsPage = await browser.newPage({ userAgent: MAC_USER_AGENT });
+    await settingsPage.addInitScript(() => {
+      const add = window.addEventListener;
+      window.__settingsSectionListenerReady = false;
+      window.addEventListener = function(type, ...args) {
+        if (type === 'tauri:open-flow:open-settings-section') {
+          window.__settingsSectionListenerReady = true;
+        }
+        return add.call(this, type, ...args);
+      };
+    });
     await seedDevState(settingsPage, {
       settings: {
         setup_complete: true,
@@ -73,6 +83,7 @@ async function reachPermissionsStep(page) {
       },
     });
     await settingsPage.goto(TARGET_URL, { waitUntil: 'networkidle', timeout: TIMEOUT });
+    await settingsPage.waitForFunction(() => window.__settingsSectionListenerReady, null, { timeout: TIMEOUT });
     await settingsPage.evaluate(() => {
       window.dispatchEvent(new CustomEvent('tauri:open-flow:open-settings-section', { detail: 'permissions' }));
     });

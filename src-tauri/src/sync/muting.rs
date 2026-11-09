@@ -344,7 +344,7 @@ impl SyncManager {
             }
             if send_message(
                 &mut tls,
-                &Message::DictationMute {
+                Message::DictationMute {
                     device_uuid: self.device_uuid(),
                 },
             )
@@ -428,13 +428,13 @@ impl SyncManager {
                     || !same_recording(&self.inner.app, &active)
                     || !trusted(&self.inner, uuid, &peer.cert_fp)
                 {
-                    let _ = send_message(&mut tls, &Message::DictationMuteEnd).await;
+                    let _ = send_message(&mut tls, Message::DictationMuteEnd).await;
                     return Ok(());
                 }
                 if Instant::now() >= next_heartbeat {
                     tokio::time::timeout(
                         HEARTBEAT,
-                        send_message(&mut tls, &Message::DictationMuteHeartbeat),
+                        send_message(&mut tls, Message::DictationMuteHeartbeat),
                     )
                     .await??;
                     next_heartbeat = Instant::now() + HEARTBEAT;
@@ -488,7 +488,7 @@ pub(super) async fn receive(
     if !consent {
         let _ = send_message(
             &mut tls,
-            &Message::DictationMuteAck {
+            Message::DictationMuteAck {
                 enabled: false,
                 busy: false,
             },
@@ -501,7 +501,7 @@ pub(super) async fn receive(
         log::debug!("sync: active mute lease limit reached");
         let _ = send_message(
             &mut tls,
-            &Message::DictationMuteAck {
+            Message::DictationMuteAck {
                 enabled: false,
                 busy: true,
             },
@@ -512,7 +512,7 @@ pub(super) async fn receive(
     if !trusted(&inner, &uuid, &fingerprint) || !enabled(&inner.app) {
         let _ = send_message(
             &mut tls,
-            &Message::DictationMuteAck {
+            Message::DictationMuteAck {
                 enabled: false,
                 busy: false,
             },
@@ -522,7 +522,7 @@ pub(super) async fn receive(
     }
     if send_message(
         &mut tls,
-        &Message::DictationMuteAck {
+        Message::DictationMuteAck {
             enabled: true,
             busy: false,
         },
@@ -1068,7 +1068,7 @@ mod tests {
         for explicit in [false, true] {
             let (mut sender, mut receiver) = tokio::io::duplex(512);
             if explicit {
-                send_message(&mut sender, &Message::DictationMuteEnd)
+                send_message(&mut sender, Message::DictationMuteEnd)
                     .await
                     .unwrap();
             } else {
@@ -1105,7 +1105,7 @@ mod tests {
                 async move { lease(&mut receiver, || enabled.load(Ordering::Relaxed)).await },
             );
         for _ in 0..5 {
-            send_message(&mut sender, &Message::DictationMuteHeartbeat)
+            send_message(&mut sender, Message::DictationMuteHeartbeat)
                 .await
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1140,7 +1140,7 @@ mod tests {
             !task.is_finished(),
             "a completed slow heartbeat renews the lease"
         );
-        send_message(&mut sender, &Message::DictationMuteEnd)
+        send_message(&mut sender, Message::DictationMuteEnd)
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_millis(40), task)

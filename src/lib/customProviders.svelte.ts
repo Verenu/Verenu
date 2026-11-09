@@ -23,7 +23,19 @@ export function isCustomProviderId(id: string): id is `custom:${string}` {
 export function customProvider(id: ProviderId) {
   return customProviderStore.providers.find(p => p.id === id);
 }
+let nextRefresh = 0;
+let appliedRefresh = 0;
+export function beginCustomProviderRefresh() {
+  const refresh = ++nextRefresh;
+  return (providers: CustomProvider[]) => {
+    if (refresh > appliedRefresh) {
+      appliedRefresh = refresh;
+      customProviderStore.providers = providers;
+    }
+  };
+}
 export async function refreshCustomProviders() {
+  const apply = beginCustomProviderRefresh();
   const all = await invoke<{ custom_providers: CustomProvider[] }>('get_all_settings');
-  customProviderStore.providers = all.custom_providers ?? [];
+  apply(all.custom_providers ?? []);
 }

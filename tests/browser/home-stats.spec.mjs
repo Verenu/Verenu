@@ -3,6 +3,48 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test, expect } from './fixtures.mjs';
 
+test('history renders while its independent stats request is still pending', async ({ page, session }) => {
+  const directory = path.dirname(process.env.VERENU_SESSION_ACCESS_FILE);
+  const db = new DatabaseSync(path.join(directory, 'data', 'verenu.db'));
+  let row;
+  let releaseStats;
+  const statsHeld = new Promise(resolve => { releaseStats = resolve; });
+  let statsRequested;
+  const requested = new Promise(resolve => { statsRequested = resolve; });
+  try {
+    db.exec('PRAGMA busy_timeout=5000');
+    const text = 'Synthetic history loads before statistics';
+    row = db.prepare('INSERT INTO transcriptions(raw_text,clean_text,words,duration_ms,api_used) VALUES(?,?,1,1000,?) RETURNING id').get(text, text, 'fixture');
+    const expectedStats = await session.invoke('get_stats');
+    const expectedWords = expectedStats.total_words >= 1000
+      ? `${(expectedStats.total_words / 1000).toFixed(1)}k`
+      : String(expectedStats.total_words);
+    await page.route('**/__verenu_dev/invoke', async route => {
+      if (route.request().postDataJSON()?.command !== 'get_stats') return route.continue();
+      const response = await route.fetch();
+      statsRequested();
+      await statsHeld;
+      await route.fulfill({ response });
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await requested;
+    await expect(page.getByText(text, { exact: true })).toBeVisible();
+    releaseStats();
+    await expect(page.locator('.stat-card .stat-num').first()).toHaveText(expectedWords);
+  } finally {
+    releaseStats();
+    try {
+      await page.unroute('**/__verenu_dev/invoke');
+    } finally {
+      try {
+        if (row) db.prepare('DELETE FROM transcriptions WHERE id=?').run(row.id);
+      } finally {
+        db.close();
+      }
+    }
+  }
+});
+
 test('Home stats stay visible while history scrolls and remain hidden on narrow windows', async ({ page }, testInfo) => {
   const directory = path.dirname(process.env.VERENU_SESSION_ACCESS_FILE);
   const manifest = JSON.parse(await fs.readFile(path.join(directory, 'session.json'), 'utf8'));

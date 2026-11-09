@@ -9,7 +9,7 @@ async fn approval_reader_uses_the_requested_deadline() {
         read_message_with_timeout(&mut reader, std::time::Duration::from_secs(1)),
         async {
             tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-            send_message(&mut writer, &Message::PairBusy).await.unwrap();
+            send_message(&mut writer, Message::PairBusy).await.unwrap();
         },
     );
     assert!(matches!(result.unwrap(), Message::PairBusy));
@@ -54,13 +54,14 @@ async fn session_rejects_a_different_peer_uuid() {
                 .unwrap();
             super::super::protocol::send_message(
                 &mut server,
-                &Message::HelloAck(super::super::protocol::Hello {
+                Message::HelloAck(super::super::protocol::Hello {
                     device_uuid: uuid("impostor"),
                     device_name: "Fixture".into(),
                     protocol: super::super::protocol::PROTOCOL_VERSION,
                     app_version: "test".into(),
                     activity_receipts: false,
                     cleanup_cache: false,
+                    compressed_frames: false,
                 }),
             )
             .await
@@ -86,13 +87,14 @@ async fn session_rejects_completion_before_final_batch() {
                 .unwrap();
             super::super::protocol::send_message(
                 &mut server,
-                &Message::HelloAck(super::super::protocol::Hello {
+                Message::HelloAck(super::super::protocol::Hello {
                     device_uuid: uuid("early-b"),
                     device_name: "Fixture".into(),
                     protocol: super::super::protocol::PROTOCOL_VERSION,
                     app_version: "test".into(),
                     activity_receipts: false,
                     cleanup_cache: false,
+                    compressed_frames: false,
                 }),
             )
             .await
@@ -103,7 +105,7 @@ async fn session_rejects_completion_before_final_batch() {
             let stats = engine::build_stats_exchange(&b.lock().unwrap(), &uuid("early-b")).unwrap();
             super::super::protocol::send_message(
                 &mut server,
-                &Message::Meta {
+                Message::Meta {
                     stats,
                     settings: vec![],
                 },
@@ -113,7 +115,7 @@ async fn session_rejects_completion_before_final_batch() {
             super::super::protocol::read_message(&mut server)
                 .await
                 .unwrap();
-            super::super::protocol::send_message(&mut server, &Message::SyncDone)
+            super::super::protocol::send_message(&mut server, Message::SyncDone)
                 .await
                 .unwrap();
         },

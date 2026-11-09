@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { invoke, listen } from './tauri';
+import { desktopShortcut, loadDesktopShortcuts } from './shortcutStatus.svelte';
 
 const harness = vi.hoisted(() => ({ handlers: new Map<string, unknown>() }));
 
@@ -13,13 +14,11 @@ vi.mock('./tauri', () => ({
 }));
 
 it('keeps Settings usable when shortcut status is unavailable', async () => {
-  const { desktopShortcut, loadDesktopShortcuts } = await import('./shortcutStatus.svelte');
   await loadDesktopShortcuts();
   expect(desktopShortcut('copy')).toBeUndefined();
 });
 
 it('loads persistent shortcut failures and clears them after native recovery', async () => {
-  const { desktopShortcut, loadDesktopShortcuts } = await import('./shortcutStatus.svelte');
   const failure = {
     id: 'dictation', requested: 'Ctrl + Super', active: null, codes: [],
     note: 'Creating shortcut session: An app id is required',
@@ -37,7 +36,6 @@ it('loads persistent shortcut failures and clears them after native recovery', a
 });
 
 it('keeps a newer shortcut event when the status snapshot returns late', async () => {
-  const { desktopShortcut, loadDesktopShortcuts } = await import('./shortcutStatus.svelte');
   const failure = {
     id: 'dictation' as const, requested: 'Ctrl + Super', active: null, codes: [],
     note: 'Creating shortcut session: An app id is required',

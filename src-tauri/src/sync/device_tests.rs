@@ -109,7 +109,7 @@ async fn pair_with_storage(
             async {
                 protocol::send_message(
                     &mut client,
-                    &protocol::Message::PairRequest {
+                    protocol::Message::PairRequest {
                         device_uuid: a.host.uuid.clone(),
                         device_name: "Fixture A".into(),
                         protocol: protocol::PROTOCOL_VERSION,
@@ -147,7 +147,7 @@ async fn pair_with_storage(
                 if result.is_err() {
                     let _ = protocol::send_message(
                         &mut server,
-                        &protocol::Message::PairReject {
+                        protocol::Message::PairReject {
                             reason: "code mismatch".into(),
                         },
                     )
@@ -157,7 +157,7 @@ async fn pair_with_storage(
                 if !save_trust {
                     protocol::send_message(
                         &mut server,
-                        &protocol::Message::Error {
+                        protocol::Message::Error {
                             message: "simulated trust persistence failure".into(),
                         },
                     )
@@ -170,7 +170,7 @@ async fn pair_with_storage(
                     &remote.device_name,
                     &identity::fingerprint_of(&remote.cert_der),
                 )?;
-                protocol::send_message(&mut server, &protocol::Message::PairComplete).await?;
+                protocol::send_message(&mut server, protocol::Message::PairComplete).await?;
                 Ok(remote)
             },
         )
@@ -404,13 +404,14 @@ async fn two_devices_resume_an_interrupted_snapshot_without_duplicates() {
                 ));
                 protocol::send_message(
                     &mut server,
-                    &protocol::Message::HelloAck(protocol::Hello {
+                    protocol::Message::HelloAck(protocol::Hello {
                         device_uuid: b.host.uuid.clone(),
                         device_name: "Fixture B".into(),
                         protocol: protocol::PROTOCOL_VERSION,
                         app_version: "test".into(),
                         activity_receipts: false,
                         cleanup_cache: false,
+                        compressed_frames: false,
                     }),
                 )
                 .await
@@ -423,7 +424,7 @@ async fn two_devices_resume_an_interrupted_snapshot_without_duplicates() {
                     engine::build_stats_exchange(&b.db.lock().unwrap(), &b.host.uuid).unwrap();
                 protocol::send_message(
                     &mut server,
-                    &protocol::Message::Meta {
+                    protocol::Message::Meta {
                         stats,
                         settings: vec![],
                     },
@@ -445,7 +446,7 @@ async fn two_devices_resume_an_interrupted_snapshot_without_duplicates() {
                 assert!(!done);
                 protocol::send_message(
                     &mut server,
-                    &protocol::Message::Ops(protocol::OpsBatch {
+                    protocol::Message::Ops(protocol::OpsBatch {
                         ops,
                         cursor,
                         done,
