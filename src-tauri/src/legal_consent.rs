@@ -794,7 +794,7 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut socket = loop {
                 match cleanup_listener.accept() {
-                    Ok((socket, _)) => break socket,
+                    Ok((socket, _)) => { socket.set_nonblocking(false).unwrap(); break socket }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
                     Err(e) => panic!("mock cleanup transport failed: {e}"),
                 }
@@ -825,7 +825,7 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut socket = loop {
                 match acceptance_listener.accept() {
-                    Ok((socket, _)) => break socket,
+                    Ok((socket, _)) => { socket.set_nonblocking(false).unwrap(); break socket }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
                     Err(e) => panic!("mock acceptance transport failed: {e}"),
                 }
@@ -847,7 +847,7 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut socket = loop {
                 match analytics_listener.accept() {
-                    Ok((socket, _)) => break socket,
+                    Ok((socket, _)) => { socket.set_nonblocking(false).unwrap(); break socket }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
                     Err(e) => panic!("mock analytics transport failed: {e}"),
                 }
@@ -862,7 +862,7 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut socket = loop {
                 match listener.accept() {
-                    Ok((socket, _)) => break socket,
+                    Ok((socket, _)) => { socket.set_nonblocking(false).unwrap(); break socket }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
                     Err(e) => panic!("mock transport failed: {e}"),
                 }
