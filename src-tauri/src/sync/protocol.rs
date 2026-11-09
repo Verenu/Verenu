@@ -31,6 +31,15 @@ fn frame_memory() -> Arc<Semaphore> {
         .clone()
 }
 
+fn incoming_small_frame_memory() -> Arc<Semaphore> {
+    // Frame type is unknown until decoding, so reserve space for any small
+    // uncompressed frame independently of the bulk pool.
+    static MEMORY: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    MEMORY
+        .get_or_init(|| Arc::new(Semaphore::new(MUTE_CONTROL_MEMORY_PERMITS)))
+        .clone()
+}
+
 fn outgoing_frame_memory() -> Arc<Semaphore> {
     // Separate inbound and outbound pools keep full-duplex peers from holding
     // all permits while each waits for the other to read a frame.
@@ -441,6 +450,14 @@ pub async fn read_message_with_timeout<R: AsyncRead + Unpin>(
 }
 
 async fn read_message_inner<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Message> {
+    read_message_with_budgets(reader, frame_memory(), incoming_small_frame_memory()).await
+}
+
+async fn read_message_with_budgets<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    bulk_budget: Arc<Semaphore>,
+    small_budget: Arc<Semaphore>,
+) -> Result<Message> {
     let mut len_bytes = [0u8; 4];
     reader.read_exact(&mut len_bytes).await?;
     let header = u32::from_be_bytes(len_bytes);
@@ -467,7 +484,12 @@ async fn read_message_inner<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Mess
     let permits = ((len as usize + expanded_len).saturating_add(FRAME_MEMORY_UNIT_BYTES - 1)
         / FRAME_MEMORY_UNIT_BYTES)
         .max(1) as u32;
-    let memory = frame_memory()
+    let (budget, permits) = if !compressed && len as usize <= MAX_MUTE_CONTROL_BYTES {
+        (small_budget, 1)
+    } else {
+        (bulk_budget, permits)
+    };
+    let memory = budget
         .acquire_many_owned(permits)
         .await
         .map_err(|_| anyhow!("sync frame memory budget unavailable"))?;
@@ -506,11 +528,77 @@ async fn read_message_inner<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Mess
 #[cfg(test)]
 mod tests {
     use super::{
-        send_message_with_budget, send_message_with_budgets, LimitedBuffer, Message, Semaphore,
-        Write, MAX_MESSAGE_BYTES,
+        read_message_with_budgets, send_message_with_budget, send_message_with_budgets,
+        LimitedBuffer, Message, Semaphore, Write, MAX_MESSAGE_BYTES,
     };
     use std::sync::Arc;
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn inbound_heartbeat_does_not_wait_for_a_blocked_bulk_frame() {
+        let bulk = Arc::new(Semaphore::new(1));
+        let small = Arc::new(Semaphore::new(1));
+        let (mut sender, mut reader) = tokio::io::duplex(32);
+        // Reserve the bulk pool for a compressed frame whose body never arrives.
+        sender
+            .write_all(&(super::COMPRESSED_FRAME | 8).to_be_bytes())
+            .await
+            .unwrap();
+        sender.write_all(&32768u32.to_be_bytes()).await.unwrap();
+        let first_bulk = bulk.clone();
+        let first_small = small.clone();
+        let first = tokio::spawn(async move {
+            read_message_with_budgets(&mut reader, first_bulk, first_small).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while bulk.available_permits() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!first.is_finished());
+
+        let body = serde_json::to_vec(&Message::DictationMuteHeartbeat).unwrap();
+        let mut wire = (body.len() as u32).to_be_bytes().to_vec();
+        wire.extend_from_slice(&body);
+        let received = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            read_message_with_budgets(&mut wire.as_slice(), bulk.clone(), small.clone()),
+        )
+        .await
+        .expect("inbound heartbeat was blocked by bulk sync")
+        .unwrap();
+        assert!(matches!(received, Message::DictationMuteHeartbeat));
+        assert_eq!(bulk.available_permits(), 0);
+        assert_eq!(small.available_permits(), 1);
+        first.abort();
+        let _ = first.await;
+        assert_eq!(bulk.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn inbound_small_frames_share_a_bounded_budget() {
+        let bulk = Arc::new(Semaphore::new(1));
+        let small = Arc::new(Semaphore::new(1));
+        let held = small.clone().acquire_owned().await.unwrap();
+        let body = serde_json::to_vec(&Message::DictationMuteHeartbeat).unwrap();
+        let mut wire = (body.len() as u32).to_be_bytes().to_vec();
+        wire.extend_from_slice(&body);
+        let mut reader = wire.as_slice();
+        let read = read_message_with_budgets(&mut reader, bulk.clone(), small.clone());
+        tokio::pin!(read);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), &mut read)
+            .await
+            .is_err());
+        assert_eq!(bulk.available_permits(), 1);
+        drop(held);
+        assert!(matches!(
+            read.await.unwrap(),
+            Message::DictationMuteHeartbeat
+        ));
+        assert_eq!(small.available_permits(), 1);
+    }
 
     #[test]
     fn compression_buffer_rejects_bytes_past_its_limit() {
