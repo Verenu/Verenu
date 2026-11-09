@@ -181,7 +181,7 @@ pub fn export_to_downloads(app: &AppHandle) -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
-fn redact_message(input: &str) -> String {
+pub(crate) fn redact_message(input: &str) -> String {
     const MARKERS: &[&str] = &[
         "authorization:",
         "bearer ",
@@ -261,6 +261,9 @@ fn redact_json_key_ci(input: &str, key: &str) -> String {
                 cursor = content_start + "[REDACTED]".len();
                 continue;
             }
+            // Unterminated value (for example a truncated message): treat the rest as secret.
+            remaining.replace_range(content_start.., "[REDACTED]");
+            break;
         }
         cursor = value_start;
     }
@@ -286,6 +289,9 @@ fn redact_quoted_field_value_ci(input: &str, token: &str) -> String {
                 cursor = content_start + "[REDACTED]".len();
                 continue;
             }
+            // Unterminated value (for example a truncated message): treat the rest as secret.
+            remaining.replace_range(content_start.., "[REDACTED]");
+            break;
         }
 
         cursor = remaining[value_start..]
@@ -608,6 +614,20 @@ mod tests {
         let s = r#""abc\"def""#;
         let end = find_json_string_end(s, 1).expect("expected end quote");
         assert_eq!(&s[end..=end], "\"");
+    }
+
+    #[test]
+    fn redacts_unterminated_sensitive_values() {
+        for input in [
+            r#"failed {"api_key": "sk-SECRET123"#,
+            r#"failed {"authorization": "Bearer SECRET123"#,
+        ] {
+            let out = super::redact_message(input);
+            assert!(!out.contains("SECRET"), "leaked: {out}");
+            assert!(out.contains("[REDACTED]"));
+        }
+        let out = super::redact_message(r#"{"api_key": "abc", "model": "x"}"#);
+        assert_eq!(out, r#"{"api_key": "[REDACTED]", "model": "x"}"#);
     }
 
     #[test]

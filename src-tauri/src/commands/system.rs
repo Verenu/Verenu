@@ -1111,7 +1111,8 @@ const FRONTEND_LOG_SOURCES: &[&str] = &[
 /// One line of webview text, bounded and with control characters flattened, so a
 /// message cannot forge extra session-log lines.
 pub(crate) fn frontend_log_text(message: &str) -> String {
-    message
+    // Redact before truncating so a cut-off value cannot slip past the redactor.
+    crate::system::logger::redact_message(message)
         .chars()
         .take(FRONTEND_LOG_CHARS)
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -1147,6 +1148,16 @@ mod frontend_log_tests {
         assert_eq!(frontend_log_text("first\nsecond\tthird\r\u{7}"), "first second third");
         let long = "x".repeat(2_000);
         assert_eq!(frontend_log_text(&long).chars().count(), FRONTEND_LOG_CHARS);
+    }
+
+    #[test]
+    fn secrets_are_redacted_before_truncation() {
+        let padding = "x".repeat(FRONTEND_LOG_CHARS - 20);
+        for field in ["\"api_key\": \"", "\"authorization\": \"", "api_key="] {
+            let msg = format!("{padding} {field}sk-SECRETSECRETSECRETSECRET and more text");
+            let out = frontend_log_text(&msg);
+            assert!(!out.contains("SECRET"), "leaked for {field}: {out}");
+        }
     }
 
     #[test]
