@@ -30,7 +30,8 @@ export function modalFocusTrap(node: HTMLElement, options: ModalFocusOptions) {
     if (!target?.isConnected) {
       return false;
     }
-    target.focus();
+    // Dialogs open mid-transition; a scrolling focus would shift the page under them.
+    target.focus({ preventScroll: true });
     return node.contains(document.activeElement);
   }
 
@@ -38,7 +39,7 @@ export function modalFocusTrap(node: HTMLElement, options: ModalFocusOptions) {
     const target = current.restoreFocus?.() ?? previousFocus;
     previousFocus = null;
     if (target?.isConnected) {
-      target.focus();
+      target.focus({ preventScroll: true });
     }
   }
 

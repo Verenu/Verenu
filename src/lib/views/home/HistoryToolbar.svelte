@@ -36,6 +36,16 @@
 
   let filtersActive = $derived((search ?? '').trim().length > 0 || appFilter !== null);
   let expanded = $derived(uiExpanded || filtersActive);
+  // The field clips its contents while it grows, then lets the app menu overflow once it has settled.
+  let settled = $state(false);
+  $effect(() => {
+    if (!expanded) {
+      settled = false;
+      return;
+    }
+    const timer = setTimeout(() => { settled = true; }, motionMs(MOTION_MS.base));
+    return () => clearTimeout(timer);
+  });
 
   async function expandSearch() {
     preserveExpanded = true;
@@ -75,7 +85,7 @@
 </script>
 
 <div class="history-toolbar">
-  <div class="history-search-group" class:expanded bind:this={groupEl}>
+  <div class="history-search-group" class:expanded class:settled bind:this={groupEl}>
     {#if !expanded}
       <button class="search-icon-btn ui-focus-ring" onclick={expandSearch} aria-label="Search history">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.35-4.35" /></svg>
@@ -138,8 +148,12 @@
 <style>
   .history-toolbar { display: flex; align-items: center; justify-content: flex-end; flex: 1 1 auto; min-width: 0; }
 
+  /* Width is driven by max-width alone so opening and closing animate between two lengths.
+     Switching flex and min/max-width together made the field snap wide before it settled. */
   .history-search-group {
-    flex: 0 0 32px;
+    flex: 0 1 auto;
+    width: 100%;
+    max-width: 32px;
     min-width: 32px;
     display: flex;
     align-items: center;
@@ -151,19 +165,18 @@
     margin-left: auto;
     overflow: hidden;
     transition:
-      flex var(--ui-duration-base) var(--ui-ease-out),
+      max-width var(--ui-duration-base) var(--ui-ease-out),
       border-color var(--ui-duration-fast) var(--ui-ease-out),
       background-color var(--ui-duration-fast) var(--ui-ease-out);
   }
 
   .history-search-group.expanded {
-    flex: 1 1 260px;
-    min-width: 160px;
     max-width: 460px;
     background: var(--bg-elev);
     border-color: var(--line);
-    overflow: visible;
   }
+
+  .history-search-group.expanded.settled { overflow: visible; }
 
   .search-icon-btn {
     all: unset;
@@ -239,7 +252,7 @@
 
   .clear-filters-btn:hover { background: var(--control-hover); border-color: transparent; }
   @media (max-width: 560px) {
-    .history-search-group.expanded { flex-basis: 100%; max-width: none; }
+    .history-search-group.expanded { max-width: 100%; }
     .history-app-trigger span { max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .clear-filters-wrap { display: none; }
   }

@@ -1,7 +1,24 @@
+<script module lang="ts">
+  import { listen as listenWhileUnmounted } from '../tauri';
+  import type { Entry as CachedEntry, Stats as CachedStats } from './home/helpers';
+
+  // The last unfiltered first page and stats, kept in memory so returning to Home paints the
+  // previous content at once instead of flashing the loading state while the refresh runs.
+  let homeCache: { recents: CachedEntry[]; stats: CachedStats; hasMore: boolean } | null = null;
+  let pruneWatched = false;
+
+  /** Deleting history elsewhere must also drop the remembered rows, even while Home is not mounted. */
+  function watchHistoryPruned() {
+    if (pruneWatched) return;
+    pruneWatched = true;
+    listenWhileUnmounted('verenu:history-pruned', () => { homeCache = null; }).catch(() => { pruneWatched = false; });
+  }
+</script>
+
 <script lang="ts">
   import { handleConsentError } from '../legal/consentStore.svelte';
   import { formatIpcError } from '../errors';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { invoke, getVersion, listen, emit } from '../tauri';
   import { appStore } from '../stores';
   import { installAvailableUpdate } from '../updateActions';
@@ -26,11 +43,28 @@
   import DictationReadiness from './home/DictationReadiness.svelte';
   import type { InstalledApp } from '../appMappings';
 
+  // Remember the hero's last state so a returning user's first paint matches it instead of
+  // starting as one card and changing once the readiness check and history arrive.
+  const HERO_COMPACT_KEY = 'verenu-home-hero-compact';
+  function readHeroMemory(): string | null {
+    try { return localStorage.getItem(HERO_COMPACT_KEY); } catch { return null; }
+  }
+  function readHeroCompact(): boolean {
+    return readHeroMemory() === '1';
+  }
+
   let hotkey = defaultHotkey;
-  let setupIncomplete = true;
+  let heroSettled = false;
+  let setupIncomplete = readHeroMemory() === 'setup';
+  let readinessKnown = false;
   let dictationShortcut: ShortcutStatus | undefined;
   $: keyLabels = hotkey.filter(Boolean).map(formatKeyLabel);
   $: shortcutUnavailable = dictationShortcut?.active === null;
+  $: hasDictated = stats.total_words > 0 || recents.length > 0;
+  $: heroCompact = !setupIncomplete && !shortcutUnavailable && (heroSettled ? hasDictated : readHeroCompact());
+  $: if (heroSettled && readinessKnown) {
+    try { localStorage.setItem(HERO_COMPACT_KEY, setupIncomplete ? 'setup' : heroCompact ? '1' : '0'); } catch {}
+  }
 
   function refreshShortcut(status = desktopShortcut('dictation')) {
     dictationShortcut = status;
@@ -48,14 +82,20 @@
 
   const greeting = getGreeting();
 
-  let recents: Entry[] = [];
-  let stats: Stats = { total_words: 0, avg_wpm: 0, day_streak: 0 };
-  let loading = true;
+  // Each visit takes the remembered page and leaves nothing behind, so rows deleted or
+  // filtered during this visit cannot be repainted by a later one unless it re-remembers them.
+  const restored = homeCache;
+  homeCache = null;
+  let recents: Entry[] = restored?.recents ?? [];
+  let stats: Stats = restored?.stats ?? { total_words: 0, avg_wpm: 0, day_streak: 0 };
+  let statsLoaded = restored !== null;
+  let unfilteredPageCurrent = false;
+  let loading = restored === null;
   let historyError = '';
   let loadingMore = false;
-  let hasMoreHistory = false;
-  let historyCursor: number | null = null;
-  let historyOffset = 0;
+  let hasMoreHistory = restored?.hasMore ?? false;
+  let historyCursor: number | null = recents.length > 0 ? recents[recents.length - 1].id : null;
+  let historyOffset = recents.length;
 
   let search = '';
   let debouncedSearch = '';
@@ -66,7 +106,7 @@
   const statsGate = createLatestGate();
   const refreshStats = createLatestRefresher(
     () => invoke<Stats>('get_stats'),
-    (next) => { stats = next; },
+    (next) => { stats = next; statsLoaded = true; },
     statsGate,
   );
   const refreshApps = createLatestRefresher(
@@ -206,6 +246,8 @@
   async function deleteEntry(entry: Entry) {
     try {
       await invoke('delete_history_entry', { id: entry.id });
+      // Home may have been left while the delete was in flight, after remembering this row.
+      if (homeCache) homeCache = { ...homeCache, recents: homeCache.recents.filter((item) => item.id !== entry.id) };
       recents = recents.filter((item) => item.id !== entry.id);
       historyOffset = Math.max(0, historyOffset - 1);
       // A get_recent issued before the delete may still be in flight and would restore the row.
@@ -239,7 +281,10 @@
       historyOffset = cached.nextOffset;
       if (page.length > 0) historyCursor = page[page.length - 1].id;
       else if (reset) historyCursor = null;
-      if (reset) historyError = '';
+      if (reset) {
+        historyError = '';
+        unfilteredPageCurrent = !debouncedSearch.trim() && !appFilter;
+      }
       hasMoreHistory = cached.hasMore;
     },
     onFailure: (err, reset) => {
@@ -253,11 +298,23 @@
       }
     },
     onSettled: (reset) => {
-      if (reset) loading = false;
+      if (reset) {
+        loading = false;
+        heroSettled = true;
+      }
     },
   });
 
+  watchHistoryPruned();
+  onDestroy(() => {
+    if (!unfilteredPageCurrent || historyError || !statsLoaded) return;
+    homeCache = { recents: recents.slice(0, HISTORY_PAGE_SIZE), stats, hasMore: hasMoreHistory || recents.length > HISTORY_PAGE_SIZE };
+  });
+
   function load(reset = true, withStats = false) {
+    // Rows on screen may predate this request (a cleared filter, a prune), so they are not
+    // remembered for the next visit until the replacement page arrives.
+    if (reset) unfilteredPageCurrent = false;
     return sequencer.load(reset, withStats);
   }
 
@@ -414,13 +471,22 @@
 <div class="content-inner" class:desktop-home={!isAndroid}>
   <div class="home-grid">
     <div>
-      <h1 class="page-h">Welcome back</h1>
-      <p class="page-sub">{greeting}</p>
+      <header class="home-head">
+        <div class="home-head-title">
+          <h1 class="page-h">Welcome back</h1>
+          <p class="page-sub">{greeting}</p>
+        </div>
+        {#if !isAndroid}
+          <div class="stat-stack" class:pending={!statsLoaded}>
+            <StatsCard {stats} />
+          </div>
+        {/if}
+      </header>
 
-      <HomeHero {keyLabels} {setupIncomplete} {shortcutUnavailable} android={isAndroid} />
+      <HomeHero {keyLabels} {setupIncomplete} {shortcutUnavailable} compact={heroCompact} android={isAndroid} />
 
       <ShortcutRecovery />
-      <DictationReadiness onchange={(incomplete) => { setupIncomplete = incomplete; }} />
+      <DictationReadiness onchange={(incomplete) => { setupIncomplete = incomplete; readinessKnown = true; }} />
 
       {#if appStore.globalMessage}
         <GlobalMessageBanner message={appStore.globalMessage.message} />
@@ -474,12 +540,6 @@
         onDelete={deleteEntry}
       />
     </div>
-
-    {#if !isAndroid}
-      <div class="stat-stack native-chrome-corner--below">
-        <StatsCard {stats} />
-      </div>
-    {/if}
   </div>
 </div>
 
@@ -497,7 +557,8 @@
 
 <style>
   .content-inner {
-    width: min(100%, var(--page-max));
+    /* One reading column. Wider rows push history text past a comfortable line length. */
+    width: min(100%, 920px);
     margin-inline: auto;
     padding: var(--page-pad-y) var(--page-pad-x) 36px;
     min-width: 0;
@@ -505,11 +566,25 @@
 
   .home-grid {
     display: grid;
-    grid-template-columns: minmax(540px, 1fr) minmax(220px, 280px);
-    gap: clamp(18px, 3vw, 32px);
+    grid-template-columns: minmax(0, 1fr);
     align-items: start;
+    min-width: 640px;
+  }
+
+  .home-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px 28px;
+    margin-bottom: 20px;
     min-width: 0;
   }
+
+  :global(.app.app-linux) .home-head {
+    margin-top: var(--native-chrome-below-clearance);
+  }
+
+  .home-head-title { min-width: 0; }
 
   .home-grid > div {
     min-width: 0;
@@ -525,24 +600,11 @@
     color: var(--ink);
   }
 
-  .page-sub { color: var(--ink-mute); font-size: 12.5px; margin: 0 0 22px; }
+  .page-sub { color: var(--ink-mute); font-size: 12.5px; margin: 0; }
 
-  .stat-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 22px;
-    position: sticky;
-    top: calc(var(--page-pad-y) + var(--native-chrome-below-clearance, 0px));
-  }
-
-  @media (max-width: 1060px) {
-    .home-grid {
-      grid-template-columns: 1fr;
-      min-width: 640px;
-    }
-
-    .desktop-home .stat-stack { display: none; }
-  }
+  /* Stats stay invisible until the first read so the header never shows zeros that then change width. */
+  .stat-stack { flex: none; transition: opacity var(--ui-duration-base) var(--ui-ease-out); }
+  .stat-stack.pending { opacity: 0; }
 
   :global(.app[data-android='true']) .home-grid { min-width: 0; }
 
@@ -574,6 +636,7 @@
       padding-block: 24px;
     }
 
-    .page-sub { margin-bottom: 16px; }
+    .home-head { margin-bottom: 16px; }
+    .desktop-home .stat-stack { display: none; }
   }
 </style>

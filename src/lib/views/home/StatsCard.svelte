@@ -26,64 +26,31 @@
 </div>
 
 <style>
-  .stat-card { display: flex; flex-direction: column; gap: 10px; }
+  .stat-card { display: flex; align-items: flex-end; gap: 28px; }
 
   .stat-line {
     display: flex;
-    align-items: baseline;
-    gap: 8px;
-    border-bottom: 1px solid var(--line);
-    padding-bottom: 9px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+    min-width: 0;
   }
-  .stat-line:last-child { border-bottom: 0; padding-bottom: 0; }
 
   .stat-num {
     font-family: var(--sans);
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 600;
     letter-spacing: -0.02em;
     line-height: 1;
     color: var(--ink);
   }
   .stat-num :global(small) {
-    font-family: var(--serif);
-    font-size: 14px;
+    font-family: inherit;
+    font-size: 13px;
     color: var(--ink-mute);
     margin-left: 1px;
-    font-weight: 400;
+    font-weight: 500;
   }
 
-  .stat-label { font-size: 11.5px; color: var(--ink-mute); margin-left: auto; }
-
-  @media (max-width: 1060px) {
-    .stat-card {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-    }
-
-    .stat-line {
-      border-bottom: 0;
-      border-top: 1px solid var(--line);
-      padding: 10px 0 0;
-      min-width: 0;
-    }
-  }
-
-  @media (max-width: 720px) {
-    .stat-card {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-    }
-
-    .stat-line {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 2px;
-      padding-top: 12px;
-    }
-
-    .stat-num { font-size: 20px; }
-    .stat-label { margin-left: 0; font-size: 11px; }
-  }
+  .stat-label { font-size: 11.5px; line-height: 1.2; color: var(--ink-mute); white-space: nowrap; }
 </style>

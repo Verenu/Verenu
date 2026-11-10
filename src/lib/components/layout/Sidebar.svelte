@@ -25,7 +25,6 @@
     orderedContexts,
     selectContext,
     isPinned,
-    compactAge,
     EVERYWHERE_ID,
   } from '../../contextsStore.svelte';
   import type { Context } from '../../stores';
@@ -627,7 +626,6 @@
             <button
               type="button"
               class="ctx-row"
-              class:has-stack={stack.length > 0}
               class:active={appStore.currentPage === 'contexts' && contextsStore.selectedId === context.id}
               data-debug-id={`context.${context.id}`}
               onclick={() => openContext(context.id)}
@@ -666,12 +664,6 @@
             </button>
 
             <span class="ctx-tail">
-              {#if pinned}
-                <span class="ctx-pin" title="Pinned">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18 3v2h-1v6l2 3v2h-6v5h-2v-5H5v-2l2-3V5H6V3z"/></svg>
-                </span>
-              {/if}
-              <span class="ctx-age">{compactAge(context.created_at)}</span>
               <button
                   type="button"
                   class="ctx-kebab"
@@ -883,17 +875,16 @@
      .nav-section's height immediately. Its exit animation still paints from
      the same coordinates. */
   .rail-settings .rail-list-app,
-  .sidebar:not(.rail-settings) .rail-list-settings,
   .sidebar:not(.rail-settings) .settings-rail-content {
     position: absolute;
     left: 8px;
     right: 8px;
   }
 
-  .rail-settings .rail-list-app { top: 18px; }
-  .sidebar:not(.rail-settings) .rail-list-settings { top: 12px; }
-  .sidebar:not(.rail-settings) .settings-rail-content { top: 0; }
-  .rail-settings .rail-list-settings { position: static; }
+  /* These are grid items, so their offsets resolve against the grid area (inside the padding),
+     not the padding box. The values cancel the padding change between the two rails. */
+  .rail-settings .rail-list-app { top: -2px; left: 0; right: 0; }
+  .sidebar:not(.rail-settings) .settings-rail-content { top: 2px; left: 0; right: 0; }
 
   .settings-rail-content {
     grid-area: 1 / 1;
@@ -1261,8 +1252,7 @@
     flex: none;
     font-size: 10px;
     font-weight: 500;
-    color: var(--ink-faint);
-    opacity: 0.9;
+    color: var(--ink-mute);
   }
 
   .ctx-subhead-rule {
@@ -1282,11 +1272,11 @@
     user-select: none;
     text-align: left;
     display: grid;
-    grid-template-columns: var(--ctx-gutter) minmax(0, 1fr);
+    grid-template-columns: var(--ctx-gutter) minmax(0, 1fr) auto;
     column-gap: var(--ctx-gutter-gap);
-    row-gap: 1px;
     align-items: center;
-    padding: var(--ctx-row-pad-y) 40px var(--ctx-row-pad-y) var(--ctx-row-pad-x);
+    /* The right padding keeps the name and app icons clear of the hover menu button. */
+    padding: var(--ctx-row-pad-y) 26px var(--ctx-row-pad-y) var(--ctx-row-pad-x);
     --stack-ring: var(--bg-elev);
     transition:
       background-color 170ms cubic-bezier(0.33, 1, 0.68, 1),
@@ -1301,7 +1291,6 @@
     --ctx-line-h: 18px;
   }
 
-  .ctx-row.has-stack { padding-bottom: calc(var(--ctx-row-pad-y) + 3px); }
   .ctx-row:hover { background: var(--control-hover); color: var(--ink-strong); --stack-ring: var(--control-hover); }
   .ctx-row.active {
     background: var(--control-active);
@@ -1337,11 +1326,9 @@
   }
 
   .ctx-stack {
-    grid-column: 1 / -1;
     display: flex;
     align-items: center;
-    justify-self: start;
-    max-width: 100%;
+    justify-self: end;
     height: var(--ctx-line-h);
     --stack-dwell: 500ms;
   }
@@ -1412,26 +1399,6 @@
     pointer-events: none;
   }
 
-  .ctx-pin {
-    display: grid;
-    place-items: center;
-    width: 10px;
-    height: 10px;
-    color: color-mix(in srgb, var(--ink-faint) 70%, transparent);
-    transition: opacity 150ms ease;
-  }
-
-  .ctx-age {
-    width: 23px;
-    text-align: right;
-    font-family: var(--sans);
-    font-size: 9.5px;
-    font-variant-numeric: tabular-nums;
-    color: color-mix(in srgb, var(--ink-faint) 70%, transparent);
-    letter-spacing: 0.02em;
-    transition: opacity 150ms ease;
-  }
-
   .ctx-kebab {
     position: absolute;
     right: -3px;
@@ -1460,12 +1427,6 @@
     transform: translateY(-50%) scale(1);
   }
 
-  .ctx-row-wrap:hover .ctx-age,
-  .ctx-row-wrap:focus-within .ctx-age,
-  .ctx-row-wrap.menu-open .ctx-age,
-  .ctx-row-wrap:hover .ctx-pin,
-  .ctx-row-wrap:focus-within .ctx-pin,
-  .ctx-row-wrap.menu-open .ctx-pin { opacity: 0; }
   .ctx-row-wrap:hover .ctx-kebab,
   .ctx-row-wrap:focus-within .ctx-kebab,
   .ctx-row-wrap.menu-open .ctx-kebab {
@@ -1477,8 +1438,6 @@
   @media (prefers-reduced-motion: reduce) {
     .ctx-row,
     .ctx-kebab,
-    .ctx-age,
-    .ctx-pin,
     .ctx-icon,
     .ctx-stack-item.is-extra,
     .ctx-stack-more { transition-duration: 1ms; transition-delay: 0ms; }

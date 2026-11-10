@@ -97,7 +97,7 @@
 }
 
 .app[data-android='true'] .toggle.on .toggle-thumb {
-  left: 24px;
+  transform: translate3d(20px, -50%, 0);
 }
 
 .app[data-android='true'] .toggle .toggle-x {

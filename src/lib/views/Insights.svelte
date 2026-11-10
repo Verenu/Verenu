@@ -254,7 +254,7 @@
     {#if status === 'error'}
       <p class="fetch-status fetch-status-error" role="alert">Refresh failed: {error}</p>
     {:else if status === 'loading'}
-      <p class="fetch-status" role="status" aria-live="polite">Refreshing insights…</p>
+      <p class="fetch-status fetch-status-quiet" role="status" aria-live="polite">Refreshing insights…</p>
     {/if}
 
     {#key displayVersion}
@@ -347,6 +347,18 @@
 
   .fetch-status { margin: 0 0 10px; font-size: 12px; color: var(--ink-mute); }
   .fetch-status-error { color: var(--danger); }
+  /* A refresh usually lands within a few frames. Announce it to assistive tech without
+     pushing the charts down and back up. */
+  .fetch-status-quiet {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 
   .content-inner :global(.card) {
     display: flex;

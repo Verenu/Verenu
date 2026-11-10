@@ -4,6 +4,9 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Fixed several visual glitches in the main window. Returning to Home shows your history at once instead of a loading message and a setup notice that pushed the page around, opening Settings no longer nudges the whole window, the sidebar lists hold their position while they swap, the history search field opens and closes smoothly, the Models and Providers settings appear in their saved state, and refreshing Insights no longer moves the charts. Switches move at the same speed as other controls.
+- Home gives more room to your dictation history. The word count, speed, and streak moved into the page header and stay visible on narrower windows, the history sits in one reading column, and the shortcut card shrinks to a one-line reminder once you have dictated. Each history row now shows its actions button faintly before you hover.
+- Pinned contexts in the sidebar take one line each, with their app and website icons beside the name. The pin marker and context age were removed; the "More contexts" label is easier to read.
 - Updated bundled SQLite to address a security advisory and made dependency audits block nightly releases.
 - Session logs now redact secrets in webview error messages before shortening them, and treat an unterminated API key or authorization value as a secret to the end of the line.
 - Verenu now shares your dictionary with T3 Code dictation. After you pair T3 Code, every Verenu dictionary term and its "often mistranscribed as" values are written to T3's shared dictionary and kept current while Verenu runs. Entries you add in T3 are never changed or removed, and T3 keeps its 100-entry limit. Pairings made before this release need to be reconnected once so T3 can grant settings access. T3's cleanup instructions are stored on each device by T3 Code and cannot be set through the pairing, so Verenu does not send them.

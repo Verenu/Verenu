@@ -836,7 +836,12 @@
     );
   });
 
-  migrateAndLoad().catch((err) => console.error('load models failed', err));
+  // Until saved settings arrive the tiles hold built-in defaults, which showed a wrong selection and a
+  // missing-key warning that then vanished. Keep the section invisible until it shows real state.
+  let hydrated = $state(false);
+  migrateAndLoad()
+    .catch((err) => console.error('load models failed', err))
+    .finally(() => { hydrated = true; });
 </script>
 
 <h2 class="settings-h">Models</h2>
@@ -850,7 +855,7 @@
   </div>
 {/if}
 
-<div inert={modelConflict}>
+<div class="models-body" class:hydrating={!hydrated} inert={modelConflict}>
 <div data-setting-target="model-presets">
   <ModelPresetPicker
     {apiKeyStatus}
@@ -968,6 +973,9 @@
 </div>
 
 <style>
+  .models-body { transition: opacity var(--ui-duration-base) var(--ui-ease-out); }
+  .models-body.hydrating { opacity: 0; }
+
   .models-note {
     margin: 8px 0 0;
     font-family: var(--sans);

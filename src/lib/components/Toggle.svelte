@@ -60,7 +60,7 @@
     border-radius: 999px;
     position: relative;
     cursor: pointer;
-    transition: background 0.3s ease-out;
+    transition: background-color var(--ui-duration-base) var(--ui-ease-out);
     flex-shrink: 0;
   }
 
@@ -72,8 +72,8 @@
     border-radius: 50%;
     top: 50%;
     left: 2px;
-    transform: translateY(-50%);
-    transition: left 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+    transform: translate3d(0, -50%, 0);
+    transition: transform var(--ui-duration-base) var(--ui-ease-out);
     box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 15%, transparent);
     display: flex;
     align-items: center;
@@ -89,7 +89,7 @@
   .toggle:disabled { opacity: 0.45; cursor: default; }
 
   .toggle.on .toggle-thumb {
-    left: 16px;
+    transform: translate3d(14px, -50%, 0);
   }
 
   .toggle.error {
