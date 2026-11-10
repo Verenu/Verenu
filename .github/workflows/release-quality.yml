@@ -11,6 +11,28 @@ permissions:
   contents: read
 
 jobs:
+  dependency-audits:
+    name: Release dependency audits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source-ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Audit npm dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0
+        with:
+          tool: cargo-audit
+          fallback: none
+      - name: Audit Rust dependencies
+        run: cargo audit --file src-tauri/Cargo.lock
   fast:
     name: Release fast regression suites (${{ matrix.suites }})
     runs-on: ubuntu-24.04

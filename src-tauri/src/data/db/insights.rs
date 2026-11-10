@@ -593,7 +593,7 @@ fn query_hourly(conn: &Connection, range: &DateRange, context_id: Option<i64>) -
          GROUP BY 1",
     )?;
     let rows = stmt.query_map(params![range.start_day.to_string(), range.end_day.to_string(), context_id], |r| {
-        Ok((r.get::<_, usize>(0)?, r.get::<_, i64>(1)?))
+        Ok((r.get::<_, u32>(0)? as usize, r.get::<_, i64>(1)?))
     })?;
     for row in rows {
         let (hour, words) = row?;
@@ -614,7 +614,7 @@ fn query_hourly(conn: &Connection, range: &DateRange, context_id: Option<i64>) -
             range.end_day.to_string(),
             context_id
         ],
-        |r| Ok((r.get::<_, usize>(0)?, r.get::<_, i64>(1)?)),
+        |r| Ok((r.get::<_, u32>(0)? as usize, r.get::<_, i64>(1)?)),
     )?;
     for row in rows {
         let (hour, words) = row?;

@@ -63,7 +63,7 @@ pub(crate) fn prepare() -> anyhow::Result<()> {
                 source.join("verenu.db"),
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )?;
-            conn.backup(rusqlite::DatabaseName::Main, &db_path, None)?;
+            conn.backup(rusqlite::MAIN_DB, &db_path, rusqlite::backup::NO_PROGRESS)?;
             if std::env::var("VERENU_DEV_PRIVATE_HISTORY").as_deref() != Ok("1") {
                 scrub_history(&db_path)?;
             }
@@ -963,7 +963,7 @@ mod tests {
             .unwrap();
             conn.execute("INSERT INTO transcriptions (raw_text, clean_text) VALUES ('Synthetic source text', 'Synthetic source text')", []).unwrap();
             conn.execute("INSERT INTO context_sub_apps (uuid, label, executable, title_pattern, match_mode) VALUES ('synthetic-sub-app', 'Synthetic sub-app', 'fixture', 'Synthetic pattern', 'contains')", []).unwrap();
-            conn.backup(rusqlite::DatabaseName::Main, &copy, None)
+            conn.backup(rusqlite::MAIN_DB, &copy, rusqlite::backup::NO_PROGRESS)
                 .unwrap();
         }
         scrub_history(&copy).unwrap();

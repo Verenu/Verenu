@@ -26,7 +26,7 @@ pub fn query_agent_changes(db: &Db, limit: usize) -> Result<Value> {
     anyhow::ensure!((1..=500).contains(&limit), "limit must be between 1 and 500");
     let conn = lock_conn(db)?;
     let mut stmt = conn.prepare("SELECT id, command, target_id, status, started_at, finished_at, actor_id FROM agent_change_audit WHERE started_at >= datetime('now', '-30 days') ORDER BY id DESC LIMIT ?1")?;
-    let entries = stmt.query_map([limit], |row| Ok(json!({
+    let entries = stmt.query_map([limit as i64], |row| Ok(json!({
         "id": row.get::<_, i64>(0)?, "command": row.get::<_, String>(1)?,
         "target_id": row.get::<_, Option<i64>>(2)?, "status": row.get::<_, String>(3)?,
         "started_at": row.get::<_, String>(4)?, "finished_at": row.get::<_, Option<String>>(5)?, "actor_id": row.get::<_, Option<String>>(6)?
