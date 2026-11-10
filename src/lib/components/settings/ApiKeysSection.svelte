@@ -1,3 +1,9 @@
+<script module lang="ts">
+  // Which providers have a saved key (booleans only), remembered so reopening the section
+  // paints the list at once instead of popping it in after the status read.
+  let rememberedKeyStatus: Record<string, boolean> | null = null;
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
@@ -22,8 +28,8 @@
   const MAX_CUSTOM = 12;
 
   let drawer = $state<ProviderDrawer | null>(null);
-  let loaded = $state(false);
-  let keyStatus = $state<Record<string, boolean>>({});
+  let loaded = $state(rememberedKeyStatus !== null);
+  let keyStatus = $state<Record<string, boolean>>(rememberedKeyStatus ?? {});
   let confirming = $state<string | null>(null);
   let busy = $state(false);
   let error = $state('');
@@ -53,6 +59,7 @@
         }
       }
       keyStatus = status;
+      rememberedKeyStatus = status;
     } catch (err) {
       console.error('get_api_key_status failed:', err);
     }
@@ -210,7 +217,7 @@
 {#if error}<div class="error"><Callout severity="error" compact>{error}</Callout></div>{/if}
 {#if notice}<p class="notice" role="status" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>{notice}</p>{/if}
 
-<p class="fineprint">Logos belong to their owners. Verenu is not affiliated with these companies.</p>
+{#if loaded}<p class="fineprint">Logos belong to their owners. Verenu is not affiliated with these companies.</p>{/if}
 
 <ProviderDrawer
   bind:this={drawer}

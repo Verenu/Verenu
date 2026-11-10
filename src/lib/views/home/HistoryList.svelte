@@ -334,7 +334,7 @@
 </script>
 
 {#if loading}
-  <div class="empty-state" role="status" aria-live="polite">
+  <div class="empty-state loading-state" role="status" aria-live="polite">
     <p class="empty-h">Loading history…</p>
     <p class="empty-sub">Fetching your recent dictations.</p>
   </div>
@@ -563,7 +563,7 @@
     font-weight: 400;
     font-variant-numeric: normal;
     font-size: 10.5px;
-    color: var(--ink-faint);
+    color: var(--ink-mute);
     letter-spacing: 0.01em;
     opacity: 0;
   }
@@ -688,6 +688,10 @@
     text-align: center;
     gap: 6px;
   }
+
+  /* History usually loads within a few frames; only a slow load shows the placeholder. */
+  .loading-state { animation: history-loading-in var(--ui-duration-base) var(--ui-ease-out) 400ms both; }
+  @keyframes history-loading-in { from { opacity: 0; } }
 
   .empty-h {
     font-family: var(--sans);

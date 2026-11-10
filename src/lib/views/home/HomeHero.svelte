@@ -5,11 +5,14 @@
   export let android = false;
   export let setupIncomplete = false;
   export let shortcutUnavailable = false;
+  /** Slim one-line reminder for someone who already dictates. Setup and shortcut problems always get the full card. */
+  export let compact = false;
 
   $: showAndroid = android || isAndroid;
+  $: slim = compact && !setupIncomplete && !shortcutUnavailable;
 </script>
 
-<div class="hero-photo">
+<div class="hero-photo" class:compact={slim}>
   <div class="hero-photo-content">
     <h2 class="hero-photo-title">
       {#if !showAndroid && shortcutUnavailable}
@@ -24,6 +27,7 @@
         Hold {#each keyLabels as label}<kbd>{label}</kbd>{' '}{/each}to dictate
       {/if}
     </h2>
+    {#if !slim}
     <p class="hero-photo-sub">
       {#if !showAndroid && shortcutUnavailable}
         Check the shortcut details below before dictating.
@@ -38,6 +42,7 @@
         <em class="hero-em">email, messages, docs</em> &mdash; or anywhere else.
       {/if}
     </p>
+    {/if}
   </div>
 </div>
 
@@ -92,6 +97,11 @@
     margin: 0;
     line-height: 1.5;
   }
+
+  .hero-photo.compact { height: auto; min-height: 0; }
+  .hero-photo.compact .hero-photo-content { padding: 11px 18px; max-width: 100%; }
+  .hero-photo.compact .hero-photo-title { font-size: 14px; margin: 0; line-height: 1.5; }
+  .hero-photo.compact .hero-photo-title :global(kbd) { font-size: 11.5px; }
 
   .hero-em {
     font-family: var(--sans);

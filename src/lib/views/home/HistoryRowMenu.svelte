@@ -97,7 +97,8 @@
     height: 22px;
     border-radius: 5px;
     color: var(--ink-mute);
-    opacity: 0;
+    /* Faint at rest so the row's actions are discoverable before hover. */
+    opacity: 0.4;
     transition: opacity var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast), background var(--ui-duration-fast);
   }
   .row-menu-btn svg { width: 14px; height: 14px; }

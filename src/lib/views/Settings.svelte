@@ -178,7 +178,7 @@
       const target = previousFocusEl;
       previousFocusEl = null;
       if (target?.isConnected) {
-        requestAnimationFrame(() => target.focus());
+        requestAnimationFrame(() => target.focus({ preventScroll: true }));
       }
       return;
     }
@@ -198,7 +198,9 @@
         return;
       }
       if (active instanceof HTMLElement && settingsPageEl?.contains(active)) return;
-      (isAndroid ? settingsPageEl : (firstFocusableInShell() ?? settingsPageEl))?.focus();
+      // The page is still offset by its entrance transition. A scrolling focus would nudge the whole
+      // window to reveal it and then drift back as the transition finishes.
+      (isAndroid ? settingsPageEl : (firstFocusableInShell() ?? settingsPageEl))?.focus({ preventScroll: true });
     };
     requestAnimationFrame(focusSettingsPage);
     return () => { cancelled = true; };

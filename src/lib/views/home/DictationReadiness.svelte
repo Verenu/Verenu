@@ -19,6 +19,10 @@
   let sequence = 0;
   let mounted = false;
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  // The check normally finishes well inside a second. Showing its notice at once made the page
+  // jump on every visit, so it only appears when the check is unusually slow.
+  const SLOW_CHECK_MS = 2500;
+  let slowCheck = $state(false);
 
   const connectionWarning = $derived(
     !checking && !failed && !issues.some(issue => issue.task === 'transcription') &&
@@ -94,12 +98,14 @@
     if (!appStore.settingsOpen && mounted) void refresh(isOnline);
   });
   $effect(() => {
-    onchange(checking || failed || issues.length > 0 || connectionWarning);
+    // While the first check runs, Home keeps the state it remembered from the last visit.
+    if (!checking) onchange(failed || issues.length > 0 || connectionWarning);
   });
 
   onMount(() => {
     mounted = true;
     void refresh();
+    const slowTimer = setTimeout(() => { slowCheck = true; }, SLOW_CHECK_MS);
     const browserEvents = ['focus', 'verenu:api-key-saved', 'verenu:api-key-deleted', 'verenu:setting-saved', 'verenu:context-saved'];
     const update = () => {
       if (refreshTimer) clearTimeout(refreshTimer);
@@ -132,6 +138,7 @@
     return () => {
       mounted = false;
       sequence++;
+      clearTimeout(slowTimer);
       if (refreshTimer) clearTimeout(refreshTimer);
       browserEvents.forEach(event => window.removeEventListener(event, update));
       unlisteners.forEach(stop => stop());
@@ -139,7 +146,7 @@
   });
 </script>
 
-{#if checking || failed || issues.length || connectionWarning}
+{#if (checking && slowCheck) || failed || issues.length || connectionWarning}
   <div class="readiness-notice">
     {#if checking}
       <Callout severity="info">Checking dictation setup…</Callout>
