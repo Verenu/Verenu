@@ -4,6 +4,7 @@ Notable project changes are recorded here. GitHub Release pages remain the sourc
 
 ## Unreleased
 
+- Updated bundled SQLite to address a security advisory and made dependency audits block nightly releases.
 - Session logs now redact secrets in webview error messages before shortening them, and treat an unterminated API key or authorization value as a secret to the end of the line.
 - Verenu now shares your dictionary with T3 Code dictation. After you pair T3 Code, every Verenu dictionary term and its "often mistranscribed as" values are written to T3's shared dictionary and kept current while Verenu runs. Entries you add in T3 are never changed or removed, and T3 keeps its 100-entry limit. Pairings made before this release need to be reconnected once so T3 can grant settings access. T3's cleanup instructions are stored on each device by T3 Code and cannot be set through the pairing, so Verenu does not send them.
 - Fixed a Linux Hyprland loop where an unrelated config error made Verenu rebind and reload Hyprland every few seconds. Only config errors from Verenu's own bindings count as failures, and automatic rebinds now back off and stop after five attempts.

@@ -163,6 +163,11 @@ test('nightly publication requires exact-source regression verification', () => 
   assert.equal(publishSteps[upload].with.draft, true);
   assert.ok(publishSteps.findIndex(step => step.name === 'Publish completed draft') > upload);
   const release = workflow('release-quality.yml');
+  const prAudit = workflow('pr-checks.yml').jobs['dependency-audits'];
+  const releaseAudit = release.jobs['dependency-audits'];
+  for (const name of ['Audit npm dependencies', 'Audit Rust dependencies', 'Install cargo-audit']) {
+    assert.deepEqual(releaseAudit.steps.find(step => step.name === name), prAudit.steps.find(step => step.name === name));
+  }
   for (const job of Object.values(release.jobs)) {
     assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout')).with.ref, '${{ inputs.source-ref }}');
   }
