@@ -33,9 +33,9 @@
         : 'Follow Windows';
 
   const modeDescriptions: Record<string, string> = {
-    light: 'Always use the bright look',
-    dark: 'Always use the dim look',
-    omarchy: 'Match your Omarchy theme',
+    light: 'Always light',
+    dark: 'Always dark',
+    omarchy: 'Match Omarchy',
   };
 
   let error = $state('');
@@ -133,7 +133,7 @@
   </span>
 {/snippet}
 
-<div class="option-list" role="radiogroup" aria-label="Appearance" data-setting-target="general-appearance" bind:this={modeGroup}>
+<div class="option-list mode-grid" style:--modes={modes.length} role="radiogroup" aria-label="Appearance" data-setting-target="general-appearance" bind:this={modeGroup}>
   {#each modes as mode, index}
     {@const checked = appStore.appearanceMode === mode.id}
     <button
@@ -175,11 +175,11 @@
   <div class="list-head" data-setting-target="general-themes">
     <div>
       <div class="label">Themes</div>
-      <div class="desc">Pick a palette, or create and save your own. Saved themes stay on this device.</div>
+      <div class="desc">Pick a palette or create your own. Saved themes stay on this device.</div>
     </div>
     <button class="btn-ghost btn-compact" aria-disabled={busy} onclick={createTheme}>Create theme</button>
   </div>
-  <div class="option-list" role="group" aria-label="Themes">
+  <div class="option-list theme-grid" role="group" aria-label="Themes">
     {#each appStore.savedThemes as theme (theme.id)}
       {@const selected = activeSaved?.id === theme.id}
       <div class="theme-row" class:active={selected} class:editing={themeEditor.editingId === theme.id}>
@@ -214,12 +214,28 @@
 
 <style>
   .option-list {
+    background: var(--settings-card-bg, var(--bg-elev));
     border: 1px solid var(--line);
-    border-radius: 10px;
-    margin: 4px 0 16px;
+    border-radius: var(--r-lg, 14px);
+    margin: 0 0 12px;
     overflow: hidden;
   }
   .option-list > :global(* + *) { border-top: 1px solid var(--line); }
+  /* Themes sit two to a row: a hairline gap over the line color draws the dividers. */
+  .theme-grid { background: var(--line); display: grid; gap: 1px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .theme-grid > :global(*) { background: var(--settings-card-bg, var(--bg-elev)); border-top: 0; }
+  .theme-grid > :global(:last-child:nth-child(odd)) { grid-column: 1 / -1; }
+  .mode-grid { background: var(--line); display: grid; gap: 1px; grid-template-columns: repeat(var(--modes, 3), minmax(0, 1fr)); }
+  .mode-grid .option { --cell: var(--settings-card-bg, var(--bg-elev)); background: var(--cell); border-top: 0; gap: 12px; padding-inline: 14px; }
+  .mode-grid .option:hover { background: linear-gradient(var(--control-hover), var(--control-hover)), var(--cell); }
+  .mode-grid .option.active { background: color-mix(in srgb, var(--accent) 6%, var(--cell)); }
+  .mode-grid .option-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @container settings-panel (max-width: 600px) {
+    .mode-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+  @container settings-panel (max-width: 520px) {
+    .theme-grid { grid-template-columns: minmax(0, 1fr); }
+  }
   .option {
     align-items: center;
     background: transparent;
@@ -230,7 +246,7 @@
     font-family: var(--sans);
     gap: 14px;
     min-height: 52px;
-    padding: 8px 14px;
+    padding: 8px 16px;
     text-align: left;
     transition: background var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
     width: 100%;
@@ -243,6 +259,8 @@
   .option-text { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
   .option-name { font-size: 13px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .option-desc { color: var(--ink-mute); font-size: 12px; }
+  /* The tinted selected tile needs the stronger text color to keep 4.5:1 contrast. */
+  .option.active .option-desc { color: var(--ink-soft); }
   .check { fill: none; flex: none; height: 12px; opacity: 0; stroke: var(--accent); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; width: 12px; }
   .check.shown { opacity: 1; }
   .swatch-wrap { display: block; flex: none; height: 28px; position: relative; width: 46px; }
@@ -252,11 +270,11 @@
   .swatch-side { bottom: 0; left: 0; position: absolute; top: 0; width: 28%; }
   .swatch-card { border-radius: 2px; height: 9px; left: 38%; position: absolute; right: 8%; top: 7px; }
   .swatch-dot { border-radius: 50%; bottom: 5px; height: 5px; left: 38%; position: absolute; width: 5px; }
-  .list-head { align-items: center; display: flex; gap: 16px; justify-content: space-between; margin-top: 20px; }
+  .list-head { align-items: flex-end; display: flex; gap: 16px; justify-content: space-between; margin: 20px 2px 8px; }
   .list-head .btn-ghost { flex: none; }
   .list-head .btn-ghost[aria-disabled='true'] { cursor: default; opacity: 0.6; }
   .theme-row { align-items: stretch; display: flex; position: relative; }
-  .theme-row .theme-select { flex: 1; min-height: 44px; min-width: 0; }
+  .theme-row .theme-select { flex: 1; min-height: 44px; min-width: 0; padding-block: 6px; }
   .theme-row.editing { background: var(--control-hover); }
   .theme-edit {
     align-items: center;

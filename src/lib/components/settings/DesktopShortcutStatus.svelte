@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { desktopShortcut, loadDesktopShortcuts, type ShortcutStatus } from '../../shortcutStatus.svelte';
   import { isLinux } from '../../platform';
+  import Callout from '../Callout.svelte';
   let { id }: { id: ShortcutStatus['id'] } = $props();
   const status = $derived(desktopShortcut(id));
   let showPrompt = $state(false);
@@ -15,10 +16,13 @@
 </script>
 
 {#if status?.conflict}
-  <div class="shortcut-conflict" role="status">
-    <p class="desc"><strong>{status.conflict.trigger}</strong> is already assigned to {status.conflict.description || 'a desktop shortcut'}. The desktop shortcut takes priority{ status.conflict.while_holding ? ' while you hold the dictation hotkey' : '' }.</p>
-    <p class="desc">Choose another key above{ status.conflict.while_holding ? ', change your dictation hotkey,' : '' } or change the desktop shortcut. You can also give an agent the details below.</p>
-    <button type="button" class="btn-ghost btn-compact" onclick={() => { showPrompt = !showPrompt; }}>{showPrompt ? 'Hide agent prompt' : 'Show agent prompt'}</button>
+  <div class="shortcut-conflict">
+    <Callout
+      severity="warning"
+      compact
+      title={`${status.conflict.trigger} is already assigned to ${status.conflict.description || 'a desktop shortcut'}`}
+      action={{ label: showPrompt ? 'Hide agent prompt' : 'Show agent prompt', onclick: () => { showPrompt = !showPrompt; } }}
+    >The desktop shortcut takes priority{ status.conflict.while_holding ? ' while you hold the dictation hotkey' : '' }. Choose another key{ status.conflict.while_holding ? ', change your dictation hotkey,' : '' } or change the desktop shortcut. An agent can help with the prompt.</Callout>
     {#if showPrompt}
       <p class="desc">Review this machine-specific prompt before sharing it.</p>
       <textarea aria-label="Agent prompt" readonly value={prompt} rows="5"></textarea>
@@ -27,13 +31,16 @@
     {/if}
   </div>
 {:else if status?.note}
-  <p class="desc" role={status.active === null ? 'alert' : 'status'}>{id === 'dictation' && status.active === null && isLinux && status.note.startsWith('No available shortcut.')
-    ? 'The desktop shortcut could not be registered. Verenu requires working Hyprland integration; Xfce/X11 shortcut capture is not supported. On Hyprland, check the portal and conflicting desktop bindings.'
-    : status.note}</p>
+  <div class="shortcut-note">
+    <Callout severity={status.active === null ? 'error' : 'info'} compact>{id === 'dictation' && status.active === null && isLinux && status.note.startsWith('No available shortcut.')
+      ? 'The desktop shortcut could not be registered. Verenu requires working Hyprland integration; Xfce/X11 shortcut capture is not supported. On Hyprland, check the portal and conflicting desktop bindings.'
+      : status.note}</Callout>
+  </div>
 {/if}
 
 <style>
-  .shortcut-conflict { margin: 8px 0 12px; }
-  .shortcut-conflict p { margin: 6px 0; }
-  .shortcut-conflict textarea { display: block; box-sizing: border-box; width: 100%; margin: 8px 0; padding: 8px; color: inherit; background: transparent; border: 1px solid var(--border-color, #555); border-radius: 6px; resize: vertical; }
+  .shortcut-conflict, .shortcut-note { margin-top: 10px; }
+  .shortcut-conflict p { margin: 8px 0 6px; }
+  .shortcut-conflict textarea { display: block; box-sizing: border-box; width: 100%; margin: 0 0 8px; padding: 8px 10px; color: var(--ink-soft); background: transparent; border: 1px solid var(--line-strong); border-radius: var(--r-sm); font: 11.5px/1.5 var(--mono); resize: vertical; }
+  .shortcut-conflict textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 </style>

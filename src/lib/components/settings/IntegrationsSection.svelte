@@ -80,8 +80,8 @@
 </script>
 
 <h2 class="settings-h">Integrations</h2>
-<p class="section-intro">Connect your tools for dictation and Insights.</p>
-<ConsentHint feature="Integrations" />
+<p class="settings-lede">Connect your tools for dictation and Insights.</p>
+<ConsentHint banner feature="Integrations" />
 <ConsentArea>
 
 <div class="integration-list">
@@ -145,7 +145,6 @@
 {/if}
 
 <style>
-  .section-intro { color: var(--ink-mute); font-size: 12.5px; line-height: 1.5; margin: -8px 0 22px; }
   .integration-list { display: grid; gap: 12px; }
   .github-dark { display: none; }
   :global(:root[data-theme="dark"]) .github-light { display: none; }

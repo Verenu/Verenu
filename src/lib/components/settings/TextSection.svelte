@@ -47,6 +47,16 @@
     anchor_misses: 0,
   });
   let latestAutoLearn = $state<{ event_type: string; reason_code: string } | null>(null);
+  const autoLearnTotal = $derived(
+    autoLearnSummary.promotions + autoLearnSummary.low_confidence_rejections + autoLearnSummary.anchor_misses,
+  );
+  /** Backend codes such as `low_confidence` read as plain words; a missing code is left out. */
+  const latestAutoLearnLabel = $derived.by(() => {
+    const words = (code: string | undefined) => (code ?? '').replace(/[_-]+/g, ' ').trim();
+    const event = words(latestAutoLearn?.event_type);
+    const reason = words(latestAutoLearn?.reason_code);
+    return event && reason ? `${event} (${reason})` : event || reason;
+  });
 
   let cleanupError = $state(false);
   let contextualFormattingError = $state(false);
@@ -193,7 +203,7 @@
 
 <h3 class="settings-subhead first">Cleanup and formatting</h3>
 <div class="setting-row" data-setting-target="text-cleanup">
-  <div><div class="label">Cleanup</div><div class="desc">Cleans up dictation after transcription. Choose the level in Style and a cleanup model in Models.</div></div>
+  <div><div class="label">Cleanup</div><div class="desc">Cleans up dictation after transcription. Set the level in Style and the model in Models.</div></div>
   <Toggle checked={appStore.cleanupEnabled} onchange={handleCleanup} label="Cleanup" bind:error={cleanupError} />
 </div>
 
@@ -203,7 +213,7 @@
 </div>
 {#if !isAndroid}
   <div class="setting-row" data-setting-target="text-caps-lock">
-    <div><div class="label">Automatic caps lock detection</div><div class="desc">When Caps Lock is on, output your dictation in ALL CAPS</div></div>
+    <div><div class="label">Automatic caps lock detection</div><div class="desc">Types your dictation in ALL CAPS while Caps Lock is on.</div></div>
     <Toggle checked={capsLockUppercase} onchange={handleCapsLockUppercase} label="Automatic caps lock detection" bind:error={capsLockUppercaseError} />
   </div>
 {/if}
@@ -212,7 +222,7 @@
 <div class="setting-row voice-commands-row" data-setting-target="text-voice-commands">
   <div>
     <div class="label">Voice commands</div>
-    <div class="desc">Say punctuation, line breaks, or “scratch that” while dictating and Verenu applies them instead of typing the words. Off by default.</div>
+    <div class="desc">Say punctuation, line breaks, or “scratch that” while dictating and Verenu applies them instead of typing the words.</div>
   </div>
   <Toggle checked={voiceCommands} onchange={handleVoiceCommands} disabled={voiceCommandsSaving} label="Voice commands" bind:error={voiceCommandsError} />
   <div class="voice-commands-disclosure">
@@ -224,7 +234,7 @@
         <dt>Take back</dt><dd>“scratch that” or “strike that” removes the latest fragment. “Remove that”, “delete that”, “undo that” and “cancel that” do the same only when set off by punctuation.</dd>
       </dl>
       <ul class="voice-commands-limits">
-        <li>English only, with Spoken Language set to English, not Auto.</li>
+        <li>English only, with Spoken language set to English, not Auto.</li>
         <li>Cleanup must be on and not set to Off in Style.</li>
         <li>Commands act only on what you are dictating now and never edit text already in another app.</li>
         <li>Snippet and clipboard text, quoted text, and code stay literal.</li>
@@ -240,9 +250,13 @@
 <div class="setting-row" data-setting-target="text-learning">
   <div>
     <div class="label">Auto-learn corrections</div>
-    <div class="desc">Adds corrections you confirm to your dictionary automatically. Entirely on-device; no text is sent to any API.</div>
+    <div class="desc">Adds corrections you confirm to your dictionary. Nothing leaves this device.</div>
     <div class="desc learn-status" data-setting-target="text-learning-activity">
-      {autoLearnSummary.promotions} promoted · {autoLearnSummary.low_confidence_rejections} blocked · {autoLearnSummary.anchor_misses} missed{#if latestAutoLearn} · Latest: {latestAutoLearn.event_type} ({latestAutoLearn.reason_code}){/if}
+      {#if autoLearnTotal === 0}
+        No corrections learned yet.
+      {:else}
+        {autoLearnSummary.promotions} learned · {autoLearnSummary.low_confidence_rejections} blocked · {autoLearnSummary.anchor_misses} missed{#if latestAutoLearnLabel} · Latest: {latestAutoLearnLabel}{/if}
+      {/if}
     </div>
   </div>
   <Toggle checked={autoLearn} onchange={handleAutoLearn} label="Auto-learn corrections" bind:error={autoLearnError} />
@@ -303,12 +317,6 @@
   @container settings-panel (max-width: 520px) {
     .voice-commands-details { grid-template-columns: 1fr; gap: 0; }
     .voice-commands-details dd { margin-bottom: 8px; }
-  }
-  .settings-error {
-    margin: -2px 0 12px;
-    color: var(--danger);
-    font-size: 12px;
-    line-height: 1.45;
   }
   .modal-backdrop {
     position: fixed;

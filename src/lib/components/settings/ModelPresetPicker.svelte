@@ -152,10 +152,11 @@
 
 <style>
   .preset-grid { display: flex; flex-direction: column; gap: 0; margin-bottom: 6px; }
-  .preset-group { margin-top: 20px; animation: group-in var(--ui-duration-base) var(--ui-ease-out) both; }
+  .preset-group { margin-top: 28px; animation: group-in var(--ui-duration-base) var(--ui-ease-out) both; }
   .preset-group:nth-of-type(2) { animation-delay: 60ms; }
-  .preset-group:last-of-type { margin-bottom: 14px; }
-  .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-height: 20px; margin-bottom: 6px; }
+  .preset-group:first-of-type { margin-top: 0; }
+  .preset-group:last-of-type { margin-bottom: 0; }
+  .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-height: 20px; margin-bottom: 8px; }
   .group-head :global(.settings-subhead) { margin: 0; }
   .group-status { font-family: var(--sans); font-size: 11.5px; color: var(--ink-mute); }
   .preset-list {

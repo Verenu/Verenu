@@ -124,7 +124,7 @@
   );
   const microphoneCopy = {
     inputDeviceLabel: 'Input device',
-    inputDeviceDescription: 'Choose which microphone Verenu should record from',
+    inputDeviceDescription: 'The microphone Verenu records from',
     defaultDevice: 'Default Device',
     noDevicesFound: 'No devices found',
   };
@@ -135,8 +135,8 @@
   let captureTarget = $state<CaptureTarget>('dictation');
   let controlKeys = $state({ cancel: 'Escape', handsfree: 'Space' });
   const secondaryControls = [
-    { id: 'cancel', label: 'Cancel dictation', description: 'Available while recording or processing' },
-    { id: 'handsfree', label: 'Switch to hands-free', description: 'Available while holding the dictation shortcut' },
+    { id: 'cancel', label: 'Cancel dictation', description: 'One key, active while recording or processing.' },
+    { id: 'handsfree', label: 'Switch to hands-free', description: 'One key, active while you hold the dictation hotkey.' },
   ] as const;
   let recordingHotkey = $state(false);
   let capturedKeys = $state<string[]>([]);
@@ -657,9 +657,8 @@
   <div class="setting-row" data-setting-target="general-hotkey">
     <div>
       <div class="label">Hotkey</div>
-      <div class="desc">Hold to record, release to transcribe. Click to change, hold all your keys, then release.</div>
-      <div id="hotkey-help" class="desc hotkey-tip" class:hotkey-error={captureTarget === 'dictation' && Boolean(hotkeyError)} role={captureTarget === 'dictation' && hotkeyError ? 'alert' : undefined}>
-        {(captureTarget === 'dictation' && hotkeyError) || (recordingHotkey && captureTarget === 'dictation' ? 'Hold every key in the combination. Release any key to save. Escape before pressing keys or click outside to cancel.' : isMac ? 'Use any modifiers with one key, or a function key on its own.' : isLinux ? 'Use any modifiers with one key, a function key on its own, or a modifier-only combination.' : 'You can use one key or hold several keys together.')}
+      <div id="hotkey-help" class="desc" class:hotkey-error={captureTarget === 'dictation' && Boolean(hotkeyError)} role={captureTarget === 'dictation' && hotkeyError ? 'alert' : undefined}>
+        {(captureTarget === 'dictation' && hotkeyError) || (recordingHotkey && captureTarget === 'dictation' ? 'Hold every key in the combination, then release any key to save. Press Escape first or click outside to cancel.' : `Hold to record, release to transcribe. ${isMac ? 'Use modifiers with one key, or a function key on its own.' : isLinux ? 'Use modifiers with one key, a function key on its own, or modifiers only.' : 'Use one key or several keys held together.'}`)}
       </div>
       {#if isMac && hotkey[0] === 'F5'}
         <div class="desc hotkey-tip">
@@ -694,10 +693,10 @@
   <div class="setting-row" data-setting-target="general-copy-last">
     <div>
       <div class="label">Copy last dictation</div>
-      <div class="desc">Re-copies your last dictation to the clipboard, in case a paste didn't land</div>
+      <div class="desc">Puts your last dictation back on the clipboard when a paste did not land.</div>
       {#if isLinux && !isAndroid}<DesktopShortcutStatus id="copy" />{/if}
     </div>
-    <span class="badge key-badge">{isLinux && !isAndroid && desktopShortcut('copy') ? desktopShortcut('copy')?.active ?? 'Unavailable' : isMac ? '⌥⌘C' : 'Ctrl+Alt+C'}</span>
+    <span class="badge key-badge">{isLinux && !isAndroid && desktopShortcut('copy') ? desktopShortcut('copy')?.active?.split('+').join(' + ') ?? 'Unavailable' : isMac ? '⌥⌘C' : 'Ctrl + Alt + C'}</span>
   </div>
 {/if}
 {#if isLinux && !isAndroid}
@@ -707,11 +706,10 @@
     <div class="setting-row">
       <div>
         <div class="label">{control.label}</div>
-        <div class="desc">{control.description}</div>
-        <div id={`${control.id}-help`} class="desc hotkey-tip" class:hotkey-error={captureTarget === control.id && Boolean(hotkeyError)} role={captureTarget === control.id && hotkeyError ? 'alert' : undefined}>
+        <div id={`${control.id}-help`} class="desc" class:hotkey-error={captureTarget === control.id && Boolean(hotkeyError)} role={captureTarget === control.id && hotkeyError ? 'alert' : undefined}>
           {captureTarget === control.id && hotkeyError ? hotkeyError : capturing
             ? 'Press and release one key to save, including Escape. Click outside to cancel.'
-            : 'Click to change. Desktop shortcuts take priority when the full key combination matches.'}
+            : control.description}
         </div>
         <DesktopShortcutStatus id={control.id as 'cancel' | 'handsfree'} />
       </div>
@@ -728,7 +726,7 @@
 
 <h3 class="settings-subhead">Speech input</h3>
 <div class="setting-row" data-setting-target="general-language">
-  <div class="lang-setting-text"><div class="label">Spoken Language</div><div class="desc">Tells transcription what language to expect{languageScopeNote}</div></div>
+  <div class="lang-setting-text"><div class="label">Spoken language</div><div class="desc">The language transcription expects{languageScopeNote}</div></div>
   <div class="ui-dropdown language-dropdown" role="presentation" onkeydown={(e) => { if (e.key === 'Escape' && languageDropdownOpen) { languageDropdownOpen = false; e.stopPropagation(); } }}>
     <button
       class="ui-dropdown-trigger ui-dropdown-trigger--compact language-btn"
@@ -812,21 +810,19 @@
 <h3 class="settings-subhead">Appearance</h3>
 <AppearanceSettings />
 <div class="setting-row" data-setting-target="general-accent">
-  <div><div class="label">Accent color</div><div class="desc">Used for actions, highlights, focus rings, and status details</div></div>
+  <div><div class="label">Accent color</div><div class="desc">Used for actions, highlights, and focus rings</div></div>
   <AccentColorPicker value={appStore.accentColor} onchange={handleAccentColor} />
 </div>
 
+<h3 class="settings-subhead">App</h3>
 {#if !isAndroid}
-  <h3 class="settings-subhead">Startup</h3>
   <div class="setting-row" data-setting-target="general-startup">
-    <div><div class="label">Start on Boot</div><div class="desc">{isMac ? 'Launch Verenu when macOS starts' : isLinux ? 'Launch Verenu when you log in' : 'Launch Verenu when Windows starts'}</div></div>
+    <div><div class="label">Start on boot</div><div class="desc">{isMac ? 'Launch Verenu when macOS starts' : isLinux ? 'Launch Verenu when you log in' : 'Launch Verenu when Windows starts'}</div></div>
     <Toggle checked={autostart} onchange={handleAutostart} label="Start on boot" bind:error={autostartError} />
   </div>
 {/if}
-
-<h3 class="settings-subhead">Compatibility</h3>
 <div class="setting-row" data-setting-target="general-legacy">
-  <div><div class="label">Legacy pages</div><div class="desc">Bring back the standalone App Mappings settings page and the Dictionary/Snippets pages, superseded by Contexts.</div></div>
+  <div><div class="label">Legacy pages</div><div class="desc">Bring back the App Mappings, Dictionary, and Snippets pages that Contexts replaced.</div></div>
   <Toggle checked={appStore.legacyFeaturesEnabled} onchange={handleLegacyFeatures} label="Legacy pages" bind:error={legacyFeaturesToggleError} />
 </div>
 {#if legacyFeaturesError}
@@ -868,12 +864,11 @@
 {/if}
 
 <style>
-  .hotkey-tip { margin-top: 8px; }
+  .hotkey-tip { margin-top: 6px; }
   .hotkey-tip strong { color: var(--ink-soft); font-weight: 600; }
 
   .keybind-btn, .secondary-keybind-btn {
     cursor: pointer;
-    border: 1px solid transparent;
     transition:
       width 240ms cubic-bezier(0.22, 1, 0.36, 1),
       background 0.18s cubic-bezier(0.22, 1, 0.36, 1),
@@ -890,18 +885,12 @@
   }
   .desc.hotkey-error { color: var(--danger); }
   .keybind-btn:hover, .secondary-keybind-btn:hover { background: var(--control-hover); }
-  .keybind-btn.recording, .secondary-keybind-btn.recording { background: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
+  .keybind-btn.recording, .secondary-keybind-btn.recording { background: var(--accent); border-color: var(--accent); color: var(--on-accent); animation: pulse 1.5s infinite; }
   .keybind-btn.armed { transform: scale(1.02); }
   .keybind-btn.first { transform: scale(1.03); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
   .keybind-btn.saving { opacity: 0.9; }
-  .keybind-btn.success { background: color-mix(in srgb, var(--accent) 82%, white 18%); color: var(--on-accent); transform: scale(1.03); }
+  .keybind-btn.success { background: color-mix(in srgb, var(--accent) 82%, white 18%); border-color: transparent; color: var(--on-accent); transform: scale(1.03); }
   .keybind-btn.error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-line); animation: none; }
-  .settings-error {
-    margin: -2px 0 12px;
-    color: var(--danger);
-    font-size: 12px;
-    line-height: 1.45;
-  }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
   .mic-btn {
     max-width: 180px;
@@ -924,7 +913,7 @@
   .language-code {
     font-family: var(--mono);
     font-size: 10.5px;
-    color: var(--ink-faint);
+    color: var(--ink-mute);
     text-transform: uppercase;
   }
   .language-menu {

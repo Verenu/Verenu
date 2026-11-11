@@ -156,8 +156,8 @@
     Add provider
   </GatedButton>
 </div>
-<ConsentHint feature="Adding or changing cloud providers" thenEnable={() => drawer?.openPicker()} />
 <p class="panel-note">{isAndroid ? 'Keys are encrypted in the Android Keystore.' : 'Keys stay on this device and are never shown again.'}</p>
+<ConsentHint banner feature="Adding or changing cloud providers" thenEnable={() => drawer?.openPicker()} />
 
 {#if count}
   <ul class="list" aria-label="Your providers">
@@ -234,8 +234,8 @@
   .page-head h2.page-title { margin: 0; }
   :global(.add) { display: inline-flex; align-items: center; gap: 6px; flex: none; }
 
-  .list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 8px; }
-  .row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-elev); transition: border-color 140ms ease, background 140ms ease; }
+  .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-lg, 14px); background: var(--settings-card-bg, var(--bg-elev)); transition: border-color 140ms ease, background 140ms ease; }
   .row:hover { border-color: var(--line-strong); }
   .info { flex: 1; min-width: 0; display: grid; gap: 2px; }
   .name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--ink); }
@@ -252,7 +252,7 @@
   .confirm { width: 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--ink-soft); }
   .confirm span { flex: 1 1 200px; }
 
-  .empty { display: grid; justify-items: center; gap: 10px; padding: 44px 16px; border: 1px dashed var(--line); border-radius: 16px; text-align: center; }
+  .empty { display: grid; justify-items: center; gap: 10px; padding: 36px 16px; border: 1px dashed var(--line); border-radius: var(--r-lg, 14px); text-align: center; }
   .empty-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; background: var(--paper-2); color: var(--ink-mute); }
   .empty-title { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--ink); }
 

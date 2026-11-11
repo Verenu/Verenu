@@ -82,13 +82,14 @@
 <svelte:window onkeydown={handleRecordKeydown} />
 
 <h2 class="settings-h">Sub-apps</h2>
+<p class="settings-lede">A sub-app is one window inside an app, such as a Discord server or a VS Code project, that gets its own Context.</p>
 
 <h3 class="settings-subhead first">Shortcut</h3>
 
 <div class="setting-row" data-setting-target="sub-apps-shortcut">
   <div>
     <div class="label">Capture shortcut</div>
-    <div class="desc">Focus a window, such as a Discord server or a VS Code project, and press this to save it as a sub-app.</div>
+    <div class="desc">Focus a window and press this to save it as a sub-app.</div>
   </div>
   <div class="shortcut-actions">
     {#if !isDefault && !recording}
@@ -117,14 +118,20 @@
 
 <h3 class="settings-subhead">Your sub-apps</h3>
 {#if subApps.length === 0}
-  <p class="empty">
-    {#if desktopShortcut('capture')?.active === null}
-      No sub-apps yet. Choose an available capture shortcut above.
-    {:else}
-      No sub-apps yet. Focus a window and press
-      {#each subAppCaptureKeys(activeChord) as key, index}{#if index > 0}+{/if}<kbd>{key}</kbd>{/each}.
-    {/if}
-  </p>
+  <div class="empty">
+    <span class="empty-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2.5"/><path d="M3 9h18M8 21h8"/></svg>
+    </span>
+    <p class="empty-title">No sub-apps yet</p>
+    <p class="empty-text">
+      {#if desktopShortcut('capture')?.active === null}
+        Choose an available capture shortcut above.
+      {:else}
+        Focus a window and press
+        {#each subAppCaptureKeys(activeChord) as key, index}{#if index > 0}<span class="plus">+</span>{/if}<kbd>{key}</kbd>{/each}
+      {/if}
+    </p>
+  </div>
 {:else}
   <ul class="sub-app-list">
     {#each subApps as subApp (subApp.id)}
@@ -159,7 +166,6 @@
   }
 
   .shortcut-btn {
-    border: 1px solid transparent;
     cursor: pointer;
     transition: background var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
     white-space: nowrap;
@@ -171,6 +177,7 @@
 
   .shortcut-btn.recording {
     background: var(--accent);
+    border-color: var(--accent);
     color: var(--on-accent);
   }
 
@@ -180,17 +187,38 @@
   }
 
   .shortcut-hint,
-  .empty,
   .section-error {
     font-size: 12px;
     line-height: 1.5;
-    margin: 6px 0 0;
+    margin: 8px 2px 0;
   }
 
-  .shortcut-hint,
+  .shortcut-hint { color: var(--ink-mute); }
+
   .empty {
-    color: var(--ink-mute);
+    border: 1px dashed var(--line);
+    border-radius: var(--r-lg, 14px);
+    display: grid;
+    gap: 6px;
+    justify-items: center;
+    padding: 32px 16px;
+    text-align: center;
   }
+
+  .empty-icon {
+    background: var(--paper-2);
+    border-radius: 12px;
+    color: var(--ink-mute);
+    display: grid;
+    height: 40px;
+    margin-bottom: 4px;
+    place-items: center;
+    width: 40px;
+  }
+
+  .empty-title { color: var(--ink); font-size: 13.5px; font-weight: 600; margin: 0; }
+  .empty-text { color: var(--ink-mute); font-size: 12px; line-height: 1.8; margin: 0; }
+  .empty .plus { margin: 0 3px; }
 
   .section-error {
     color: var(--danger);
@@ -203,24 +231,27 @@
     color: var(--ink-mute);
     font-family: var(--mono);
     font-size: 10.5px;
-    padding: 0 4px;
+    padding: 2px 5px;
   }
 
   .sub-app-list {
+    background: var(--settings-card-bg, var(--bg-elev));
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg, 14px);
     display: flex;
     flex-direction: column;
     list-style: none;
-    margin: 4px 0 0;
+    margin: 0;
     padding: 0;
   }
 
   .sub-app-row {
     align-items: center;
-    border-bottom: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line);
     display: grid;
     gap: 12px;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    padding: 10px 0;
+    padding: 12px 16px;
   }
 
   .sub-app-row:last-child {
