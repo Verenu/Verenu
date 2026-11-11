@@ -604,6 +604,7 @@ local verenu_cancel = hl.dsp.global("{cancel_portal_id}")
 local verenu_release = hl.dsp.exec_cmd("{release_command}")
 local verenu_handsfree = hl.dsp.exec_cmd("{handsfree_command}")
 local verenu_release_armed = false
+local verenu_release_scheduled = false
 local verenu_release_generation = 0
 local verenu_press_generation = 0
 local verenu_mouse_companion_pending = false
@@ -634,6 +635,7 @@ local verenu_press = function()
     return
   end
   verenu_combo = false
+  verenu_release_scheduled = false
   verenu_press_generation = verenu_press_generation + 1
   local press_generation = verenu_press_generation
   -- Mouse firmware can append F13 to a modifier-only shortcut. Accept that
@@ -652,13 +654,14 @@ local verenu_press = function()
     verenu_quick_tap_generation = verenu_quick_tap_generation + 1
     verenu_release_generation = verenu_release_generation + 1
     verenu_release_armed = true
+    verenu_short_hold = false
     hl.dispatch(verenu_handsfree)
   else
     verenu_release_generation = verenu_release_generation + 1
     verenu_release_armed = true
+    verenu_short_hold = true
     hl.dispatch(verenu_dictate)
   end
-  verenu_short_hold = true
   hl.timer(function()
     if press_generation == verenu_press_generation then
       verenu_short_hold = false
@@ -666,7 +669,7 @@ local verenu_press = function()
   end, { timeout = 700, type = "oneshot" })
 end
 hl.on("input.keyboard.key", function(keycode, _, state)
-  if not verenu_release_armed then
+  if not verenu_release_armed or verenu_release_scheduled then
     return
   end
   if state == 1 then
@@ -684,6 +687,7 @@ hl.on("input.keyboard.key", function(keycode, _, state)
   end
   for _, release_keycode in ipairs(verenu_release_keycodes) do
     if keycode == release_keycode then
+      verenu_release_scheduled = true
       if verenu_combo then
         -- Not a tap: it must not arm the double-tap hands-free gesture, and
         -- the next chord press is swallowed for a moment.
