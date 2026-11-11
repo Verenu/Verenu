@@ -331,7 +331,7 @@
   <div class="gain-header">
     <div>
       <div class="label">Microphone gain</div>
-      <div class="desc">Speech level adjusts automatically. Leave this at the default unless speech is too quiet or not detected; higher values target a louder level.</div>
+      <div class="desc">Speech level adjusts automatically. Raise this only if speech is too quiet or not detected.</div>
     </div>
     <span class="gain-value"><RollingNumber value={micGain} decimals={1} suffix="×" /></span>
   </div>
@@ -352,18 +352,17 @@
       <span>8×</span>
     </div>
   </div>
-  {#if micGainError}<div class="desc" role="alert">Could not save microphone gain. Reload Audio settings before trying again.</div>{/if}
+  {#if micGainError}<div class="row-callout"><Callout severity="error" compact>Could not save microphone gain. Reload Audio settings before trying again.</Callout></div>{/if}
   {#if gainAdvice}
-    <div class="gain-tip" role="note" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      {gainAdvice}
+    <div class="row-callout" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
+      <Callout severity="warning" compact role="note">{gainAdvice}</Callout>
     </div>
   {/if}
 </div>
 
 {#if isLinux && !isAndroid}
   <div class="setting-row" data-setting-target="audio-echo-cancellation">
-    <div><div class="label">Echo cancellation</div><div class="desc">Reduce speaker audio picked up by the default microphone. Requires PipeWire echo cancellation and the Default Device microphone. Turn this off if your microphone already cancels echo.</div></div>
+    <div><div class="label">Echo cancellation</div><div class="desc">Reduces speaker audio picked up by the microphone. Needs PipeWire echo cancellation and the Default Device microphone. Leave off if your microphone already cancels echo.</div></div>
     <Toggle checked={echoCancellation} onchange={handleEchoCancellation} label="Echo cancellation" bind:error={echoCancellationError} />
   </div>
 {/if}
@@ -428,35 +427,50 @@
   </div>
 {/if}
 
+{#if isWindows || (isLinux && !isAndroid)}
+  <div class="setting-row" data-setting-target="audio-mic-mute-button">
+    <div>
+      <div class="label">Use microphone mute button for dictation</div>
+      <div class="desc">Mute, then unmute the selected microphone within about 3 seconds to toggle hands-free dictation. Works with mixer mute and USB or headset mute buttons. Your hotkey keeps working.</div>
+    </div>
+    <Toggle
+      checked={micMuteButtonDictation}
+      onchange={handleMicMuteButtonDictation}
+      label="Use microphone mute button for dictation"
+      bind:error={micMuteButtonDictationError}
+    />
+  </div>
+{/if}
+
 <h3 class="settings-subhead">While you dictate</h3>
 {#if !isLinux || isAndroid}
 <div class="setting-row" data-setting-target="audio-system-mute">
-  <div><div class="label">{isMac ? 'Mute System Audio' : isAndroid ? 'Mute device audio' : 'Mute PC Audio'}</div><div class="desc">{isMac ? 'Mutes system volume while dictating to prevent audio interference' : isAndroid ? 'Mutes device audio while dictating to prevent audio interference' : isWindows ? 'Mutes Windows volume while dictating to prevent audio interference' : 'Mutes the default output while dictating to prevent audio interference'}</div></div>
+  <div><div class="label">{isMac ? 'Mute system audio' : isAndroid ? 'Mute device audio' : 'Mute PC audio'}</div><div class="desc">{isMac ? 'Mutes system volume while dictating to prevent audio interference' : isAndroid ? 'Mutes device audio while dictating to prevent audio interference' : isWindows ? 'Mutes Windows volume while dictating to prevent audio interference' : 'Mutes the default output while dictating to prevent audio interference'}</div></div>
   <Toggle checked={muteAudio} onchange={handleMuteAudio} label={isMac ? 'Mute system audio' : isAndroid ? 'Mute device audio' : 'Mute PC audio'} bind:error={muteAudioError} />
 </div>
 {/if}
 {#if isLinux && !isAndroid}
-  <div data-setting-target="audio-system-mute">
-    {#if duckSettingError}<div class="setting-row"><div class="desc" role="alert">Could not save the volume setting. Try changing it again.</div></div>{/if}
-    <div class="setting-row sound-volume-row" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
-      <div class="sound-volume-header"><div><div class="label">Volume of audio while dictating</div><div class="desc">Maximum system volume while dictating. Audio already below this level stays unchanged. 0% mutes immediately; 100% leaves it unchanged. Other levels fade down smoothly. Playback continues unless media pause is enabled. Partial reduction requires PipeWire's PulseAudio service and pactl.</div></div><span class="sound-volume-value"><RollingNumber value={duckTarget} suffix="%" /></span></div>
-      <div class="sound-volume-slider-wrap">
-        <input type="range" class="sound-volume-slider" min="0" max="100" step="1" bind:value={duckTarget} onchange={() => saveDuckSetting('duck_target', duckTarget)} style="--pct: {duckTarget}%" aria-label="Volume of audio while dictating" />
-        <div class="sound-volume-ticks"><span>0%</span><span>50%</span><span>100%</span></div>
-      </div>
+  <div class="setting-row sound-volume-row" data-setting-target="audio-system-mute">
+    <div class="sound-volume-header"><div><div class="label">Volume of audio while dictating</div><div class="desc">Caps system volume while you dictate. 0% mutes, 100% leaves it unchanged, and levels in between fade down. Partial reduction needs PipeWire's PulseAudio service and pactl.</div></div><span class="sound-volume-value"><RollingNumber value={duckTarget} suffix="%" /></span></div>
+    <div class="sound-volume-slider-wrap">
+      <input type="range" class="sound-volume-slider" min="0" max="100" step="1" bind:value={duckTarget} onchange={() => saveDuckSetting('duck_target', duckTarget)} style="--pct: {duckTarget}%" aria-label="Volume of audio while dictating" />
+      <div class="sound-volume-ticks"><span>0%</span><span>50%</span><span>100%</span></div>
     </div>
+    {#if duckSettingError}<div class="row-callout"><Callout severity="error" compact>Could not save the volume setting. Try changing it again.</Callout></div>{/if}
     {#if duckTarget > 0 && duckTarget < 100}
     <div class="volume-fades" transition:slide={{ duration: motionMs(MOTION_MS.base) }}>
     <Disclosure label="Advanced volume fades" id="volume-fades-details" bind:open={fadesOpen}>
-    <div class="setting-row sound-volume-row">
+    <div class="fade-rows">
+    <div class="fade-row sound-volume-row">
       <div class="sound-volume-header"><div><div class="label">Fade down duration</div><div class="desc">Time to reach the target when dictation starts.</div></div><span class="sound-volume-value"><RollingNumber value={duckFadeDown} suffix=" ms" /></span></div>
       <div class="sound-volume-slider-wrap"><input type="range" class="sound-volume-slider" min="0" max="5000" step="50" bind:value={duckFadeDown} onchange={() => saveDuckSetting('duck_fade_down_ms', duckFadeDown)} style="--pct: {duckFadeDown / 50}%" aria-label="Fade down duration" /></div>
     </div>
-    <div class="setting-row sound-volume-row">
+    <div class="fade-row sound-volume-row">
       <div class="sound-volume-header"><div><div class="label">Fade up duration</div><div class="desc">Time to restore the volume when dictation ends.</div></div><span class="sound-volume-value"><RollingNumber value={duckFadeUp} suffix=" ms" /></span></div>
       <div class="sound-volume-slider-wrap"><input type="range" class="sound-volume-slider" min="0" max="5000" step="50" bind:value={duckFadeUp} onchange={() => saveDuckSetting('duck_fade_up_ms', duckFadeUp)} style="--pct: {duckFadeUp / 50}%" aria-label="Fade up duration" /></div>
     </div>
-    <div class="setting-row"><div><div class="label">Smooth fade up</div><div class="desc">Ease the start and end of the fade; turn off for a linear curve.</div></div><Toggle checked={duckUpSmooth} onchange={setDuckCurve} label="Smooth fade up" bind:error={duckUpCurveError} /></div>
+    <div class="fade-row fade-toggle"><div><div class="label">Smooth fade up</div><div class="desc">Ease the start and end of the fade; turn off for a linear curve.</div></div><Toggle checked={duckUpSmooth} onchange={setDuckCurve} label="Smooth fade up" bind:error={duckUpCurveError} /></div>
+    </div>
     </Disclosure>
     </div>
     {/if}
@@ -470,32 +484,15 @@
 {/if}
 {#if isWindows || (isLinux && !isAndroid)}
   <div class="setting-row" data-setting-target="audio-pause-media">
-    <div><div class="label">Pause media while dictating</div><div class="desc">{isWindows ? 'Pauses active Windows media sessions and resumes them after transcription finishes. Works with apps that expose Windows media controls.' : 'Pauses playing music and videos and resumes them after transcription finishes. Works with apps and browsers that expose Linux media controls (MPRIS).'}</div></div>
+    <div><div class="label">Pause media while dictating</div><div class="desc">{isWindows ? 'Pauses music and videos, then resumes them after transcription. Works with apps that expose Windows media controls.' : 'Pauses music and videos, then resumes them after transcription. Works with apps that expose Linux media controls (MPRIS).'}</div></div>
     <Toggle checked={pauseMediaDuringDictation} onchange={handlePauseMedia} label="Pause media while dictating" bind:error={pauseMediaError} />
   </div>
 {/if}
-{#if isWindows || (isLinux && !isAndroid)}
-  <h3 class="settings-subhead">Hands-free</h3>
-  <div class="setting-row" data-setting-target="audio-mic-mute-button">
-    <div>
-      <div class="label">Use microphone mute button for dictation</div>
-      <div class="desc">Mute then unmute the selected mic (within ~3s) to toggle hands-free dictation. Works with mute buttons the system can see — mixer mute, USB/headset hardware mute, or a mute that silences the capture stream (PipeWire on Linux). Keyboard hotkey is unchanged.</div>
-    </div>
-    <Toggle
-      checked={micMuteButtonDictation}
-      onchange={handleMicMuteButtonDictation}
-      label="Use microphone mute button for dictation"
-      bind:error={micMuteButtonDictationError}
-    />
-  </div>
-{/if}
-
-<h3 class="settings-subhead">Sounds</h3>
 <div class="setting-row sound-volume-row" data-setting-target="audio-sounds">
   <div class="sound-volume-header">
     <div>
       <div class="label">Sound effects volume</div>
-      <div class="desc">Set to 0% to silence dictation chimes</div>
+      <div class="desc">The chimes when dictation starts and stops. 0% silences them.</div>
     </div>
     <span class="sound-volume-value"><RollingNumber value={Math.round(soundEffectsVolume)} suffix="%" /></span>
   </div>
@@ -518,11 +515,20 @@
 </div>
 
 <style>
-  .volume-fades { margin-top: 8px; }
-  .volume-fades :global(.disclosure-body) { padding-top: 4px; }
+  .volume-fades { margin-top: 10px; width: 100%; }
+  .fade-rows {
+    margin-top: 6px;
+    padding: 2px 14px;
+    border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--paper) 55%, var(--bg-elev));
+  }
+  .fade-row { display: flex; flex-direction: column; align-items: stretch; padding: 12px 0; }
+  .fade-row + .fade-row { border-top: 1px solid var(--line); }
+  .fade-row.fade-toggle { flex-direction: row; align-items: center; justify-content: space-between; gap: 24px; }
+  .row-callout { margin-top: 12px; width: 100%; }
 
   .setting-row.gain-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
-  .gain-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+  .gain-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; width: 100%; }
   .gain-value {
     font-family: var(--mono);
     font-size: 13px;
@@ -532,7 +538,7 @@
     text-align: right;
     flex-shrink: 0;
   }
-  .gain-slider-wrap { margin-top: 10px; width: 100%; }
+  .gain-slider-wrap { margin-top: 14px; width: 100%; }
   .gain-slider {
     -webkit-appearance: none;
     appearance: none;
@@ -548,6 +554,7 @@
     cursor: pointer;
     border: none;
     display: block;
+    margin: 0;
   }
   .gain-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
@@ -573,26 +580,8 @@
     cursor: pointer;
   }
   .gain-ticks { display: flex; justify-content: space-between; margin-top: 5px; font-size: 10px; color: var(--ink-mute); font-family: var(--mono); user-select: none; }
-  .gain-tip {
-    grid-column: 1 / -1;
-    width: 100%;
-    box-sizing: border-box;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 10px;
-    padding: 7px 10px;
-    background: var(--warning-bg);
-    border: 1px solid var(--warning-line);
-    border-radius: 7px;
-    font-size: 11.5px;
-    color: var(--warning);
-    line-height: 1.4;
-  }
-  .gain-tip svg { flex-shrink: 0; color: var(--warning); }
-
   .setting-row.sound-volume-row { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
-  .sound-volume-header { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+  .sound-volume-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; width: 100%; }
   .sound-volume-value {
     font-family: var(--mono);
     font-size: 13px;
@@ -602,7 +591,7 @@
     text-align: right;
     flex-shrink: 0;
   }
-  .sound-volume-slider-wrap { margin-top: 10px; width: 100%; }
+  .sound-volume-slider-wrap { margin-top: 14px; width: 100%; }
   .sound-volume-slider {
     -webkit-appearance: none;
     appearance: none;

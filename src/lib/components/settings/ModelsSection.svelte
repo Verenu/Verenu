@@ -30,6 +30,7 @@
   } from '../../localLlmStore.svelte';
   import { MOTION_MS, motionMs } from '../../motion';
   import Toggle from '../Toggle.svelte';
+  import Callout from '../Callout.svelte';
   import CompactSelect from '../CompactSelect.svelte';
   import { appStore, cleanupPromptStore } from '../../stores.svelte';
   import {
@@ -846,12 +847,15 @@
 
 <h2 class="settings-h">Models</h2>
 <p class="settings-lede">Pick a setup and Verenu chooses the speech model, clean-up model, and backups for you.</p>
-<ConsentHint feature="Cloud transcription and cleanup, and model downloads" />
+<ConsentHint banner feature="Cloud transcription and cleanup, and model downloads" />
 
 {#if modelConflict}
-  <div class="panel-note" role="alert">
-    Model settings changed outside this screen. Reload to use the latest settings; unsaved selections here will be discarded.
-    <button class="btn-ghost" onclick={() => { void persistChain.catch(() => {}).then(() => migrateAndLoad(true)); }}>Reload model settings</button>
+  <div class="models-conflict">
+    <Callout
+      severity="warning"
+      role="alert"
+      action={{ label: 'Reload model settings', onclick: () => { void persistChain.catch(() => {}).then(() => migrateAndLoad(true)); } }}
+    >Model settings changed outside this screen. Reload to use the latest settings; unsaved selections here will be discarded.</Callout>
   </div>
 {/if}
 
@@ -877,14 +881,6 @@
     bind:activeLabel={activePresetName}
   />
   {#if localTestResult}<p class="models-note" role="status">{localTestResult}</p>{/if}
-</div>
-
-<div class="setting-row models-row" data-setting-target="advanced-models">
-  <div>
-    <div class="label">Advanced Models</div>
-    <div class="desc">Choose specific models, edit backups and cleanup prompts, and compare two speech models.</div>
-  </div>
-  <Toggle checked={advancedModelUi} onchange={handleAdvancedModelUi} label="Advanced Models" bind:error={advancedModelUiError} />
 </div>
 
 <div class="active-head">
@@ -925,9 +921,15 @@
 />
 
 <h3 class="settings-subhead">Model settings</h3>
+<div class="setting-row models-row" data-setting-target="advanced-models">
+  <div>
+    <div class="label">Advanced models</div>
+    <div class="desc">Choose specific models, edit backups and cleanup prompts, and compare two speech models.</div>
+  </div>
+  <Toggle checked={advancedModelUi} onchange={handleAdvancedModelUi} label="Advanced models" bind:error={advancedModelUiError} />
+</div>
 {#if advancedModelUi}
-<div class="advanced-block" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
-  <div class="setting-row models-row" data-setting-target="models-strategy">
+  <div class="setting-row models-row" data-setting-target="models-strategy" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
     <div>
       <div class="label">Transcription strategy</div>
       <div class="desc">Use one model, or compare two working models from the fallback chain before cleanup.</div>
@@ -942,7 +944,6 @@
       onchange={(value) => handleDualTranscription(value === 'dual')}
     />
   </div>
-</div>
 {/if}
 
 <div class="setting-row models-row" data-setting-target="models-memory">
@@ -973,6 +974,7 @@
 </div>
 
 <style>
+  .models-conflict { margin: 0 0 16px; }
   .models-body { transition: opacity var(--ui-duration-base) var(--ui-ease-out); }
   .models-body.hydrating { opacity: 0; }
 
@@ -990,7 +992,7 @@
     justify-content: space-between;
     gap: 12px;
     min-height: 20px;
-    margin: 40px 0 8px;
+    margin: 28px 0 8px;
   }
 
   .active-head :global(.settings-subhead) {

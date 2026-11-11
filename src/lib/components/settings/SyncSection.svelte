@@ -4,6 +4,7 @@
   import { consentBlocked, handleConsentError, requireConsent } from '../../legal/consentStore.svelte';
   import { formatSyncError as formatIpcError } from '../../errors';
   import { invoke } from '../../tauri';
+  import Callout from '../Callout.svelte';
   import Toggle from '../Toggle.svelte';
   import { SyncMutingSetting } from '../../syncMutingSetting.svelte';
   import {
@@ -388,7 +389,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <h2 class="settings-h">Sync</h2>
-<ConsentHint feature="Pairing and syncing devices" />
+<ConsentHint banner feature="Pairing and syncing devices" />
 <ConsentArea>
 
 <div class="id-card" data-setting-target="sync-this-device">
@@ -411,6 +412,7 @@
         bind:value={deviceName}
         maxlength={60}
         spellcheck="false"
+        placeholder="This device"
         aria-label="This device's sync name"
         disabled={nameBusy}
         onkeydown={(e) => {
@@ -470,13 +472,8 @@
   {/if}
 
   {#if listenerHint}
-    <div class="notice err" role="alert" transition:slide={{ duration: durBase(), easing: cubicOut }}>
-      <span class="notice-inner">
-        <svg class="notice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5v.01" />
-        </svg>
-        <span class="notice-text">{listenerHint}</span>
-      </span>
+    <div class="listener-hint" transition:slide={{ duration: durBase(), easing: cubicOut }}>
+      <Callout severity="warning" role="alert">{listenerHint}</Callout>
     </div>
   {/if}
 </div>
@@ -972,8 +969,8 @@
     gap: 14px;
     padding: 14px 16px;
     border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: var(--bg-elev);
+    border-radius: var(--r-lg, 14px);
+    background: var(--settings-card-bg, var(--bg-elev));
   }
   .id-main {
     min-width: 0;
@@ -1122,14 +1119,14 @@
     margin-top: 8px;
   }
   .sync-muting {
-    margin-top: 32px;
+    margin-top: 24px;
   }
   .device {
     container-type: inline-size;
     margin-top: 10px;
     border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: var(--bg-elev);
+    border-radius: var(--r-lg, 14px);
+    background: var(--settings-card-bg, var(--bg-elev));
     transition:
       border-color var(--ui-duration-base) var(--ui-ease-out),
       box-shadow var(--ui-duration-base) var(--ui-ease-out);
@@ -1429,8 +1426,8 @@
     margin-top: 14px;
     container-type: inline-size;
     border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: var(--bg-elev);
+    border-radius: var(--r-lg, 14px);
+    background: var(--settings-card-bg, var(--bg-elev));
     transition: border-color var(--ui-duration-base) var(--ui-ease-out);
   }
   .setup.is-open {
@@ -1724,8 +1721,10 @@
     display: flex;
     gap: 8px;
     align-items: flex-start;
-    margin-top: 28px;
+    margin: 20px 2px 0;
+    font-size: 12px;
   }
+  .listener-hint { margin-top: 10px; }
   .note-icon {
     width: 14px;
     height: 14px;

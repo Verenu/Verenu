@@ -178,6 +178,8 @@
 
 <svelte:window onkeydown={handleBetaModalKeydown} />
 
+{#snippet external()}<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5H3.5v9h9V10M9 3.5h3.5V7M12.5 3.5 7 9"/></svg>{/snippet}
+
 <h2 class="settings-h">About</h2>
 
 <h3 class="settings-subhead first">Updates</h3>
@@ -185,6 +187,7 @@
   <div>
     <div class="label">Version</div>
     <div class="desc"><button class="version-tap" data-setting-target="about-version" onclick={handleVersionTap}>v{appVersion}</button></div>
+    {#if devModeHintVisible}<div class="desc dev-hint">Developer mode enabled for this session.</div>{/if}
     <ConsentHint feature="Update checks" thenEnable={checkForUpdateManual} />
     <div role="status" aria-live="polite">
     {#if appStore.updateInstallError || updateCheckError}
@@ -232,11 +235,6 @@
     {/if}
   </div>
 </div>
-{#if devModeHintVisible}
-  <div class="dev-hint-row">
-    <span class="desc dev-hint">Developer mode enabled for this session.</span>
-  </div>
-{/if}
 <div class="setting-row" data-setting-target="about-beta">
   <div>
     <div class="label">Beta updates</div>
@@ -247,23 +245,22 @@
 </div>
 
 
+<div class="setting-row" data-setting-target="about-setup">
+  <div>
+    <div class="label">Setup</div>
+    <div class="desc">Review your provider, key, and defaults again.</div>
+  </div>
+  <button class="btn-ghost" onclick={rerunSetup}>Re-run setup</button>
+</div>
+
 <h3 class="settings-subhead">Links</h3>
 <div class="setting-row" data-setting-target="about-website">
-  <div><div class="label">Website</div></div>
-  <button class="btn-ghost" onclick={() => openExternal(WEBSITE_URL)}>verenu.com</button>
+  <div><div class="label">Website</div><div class="desc">Guides, downloads, and release notes.</div></div>
+  <button class="btn-ghost link-btn" onclick={() => openExternal(WEBSITE_URL)}>verenu.com{@render external()}</button>
 </div>
 <div class="setting-row" data-setting-target="about-source">
   <div><div class="label">Source</div><div class="desc" data-setting-target="about-license">Open source under the MIT license.</div></div>
-  <button class="btn-ghost" onclick={() => openExternal(`https://github.com/${SOURCE_REPO}`)}>github.com/{SOURCE_REPO}</button>
-</div>
-
-<h3 class="settings-subhead">Setup</h3>
-<div class="setting-row" data-setting-target="about-setup">
-  <div>
-    <div class="label">Onboarding</div>
-    <div class="desc">Re-run setup to review your provider, key, and defaults.</div>
-  </div>
-  <button class="btn-ghost" onclick={rerunSetup}>Re-run setup</button>
+  <button class="btn-ghost link-btn" onclick={() => openExternal(`https://github.com/${SOURCE_REPO}`)}>github.com/{SOURCE_REPO}{@render external()}</button>
 </div>
 
 {#if confirmBetaUpdates}
@@ -300,7 +297,9 @@
 {/if}
 
 <style>
-  .update-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+  .update-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .link-btn { align-items: center; display: inline-flex; gap: 6px; }
+  .link-btn svg { color: var(--ink-mute); }
   .version-tap {
     border: none;
     background: transparent;
@@ -308,10 +307,6 @@
     color: inherit;
     font: inherit;
     cursor: default;
-  }
-  .dev-hint-row {
-    margin-top: -4px;
-    margin-bottom: 8px;
   }
   .dev-hint {
     color: var(--ink-faint);

@@ -168,4 +168,17 @@ describe('gated feature hints', () => {
     render(ConsentHint, { feature: 'Product analytics' });
     expect(screen.queryByTestId('consent-hint')).toBeNull();
   });
+
+  it('renders a page-level hint as a status callout with the same copy and action', async () => {
+    backend(state('skipped'));
+    await loadConsent();
+    const onaccept = vi.fn();
+    render(ConsentHint, { feature: 'Integrations', banner: true, thenEnable: onaccept });
+    const banner = await screen.findByTestId('consent-hint');
+    expect(banner.getAttribute('role')).toBe('status');
+    expect(banner.classList.contains('callout')).toBe(true);
+    expect(banner.textContent).toContain('Integrations is off because you have not accepted the Terms and Privacy Policy.');
+    await fireEvent.click(screen.getByRole('button', { name: 'Review and accept' }));
+    expect(onaccept).not.toHaveBeenCalled();
+  });
 });

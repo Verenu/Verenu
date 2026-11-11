@@ -9,6 +9,7 @@
   import { scrollEdges, type ScrollEdgeCallback } from '../scrollFade';
   import { clearSettingsSearchNavigation, requestSettingsSearchNavigation, searchSettings, settingsSearchNavigation, type SettingsSearchEntry } from '../settingsSearch.svelte';
 
+  import Callout from '../components/Callout.svelte';
   import DeferredView from '../components/DeferredView.svelte';
   import { lazyComponent } from '../lazyComponent.svelte';
   import { navigation } from '../navigation.svelte';
@@ -424,9 +425,12 @@
             out:pageSwap={{ axis: 'y', distance: 0, duration: motionMs(SECTION_OUT_MS) }}
           >
             {#if externalSettingsChange && section !== 'models'}
-              <div class="panel-note" role="alert">
-                Settings changed outside this screen. Reload to see the latest values; unsaved edits on this page will be discarded.
-                <button class="btn-ghost" onclick={() => { externalSettingsChange = false; settingsReload += 1; }}>Reload settings</button>
+              <div class="panel-reload">
+                <Callout
+                  severity="warning"
+                  role="alert"
+                  action={{ label: 'Reload settings', onclick: () => { externalSettingsChange = false; settingsReload += 1; } }}
+                >Settings changed outside this screen. Reload to see the latest values; unsaved edits on this page will be discarded.</Callout>
               </div>
             {/if}
             <div class="panel-inner" inert={sectionNavigation.pending || (externalSettingsChange && section !== 'models')} aria-busy={sectionNavigation.pending}>
@@ -635,20 +639,23 @@
     font-size: 13px;
     line-height: 1.5;
     color: var(--ink-mute);
-    margin: -8px 0 4px;
-    max-width: 56ch;
+    margin: -10px 0 20px;
+    max-width: 64ch;
   }
 
+  /* A quiet group label: the page title and the cards carry the weight. */
   .settings-body :global(.settings-subhead) {
     font-family: var(--sans);
-    font-size: 15px;
+    font-size: 13px;
     font-weight: 600;
-    color: var(--ink);
-    letter-spacing: -0.01em;
-    margin: 40px 0 8px;
+    color: var(--ink-soft);
+    letter-spacing: 0;
+    line-height: 1.3;
+    margin: 28px 0 8px;
+    padding-left: 2px;
   }
 
-  .settings-body :global(.settings-subhead.first) { margin-top: 8px; }
+  .settings-body :global(.settings-subhead.first) { margin-top: 0; }
 
   .settings-body :global([data-setting-target]) {
     position: relative;
@@ -769,13 +776,25 @@
   }
 
   .settings-body :global(.label) { font-size: 13px; font-weight: 500; color: var(--ink-strong); }
-  .settings-body :global(.desc)  { font-size: 12px; color: var(--ink-mute); margin-top: 4px; max-width: 56ch; line-height: 1.45; }
+  .settings-body :global(.desc)  { font-size: 12px; color: var(--ink-mute); margin-top: 3px; max-width: 76ch; line-height: 1.45; text-wrap: pretty; }
 
   .settings-body :global(.panel-note) {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--ink-mute);
-    margin: 0 0 16px;
+    margin: -10px 0 20px;
     line-height: 1.5;
+    max-width: 64ch;
+  }
+
+  .panel-reload { width: min(100%, 680px); margin: 0 auto 16px; }
+  :global(.app[data-android='true']) .panel-reload { width: 100%; }
+
+  /* Inline save failures and notes that follow a card. */
+  .settings-body :global(.settings-error) {
+    margin: 8px 2px 0;
+    color: var(--danger);
+    font-size: 12px;
+    line-height: 1.45;
   }
 
   .settings-body :global(.btn-ghost) {
@@ -811,4 +830,16 @@
     font-size: 11px;
     letter-spacing: 0.04em;
   }
+
+  /* A shortcut that cannot be changed here is a keycap, not a button. */
+  .settings-body :global(span.key-badge) {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--ink) 7%, transparent);
+    color: var(--ink-soft);
+  }
+
+  .settings-body :global(button.key-badge) { min-height: 28px; }
+
+  /* Feedback states (recording, saved, failed) set their own text color. */
+  .settings-body :global(button.key-badge:not(.recording, .success, .error)) { color: var(--ink-strong); }
 </style>
