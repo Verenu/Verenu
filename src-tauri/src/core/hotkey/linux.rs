@@ -584,6 +584,10 @@ fn should_cancel_hold(chord_active: bool, handsfree: bool) -> bool {
     chord_active && !handsfree
 }
 
+fn consume_chord_cancel(chord_active: &AtomicBool, handsfree: bool) -> bool {
+    should_cancel_hold(chord_active.swap(false, Ordering::SeqCst), handsfree)
+}
+
 pub fn set_chord_cancel_callback(callback: impl Fn() + Send + Sync + 'static) {
     let _ = CHORD_CANCEL.set(Box::new(callback));
 }
@@ -1271,10 +1275,10 @@ async fn run_portal_session(
                     log::info!("linux hotkey: portal Escape-to-cancel fired");
                     if let Some(cb) = ESCAPE.get() { cb(); }
                 } else if id == PORTAL_CHORD_CANCEL_ID {
-                    if should_cancel_hold(CHORD_ACTIVE.load(Ordering::SeqCst), HANDLESS.load(Ordering::SeqCst)) {
+                    let cancel = consume_chord_cancel(&CHORD_ACTIVE, HANDLESS.load(Ordering::SeqCst));
+                    refresh_escape_listening();
+                    if cancel {
                         log::info!("linux hotkey: discarding hold used by another shortcut");
-                        CHORD_ACTIVE.store(false, Ordering::SeqCst);
-                        refresh_escape_listening();
                         if let Some(cb) = CHORD_CANCEL.get() { cb(); }
                     }
                 } else if id == PORTAL_COPY_ID {
@@ -1749,6 +1753,17 @@ mod tests {
         assert!(!should_cancel_hold(true, true));
         assert!(!should_cancel_hold(false, false));
         assert!(!should_cancel_hold(false, true));
+    }
+
+    #[test]
+    fn interrupted_chord_is_cleared_even_in_handsfree() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let active = AtomicBool::new(true);
+        assert!(!super::consume_chord_cancel(&active, true));
+        assert!(!active.load(Ordering::SeqCst));
+        active.store(true, Ordering::SeqCst);
+        assert!(super::consume_chord_cancel(&active, false));
+        assert!(!active.load(Ordering::SeqCst));
     }
 
     #[test]
