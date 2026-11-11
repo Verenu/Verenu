@@ -485,8 +485,6 @@ pub(crate) fn pill_window_after_show() -> Option<ActiveWindow> {
 pub(crate) fn ensure_global_shortcut_binding(
     bindings: &[String],
     press_portal_id: &str,
-    release_command: &str,
-    handsfree_command: &str,
     release_keycodes: &[u32],
 ) -> Result<(), String> {
     ensure_window_rules()?;
@@ -501,13 +499,16 @@ pub(crate) fn ensure_global_shortcut_binding(
         fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let start = "-- >>> Verenu managed global shortcut (do not edit) <<<";
     let end = "-- <<< End Verenu managed global shortcut >>>";
+    let scope = press_portal_id.rsplit_once(':').map_or("", |(scope, _)| scope);
+    let release_id = format!("{scope}:dictate-release");
+    let handsfree_id = format!("{scope}:dictate-double-tap");
     let block = global_shortcut_binding_block(
         start,
         end,
         bindings,
         press_portal_id,
-        release_command,
-        handsfree_command,
+        &release_id,
+        &handsfree_id,
         release_keycodes,
     );
     let next = replace_managed_block(&current, start, end, &block)?;
@@ -609,14 +610,16 @@ if _verenu_dictation_bindings then
 end
 _verenu_dictation_bindings = {}
 local verenu_cancel = hl.dsp.global("{cancel_portal_id}")
-local verenu_release = hl.dsp.exec_cmd("{release_command}")
-local verenu_handsfree = hl.dsp.exec_cmd("{handsfree_command}")
+local verenu_release = hl.dsp.global("{release_command}")
+local verenu_handsfree = hl.dsp.global("{handsfree_command}")
+local verenu_tap_cancel = hl.dsp.global("{tap_cancel_id}")
 local verenu_release_armed = false
 local verenu_release_scheduled = false
 local verenu_release_generation = 0
 local verenu_press_generation = 0
 local verenu_mouse_companion_pending = false
 local verenu_short_hold = false
+local verenu_second_tap = false
 local verenu_quick_tap_pending = false
 local verenu_quick_tap_generation = 0
 -- True once another key joins the held chord: the user is running some other
@@ -627,31 +630,50 @@ local verenu_suppress_press = false
 local verenu_release_keycodes = { {release_keycodes} }
 _verenu_keys_down = _verenu_keys_down or {}
 local verenu_keys_down = _verenu_keys_down
+for key in pairs(verenu_keys_down) do
+  local configured = false
+  for _, release_keycode in ipairs(verenu_release_keycodes) do
+    if key == release_keycode then configured = true; break end
+  end
+  if not configured then verenu_keys_down[key] = nil end
+end
 local verenu_chord_keys = {}
+local function verenu_key_held(key)
+  if key == 37 or key == 105 then return verenu_keys_down[37] or verenu_keys_down[105] end
+  if key == 64 or key == 108 then return verenu_keys_down[64] or verenu_keys_down[108] end
+  if key == 50 or key == 62 then return verenu_keys_down[50] or verenu_keys_down[62] end
+  if key == 133 or key == 134 then return verenu_keys_down[133] or verenu_keys_down[134] end
+  return verenu_keys_down[key]
+end
 local verenu_ignored_keycodes = {}
 for _, ignored in ipairs({ {ignored_keycodes} }) do
   verenu_ignored_keycodes[ignored] = true
 end
-local verenu_release_key = function(generation)
+local verenu_release_key = function(generation, action)
   if not verenu_release_armed or generation ~= verenu_release_generation then
     return
   end
   verenu_release_armed = false
-  hl.dispatch(verenu_release)
+  if action then hl.dispatch(action) end
   hl.dispatch(hl.dsp.submap("reset"))
+  hl.timer(function()
+    if generation == verenu_release_generation then verenu_release_scheduled = false end
+  end, { timeout = 25, type = "oneshot" })
 end
 _verenu_retire_binding = function()
   if verenu_release_armed then
     verenu_release_armed = false
+    local action = not verenu_second_tap and (verenu_short_hold and verenu_tap_cancel or verenu_release) or nil
+    if not action then return end
     _verenu_retiring_binding = true
     hl.timer(function()
-      hl.dispatch(verenu_release)
+      hl.dispatch(action)
       _verenu_retiring_binding = false
     end, { timeout = 25, type = "oneshot" })
   end
 end
 local verenu_press = function()
-  if verenu_binding_generation ~= _verenu_binding_generation or _verenu_retiring_binding or verenu_release_armed then return end
+  if verenu_binding_generation ~= _verenu_binding_generation or _verenu_retiring_binding or verenu_release_armed or verenu_release_scheduled then return end
   -- A chord pressed right after a combo is almost always the next combo.
   if verenu_suppress_press then
     return
@@ -677,11 +699,13 @@ local verenu_press = function()
     verenu_release_generation = verenu_release_generation + 1
     verenu_release_armed = true
     verenu_short_hold = false
+    verenu_second_tap = true
     hl.dispatch(verenu_handsfree)
   else
     verenu_release_generation = verenu_release_generation + 1
     verenu_release_armed = true
     verenu_short_hold = true
+    verenu_second_tap = false
     hl.dispatch(verenu_dictate)
   end
   hl.timer(function()
@@ -708,6 +732,16 @@ hl.on("input.keyboard.key", function(keycode, _, state)
     verenu_quick_tap_pending = false
   end
   if not verenu_release_armed then
+    if state == 1 and is_release_key and verenu_release_scheduled then
+      local complete = next(verenu_chord_keys) ~= nil
+      for key in pairs(verenu_chord_keys) do
+        if not verenu_key_held(key) then complete = false; break end
+      end
+      if complete then
+        verenu_release_scheduled = false
+        verenu_press()
+      end
+    end
     return
   end
   if state == 1 then
@@ -715,16 +749,24 @@ hl.on("input.keyboard.key", function(keycode, _, state)
       if not is_release_key and not verenu_ignored_keycodes[keycode] then
         verenu_combo = true
         verenu_quick_tap_pending = false
+        verenu_release_armed = false
+        verenu_release_generation = verenu_release_generation + 1
+        verenu_suppress_press = true
+        hl.timer(function()
+          verenu_suppress_press = false
+          verenu_release_scheduled = false
+        end, { timeout = 400, type = "oneshot" })
         hl.dispatch(verenu_cancel)
         return
       end
       if is_release_key and not verenu_suppress_press and not verenu_combo then
         local complete = next(verenu_chord_keys) ~= nil
         for key in pairs(verenu_chord_keys) do
-          if not verenu_keys_down[key] then complete = false; break end
+          if not verenu_key_held(key) then complete = false; break end
         end
         if complete then
           verenu_release_armed = false
+          verenu_release_scheduled = false
           verenu_press()
           return
         end
@@ -747,6 +789,13 @@ hl.on("input.keyboard.key", function(keycode, _, state)
   for _, release_keycode in ipairs(verenu_release_keycodes) do
     if keycode == release_keycode then
       verenu_release_scheduled = true
+      if verenu_second_tap then
+        local generation = verenu_release_generation
+        hl.timer(function()
+          verenu_release_key(generation, nil)
+        end, { timeout = 25, type = "oneshot" })
+        return
+      end
       if verenu_combo then
         -- Not a tap: it must not arm the double-tap hands-free gesture, and
         -- the next chord press is swallowed for a moment.
@@ -767,11 +816,14 @@ hl.on("input.keyboard.key", function(keycode, _, state)
         end, { timeout = 350, type = "oneshot" })
       end
       local generation = verenu_release_generation
-      -- Let the portal press event reach Verenu before handing off the
-      -- release. This covers very short taps without blocking Hyprland.
-      hl.timer(function()
-        verenu_release_key(generation)
-      end, { timeout = 25, type = "oneshot" })
+      local is_tap = verenu_short_hold
+      if is_tap then
+        hl.timer(function()
+          verenu_release_key(generation, verenu_tap_cancel)
+        end, { timeout = 350, type = "oneshot" })
+      else
+        verenu_release_key(generation, verenu_release)
+      end
       return
     end
   end
@@ -812,6 +864,10 @@ fn global_shortcut_binding_block(
         || "cancel-chord".to_string(),
         |(scope, _)| format!("{scope}:cancel-chord"),
     );
+    let tap_cancel_id = press_portal_id.rsplit_once(':').map_or_else(
+        || "dictate-tap-cancel".to_string(),
+        |(scope, _)| format!("{scope}:dictate-tap-cancel"),
+    );
     let ignored_keycodes = release_keycodes
         .iter()
         .chain(NON_COMBO_KEYCODES.iter())
@@ -825,6 +881,7 @@ fn global_shortcut_binding_block(
         .replace("{end}", end)
         .replace("{press_portal_id}", press_portal_id)
         .replace("{cancel_portal_id}", &cancel_portal_id)
+        .replace("{tap_cancel_id}", &tap_cancel_id)
         .replace("{release_command}", &release_command)
         .replace("{handsfree_command}", &handsfree_command)
         .replace("{release_keycodes}", &release_list)
@@ -985,12 +1042,16 @@ mod tests {
             &[37, 105, 133, 134],
         );
         let source = include_str!("../../../tests/fixtures/hyprland-gestures.lua");
-        for marker in ["__VERENU_GENERATED_WINDOW_RULES__()", "__VERENU_GENERATED_BINDINGS__()"] {
+        for marker in ["__VERENU_GENERATED_WINDOW_RULES__()", "__VERENU_GENERATED_BINDINGS__()", "__VERENU_ALTERNATE_BINDINGS__()"] {
             assert!(source.contains(marker), "hyprland gesture fixture missing sentinel {marker}");
         }
         let fixture = source
             .replace("__VERENU_GENERATED_WINDOW_RULES__()", &super::window_rule_block())
-            .replace("__VERENU_GENERATED_BINDINGS__()", &block);
+            .replace("__VERENU_GENERATED_BINDINGS__()", &block)
+            .replace("__VERENU_ALTERNATE_BINDINGS__()", &global_shortcut_binding_block(
+                "-- ALT START", "-- ALT END", &["CTRL + SPACE".to_string()],
+                "app:dictate", "release", "handsfree", &[37, 105, 65],
+            ));
         assert!(!fixture.contains("__VERENU_"), "hyprland gesture fixture left an unreplaced sentinel");
         let mut child = Command::new("lua")
             .arg("-")
@@ -1054,18 +1115,19 @@ mod tests {
             "END",
             &["CTRL + SPACE".to_string()],
             "app:dictate",
-            "/usr/bin/verenu --verenu-hotkey-release",
-            "/usr/bin/verenu --verenu-hotkey-handsfree",
+            "app:dictate-release",
+            "app:dictate-double-tap",
             &[65],
         );
 
         assert!(block.contains("local verenu_dictate = hl.dsp.global(\"app:dictate\")"));
         assert!(block.contains(
-            "local verenu_release = hl.dsp.exec_cmd(\"/usr/bin/verenu --verenu-hotkey-release\")"
+            "local verenu_release = hl.dsp.global(\"app:dictate-release\")"
         ));
         assert!(block.contains(
-            "local verenu_handsfree = hl.dsp.exec_cmd(\"/usr/bin/verenu --verenu-hotkey-handsfree\")"
+            "local verenu_handsfree = hl.dsp.global(\"app:dictate-double-tap\")"
         ));
+        assert!(block.contains("local verenu_tap_cancel = hl.dsp.global(\"app:dictate-tap-cancel\")"));
         assert!(block.contains("local verenu_quick_tap_pending = false"));
         assert!(block.contains("hl.dispatch(verenu_handsfree)"));
         assert!(block.contains(
@@ -1118,10 +1180,10 @@ mod tests {
         );
 
         assert!(block.contains(
-            r#"local verenu_release = hl.dsp.exec_cmd("C:\\Program Files\\Verenu\\verenu.exe --release \"quoted\"")"#
+            r#"local verenu_release = hl.dsp.global("C:\\Program Files\\Verenu\\verenu.exe --release \"quoted\"")"#
         ));
         assert!(block.contains(
-            r#"local verenu_handsfree = hl.dsp.exec_cmd("C:\\Program Files\\Verenu\\verenu.exe --handsfree")"#
+            r#"local verenu_handsfree = hl.dsp.global("C:\\Program Files\\Verenu\\verenu.exe --handsfree")"#
         ));
     }
 }
