@@ -625,6 +625,9 @@ local verenu_quick_tap_generation = 0
 local verenu_combo = false
 local verenu_suppress_press = false
 local verenu_release_keycodes = { {release_keycodes} }
+_verenu_keys_down = _verenu_keys_down or {}
+local verenu_keys_down = _verenu_keys_down
+local verenu_chord_keys = {}
 local verenu_ignored_keycodes = {}
 for _, ignored in ipairs({ {ignored_keycodes} }) do
   verenu_ignored_keycodes[ignored] = true
@@ -648,7 +651,7 @@ _verenu_retire_binding = function()
   end
 end
 local verenu_press = function()
-  if verenu_binding_generation ~= _verenu_binding_generation or _verenu_retiring_binding then return end
+  if verenu_binding_generation ~= _verenu_binding_generation or _verenu_retiring_binding or verenu_release_armed then return end
   -- A chord pressed right after a combo is almost always the next combo.
   if verenu_suppress_press then
     return
@@ -689,10 +692,45 @@ local verenu_press = function()
 end
 hl.on("input.keyboard.key", function(keycode, _, state)
   if verenu_binding_generation ~= _verenu_binding_generation then return end
-  if not verenu_release_armed or verenu_release_scheduled then
+  local is_release_key = false
+  for _, release_keycode in ipairs(verenu_release_keycodes) do
+    if keycode == release_keycode then is_release_key = true; break end
+  end
+  if is_release_key and state == 1 then verenu_keys_down[keycode] = true end
+  if is_release_key and state == 0 then
+    if verenu_release_armed and not verenu_release_scheduled then
+      verenu_chord_keys = {}
+      for key in pairs(verenu_keys_down) do verenu_chord_keys[key] = true end
+    end
+    verenu_keys_down[keycode] = nil
+  end
+  if state == 1 and not is_release_key and not verenu_ignored_keycodes[keycode] and verenu_quick_tap_pending then
+    verenu_quick_tap_pending = false
+  end
+  if not verenu_release_armed then
     return
   end
   if state == 1 then
+    if verenu_release_scheduled then
+      if not is_release_key and not verenu_ignored_keycodes[keycode] then
+        verenu_combo = true
+        verenu_quick_tap_pending = false
+        hl.dispatch(verenu_cancel)
+        return
+      end
+      if is_release_key and not verenu_suppress_press and not verenu_combo then
+        local complete = next(verenu_chord_keys) ~= nil
+        for key in pairs(verenu_chord_keys) do
+          if not verenu_keys_down[key] then complete = false; break end
+        end
+        if complete then
+          verenu_release_armed = false
+          verenu_press()
+          return
+        end
+      end
+      return
+    end
     if keycode == 191 and verenu_mouse_companion_pending then
       return
     end
@@ -705,6 +743,7 @@ hl.on("input.keyboard.key", function(keycode, _, state)
   if state ~= 0 then
     return
   end
+  if verenu_release_scheduled then return end
   for _, release_keycode in ipairs(verenu_release_keycodes) do
     if keycode == release_keycode then
       verenu_release_scheduled = true
