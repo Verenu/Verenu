@@ -599,6 +599,14 @@ const NON_COMBO_KEYCODES: &[u32] = &[
 const GLOBAL_SHORTCUT_TEMPLATE: &str = r#"{start}
 -- Portal action: {press_portal_id}
 local verenu_dictate = hl.dsp.global("{press_portal_id}")
+if _verenu_retire_binding then _verenu_retire_binding() end
+_verenu_binding_generation = (_verenu_binding_generation or 0) + 1
+local verenu_binding_generation = _verenu_binding_generation
+if _verenu_dictation_bindings then
+  for _, handle in ipairs(_verenu_dictation_bindings) do
+    if tostring(handle) ~= 'HL.Keybind(expired)' then handle:remove() end
+  end
+end
 _verenu_dictation_bindings = {}
 local verenu_cancel = hl.dsp.global("{cancel_portal_id}")
 local verenu_release = hl.dsp.exec_cmd("{release_command}")
@@ -629,7 +637,18 @@ local verenu_release_key = function(generation)
   hl.dispatch(verenu_release)
   hl.dispatch(hl.dsp.submap("reset"))
 end
+_verenu_retire_binding = function()
+  if verenu_release_armed then
+    verenu_release_armed = false
+    _verenu_retiring_binding = true
+    hl.timer(function()
+      hl.dispatch(verenu_release)
+      _verenu_retiring_binding = false
+    end, { timeout = 25, type = "oneshot" })
+  end
+end
 local verenu_press = function()
+  if verenu_binding_generation ~= _verenu_binding_generation or _verenu_retiring_binding then return end
   -- A chord pressed right after a combo is almost always the next combo.
   if verenu_suppress_press then
     return
@@ -669,6 +688,7 @@ local verenu_press = function()
   end, { timeout = 700, type = "oneshot" })
 end
 hl.on("input.keyboard.key", function(keycode, _, state)
+  if verenu_binding_generation ~= _verenu_binding_generation then return end
   if not verenu_release_armed or verenu_release_scheduled then
     return
   end

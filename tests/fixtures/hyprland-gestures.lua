@@ -1,5 +1,8 @@
 local time, timers, bindings, actions = 0, {}, {}, {}
-local keyboard
+local keyboard_handlers = {}
+local function keyboard(...)
+  for _, handler in ipairs(keyboard_handlers) do handler(...) end
+end
 local window_rules = {}
 hl = {
   window_rule = function(rule) window_rules[#window_rules + 1] = rule end,
@@ -9,8 +12,17 @@ hl = {
     submap = function() return "reset" end,
   },
   dispatch = function(action) actions[#actions + 1] = action end,
-  bind = function(keys, callback) bindings[keys] = callback end,
-  on = function(_, callback) keyboard = callback end,
+  bind = function(keys, callback)
+    local handle = { removed = false }
+    function handle:remove() self.removed = true end
+    local previous = bindings[keys]
+    bindings[keys] = function()
+      if previous then previous() end
+      if not handle.removed then callback() end
+    end
+    return handle
+  end,
+  on = function(_, callback) keyboard_handlers[#keyboard_handlers + 1] = callback end,
   timer = function(callback, options)
     timers[#timers + 1] = { at = time + options.timeout, callback = callback }
   end,
@@ -36,7 +48,13 @@ local function count(action)
   return total
 end
 
+local function reload_bindings()
 __VERENU_GENERATED_BINDINGS__()
+end
+
+-- Hyprland can reload its config without destroying Lua event listeners.
+reload_bindings()
+reload_bindings()
 
 __VERENU_GENERATED_WINDOW_RULES__()
 assert(#window_rules == 2, "fresh setup did not install both window policies")
@@ -139,4 +157,30 @@ advance(9050)
 assert(count("app:dictate") == starts_before + 1, "held chord did not start")
 assert(count("release") == released_before + 1, "held chord did not release exactly once")
 assert(count("handsfree") == toggles_before, "held chord entered hands-free")
+
+released_before = count("release")
+bindings["CTRL + Super_L"]()
+advance(10000)
+reload_bindings()
+keyboard(133, nil, 0)
+advance(10050)
+assert(count("release") == released_before + 1, "reload during hold failed to release exactly once")
+
+released_before = count("release")
+bindings["CTRL + Super_L"]()
+advance(11000)
+keyboard(133, nil, 0)
+reload_bindings()
+advance(11050)
+assert(count("release") == released_before + 1, "reload during pending release dispatched twice")
+
+released_before = count("release")
+starts_before = count("app:dictate")
+bindings["CTRL + Super_L"]()
+reload_bindings()
+bindings["CTRL + Super_L"]()
+assert(count("release") == released_before, "reload released before the portal press could arrive")
+assert(count("app:dictate") == starts_before + 1, "reload accepted a press while retiring the previous chord")
+advance(11075)
+assert(count("release") == released_before + 1, "immediate reload did not deliver the delayed release")
 print("Generated Hyprland gesture regressions passed")
