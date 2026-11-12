@@ -6,6 +6,7 @@
   import { isAndroid } from '../../platform';
   import Toggle from '../Toggle.svelte';
   import Disclosure from '../Disclosure.svelte';
+  import CompactSelect from '../CompactSelect.svelte';
   import { appStore } from '../../stores';
   import {
     loadSettingsSnapshot,
@@ -19,6 +20,45 @@
   import { MOTION_PX, modalBackdrop, modalCard, motionPx } from '../../motion';
 
   let settingsBaseline: SettingsSnapshot | null = null;
+  type ExpirationStatus = { days: number | null; paused_for_sync: boolean; deleted: Array<{ request_id: string; term: string; deleted_at: string }> };
+  let expiration = $state<ExpirationStatus>({ days: null, paused_for_sync: false, deleted: [] });
+  let expirationError = $state('');
+  let expirationSaving = $state(false);
+  const expirationOptions = [
+    { value: 'off', label: 'Off' },
+    ...Array.from({ length: 54 }, (_, i) => ({ value: String(i + 7), label: `${i + 7} days` })),
+  ];
+
+  async function loadExpiration() {
+    expiration = await invoke<ExpirationStatus>('get_vocabulary_expiration');
+  }
+
+  async function changeExpiration(value: string) {
+    if (expirationSaving) return;
+    expirationSaving = true;
+    expirationError = '';
+    try {
+      await invoke('set_vocabulary_expiration', { days: value === 'off' ? null : Number(value) });
+      await loadExpiration();
+    } catch (err) {
+      expirationError = formatIpcError(err, 'Could not save vocabulary expiration');
+    } finally {
+      expirationSaving = false;
+    }
+  }
+
+  async function restoreVocabulary(requestId: string) {
+    expirationSaving = true;
+    expirationError = '';
+    try {
+      await invoke('restore_expired_vocabulary', { requestId });
+      await loadExpiration();
+    } catch (err) {
+      expirationError = formatIpcError(err, 'Could not restore vocabulary');
+    } finally {
+      expirationSaving = false;
+    }
+  }
 
   async function saveTextSetting<K extends WritableSettingKey>(key: K, value: SettingsValueMap[K]) {
     const baseline = settingsBaseline;
@@ -90,6 +130,8 @@
     } catch (err) {
       console.error('TextSection auto-learn status failed:', err);
     }
+    try { await loadExpiration(); }
+    catch (err) { expirationError = formatIpcError(err, 'Could not load vocabulary expiration'); }
   }
 
   async function applyCleanup(value: boolean) {
@@ -179,6 +221,9 @@
     let unlisten: (() => void) | undefined;
     let active = true;
     listenForSyncCompletion(() => {
+      void invoke<ExpirationStatus>('get_vocabulary_expiration').then(status => {
+        if (active && !expirationSaving) expiration = status;
+      }).catch(() => {});
       const cleanupVersion = appStore.cleanupChangeVersion;
       void loadSettingsSnapshot().then(({ contextual_formatting_enabled: formatting,
         cleanup_enabled: cleanup, voice_commands_enabled: commands }) => {
@@ -262,6 +307,29 @@
   <Toggle checked={autoLearn} onchange={handleAutoLearn} label="Auto-learn corrections" bind:error={autoLearnError} />
 </div>
 
+<div class="setting-row" data-setting-target="text-vocabulary-expiration">
+  <div>
+    <div class="label">Delete unused vocabulary</div>
+    <div class="desc">Move vocabulary to the recovery list if its spelling or correction does not appear in dictation for this long. The waiting period starts when you turn this on. Snippets are not deleted. This setting and deletions sync to paired devices. Activity recorded while enabled is retained when you turn it off.</div>
+    {#if expiration.days !== null && expiration.paused_for_sync}
+      <div class="desc">Paused until all paired devices support vocabulary activity tracking and complete a sync.</div>
+    {/if}
+  </div>
+  <CompactSelect value={expiration.days === null ? 'off' : String(expiration.days)} options={expirationOptions} label="Delete unused vocabulary after" onchange={changeExpiration} openAbove />
+</div>
+{#if expiration.deleted.length}
+  <div class="setting-row">
+    <div>
+      <div class="label">Deleted vocabulary</div>
+      <div class="desc">Restore an item with its Context assignments and corrections.</div>
+      {#each expiration.deleted as item (item.request_id)}
+        <div class="expiration-item"><span>{item.term} <span class="desc">· {item.deleted_at.slice(0, 10)}</span></span><button class="btn-ghost btn-compact" disabled={expirationSaving} onclick={() => restoreVocabulary(item.request_id)}>Restore</button></div>
+      {/each}
+    </div>
+  </div>
+{/if}
+{#if expirationError}<p class="settings-error" role="alert">{expirationError}</p>{/if}
+
 {#if confirmCleanupOff}
   <button class="modal-backdrop" aria-label="Close dialog" onclick={() => (confirmCleanupOff = false)} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
   <div
@@ -296,6 +364,7 @@
 {/if}
 
 <style>
+  .expiration-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 8px; }
   .learn-status { font-variant-numeric: tabular-nums; }
   .setting-row.voice-commands-row { row-gap: 0; }
   .voice-commands-disclosure { grid-column: 1 / -1; margin-top: 6px; }

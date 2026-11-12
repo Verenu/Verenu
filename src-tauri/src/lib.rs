@@ -110,6 +110,13 @@ fn start_storage_maintenance(
                 if let Err(err) = db::prune_auto_learn_retention(&db_for_work) {
                     log::warn!("maintenance: auto-learn retention failed: {err}");
                 }
+                match db::expire_vocabulary(&db_for_work) {
+                    Ok(count) if count > 0 => {
+                        let _ = app_for_work.emit("verenu:dictionary-updated", serde_json::json!({"context_id":null,"dictionary_id":null}));
+                    }
+                    Ok(_) => {}
+                    Err(err) => log::warn!("maintenance: vocabulary expiration failed: {err}"),
+                }
                 if let Err(err) = db::prune_pending_corrections(
                     &db_for_work,
                     crate::api::auto_learn::PENDING_RETENTION_DAYS,
@@ -959,6 +966,9 @@ pub fn run() {
             commands::move_dictionary_entry_by_term_to_context,
             commands::move_snippet_entry_to_context,
             commands::get_auto_learn_status_summary,
+            commands::get_vocabulary_expiration,
+            commands::set_vocabulary_expiration,
+            commands::restore_expired_vocabulary,
             commands::get_recent_auto_learn_activity,
             commands::retry_transcription,
             commands::check_for_update,

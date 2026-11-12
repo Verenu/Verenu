@@ -70,6 +70,8 @@ pub struct Hello {
     pub activity_receipts: bool,
     #[serde(default)]
     pub cleanup_cache: bool,
+    #[serde(default)]
+    pub vocabulary_usage: bool,
     #[serde(default, rename = "z", skip_serializing_if = "is_false")]
     pub compressed_frames: bool,
 }

@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS dictionary_corrections (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_corrections_uuid
   ON dictionary_corrections(uuid) WHERE uuid IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_corrections_context_mistake
+CREATE INDEX IF NOT EXISTS idx_dictionary_corrections_context_mistake
   ON dictionary_corrections(context_id, mistake);
 CREATE INDEX IF NOT EXISTS idx_dictionary_corrections_context_dictionary
   ON dictionary_corrections(context_id, dictionary_id);
@@ -362,7 +362,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // keys, so enable enforcement before schema work or application queries.
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    anyhow::ensure!(user_version <= 39, "This database was created by a newer version of Verenu");
+    anyhow::ensure!(user_version <= 40, "This database was created by a newer version of Verenu");
     if user_version < 2 && db_existed_before_open {
         let _ = std::fs::copy(db_path, db_path.with_extension("db.bak"));
     }
@@ -1068,7 +1068,35 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
-    if user_version <= 39 {
+    if user_version < 40 {
+        run_migration(&mut conn, |conn| {
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_expiration_settings (
+                id INTEGER PRIMARY KEY CHECK(id = 1), days INTEGER CHECK(days BETWEEN 7 AND 60),
+                tracking_since TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT OR IGNORE INTO vocabulary_expiration_settings(id, days) VALUES (1, NULL);
+            CREATE TABLE IF NOT EXISTS vocabulary_expiration_usage (
+                item_uuid TEXT PRIMARY KEY, last_used_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS vocabulary_expiration_marks (
+                item_uuid TEXT PRIMARY KEY, cutoff TEXT NOT NULL,
+                deleted_at TEXT NOT NULL, request_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS vocabulary_expiration_log (
+                request_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, log_seq INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')), restored INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TRIGGER IF NOT EXISTS vocabulary_expiration_peer_added AFTER INSERT ON sync_peers BEGIN
+              UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now') WHERE id=1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS vocabulary_expiration_peer_removed AFTER DELETE ON sync_peers BEGIN
+              UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now') WHERE id=1;
+            END;
+            PRAGMA user_version = 40;")?;
+            Ok(())
+        })?;
+    }
+    if user_version <= 40 {
         conn.execute("DELETE FROM agent_library_changes WHERE created_at < datetime('now','-30 days')", [])?;
     }
     conn.execute_batch("CREATE TABLE IF NOT EXISTS dictation_logs (transcription_id INTEGER PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE, payload TEXT NOT NULL)")?;
@@ -1100,6 +1128,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
            ON auto_learn_candidates(context_id, last_seen_at);",
     )?;
     ensure_dictionary_correction_membership_trigger(&conn)?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_dictionary_corrections_context_mistake; CREATE INDEX idx_dictionary_corrections_context_mistake ON dictionary_corrections(context_id, mistake);")?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS backup_held_calls (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS backup_held_hourly_receipts (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS sync_rejected_history (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS sync_everywhere_aliases (uuid TEXT NOT NULL PRIMARY KEY); CREATE TABLE IF NOT EXISTS backup_context_aliases (source_uuid TEXT NOT NULL PRIMARY KEY, local_uuid TEXT NOT NULL); CREATE TABLE IF NOT EXISTS backup_context_event_sources (transcription_uuid TEXT NOT NULL, source_uuid TEXT NOT NULL, PRIMARY KEY(transcription_uuid,source_uuid));")?;
     conn.execute_batch("CREATE TABLE IF NOT EXISTS sync_pairing_ids (device_uuid TEXT PRIMARY KEY, pairing_id TEXT); CREATE TRIGGER IF NOT EXISTS sync_pairing_id_remove AFTER DELETE ON sync_peers BEGIN DELETE FROM sync_pairing_ids WHERE device_uuid = OLD.device_uuid; END;")?;
     ensure_table_column(&conn, "backup_context_aliases", "source_name", "ALTER TABLE backup_context_aliases ADD COLUMN source_name TEXT;")?;
@@ -1136,6 +1165,14 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
          END;",
     )?;
     ensure_table_column(&conn, "sync_peer_capabilities", "cleanup_cache", "ALTER TABLE sync_peer_capabilities ADD COLUMN cleanup_cache INTEGER NOT NULL DEFAULT 0;")?;
+    ensure_table_column(&conn, "sync_peer_capabilities", "vocabulary_usage", "ALTER TABLE sync_peer_capabilities ADD COLUMN vocabulary_usage INTEGER NOT NULL DEFAULT 0;")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_policy_peer (device_uuid TEXT PRIMARY KEY, ts_ms INTEGER NOT NULL, origin TEXT NOT NULL); CREATE TRIGGER IF NOT EXISTS vocabulary_policy_peer_removed AFTER DELETE ON sync_peers BEGIN DELETE FROM vocabulary_policy_peer WHERE device_uuid=OLD.device_uuid; END; CREATE TABLE IF NOT EXISTS vocabulary_policy_topology (device_uuid TEXT PRIMARY KEY, version INTEGER NOT NULL, policy_ts INTEGER NOT NULL, policy_origin TEXT NOT NULL, peers TEXT NOT NULL);")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_expiration_marks (item_uuid TEXT PRIMARY KEY, cutoff TEXT NOT NULL, deleted_at TEXT NOT NULL, request_id TEXT NOT NULL);")?;
+    ensure_table_column(&conn, "vocabulary_expiration_marks", "policy_ts", "ALTER TABLE vocabulary_expiration_marks ADD COLUMN policy_ts INTEGER NOT NULL DEFAULT 0;")?;
+    ensure_table_column(&conn, "vocabulary_expiration_marks", "policy_origin", "ALTER TABLE vocabulary_expiration_marks ADD COLUMN policy_origin TEXT NOT NULL DEFAULT '';")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_policy_retained (request_id TEXT PRIMARY KEY);")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_identity_links (link_id TEXT PRIMARY KEY, left_uuid TEXT NOT NULL, right_uuid TEXT NOT NULL);")?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_vocabulary_identity_links_left ON vocabulary_identity_links(left_uuid); CREATE INDEX IF NOT EXISTS idx_vocabulary_identity_links_right ON vocabulary_identity_links(right_uuid);")?;
     ensure_cleanup_cache_schema(&conn)?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_api_calls_transcription_id
@@ -1341,7 +1378,7 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
          );
          CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_corrections_uuid
            ON dictionary_corrections(uuid) WHERE uuid IS NOT NULL;
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_corrections_context_mistake
+         CREATE INDEX IF NOT EXISTS idx_dictionary_corrections_context_mistake
            ON dictionary_corrections(context_id, mistake);
          CREATE INDEX IF NOT EXISTS idx_dictionary_corrections_context_dictionary
            ON dictionary_corrections(context_id, dictionary_id);",
@@ -1442,7 +1479,11 @@ fn apply_v26_autolearn_context_migration(conn: &Connection) -> Result<()> {
                     "INSERT OR IGNORE INTO dictionary_corrections
                        (context_id, dictionary_id, mistake, auto_learned,
                         correction_count, confidence_tier, last_seen_at, created_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+                      WHERE NOT EXISTS (
+                        SELECT 1 FROM dictionary_corrections
+                         WHERE context_id = ?1 AND mistake = ?3
+                      )",
                     params![
                         context_id,
                         dictionary_id,

@@ -61,6 +61,7 @@ async fn session_rejects_a_different_peer_uuid() {
                     app_version: "test".into(),
                     activity_receipts: false,
                     cleanup_cache: false,
+                    vocabulary_usage: false,
                     compressed_frames: false,
                 }),
             )
@@ -94,6 +95,7 @@ async fn session_rejects_completion_before_final_batch() {
                     app_version: "test".into(),
                     activity_receipts: false,
                     cleanup_cache: false,
+                    vocabulary_usage: false,
                     compressed_frames: false,
                 }),
             )

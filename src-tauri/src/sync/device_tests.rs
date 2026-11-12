@@ -224,6 +224,297 @@ async fn session(a: &Device, b: &Device) -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn first_pairing_preserves_existing_everywhere_corrections() {
+    let a = Device::new();
+    let b = Device::new();
+    db::insert_dictionary_entry_returning(&a.db, "ExistingTerm", Some("existing mistake"), None).unwrap();
+    db::insert_snippet_returning(&b.db, "existing-shortcut", "fixture", "", None).unwrap();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        let entries = db::query_effective_dictionary_for_context(&device.db, db::EVERYWHERE_CONTEXT_ID).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mistake.as_deref(), Some("existing mistake"));
+        assert_eq!(db::query_snippets(&device.db).unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn expiration_waits_for_policy_on_transitive_offline_device() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    db::set_vocabulary_expiration(&a.db, Some(7)).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &b).await.unwrap();
+    store::mark_peer_synced(&a.db.lock().unwrap(), &b.host.uuid, 0).unwrap();
+    assert_eq!(db::vocabulary_expiration_status(&a.db).unwrap()["paused_for_sync"], true);
+    session(&b, &c).await.unwrap();
+    session(&b, &c).await.unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &b).await.unwrap();
+    assert_eq!(db::vocabulary_expiration_status(&a.db).unwrap()["paused_for_sync"], false);
+}
+
+#[tokio::test]
+async fn vocabulary_activity_survives_duplicate_term_identity_resolution() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    db::set_vocabulary_expiration(&a.db, Some(7)).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let a_entry = db::insert_dictionary_entry_returning(&a.db, "DuplicateTerm", None, None).unwrap();
+    let b_entry = db::insert_dictionary_entry_returning(&b.db, "DuplicateTerm", None, None).unwrap();
+    for (device, peer) in [(&a, &b), (&b, &a)] {
+        store::mark_peer_synced(&device.db.lock().unwrap(), &peer.host.uuid, 0).unwrap();
+        device.db.lock().unwrap().execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days'); UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days');").unwrap();
+    }
+    db::record_vocabulary_activity(&b.db, &[b_entry.id]).unwrap();
+    a.db.lock().unwrap().execute("UPDATE sync_log SET ts_ms=ts_ms+10000 WHERE table_name='dictionary' AND row_uuid=(SELECT uuid FROM dictionary WHERE id=?1)", [a_entry.id]).unwrap();
+    assert_eq!(db::expire_vocabulary(&a.db).unwrap(), 1);
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        assert_eq!(db::query_dictionary(&device.db).unwrap().len(), 1, "activity on the losing identity must keep the canonical term active");
+    }
+}
+
+#[tokio::test]
+async fn vocabulary_activity_from_offline_third_device_survives_identity_resolution() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    db::set_vocabulary_expiration(&a.db, Some(7)).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    session(&a, &b).await.unwrap();
+    db::insert_dictionary_entry_returning(&b.db, "SharedDuplicate", None, None).unwrap();
+    session(&b, &c).await.unwrap();
+    let c_entry = db::query_dictionary(&c.db).unwrap()[0].id;
+    for device in [&b, &c] {
+        device.db.lock().unwrap().execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days');").unwrap();
+    }
+    let a_entry = db::insert_dictionary_entry_returning(&a.db, "SharedDuplicate", None, None).unwrap();
+    store::mark_peer_synced(&a.db.lock().unwrap(), &b.host.uuid, 0).unwrap();
+    a.db.lock().unwrap().execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days'); UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days');").unwrap();
+    // C uses its original identity while disconnected; A later wins the collision.
+    db::record_vocabulary_activity(&c.db, &[c_entry]).unwrap();
+    a.db.lock().unwrap().execute("UPDATE sync_log SET ts_ms=ts_ms+10000 WHERE table_name='dictionary' AND row_uuid=(SELECT uuid FROM dictionary WHERE id=?1)", [a_entry.id]).unwrap();
+    assert_eq!(db::expire_vocabulary(&a.db).unwrap(), 1);
+    session(&a, &b).await.unwrap();
+    assert!(db::query_dictionary(&a.db).unwrap().is_empty(), "the term must remain expired until C's activity arrives");
+    pair(&a, &c, true).await.unwrap();
+    session(&a, &c).await.unwrap();
+    session(&c, &a).await.unwrap();
+    for device in [&a, &c] {
+        assert_eq!(db::query_dictionary(&device.db).unwrap().len(), 1, "offline activity must survive a third-device snapshot");
+        let links: i64 = device.db.lock().unwrap().query_row("SELECT COUNT(*) FROM vocabulary_identity_links", [], |row| row.get(0)).unwrap();
+        assert!(links > 0, "identity links must reach the third device");
+    }
+}
+
+#[tokio::test]
+async fn vocabulary_expiration_converges_with_offline_usage_and_recovery() {
+    let mut a = Device::new();
+    let mut b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let entry = db::insert_dictionary_entry_returning(&a.db, "SyntheticTerm", Some("sinthetic"), None).unwrap();
+    db::insert_snippet_returning(&a.db, "synthetic-shortcut", "fixture", "", None).unwrap();
+    session(&a, &b).await.unwrap();
+    for device in [&a, &b] {
+        assert_eq!(db::query_dictionary(&device.db).unwrap()[0].mistake.as_deref(), Some("sinthetic"), "correction after initial sync");
+    }
+    db::set_vocabulary_expiration(&a.db, Some(7)).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &b).await.unwrap();
+    for (device, peer) in [(&a, &b), (&b, &a)] {
+        store::mark_peer_synced(&device.db.lock().unwrap(), &peer.host.uuid, 0).unwrap();
+        device.db.lock().unwrap().execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days'); UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days');").unwrap();
+    }
+    let b_id = db::query_dictionary(&b.db).unwrap()[0].id;
+    db::record_vocabulary_activity(&b.db, &[b_id]).unwrap();
+    assert_eq!(db::expire_vocabulary(&a.db).unwrap(), 1);
+    assert!(db::query_dictionary(&a.db).unwrap().is_empty());
+    session(&b, &a).await.unwrap();
+    session(&a, &b).await.unwrap();
+    for device in [&a, &b] {
+        assert_eq!(db::query_dictionary(&device.db).unwrap()[0].mistake.as_deref(), Some("sinthetic"), "correction before restart");
+    }
+    a.restart_database();
+    b.restart_database();
+    for device in [&a, &b] {
+        let entries = db::query_dictionary(&device.db).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mistake.as_deref(), Some("sinthetic"), "device {} corrections {:?}", device.host.uuid, entries[0].corrections);
+        assert_eq!(db::query_snippets(&device.db).unwrap().len(), 1);
+        assert!(db::vocabulary_expiration_status(&device.db).unwrap()["deleted"].as_array().unwrap().is_empty());
+    }
+    // A later expiration reaches both peers and can be restored on either one.
+    for device in [&a, &b] {
+        device.db.lock().unwrap().execute_batch("UPDATE vocabulary_expiration_usage SET last_used_at=datetime('now','-20 days'); UPDATE vocabulary_expiration_marks SET cutoff=datetime('now','-30 days');").unwrap();
+    }
+    assert_eq!(db::expire_vocabulary(&a.db).unwrap(), 1);
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        assert!(db::query_dictionary(&device.db).unwrap().is_empty());
+        assert_eq!(db::query_snippets(&device.db).unwrap().len(), 1);
+    }
+    let status = db::vocabulary_expiration_status(&b.db).unwrap();
+    let request = status["deleted"][0]["request_id"].as_str().unwrap();
+    db::restore_expired_vocabulary(&b.db, request).unwrap();
+    session(&b, &a).await.unwrap();
+    session(&a, &b).await.unwrap();
+    for device in [&a, &b] {
+        let entries = db::query_dictionary(&device.db).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mistake.as_deref(), Some("sinthetic"));
+        assert!(db::vocabulary_expiration_status(&device.db).unwrap()["deleted"].as_array().unwrap().is_empty());
+    }
+    assert_eq!(db::query_dictionary(&a.db).unwrap()[0].id, entry.id);
+}
+
+#[tokio::test]
+async fn expired_vocabulary_correction_conflict_survives_sync() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "First", Some("typo"), None).unwrap();
+    session(&a, &b).await.unwrap();
+    for device in [&a, &b] {
+        device.db.lock().unwrap().execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days'); UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days');").unwrap();
+    }
+    db::set_vocabulary_expiration(&a.db, Some(7)).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &b).await.unwrap();
+    store::mark_peer_synced(&a.db.lock().unwrap(), &b.host.uuid, 0).unwrap();
+    a.db.lock().unwrap().execute("UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days')", []).unwrap();
+    assert_eq!(db::expire_vocabulary(&a.db).unwrap(), 1);
+    session(&a, &b).await.unwrap();
+    db::insert_dictionary_entry_returning(&b.db, "Second", Some("typo"), None).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        let status = db::vocabulary_expiration_status(&device.db).unwrap();
+        let request = status["deleted"][0]["request_id"].as_str().unwrap();
+        assert!(db::restore_expired_vocabulary(&device.db, request).is_err());
+        let conn = device.db.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM dictionary_corrections WHERE mistake='typo'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 2);
+    }
+}
+
+#[tokio::test]
+async fn offline_expiration_keeps_corrections_when_sync_arrives_out_of_order() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "First", Some("typo"), None).unwrap();
+    session(&a, &b).await.unwrap();
+    db::set_vocabulary_expiration(&a.db, Some(7)).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    store::mark_peer_synced(&b.db.lock().unwrap(), &a.host.uuid, 0).unwrap();
+    for device in [&a, &b] {
+        device.db.lock().unwrap().execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days'); UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days');").unwrap();
+    }
+    assert_eq!(db::expire_vocabulary(&b.db).unwrap(), 1);
+    db::insert_dictionary_entry_returning(&b.db, "Second", Some("typo"), None).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        let status = db::vocabulary_expiration_status(&device.db).unwrap();
+        let request = status["deleted"][0]["request_id"].as_str().unwrap();
+        assert!(db::restore_expired_vocabulary(&device.db, request).is_err());
+        let conn = device.db.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM dictionary_corrections WHERE mistake='typo'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 2);
+    }
+}
+
+#[tokio::test]
+async fn vocabulary_policy_syncs_before_activity_tracking_begins() {
+    let mut a = Device::new();
+    let mut b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    let entry = db::insert_dictionary_entry_returning(&a.db, "Synthetic", None, None).unwrap();
+    session(&a, &b).await.unwrap();
+    let remote = db::query_dictionary(&b.db).unwrap().into_iter().find(|row| row.term == "Synthetic").unwrap();
+    assert_eq!(db::vocabulary_expiration_status(&b.db).unwrap()["days"], serde_json::Value::Null);
+    db::record_vocabulary_activity(&b.db, &[remote.id]).unwrap();
+    assert_eq!(b.db.lock().unwrap().query_row("SELECT COUNT(*) FROM vocabulary_expiration_usage", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+    db::set_vocabulary_expiration(&a.db, Some(7)).unwrap();
+    assert_eq!(db::vocabulary_expiration_status(&a.db).unwrap()["paused_for_sync"], true);
+    session(&a, &b).await.unwrap();
+    assert_eq!(db::vocabulary_expiration_status(&b.db).unwrap()["days"], 7);
+    session(&a, &b).await.unwrap();
+    store::mark_peer_synced(&a.db.lock().unwrap(), &b.host.uuid, 0).unwrap();
+    assert_eq!(db::vocabulary_expiration_status(&a.db).unwrap()["paused_for_sync"], false);
+    db::record_vocabulary_activity(&b.db, &[remote.id]).unwrap();
+    b.restart_database();
+    session(&a, &b).await.unwrap();
+    a.restart_database();
+    let conn = a.db.lock().unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM vocabulary_expiration_usage WHERE item_uuid=(SELECT uuid FROM dictionary WHERE id=?1)", [entry.id], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1);
+    drop(conn);
+    db::set_vocabulary_expiration(&a.db, None).unwrap();
+    session(&a, &b).await.unwrap();
+    assert!(db::vocabulary_expiration_status(&b.db).unwrap()["days"].is_null());
+    b.db.lock().unwrap().execute("UPDATE vocabulary_expiration_usage SET last_used_at='2000-01-01 00:00:00'", []).unwrap();
+    db::record_vocabulary_activity(&b.db, &[remote.id]).unwrap();
+    let retained: String = b.db.lock().unwrap().query_row("SELECT last_used_at FROM vocabulary_expiration_usage LIMIT 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(retained, "2000-01-01 00:00:00");
+}
+
+#[tokio::test]
+async fn offline_disable_rejects_later_expiration_but_keeps_prior_recovery() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "Earlier", None, None).unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "Later", None, None).unwrap();
+    session(&a, &b).await.unwrap();
+    db::set_vocabulary_expiration(&a.db, Some(7)).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &b).await.unwrap();
+    store::mark_peer_synced(&a.db.lock().unwrap(), &b.host.uuid, 0).unwrap();
+    a.db.lock().unwrap().execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days') WHERE term='Earlier'; UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days');").unwrap();
+    b.db.lock().unwrap().execute("UPDATE dictionary SET created_at=datetime('now','-20 days') WHERE term='Earlier'", []).unwrap();
+    assert_eq!(db::expire_vocabulary(&a.db).unwrap(), 1);
+    session(&a, &b).await.unwrap();
+    assert_eq!(db::vocabulary_expiration_status(&b.db).unwrap()["deleted"].as_array().unwrap().len(), 1, "earlier expiration must reach B before disabling");
+    db::set_vocabulary_expiration(&b.db, None).unwrap();
+    a.db.lock().unwrap().execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days') WHERE term='Later'; UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days');").unwrap();
+    b.db.lock().unwrap().execute("UPDATE dictionary SET created_at=datetime('now','-20 days') WHERE term='Later'", []).unwrap();
+    assert_eq!(db::expire_vocabulary(&a.db).unwrap(), 1);
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        let entries = db::query_dictionary(&device.db).unwrap();
+        assert_eq!(entries.len(), 1, "device {}: {:?}", device.host.uuid, entries.iter().map(|entry| &entry.term).collect::<Vec<_>>());
+        assert_eq!(entries[0].term, "Later");
+        let status = db::vocabulary_expiration_status(&device.db).unwrap();
+        assert!(status["days"].is_null());
+        assert_eq!(status["deleted"].as_array().unwrap().len(), 1);
+        assert_eq!(status["deleted"][0]["term"], "Earlier");
+    }
+}
+
 fn logical_state(device: &Device) -> Vec<Vec<Vec<serde_json::Value>>> {
     let conn = device.db.lock().unwrap();
     [
@@ -411,6 +702,7 @@ async fn two_devices_resume_an_interrupted_snapshot_without_duplicates() {
                         app_version: "test".into(),
                         activity_receipts: false,
                         cleanup_cache: false,
+                        vocabulary_usage: false,
                         compressed_frames: false,
                     }),
                 )

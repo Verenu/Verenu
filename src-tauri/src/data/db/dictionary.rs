@@ -262,13 +262,15 @@ fn query_dictionary_conn(
            FROM dictionary d
            INNER JOIN dictionary_contexts dc ON dc.dictionary_id = d.id
           WHERE dc.context_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)
           ORDER BY d.created_at DESC"
     } else {
-        "SELECT id, term, mistake, auto_learned, correction_count, confidence_tier,
-                last_seen_at, created_at
-           FROM dictionary
+        "SELECT d.id, d.term, d.mistake, d.auto_learned, d.correction_count, d.confidence_tier,
+                d.last_seen_at, d.created_at
+           FROM dictionary d
           WHERE ?1 IS NULL
-          ORDER BY created_at DESC"
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)
+          ORDER BY d.created_at DESC"
     };
     let canonical_rows: Vec<(i64, LegacyDictionaryFields)> = conn
         .prepare_cached(canonical_sql)?
@@ -289,17 +291,19 @@ fn query_dictionary_conn(
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let correction_sql = if context_id.is_some() {
-        "SELECT id, dictionary_id, context_id, mistake, auto_learned,
-                correction_count, confidence_tier, last_seen_at, created_at
-           FROM dictionary_corrections
-          WHERE context_id = ?1
-          ORDER BY dictionary_id, id"
+        "SELECT c.id, c.dictionary_id, c.context_id, c.mistake, c.auto_learned,
+                c.correction_count, c.confidence_tier, c.last_seen_at, c.created_at
+           FROM dictionary_corrections c JOIN dictionary d ON d.id=c.dictionary_id
+          WHERE c.context_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,''))<=m.cutoff)
+          ORDER BY c.auto_learned, c.created_at DESC, COALESCE(c.uuid,'') DESC"
     } else {
-        "SELECT id, dictionary_id, context_id, mistake, auto_learned,
-                correction_count, confidence_tier, last_seen_at, created_at
-           FROM dictionary_corrections
+        "SELECT c.id, c.dictionary_id, c.context_id, c.mistake, c.auto_learned,
+                c.correction_count, c.confidence_tier, c.last_seen_at, c.created_at
+           FROM dictionary_corrections c JOIN dictionary d ON d.id=c.dictionary_id
           WHERE ?1 IS NULL
-          ORDER BY dictionary_id, context_id, id"
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,''))<=m.cutoff)
+          ORDER BY c.auto_learned, c.created_at DESC, COALESCE(c.uuid,'') DESC"
     };
     let mut correction_stmt = conn.prepare_cached(correction_sql)?;
     let correction_rows = correction_stmt.query_map(params![context_id], |row| {
@@ -316,8 +320,18 @@ fn query_dictionary_conn(
         })
     })?;
     let mut corrections_by_dictionary: HashMap<i64, Vec<DictionaryCorrection>> = HashMap::new();
+    let mut owners: HashMap<(i64, String), i64> = HashMap::new();
+    let mut suppressed = HashSet::new();
     for correction in correction_rows {
         let correction = correction?;
+        let variants = normalized_mistake_variants(Some(&correction.mistake));
+        if variants.iter().any(|variant| owners.get(&(correction.context_id, variant.clone())).is_some_and(|owner| *owner != correction.dictionary_id)) {
+            suppressed.insert(correction.dictionary_id);
+            continue;
+        }
+        for variant in variants {
+            owners.insert((correction.context_id, variant), correction.dictionary_id);
+        }
         corrections_by_dictionary
             .entry(correction.dictionary_id)
             .or_default()
@@ -327,8 +341,9 @@ fn query_dictionary_conn(
     Ok(canonical_rows
         .into_iter()
         .map(|(id, mut legacy)| {
-            let corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
-            if context_id.is_some() {
+            let mut corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
+            corrections.sort_by_key(|correction| (correction.context_id, correction.id));
+            if context_id.is_some() || (corrections.is_empty() && suppressed.contains(&id)) {
                 legacy.mistake = None;
                 legacy.auto_learned = false;
                 legacy.correction_count = 0;
@@ -679,7 +694,8 @@ fn find_dictionary_mistake_conflict(
            FROM dictionary_corrections c
            INNER JOIN dictionary d ON d.id = c.dictionary_id
           WHERE c.context_id = ?1
-            AND (?2 IS NULL OR d.id != ?2)",
+            AND (?2 IS NULL OR d.id != ?2)
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)",
     )?;
     let rows = stmt.query_map(params![context_id, dictionary_id], |row| {
         Ok((
@@ -791,6 +807,25 @@ pub(crate) fn insert_dictionary_entry_returning_conn(
         )
         .optional()?;
     if let Some(id) = existing {
+        let expired: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM dictionary d JOIN vocabulary_expiration_marks m ON m.item_uuid=d.uuid LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE d.id=?1 AND MAX(d.created_at,COALESCE(u.last_used_at,''))<=m.cutoff)", [id], |row| row.get(0))?;
+        if expired {
+            let uuid: String = tx.query_row("SELECT uuid FROM dictionary WHERE id=?1", [id], |row| row.get(0))?;
+            super::agent_library::ensure_expired_corrections_available(tx, &uuid)?;
+            tx.execute("INSERT INTO vocabulary_expiration_usage(item_uuid,last_used_at) VALUES (?1,datetime('now')) ON CONFLICT(item_uuid) DO UPDATE SET last_used_at=MAX(last_used_at,excluded.last_used_at)", [&uuid])?;
+            crate::sync::engine::append_self_log(tx, "vocabulary_expiration_usage", &uuid, "upsert")?;
+            crate::sync::engine::reconcile_vocabulary_identities(tx, &uuid)?;
+            let assigned: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM dictionary_contexts WHERE context_id=?1 AND dictionary_id=?2)", params![target_context,id], |row| row.get(0))?;
+            if context_id.is_none() || assigned {
+                if !assigned {
+                    tx.execute("INSERT OR IGNORE INTO dictionary_contexts(context_id,dictionary_id) VALUES (?1,?2)", params![target_context,id])?;
+                }
+                if normalized_mistake.is_some() {
+                    update_dictionary_entry_for_context_conn(tx, target_context, id, &normalized_term, normalized_mistake.as_deref())?;
+                }
+                let created_at = tx.query_row("SELECT created_at FROM dictionary WHERE id=?1", [id], |row| row.get(0))?;
+                return Ok(CreatedRecordMeta { id, created_at });
+            }
+        }
         if context_id.is_none() {
             anyhow::bail!("\"{normalized_term}\" is already in the dictionary");
         }

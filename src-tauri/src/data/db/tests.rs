@@ -70,6 +70,132 @@ fn library_usage_tracks_mechanical_matches_and_prunes_with_history() {
 }
 
 #[test]
+fn vocabulary_activity_is_not_recorded_when_off_and_unpaired() {
+    let db = test_db();
+    let entry = insert_dictionary_entry_returning(&db, "Synthetic", None, None).unwrap();
+    record_vocabulary_activity(&db, &[entry.id]).unwrap();
+    {
+        let conn = db.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM vocabulary_expiration_usage", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+    set_vocabulary_expiration(&db, Some(7)).unwrap();
+    record_vocabulary_activity(&db, &[entry.id]).unwrap();
+    {
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE vocabulary_expiration_usage SET last_used_at='2000-01-01 00:00:00'", []).unwrap();
+    }
+    set_vocabulary_expiration(&db, None).unwrap();
+    record_vocabulary_activity(&db, &[entry.id]).unwrap();
+    let conn = db.lock().unwrap();
+    let retained: String = conn.query_row("SELECT last_used_at FROM vocabulary_expiration_usage", [], |r| r.get(0)).unwrap();
+    assert_eq!(retained, "2000-01-01 00:00:00");
+}
+
+#[test]
+fn expired_vocabulary_releases_correction_and_restoration_reports_conflict() {
+    let db = test_db();
+    insert_dictionary_entry_returning(&db, "First", Some("typo"), None).unwrap();
+    set_vocabulary_expiration(&db, Some(7)).unwrap();
+    {
+        let conn = db.lock().unwrap();
+        conn.execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days'); UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days');").unwrap();
+    }
+    assert_eq!(expire_vocabulary(&db).unwrap(), 1);
+    let status = vocabulary_expiration_status(&db).unwrap();
+    let request = status["deleted"][0]["request_id"].as_str().unwrap();
+    let second = insert_dictionary_entry_returning(&db, "Second", Some("typo"), None).unwrap();
+    assert!(restore_expired_vocabulary(&db, request).is_err());
+    assert!(insert_dictionary_entry_returning(&db, "First", None, None).is_err());
+    delete_dictionary_entry(&db, second.id).unwrap();
+    restore_expired_vocabulary(&db, request).unwrap();
+    assert_eq!(query_dictionary(&db).unwrap()[0].mistake.as_deref(), Some("typo"));
+}
+
+#[test]
+fn unicode_correction_conflicts_are_consistent_for_recovery_and_projection() {
+    let db = test_db();
+    insert_dictionary_entry_returning(&db, "First", Some("École"), None).unwrap();
+    set_vocabulary_expiration(&db, Some(7)).unwrap();
+    db.lock().unwrap().execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days'); UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days');").unwrap();
+    assert_eq!(expire_vocabulary(&db).unwrap(), 1);
+    let status = vocabulary_expiration_status(&db).unwrap();
+    let request = status["deleted"][0]["request_id"].as_str().unwrap();
+    insert_dictionary_entry_returning(&db, "Second", Some("école"), None).unwrap();
+    assert!(restore_expired_vocabulary(&db, request).is_err());
+    // Concurrent offline changes can leave both corrections active after sync.
+    db.lock().unwrap().execute("DELETE FROM vocabulary_expiration_marks", []).unwrap();
+    let entries = query_dictionary(&db).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries.iter().filter(|entry| entry.mistake.is_some()).count(), 1);
+}
+
+#[test]
+fn vocabulary_expiration_preserves_active_items_snippets_and_recovery() {
+    let db = test_db();
+    let stale = insert_dictionary_entry_returning(&db, "Kubernetes", Some("kubernetez"), None).unwrap();
+    let active = insert_dictionary_entry_returning(&db, "Verenu", None, None).unwrap();
+    insert_snippet_returning(&db, "shortcut", "Hello", "", None).unwrap();
+    assert!(set_vocabulary_expiration(&db, Some(6)).is_err());
+    assert!(set_vocabulary_expiration(&db, Some(61)).is_err());
+    assert_eq!(expire_vocabulary(&db).unwrap(), 0);
+    set_vocabulary_expiration(&db, Some(7)).unwrap();
+    {
+        let conn = db.lock().unwrap();
+        conn.execute("UPDATE dictionary SET created_at=datetime('now','-20 days')", []).unwrap();
+        conn.execute("UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days')", []).unwrap();
+    }
+    record_vocabulary_activity(&db, &[active.id]).unwrap();
+    assert_eq!(expire_vocabulary(&db).unwrap(), 1);
+    assert_eq!(query_snippets(&db).unwrap().len(), 1);
+    let status = vocabulary_expiration_status(&db).unwrap();
+    assert_eq!(status["deleted"][0]["term"], "Kubernetes");
+    let id = status["deleted"][0]["request_id"].as_str().unwrap();
+    restore_expired_vocabulary(&db, id).unwrap();
+    let restored = query_effective_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID).unwrap();
+    let entry = restored.iter().find(|entry| entry.term == "Kubernetes").unwrap();
+    assert_eq!(entry.mistake.as_deref(), Some("kubernetez"));
+    assert_eq!(entry.id, stale.id);
+    assert_eq!(expire_vocabulary(&db).unwrap(), 0);
+    assert!(vocabulary_expiration_status(&db).unwrap()["deleted"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn vocabulary_expiration_pauses_for_unsupported_paired_devices() {
+    let db = test_db();
+    insert_dictionary_entry_returning(&db, "Synthetic", None, None).unwrap();
+    set_vocabulary_expiration(&db, Some(7)).unwrap();
+    {
+        let conn = db.lock().unwrap();
+        conn.execute_batch("UPDATE dictionary SET created_at=datetime('now','-20 days'); UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days'); INSERT INTO sync_peers(device_uuid,cert_fp) VALUES ('synthetic','synthetic');").unwrap();
+    }
+    assert_eq!(expire_vocabulary(&db).unwrap(), 0);
+    assert_eq!(vocabulary_expiration_status(&db).unwrap()["paused_for_sync"], true);
+    let conn = db.lock().unwrap();
+    conn.execute("DELETE FROM sync_peers", []).unwrap();
+    drop(conn);
+    assert_eq!(expire_vocabulary(&db).unwrap(), 0);
+}
+
+#[test]
+fn vocabulary_expiration_migrates_version_39_without_losing_library() {
+    let path = temp_db_path("vocabulary_expiration_v39");
+    {
+        let db = open(&path).unwrap();
+        insert_dictionary_entry_returning(&db, "Synthetic", Some("sinthetic"), None).unwrap();
+        insert_snippet_returning(&db, "shortcut", "Hello", "", None).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("DROP TRIGGER vocabulary_expiration_peer_added; DROP TRIGGER vocabulary_expiration_peer_removed; DROP TABLE vocabulary_expiration_log; DROP TABLE vocabulary_expiration_marks; DROP TABLE vocabulary_expiration_usage; DROP TABLE vocabulary_expiration_settings; PRAGMA user_version=39;").unwrap();
+    }
+    let db = open(&path).unwrap();
+    assert_eq!(vocabulary_expiration_status(&db).unwrap()["days"], serde_json::Value::Null);
+    assert_eq!(query_dictionary(&db).unwrap()[0].term, "Synthetic");
+    assert_eq!(query_snippets(&db).unwrap()[0].trigger, "shortcut");
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn failed_dictionary_edits_do_not_change_other_contexts_or_assign_orphans() {
     let path = temp_db_path("agent_dictionary_edit_scope");
     let db = open(path.to_str().unwrap()).unwrap();
@@ -167,7 +293,7 @@ fn agent_tables_migrate_from_master_version_36() {
         finish_agent_change(&db, id, true).unwrap();
         let conn = db.lock().unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
     std::fs::remove_file(path).unwrap();
 }
@@ -201,7 +327,7 @@ fn agent_schema_upgrades_preserve_existing_usage_and_audit() {
             let row: (Option<i64>, Option<i64>) = conn.query_row("SELECT vocabulary_replacements, snippet_expansions FROM transcriptions", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
             assert_eq!(row, (None, None));
             let current: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-            assert_eq!(current, 39);
+            assert_eq!(current, 40);
         }
         std::fs::remove_file(path).unwrap();
     }
@@ -365,6 +491,20 @@ fn agent_bulk_delete_previews_retries_and_restores_atomically() {
     assert_eq!(query_snippets(&db).unwrap()[0].expansion, "Changed");
     assert_eq!(undo_library_delete(&db, request).unwrap()["replayed"], true);
     assert_ne!(restored[0].id, term.id);
+}
+
+#[test]
+fn agent_delete_restore_rejects_a_reassigned_correction() {
+    let db = test_db();
+    insert_dictionary_entry_returning(&db, "First", Some("typo"), None).unwrap();
+    let item = &list_library_items(&db).unwrap()["items"][0];
+    let items = vec![LibraryItem { kind: "dictionary".into(), uuid: item["uuid"].as_str().unwrap().into() }];
+    let preview = preview_library_delete(&db, items.clone()).unwrap();
+    let request = "00000000-0000-4000-8000-000000000002";
+    apply_library_delete(&db, items, preview["basis"].as_str().unwrap(), request).unwrap();
+    insert_dictionary_entry_returning(&db, "Second", Some("typo"), None).unwrap();
+    assert!(undo_library_delete(&db, request).is_err());
+    assert_eq!(query_dictionary(&db).unwrap().len(), 1);
 }
 
 #[test]
@@ -955,7 +1095,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 39);
+    assert_eq!(version, 40);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);

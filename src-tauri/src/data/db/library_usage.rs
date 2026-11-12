@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 use super::{lock_conn, Db};
@@ -32,6 +32,28 @@ pub fn record_dictionary_usage(db: &Db, ids: &[i64]) -> Result<()> {
     let tx = conn.transaction()?;
     for id in ids {
         record_library_usage_conn(&tx, "dictionary", *id, 1)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn record_vocabulary_activity(db: &Db, ids: &[i64]) -> Result<()> {
+    if ids.is_empty() { return Ok(()); }
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let tracking_needed: bool = tx.query_row(
+        "SELECT days IS NOT NULL FROM vocabulary_expiration_settings WHERE id=1",
+        [],
+        |row| row.get(0),
+    )?;
+    if !tracking_needed { return Ok(()); }
+    for id in ids {
+        let uuid: Option<String> = tx.query_row("SELECT uuid FROM dictionary WHERE id=?1", [id], |r| r.get(0)).optional()?.flatten();
+        if let Some(uuid) = uuid {
+            tx.execute("INSERT INTO vocabulary_expiration_usage(item_uuid,last_used_at) VALUES (?1,datetime('now')) ON CONFLICT(item_uuid) DO UPDATE SET last_used_at=MAX(last_used_at,excluded.last_used_at)", [&uuid])?;
+            crate::sync::engine::append_self_log(&tx, "vocabulary_expiration_usage", &uuid, "upsert")?;
+            crate::sync::engine::reconcile_vocabulary_identities(&tx, &uuid)?;
+        }
     }
     tx.commit()?;
     Ok(())

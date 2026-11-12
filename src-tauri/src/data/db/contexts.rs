@@ -289,6 +289,7 @@ pub fn query_dictionary_entry_contexts(db: &Db, term: &str) -> Result<Vec<Contex
          INNER JOIN dictionary_contexts dc ON dc.context_id = c.id
          INNER JOIN dictionary d ON d.id = dc.dictionary_id
          WHERE d.term = ?1
+           AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)
          ORDER BY c.is_everywhere DESC, c.name COLLATE NOCASE ASC",
         params![normalized_term],
         |row| {
