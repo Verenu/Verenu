@@ -49,6 +49,21 @@ export function classifyStartupLog(log) {
   return checks.filter(([, pattern]) => pattern.test(text)).map(([category]) => category);
 }
 
+export function classifyPanicLocation(log) {
+  if (typeof log !== 'string') return null;
+  const match = log.replace(/\u001b\[[0-9;]*m/g, '').match(/(?:^|\n)\s*thread [^\r\n]{1,200} panicked at ([^\r\n]{1,1024}?):(\d{1,6}):\d{1,6}:/);
+  if (!match) return null;
+  const location = match[1].replace(/\\/g, '/');
+  const line = Number(match[2]);
+  if (line < 1) return null;
+  const crates = ['tauri-runtime-wry', 'tauri', 'wry', 'tao', 'webview2-com', 'windows-core', 'windows', 'tokio'];
+  const crate = crates.find((name) => new RegExp(`(?:^|/)${name}-\\d+\\.\\d+\\.\\d+/(?:[^/]+/)*[^/]+\\.rs$`).test(location));
+  if (crate) return { source: crate, line };
+  if (location === 'src/lib.rs') return { source: 'app-lib', line };
+  if (location === 'src/dev_session.rs') return { source: 'dev-session', line };
+  return null;
+}
+
 export function sessionIdentityMismatch(expected, actual, sourceChanges = undefined) {
   const fields = [];
   if (expected?.fingerprint !== actual?.fingerprint) fields.push('fingerprint');
@@ -150,8 +165,11 @@ export async function startOwnedSession({ id, fixtures, native = false, director
           const size = Math.min(stat.size, 256 * 1024);
           const buffer = Buffer.alloc(size);
           const { bytesRead } = await file.read(buffer, 0, size, stat.size - size);
-          const categories = classifyStartupLog(buffer.subarray(0, bytesRead).toString('utf8'));
+          const text = buffer.subarray(0, bytesRead).toString('utf8');
+          const categories = classifyStartupLog(text);
           if (categories.length) error.startupFailure.logCategories = categories;
+          const panicLocation = classifyPanicLocation(text);
+          if (panicLocation) error.startupFailure.panicLocation = panicLocation;
         } finally { await file.close(); }
       } catch {}
     }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
+import { classifyPanicLocation, classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
 
 test('backend identity comparison names stale source fields without exposing worktree paths', () => {
   const runner = { commit: 'runner-commit', fingerprint: 'a'.repeat(64), worktree: 'D:\\a\\Verenu\\Verenu' };
@@ -15,6 +15,13 @@ test('backend identity comparison names stale source fields without exposing wor
     backend: { commit: 'backend-commit', fingerprint: 'b'.repeat(64) },
   });
   assert.equal(JSON.stringify(mismatch).includes('D:\\a\\'), false);
+});
+
+test('panic location includes only allowlisted sources and numeric lines', () => {
+  assert.deepEqual(classifyPanicLocation("thread 'main' (1) panicked at C:\\private\\tauri-2.8.0\\src\\lib.rs:135:9:\nprivate panic"), { source: 'tauri', line: 135 });
+  assert.deepEqual(classifyPanicLocation("thread 'main' panicked at src/dev_session.rs:35:5:\nprivate"), { source: 'dev-session', line: 35 });
+  assert.equal(classifyPanicLocation("thread 'main' panicked at C:\\private\\secret.rs:20:5:\nprivate"), null);
+  assert.equal(classifyPanicLocation('error: source example tauri-2.8.0/src/lib.rs:135:9'), null);
 });
 
 test('backend identity mismatch can include repo-relative digests without source contents', () => {
