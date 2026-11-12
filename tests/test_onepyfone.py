@@ -129,10 +129,46 @@ class RunnerTests(unittest.TestCase):
 
     def test_retry_keeps_original_failure(self):
         selected = runner.entry('retry', 'ui', 'Retry', retries=1)
-        with patch.object(runner, 'execute', side_effect=[runner.TestResult('failed', observed='original bug'), runner.TestResult('passed')]):
+        with patch.object(runner, 'execute', side_effect=[runner.TestResult('failed', observed='original bug', output='assertion failed\nScreenshots saved'), runner.TestResult('passed')]):
             result = runner.run_with_retries(selected, 'http://localhost:1', False)
         self.assertEqual(result.previous_failures, ['original bug'])
+        self.assertEqual(result.previous_failure_outputs, ['assertion failed\nScreenshots saved'])
         self.assertEqual(result.regression_status, 'flaky')
+        merged = runner.merge_loop_results({'retry': result}, {'retry': runner.TestResult('passed')})['retry']
+        self.assertEqual(merged.previous_failure_outputs, ['assertion failed\nScreenshots saved'])
+        self.assertEqual(merged.regression_status, 'flaky')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'retry.xml'
+            runner.write_junit_report(path, [selected], {'retry': merged})
+            testcase = ET.parse(path).getroot().find('testcase')
+            self.assertIsNone(testcase.find('failure'))
+            self.assertIn('Regression status: flaky', testcase.find('system-out').text)
+            self.assertIn('original bug', testcase.find('system-out').text)
+            self.assertIn('assertion failed\nScreenshots saved', testcase.find('system-out').text)
+
+    def test_junit_retry_preserves_empty_output_diagnostic(self):
+        selected = runner.entry('retry-empty', 'ui', 'Retry', retries=1)
+        with patch.object(runner, 'execute', side_effect=[runner.TestResult('failed', observed='diagnostic <without output>', output=''), runner.TestResult('passed')]):
+            result = runner.run_with_retries(selected, 'http://localhost:1', False)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'retry.xml'
+            runner.write_junit_report(path, [selected], {selected.id: result})
+            history = ET.parse(path).getroot().find('testcase/system-out').text
+        self.assertIn('Regression status: flaky', history)
+        self.assertIn('diagnostic <without output>', history)
+        self.assertIn('Failure 1', history)
+
+    def test_junit_loop_history_labels_failures_not_attempts(self):
+        selected = runner.entry('loop', 'ui', 'Loop')
+        failure = runner.TestResult('failed', observed='second loop failed', previous_failures=['second loop failed'], previous_failure_outputs=['details'])
+        result = runner.merge_loop_results({'loop': runner.TestResult('passed')}, {'loop': failure})['loop']
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'loop.xml'
+            runner.write_junit_report(path, [selected], {'loop': result})
+            history = ET.parse(path).getroot().find('testcase/system-out').text
+        self.assertIn('Failure 1', history)
+        self.assertIn('second loop failed', history)
+        self.assertNotIn('Attempt 1', history)
 
     def test_servers_allocate_ports_and_never_kill_listener(self):
         first, second = runner.ServerManager(), runner.ServerManager()

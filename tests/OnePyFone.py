@@ -163,6 +163,7 @@ class TestResult:
     regression_status: str = "unknown"
     skip_reason: Optional[str] = None
     previous_failures: List[str] = field(default_factory=list)
+    previous_failure_outputs: List[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -631,6 +632,7 @@ def execute(entry_: TestEntry, test_url: str) -> TestResult:
 def run_with_retries(entry_: TestEntry, test_url: str, verbose: bool) -> TestResult:
     result = TestResult("failed")
     failures = []
+    failure_outputs = []
     total_started = time.monotonic()
     for attempt in range(1, entry_.retries + 2):
         with _OUTPUT_LOCK:
@@ -639,6 +641,7 @@ def run_with_retries(entry_: TestEntry, test_url: str, verbose: bool) -> TestRes
         result.attempts = attempt
         if result.status == "failed":
             failures.append(result.observed)
+            failure_outputs.append(result.output)
         if result.passed or result.skipped:
             break
         if attempt <= entry_.retries:
@@ -646,6 +649,7 @@ def run_with_retries(entry_: TestEntry, test_url: str, verbose: bool) -> TestRes
                 print(f"  RETRY {entry_.id}: {result.observed}", flush=True)
     result.duration_s = time.monotonic() - total_started
     result.previous_failures = failures
+    result.previous_failure_outputs = failure_outputs
     if failures and result.passed:
         result.regression_status = "flaky"
     status = "PASS" if result.passed else "SKIP" if result.skipped else "FAIL"
@@ -837,6 +841,8 @@ def merge_loop_results(accumulated: Dict[str, TestResult], current: Dict[str, Te
             chosen,
             duration_s=previous.duration_s + result.duration_s,
             attempts=previous.attempts + result.attempts,
+            previous_failures=previous.previous_failures + result.previous_failures,
+            previous_failure_outputs=previous.previous_failure_outputs + result.previous_failure_outputs,
         )
         if statuses_differ:
             chosen = replace(
@@ -844,6 +850,8 @@ def merge_loop_results(accumulated: Dict[str, TestResult], current: Dict[str, Te
                 regression_status="flaky",
                 observed=f"Status changed across loops: {previous.status} -> {result.status}. {chosen.observed}",
             )
+        elif previous.regression_status == "flaky" or result.regression_status == "flaky":
+            chosen = replace(chosen, regression_status="flaky")
         merged[test_id] = chosen
     return merged
 
@@ -953,6 +961,15 @@ def write_junit_report(path: Path, entries: Sequence[TestEntry], results: Dict[s
         elif result.status == "failed":
             detail = xml_escape(_xml_clean(result.output or result.observed))
             lines.append(f'    <failure message="{_xml_attr(result.observed)}">{detail}</failure>')
+        if result.regression_status == "flaky" or result.previous_failures or result.previous_failure_outputs:
+            history = []
+            for index in range(max(len(result.previous_failures), len(result.previous_failure_outputs))):
+                observed = result.previous_failures[index] if index < len(result.previous_failures) else ""
+                output = result.previous_failure_outputs[index] if index < len(result.previous_failure_outputs) else ""
+                history.append(f"Failure {index + 1}\nObserved: {observed}\nOutput:\n{output}")
+            history_text = "\n\n".join(history)
+            detail = xml_escape(_xml_clean(f"Regression status: {result.regression_status}\n{history_text}"))
+            lines.append(f'    <system-out>{detail}</system-out>')
         lines.append("  </testcase>")
     lines.append("</testsuite>")
     path.parent.mkdir(parents=True, exist_ok=True)

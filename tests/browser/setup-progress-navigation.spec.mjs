@@ -80,3 +80,144 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
     });
   }
 }
+
+test('setup resumes local progress while credential status is delayed', async ({ browser, session }, testInfo) => {
+  const previous = {
+    setup_complete: await session.invoke('get_setting', { key: 'setup_complete' }),
+    setup_progress: await session.invoke('get_setting', { key: 'setup_progress' }),
+  };
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const context = await browser.newContext({ viewport: testInfo.project.use.viewport });
+  const isolated = await context.newPage();
+  await isolated.route('**/__verenu_dev/invoke', async route => {
+    if (route.request().postDataJSON()?.command === 'get_api_key_status') {
+      await blocked;
+    }
+    await route.continue().catch(() => {});
+  });
+  try {
+    await session.invoke('save_setting', { key: 'setup_complete', value: false });
+    await session.invoke('save_setting', { key: 'setup_progress', value: { step: 6, provider: 'local' } });
+    await isolated.goto(session.access.localAccessUrl);
+    await expect(isolated.locator('.setup-overlay')).toBeVisible({ timeout: 30000 });
+    await expect(isolated.getByText(/^Step 6 of \d+/)).toBeVisible({ timeout: 5000 });
+  } finally {
+    release();
+    await isolated.unrouteAll({ behavior: 'wait' });
+    await context.close();
+    await session.invoke('save_setting', { key: 'setup_progress', value: previous.setup_progress ?? null });
+    await session.invoke('save_setting', { key: 'setup_complete', value: previous.setup_complete ?? true });
+  }
+});
+
+test('setup preserves cloud progress when credential status is unavailable', async ({ browser, session }, testInfo) => {
+  const previous = {
+    setup_complete: await session.invoke('get_setting', { key: 'setup_complete' }),
+    setup_progress: await session.invoke('get_setting', { key: 'setup_progress' }),
+  };
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const context = await browser.newContext({ viewport: testInfo.project.use.viewport });
+  const isolated = await context.newPage();
+  await isolated.route('**/__verenu_dev/invoke', async route => {
+    if (route.request().postDataJSON()?.command === 'get_api_key_status') await blocked;
+    await route.continue().catch(() => {});
+  });
+  try {
+    await session.invoke('save_setting', { key: 'setup_complete', value: false });
+    await session.invoke('save_setting', { key: 'setup_progress', value: { step: 6, provider: 'groq' } });
+    await isolated.goto(session.access.localAccessUrl);
+    await expect(isolated.locator('.setup-overlay')).toBeVisible({ timeout: 30000 });
+    await expect(isolated.getByText(/^Step 3 of \d+/)).toBeVisible({ timeout: 5000 });
+    await expect.poll(() => session.invoke('get_setting', { key: 'setup_progress' })).toEqual({ step: 6, provider: 'groq' });
+  } finally {
+    release();
+    await isolated.unrouteAll({ behavior: 'wait' });
+    await context.close();
+    await session.invoke('save_setting', { key: 'setup_progress', value: previous.setup_progress ?? null });
+    await session.invoke('save_setting', { key: 'setup_complete', value: previous.setup_complete ?? true });
+  }
+});
+
+test('a late credential status cannot overwrite a newer key event', async ({ browser, session }, testInfo) => {
+  const previous = {
+    setup_complete: await session.invoke('get_setting', { key: 'setup_complete' }),
+    setup_progress: await session.invoke('get_setting', { key: 'setup_progress' }),
+  };
+  const context = await browser.newContext({ viewport: testInfo.project.use.viewport });
+  const isolated = await context.newPage();
+  let release;
+  let refreshed = false;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const staleRequests = [];
+  await isolated.route('**/__verenu_dev/invoke', async route => {
+    if (route.request().postDataJSON()?.command !== 'get_api_key_status') return route.continue();
+    if (refreshed) return route.fulfill({ json: { groq: true } });
+    const pending = blocked.then(() => route.fulfill({ json: { groq: false } }).catch(() => {}));
+    staleRequests.push(pending);
+    await pending;
+  });
+  try {
+    await session.invoke('save_setting', { key: 'setup_complete', value: false });
+    await session.invoke('save_setting', { key: 'setup_progress', value: { step: 6, provider: 'groq' } });
+    await isolated.goto(session.access.localAccessUrl);
+    await expect(isolated.locator('.setup-overlay')).toBeVisible({ timeout: 30000 });
+    await expect(isolated.getByText(/^Step 3 of \d+/)).toBeVisible({ timeout: 5000 });
+    refreshed = true;
+    await isolated.evaluate(() => window.dispatchEvent(new Event('verenu:api-key-saved')));
+    const saved = isolated.getByText('A key is already saved — paste a new one to replace it');
+    await expect(saved).toBeVisible();
+    release();
+    await Promise.all(staleRequests);
+    await expect.poll(() => isolated.evaluate(async () => {
+      const { frontendIpcActivity } = await import('/src/lib/diagnostics.ts');
+      return frontendIpcActivity.snapshot().find(metric => metric.command === 'get_api_key_status')?.currently_running ?? 0;
+    })).toBe(0);
+    await expect(saved).toBeVisible();
+  } finally {
+    release();
+    await isolated.unrouteAll({ behavior: 'wait' });
+    await context.close();
+    await session.invoke('save_setting', { key: 'setup_progress', value: previous.setup_progress ?? null });
+    await session.invoke('save_setting', { key: 'setup_complete', value: previous.setup_complete ?? true });
+  }
+});
+
+test('setup resumes using a key event received before saved progress loads', async ({ browser, session }, testInfo) => {
+  const previous = {
+    setup_complete: await session.invoke('get_setting', { key: 'setup_complete' }),
+    setup_progress: await session.invoke('get_setting', { key: 'setup_progress' }),
+  };
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  let refresh = false;
+  const context = await browser.newContext({ viewport: testInfo.project.use.viewport });
+  const isolated = await context.newPage();
+  await isolated.route('**/__verenu_dev/invoke', async route => {
+    const request = route.request().postDataJSON();
+    if (request?.command === 'get_setting' && request.args?.key === 'setup_progress') await blocked;
+    if (request?.command === 'get_api_key_status') return route.fulfill({ json: { groq: refresh } });
+    await route.continue().catch(() => {});
+  });
+  try {
+    await session.invoke('save_setting', { key: 'setup_complete', value: false });
+    await session.invoke('save_setting', { key: 'setup_progress', value: { step: 6, provider: 'groq' } });
+    await isolated.goto(session.access.localAccessUrl);
+    await expect(isolated.locator('.setup-overlay')).toBeVisible({ timeout: 30000 });
+    refresh = true;
+    const response = isolated.waitForResponse(res => res.url().endsWith('/__verenu_dev/invoke')
+      && res.request().postDataJSON()?.command === 'get_api_key_status'
+      && res.status() === 200);
+    await isolated.evaluate(() => window.dispatchEvent(new Event('verenu:api-key-saved')));
+    await response;
+    release();
+    await expect(isolated.getByText(/^Step 6 of \d+/)).toBeVisible({ timeout: 5000 });
+  } finally {
+    release();
+    await isolated.unrouteAll({ behavior: 'wait' });
+    await context.close();
+    await session.invoke('save_setting', { key: 'setup_progress', value: previous.setup_progress ?? null });
+    await session.invoke('save_setting', { key: 'setup_complete', value: previous.setup_complete ?? true });
+  }
+});

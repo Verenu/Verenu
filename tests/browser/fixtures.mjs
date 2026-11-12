@@ -21,14 +21,18 @@ export const test = base.extend({
     try {
       await session.invoke('save_setting', { key: 'custom_providers', value: [provider] });
       await session.invoke('save_setting', { key: 'transcription_default_model', value: `${provider.id}/synthetic-speech` });
-      await session.invoke('save_setting', { key: 'transcription_fallback_models', value: [] });
+      if (previous.transcription_fallback_models?.length) {
+        await session.invoke('save_setting', { key: 'transcription_fallback_models', value: [] });
+      }
       await session.invoke('save_setting', { key: 'cleanup_enabled', value: false });
       await page.reload();
       await use();
     } finally {
       await session.invoke('save_setting', { key: 'custom_providers', value: previous.custom_providers ?? [] });
       await session.invoke('save_setting', { key: 'transcription_default_model', value: previous.transcription_default_model ?? null });
-      await session.invoke('save_setting', { key: 'transcription_fallback_models', value: previous.transcription_fallback_models ?? [] });
+      if (previous.transcription_fallback_models?.length) {
+        await session.invoke('save_setting', { key: 'transcription_fallback_models', value: previous.transcription_fallback_models });
+      }
       await session.invoke('save_setting', { key: 'cleanup_enabled', value: previous.cleanup_enabled ?? true });
       await page.reload();
     }
@@ -52,14 +56,18 @@ export const test = base.extend({
     try {
       await session.invoke('save_setting', { key: 'custom_providers', value: [provider] });
       await session.invoke('save_setting', { key: 'transcription_default_model', value: `${provider.id}/unsupported-speech` });
-      await session.invoke('save_setting', { key: 'transcription_fallback_models', value: [] });
+      if (previous.transcription_fallback_models?.length) {
+        await session.invoke('save_setting', { key: 'transcription_fallback_models', value: [] });
+      }
       await session.invoke('save_setting', { key: 'cleanup_enabled', value: false });
       await page.reload();
       await use();
     } finally {
       await session.invoke('save_setting', { key: 'custom_providers', value: previous.custom_providers ?? [] });
       await session.invoke('save_setting', { key: 'transcription_default_model', value: previous.transcription_default_model ?? null });
-      await session.invoke('save_setting', { key: 'transcription_fallback_models', value: previous.transcription_fallback_models ?? [] });
+      if (previous.transcription_fallback_models?.length) {
+        await session.invoke('save_setting', { key: 'transcription_fallback_models', value: previous.transcription_fallback_models });
+      }
       await session.invoke('save_setting', { key: 'cleanup_enabled', value: previous.cleanup_enabled ?? true });
       await page.reload();
     }
