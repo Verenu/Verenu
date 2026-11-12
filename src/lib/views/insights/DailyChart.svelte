@@ -79,6 +79,13 @@
   const barWidth = $derived(daily.length > 0 ? Math.min(28, (W / daily.length) * 0.55) : 0);
   const seriesBarWidth = $derived(github ? (barWidth - 2) / 2 : barWidth);
 
+  function barPath(left: number, top: number, width: number, height: number): string {
+    const radius = Math.min(2, width / 2, height);
+    const right = left + width;
+    const bottom = top + height;
+    return `M ${left} ${bottom} V ${top + radius} Q ${left} ${top} ${left + radius} ${top} H ${right - radius} Q ${right} ${top} ${right} ${top + radius} V ${bottom} Z`;
+  }
+
   let hover = $state<number | null>(null);
   let plotWidth = $state(0);
   const selectedIndex = $derived(Math.min(hover ?? 0, Math.max(0, daily.length - 1)));
@@ -184,24 +191,22 @@
       />
       {#if asBars}
         {#each daily as d, i}
-          <rect
+          {@const wordTop = d.words > 0 ? y(d.words) : H - PAD_BOTTOM - 1}
+          {@const wordHeight = d.words > 0 ? Math.max(1, H - PAD_BOTTOM - y(d.words)) : 1}
+          <path
             class="word-bar"
-            x={x(i) - barWidth / 2}
-            y={d.words > 0 ? y(d.words) : H - PAD_BOTTOM - 1}
-            width={seriesBarWidth}
-            height={d.words > 0 ? Math.max(1, H - PAD_BOTTOM - y(d.words)) : 1}
+            d={barPath(x(i) - barWidth / 2, wordTop, seriesBarWidth, wordHeight)}
             fill={hover === i ? 'var(--accent)' : 'color-mix(in srgb, var(--accent) 55%, transparent)'}
-          ><title>{fmtDayLong(d.day)} — {fmtNumber(d.words)} words</title></rect>
+          ><title>{fmtDayLong(d.day)} — {fmtNumber(d.words)} words</title></path>
           {#if github && activity[i] !== null}
             {@const count = activity[i] ?? 0}
-            <rect
+            {@const activityTop = count > 0 ? activityY(count) : H - PAD_BOTTOM - 1}
+            {@const activityHeight = count > 0 ? Math.max(1, H - PAD_BOTTOM - activityY(count)) : 1}
+            <path
               class="github-bar"
-              x={x(i) + barWidth / 2 - seriesBarWidth}
-              y={count > 0 ? activityY(count) : H - PAD_BOTTOM - 1}
-              width={seriesBarWidth}
-              height={count > 0 ? Math.max(1, H - PAD_BOTTOM - activityY(count)) : 1}
+              d={barPath(x(i) + barWidth / 2 - seriesBarWidth, activityTop, seriesBarWidth, activityHeight)}
               fill={hover === i ? 'var(--success)' : 'color-mix(in srgb, var(--success) 55%, transparent)'}
-            ><title>{fmtDayLong(d.day)} — {describeActivity(count)}</title></rect>
+            ><title>{fmtDayLong(d.day)} — {describeActivity(count)}</title></path>
           {/if}
         {/each}
       {:else}

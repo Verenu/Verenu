@@ -35,6 +35,11 @@ describe('GitHub chart legend', () => {
     const short = render(DailyChart, { props: { daily: daily.slice(0, 7), rangeLabel: 'Last 7 days', github } }).body;
     expect(short.match(/class="word-bar(?:\s|\")/g)).toHaveLength(7);
     expect(short.match(/class="github-bar(?:\s|\")/g)).toHaveLength(2);
+    const bars = [...short.matchAll(/<path class="(?:word|github)-bar" d="([^"]+)"/g)];
+    expect(bars).toHaveLength(9);
+    for (const [, path] of bars) {
+      expect(path).toMatch(/^M [\d.]+ 148 V [\d.]+ Q [\d.]+ [\d.]+ [\d.]+ [\d.]+ H [\d.]+ Q [\d.]+ [\d.]+ [\d.]+ [\d.]+ V 148 Z$/);
+    }
     expect(short).not.toContain('class="github-line');
     expect(short).toContain('0 contributions');
 
