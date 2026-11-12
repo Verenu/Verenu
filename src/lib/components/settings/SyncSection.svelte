@@ -1054,8 +1054,8 @@
   .notice {
     margin-top: 10px;
     border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: var(--bg-elev);
+    border-radius: var(--r-lg);
+    background: var(--settings-card-bg, var(--bg-elev));
     font-size: 12.5px;
     line-height: 1.45;
     color: var(--ink-soft);

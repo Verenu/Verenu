@@ -242,8 +242,8 @@
     --tile-label-col: 88px;
     --tile-action-col: 76px;
     border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: var(--bg-elev);
+    border-radius: var(--r-lg);
+    background: var(--settings-card-bg, var(--bg-elev));
     padding: 0 16px;
     margin-bottom: 12px;
   }
