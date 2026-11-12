@@ -6,7 +6,12 @@ import { root, sourceFileChanges, sourceSnapshot } from './identity.mjs';
 import { assertRunning, stopOwned, trackOwned } from './process.mjs';
 
 export function cargoTargetDirectory(environment = process.env) {
-  return environment.CARGO_TARGET_DIR || path.join(root, 'src-tauri', 'target');
+  return environment.CARGO_TARGET_DIR ? path.resolve(root, environment.CARGO_TARGET_DIR) : path.join(root, 'src-tauri', 'target');
+}
+
+export async function prepareWindowsCargoDirectories(target, platform = process.platform) {
+  if (platform !== 'win32') return;
+  await Promise.all(['examples', 'deps'].map((name) => fs.mkdir(path.join(target, 'debug', name), { recursive: true })));
 }
 
 export async function cargoDebugDirectoryStatus(target = cargoTargetDirectory(), stat = fs.stat) {
