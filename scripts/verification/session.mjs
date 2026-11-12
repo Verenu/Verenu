@@ -49,18 +49,24 @@ export function classifyStartupLog(log) {
   return checks.filter(([, pattern]) => pattern.test(text)).map(([category]) => category);
 }
 
-export function classifyPanicLocation(log) {
+export function cargoPackageNames(lockfile) {
+  if (typeof lockfile !== 'string') return new Set();
+  return new Set([...lockfile.matchAll(/^name = "([a-zA-Z0-9_-]+)"\r?$/gm)].map((match) => match[1]));
+}
+
+export function classifyPanicLocation(log, packages = new Set()) {
   if (typeof log !== 'string') return null;
   const match = log.replace(/\u001b\[[0-9;]*m/g, '').match(/(?:^|\n)\s*thread [^\r\n]{1,200} panicked at ([^\r\n]{1,1024}?):(\d{1,6}):\d{1,6}:/);
   if (!match) return null;
   const location = match[1].replace(/\\/g, '/');
   const line = Number(match[2]);
   if (line < 1) return null;
-  const crates = ['tauri-runtime-wry', 'tauri', 'wry', 'tao', 'webview2-com', 'windows-core', 'windows', 'tokio'];
-  const crate = crates.find((name) => new RegExp(`(?:^|/)${name}-\\d+\\.\\d+\\.\\d+/(?:[^/]+/)*[^/]+\\.rs$`).test(location));
-  if (crate) return { source: crate, line };
+  const crate = location.match(/(?:^|\/)([a-zA-Z0-9_-]+)-\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?\/(?:[^/]+\/)*[^/]+\.rs$/)?.[1];
+  if (crate && packages.has(crate)) return { source: crate, line };
   if (location === 'src/lib.rs') return { source: 'app-lib', line };
   if (location === 'src/dev_session.rs') return { source: 'dev-session', line };
+  if (/^src\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.rs$/.test(location)) return { source: 'app-source', line };
+  if (/^(?:.*\/)?library\/(?:core|std|alloc)\/src\/.+\.rs$/.test(location)) return { source: 'rust-standard-library', line };
   return null;
 }
 
@@ -168,7 +174,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
           const text = buffer.subarray(0, bytesRead).toString('utf8');
           const categories = classifyStartupLog(text);
           if (categories.length) error.startupFailure.logCategories = categories;
-          const panicLocation = classifyPanicLocation(text);
+          const lockfile = await fs.readFile(path.join(root, 'src-tauri', 'Cargo.lock'), 'utf8').catch(() => '');
+          const panicLocation = classifyPanicLocation(text, cargoPackageNames(lockfile));
           if (panicLocation) error.startupFailure.panicLocation = panicLocation;
         } finally { await file.close(); }
       } catch {}

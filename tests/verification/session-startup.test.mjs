@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyPanicLocation, classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
+import { cargoPackageNames, classifyPanicLocation, classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
 
 test('backend identity comparison names stale source fields without exposing worktree paths', () => {
   const runner = { commit: 'runner-commit', fingerprint: 'a'.repeat(64), worktree: 'D:\\a\\Verenu\\Verenu' };
@@ -18,8 +18,11 @@ test('backend identity comparison names stale source fields without exposing wor
 });
 
 test('panic location includes only allowlisted sources and numeric lines', () => {
-  assert.deepEqual(classifyPanicLocation("thread 'main' (1) panicked at C:\\private\\tauri-2.8.0\\src\\lib.rs:135:9:\nprivate panic"), { source: 'tauri', line: 135 });
+  const packages = cargoPackageNames('[[package]]\r\nname = "tauri"\r\nversion = "2.8.0"\r\n');
+  assert.deepEqual(classifyPanicLocation("thread 'main' (1) panicked at C:\\private\\tauri-2.8.0\\src\\lib.rs:135:9:\nprivate panic", packages), { source: 'tauri', line: 135 });
+  assert.equal(classifyPanicLocation("thread 'main' panicked at C:\\private\\secret-1.0.0\\src\\lib.rs:135:9:\nprivate", packages), null);
   assert.deepEqual(classifyPanicLocation("thread 'main' panicked at src/dev_session.rs:35:5:\nprivate"), { source: 'dev-session', line: 35 });
+  assert.deepEqual(classifyPanicLocation("thread 'main' panicked at src/data/db/schema.rs:42:5:\nprivate"), { source: 'app-source', line: 42 });
   assert.equal(classifyPanicLocation("thread 'main' panicked at C:\\private\\secret.rs:20:5:\nprivate"), null);
   assert.equal(classifyPanicLocation('error: source example tauri-2.8.0/src/lib.rs:135:9'), null);
 });
