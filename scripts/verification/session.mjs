@@ -9,6 +9,15 @@ export function cargoTargetDirectory(environment = process.env) {
   return environment.CARGO_TARGET_DIR || path.join(root, 'src-tauri', 'target');
 }
 
+export async function cargoDebugDirectoryStatus(target = cargoTargetDirectory(), stat = fs.stat) {
+  const directoryExists = async (directory) => stat(directory).then((entry) => entry.isDirectory()).catch((error) => ['ENOENT', 'ENOTDIR'].includes(error.code) ? false : null);
+  const debug = path.join(target, 'debug');
+  const [profile, examples, deps] = await Promise.all([
+    directoryExists(debug), directoryExists(path.join(debug, 'examples')), directoryExists(path.join(debug, 'deps')),
+  ]);
+  return { profile, examples, deps };
+}
+
 export function ownedSessionStartupState(manifest, launcherPid) {
   if (!manifest || manifest.launcherPid !== launcherPid) return null;
   if (manifest.status === 'ready') return 'ready';
@@ -187,6 +196,9 @@ export async function startOwnedSession({ id, fixtures, native = false, director
           if (panicLocation) error.startupFailure.panicLocation = panicLocation;
           const osErrorCode = classifyPanicOsError(text);
           if (osErrorCode !== null) error.startupFailure.panicOsErrorCode = osErrorCode;
+          if (process.platform === 'win32' && panicLocation?.source === 'ort-sys' && osErrorCode === 3) {
+            error.startupFailure.cargoDebugDirectories = await cargoDebugDirectoryStatus();
+          }
         } finally { await file.close(); }
       } catch {}
     }

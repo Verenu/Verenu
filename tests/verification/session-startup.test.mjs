@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cargoPackageNames, classifyPanicLocation, classifyPanicOsError, classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { cargoDebugDirectoryStatus, cargoPackageNames, classifyPanicLocation, classifyPanicOsError, classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
 
 test('backend identity comparison names stale source fields without exposing worktree paths', () => {
   const runner = { commit: 'runner-commit', fingerprint: 'a'.repeat(64), worktree: 'D:\\a\\Verenu\\Verenu' };
@@ -31,6 +34,17 @@ test('panic OS error classification retains only the numeric code', () => {
   assert.equal(classifyPanicOsError("thread 'main' panicked at private.rs:42:5:\r\ncalled `Result::unwrap()` on an `Err` value: Os { code: 5, kind: PermissionDenied, message: \"private\" }"), 5);
   assert.equal(classifyPanicOsError('compiler output Os { code: 5, kind: PermissionDenied }'), null);
   assert.equal(classifyPanicOsError("thread 'main' panicked at private.rs:42:5:\nOs { code: 99999, kind: Other }"), null);
+});
+
+test('cargo directory diagnostics report existence without exposing paths', async () => {
+  const target = await fs.mkdtemp(path.join(os.tmpdir(), 'verenu-startup-test-'));
+  try {
+    await fs.mkdir(path.join(target, 'debug', 'deps'), { recursive: true });
+    assert.deepEqual(await cargoDebugDirectoryStatus(target), { profile: true, examples: false, deps: true });
+    assert.deepEqual(await cargoDebugDirectoryStatus(target, async () => { throw Object.assign(new Error('private'), { code: 'EACCES' }); }), { profile: null, examples: null, deps: null });
+  } finally {
+    await fs.rm(target, { recursive: true, force: true });
+  }
 });
 
 test('backend identity mismatch can include repo-relative digests without source contents', () => {
