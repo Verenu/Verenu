@@ -69,3 +69,9 @@ test('startup log diagnostics expose only fixed categories and Rust error codes'
   assert.equal(JSON.stringify(result).includes('private'), false);
   assert.equal(JSON.stringify(result).includes('secret'), false);
 });
+
+test('ORT startup diagnostics classify extraction without exposing paths or URLs', () => {
+  const result = startupLogDiagnostics('Extraction of prebuilt binaries downloaded from `https://private.invalid/token` failed: Failed to create file in C:\\private: already exists');
+  assert.deepEqual(result, { rustErrorCodes: [], buildPackages: [], categories: ['ort-extraction-error', 'file-already-exists'] });
+  assert.equal(JSON.stringify(result).includes('private'), false);
+});
