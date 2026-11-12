@@ -33,6 +33,20 @@ export function sessionStartupDiagnostics(manifest, launcherPid, launcher = {}) 
   return result;
 }
 
+export function classifyStartupLog(log) {
+  if (typeof log !== 'string') return [];
+  const text = log.replace(/\u001b\[[0-9;]*m/g, '');
+  const checks = [
+    ['rust-compiler-error', /(?:^|\n)\s*error\[E\d{4}\]:/],
+    ['linker-error', /(?:^|\n)\s*error: linking with\b/],
+    ['build-script-error', /(?:^|\n)\s*error: failed to run custom build command\b/],
+    ['dependency-error', /(?:^|\n)\s*error: failed to (?:get|download|fetch)\b/],
+    ['disk-full', /(?:no space left on device|not enough space on the disk)/i],
+    ['runtime-panic', /(?:^|\n)\s*thread [^\r\n]{1,200} panicked at /],
+  ];
+  return checks.filter(([, pattern]) => pattern.test(text)).map(([category]) => category);
+}
+
 export function sessionIdentityMismatch(expected, actual, sourceChanges = undefined) {
   const fields = [];
   if (expected?.fingerprint !== actual?.fingerprint) fields.push('fingerprint');
@@ -56,7 +70,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   const sourceAtStart = sourceSnapshot();
   const sessionDirectory = path.join(os.homedir(), '.local', 'state', 'verenu', 'dev-sessions', id);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const log = await fs.open(path.join(directory, `startup-${Date.now()}.log`), 'w', 0o600);
+  const logPath = path.join(directory, `startup-${Date.now()}.log`);
+  const log = await fs.open(logPath, 'w', 0o600);
   let child;
   try {
     assertRunning();
@@ -123,7 +138,23 @@ export async function startOwnedSession({ id, fixtures, native = false, director
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error('Owned session startup timed out');
-  } catch (error) { await stop(); throw error; }
+  } catch (error) {
+    await stop();
+    if (error.startupFailure) {
+      try {
+        const file = await fs.open(logPath, 'r');
+        try {
+          const stat = await file.stat();
+          const size = Math.min(stat.size, 256 * 1024);
+          const buffer = Buffer.alloc(size);
+          const { bytesRead } = await file.read(buffer, 0, size, stat.size - size);
+          const categories = classifyStartupLog(buffer.subarray(0, bytesRead).toString('utf8'));
+          if (categories.length) error.startupFailure.logCategories = categories;
+        } finally { await file.close(); }
+      } catch {}
+    }
+    throw error;
+  }
 }
 export async function invokeSession(session, command, args = {}) {
   const response = await fetch(new URL('/__verenu_dev/invoke', session.access.localAccessUrl), { method: 'POST', headers: { Authorization: `Bearer ${session.access.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args }), signal: AbortSignal.timeout(30_000) });

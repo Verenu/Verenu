@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
+import { classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
 
 test('backend identity comparison names stale source fields without exposing worktree paths', () => {
   const runner = { commit: 'runner-commit', fingerprint: 'a'.repeat(64), worktree: 'D:\\a\\Verenu\\Verenu' };
@@ -61,4 +61,12 @@ test('startup diagnostics ignore manifests owned by another process', () => {
     status: 'stopped',
     childFailure: { component: 'tauri', kind: 'unexpected-exit', exitCode: 1 },
   }, 42), { manifestState: 'missing' });
+});
+
+test('startup log classification exposes only fixed categories, never raw text', () => {
+  const log = '\u001b[31merror[E0308]:\u001b[0m private path and value\nerror: linking with private-linker failed\nthread private-name panicked at private-file\nNo space left on device\n';
+  assert.deepEqual(classifyStartupLog(log), ['rust-compiler-error', 'linker-error', 'disk-full', 'runtime-panic']);
+  assert.deepEqual(classifyStartupLog('error: failed to run custom build command for private-package\nerror: failed to get private-dependency'), ['build-script-error', 'dependency-error']);
+  assert.deepEqual(classifyStartupLog('private transcript and token'), []);
+  assert.equal(JSON.stringify(classifyStartupLog(log)).includes('private'), false);
 });
