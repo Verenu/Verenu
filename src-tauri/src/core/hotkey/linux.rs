@@ -111,6 +111,7 @@ static SUB_APP: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 
 const HANDSFREE_DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(350);
 const TAP_MAX_HOLD: Duration = Duration::from_millis(700);
+#[cfg(test)]
 const STALE_CHORD_TIMEOUT: Duration = Duration::from_secs(2);
 const PORTAL_SHORTCUT_ID: &str = "dictate";
 const PORTAL_SHORTCUT_DESCRIPTION: &str = "Verenu dictation";
@@ -122,12 +123,17 @@ const PORTAL_COPY_ID: &str = "copy-last";
 const PORTAL_COPY_DESCRIPTION: &str = "Verenu copy last dictation";
 const PORTAL_HANDSFREE_ID: &str = "handsfree";
 const PORTAL_HANDSFREE_DESCRIPTION: &str = "Verenu hands-free";
+const PORTAL_HOLD_RELEASE_ID: &str = "dictate-release";
+const PORTAL_TAP_CANCEL_ID: &str = "dictate-tap-cancel";
+const PORTAL_DOUBLE_TAP_ID: &str = "dictate-double-tap";
 const PORTAL_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PortalGestureAction {
+    #[cfg(test)]
     Press,
     Release,
+    #[cfg(test)]
     Handsfree,
     Cancel,
 }
@@ -142,6 +148,7 @@ struct PortalGesture {
 }
 
 impl PortalGesture {
+    #[cfg(test)]
     fn activated(&mut self, now: Instant) -> Option<PortalGestureAction> {
         if self.chord_active
             && self
@@ -575,6 +582,10 @@ fn flush_pending_release(now: Instant) {
 
 fn should_cancel_hold(chord_active: bool, handsfree: bool) -> bool {
     chord_active && !handsfree
+}
+
+fn consume_chord_cancel(chord_active: &AtomicBool, handsfree: bool) -> bool {
+    should_cancel_hold(chord_active.swap(false, Ordering::SeqCst), handsfree)
 }
 
 pub fn set_chord_cancel_callback(callback: impl Fn() + Send + Sync + 'static) {
@@ -1034,6 +1045,9 @@ async fn run_portal_session(
         NewShortcut::new(PORTAL_CHORD_CANCEL_ID, PORTAL_CHORD_CANCEL_DESCRIPTION),
         NewShortcut::new(PORTAL_COPY_ID, PORTAL_COPY_DESCRIPTION),
         NewShortcut::new(PORTAL_HANDSFREE_ID, PORTAL_HANDSFREE_DESCRIPTION),
+        NewShortcut::new(PORTAL_HOLD_RELEASE_ID, "Verenu dictation release"),
+        NewShortcut::new(PORTAL_TAP_CANCEL_ID, "Verenu dictation tap cancel"),
+        NewShortcut::new(PORTAL_DOUBLE_TAP_ID, "Verenu dictation double tap"),
     ];
     match portal::request("Binding shortcuts", async {
         portal
@@ -1063,37 +1077,9 @@ async fn run_portal_session(
         }
     };
     log::info!("linux hotkey: discovered portal ID");
-    let release_command = match std::env::current_exe() {
-        Ok(exe) => format!(
-            "{} --verenu-hotkey-release",
-            shell_quote(&exe.to_string_lossy())
-        ),
-        Err(error) => {
-            registration_failure(portal::Failure::new(
-                "Preparing shortcut release",
-                error.to_string(),
-            ));
-            return true;
-        }
-    };
-    let handsfree_command = match std::env::current_exe() {
-        Ok(exe) => format!(
-            "{} --verenu-hotkey-handsfree",
-            shell_quote(&exe.to_string_lossy())
-        ),
-        Err(error) => {
-            registration_failure(portal::Failure::new(
-                "Preparing hands-free shortcut",
-                error.to_string(),
-            ));
-            return true;
-        }
-    };
     if let Err(error) = install_with_capture_suspended(|| crate::core::hyprland::ensure_global_shortcut_binding(
         bindings,
         &dictate_id,
-        &release_command,
-        &handsfree_command,
         &release_keycodes_for(&configured_keys(&EFFECTIVE_KEYS)),
     )) {
         registration_failure(portal::Failure::new("Installing desktop bindings", error));
@@ -1248,14 +1234,11 @@ async fn run_portal_session(
                     DESKTOP_REBINDS.store(0, Ordering::SeqCst);
                 }
                 if CONFIG_GENERATION.load(Ordering::SeqCst) != generation || desktop_changed {
-                    let was_holding = gesture
-                        .lock()
-                        .map(|state| state.chord_active)
-                        .unwrap_or(false);
+                    let was_holding = CHORD_ACTIVE.load(Ordering::SeqCst);
                     CHORD_ACTIVE.store(false, Ordering::SeqCst);
                     refresh_escape_listening();
                     if was_holding {
-                        if let Some(cb) = RELEASE.get() {
+                        if let Some(cb) = CANCEL.get() {
                             cb();
                         }
                     }
@@ -1271,34 +1254,30 @@ async fn run_portal_session(
                 if super::capture_active() { continue; }
                 let id = event.shortcut_id();
                 if id == PORTAL_SHORTCUT_ID {
-                    flush_pending_release(Instant::now());
-                    let Ok(mut gesture) = gesture.lock() else {
-                        log::error!("linux hotkey: gesture state lock was poisoned");
-                        continue;
-                    };
-                    let action = gesture.activated(Instant::now());
-                    drop(gesture);
-                    match action {
-                        Some(PortalGestureAction::Press) => {
-                            log::info!("linux hotkey: portal press");
-                            CHORD_ACTIVE.store(true, Ordering::SeqCst);
-                            refresh_escape_listening();
-                            if let Some(cb) = PRESS.get() { cb(); }
-                        }
-                        Some(PortalGestureAction::Handsfree) => {
-                            log::info!("linux hotkey: portal double-tap, toggling handsfree");
-                            CHORD_ACTIVE.store(false, Ordering::SeqCst);
-                            refresh_escape_listening();
-                            if let Some(cb) = HANDLESS_CB.get() { cb(); }
-                        }
-                        _ => log::debug!("linux hotkey: ignored duplicate portal activation"),
-                    }
+                    log::info!("linux hotkey: portal press");
+                    CHORD_ACTIVE.store(true, Ordering::SeqCst);
+                    refresh_escape_listening();
+                    if let Some(cb) = PRESS.get() { cb(); }
+                } else if id == PORTAL_HOLD_RELEASE_ID {
+                    log::info!("linux hotkey: compositor hold release");
+                    CHORD_ACTIVE.store(false, Ordering::SeqCst);
+                    refresh_escape_listening();
+                    if let Some(cb) = RELEASE.get() { cb(); }
+                } else if id == PORTAL_TAP_CANCEL_ID {
+                    log::info!("linux hotkey: compositor lone tap expired");
+                    CHORD_ACTIVE.store(false, Ordering::SeqCst);
+                    refresh_escape_listening();
+                    if let Some(cb) = CANCEL.get() { cb(); }
+                } else if id == PORTAL_DOUBLE_TAP_ID {
+                    notify_handless();
                 } else if id == PORTAL_CANCEL_ID {
                     if CANCEL_KEY.lock().map(|key| key.is_empty()).unwrap_or(true) { continue; }
                     log::info!("linux hotkey: portal Escape-to-cancel fired");
                     if let Some(cb) = ESCAPE.get() { cb(); }
                 } else if id == PORTAL_CHORD_CANCEL_ID {
-                    if should_cancel_hold(CHORD_ACTIVE.load(Ordering::SeqCst), HANDLESS.load(Ordering::SeqCst)) {
+                    let cancel = consume_chord_cancel(&CHORD_ACTIVE, HANDLESS.load(Ordering::SeqCst));
+                    refresh_escape_listening();
+                    if cancel {
                         log::info!("linux hotkey: discarding hold used by another shortcut");
                         if let Some(cb) = CHORD_CANCEL.get() { cb(); }
                     }
@@ -1327,7 +1306,7 @@ fn publish_shortcut_failure(id: &str, requested: &str, failure: portal::Failure)
 
 fn release_disconnected_hold() {
     if CHORD_ACTIVE.swap(false, Ordering::SeqCst) {
-        if let Some(cb) = RELEASE.get() {
+        if let Some(cb) = CANCEL.get() {
             cb();
         }
     }
@@ -1774,6 +1753,17 @@ mod tests {
         assert!(!should_cancel_hold(true, true));
         assert!(!should_cancel_hold(false, false));
         assert!(!should_cancel_hold(false, true));
+    }
+
+    #[test]
+    fn interrupted_chord_is_cleared_even_in_handsfree() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let active = AtomicBool::new(true);
+        assert!(!super::consume_chord_cancel(&active, true));
+        assert!(!active.load(Ordering::SeqCst));
+        active.store(true, Ordering::SeqCst);
+        assert!(super::consume_chord_cancel(&active, false));
+        assert!(!active.load(Ordering::SeqCst));
     }
 
     #[test]
