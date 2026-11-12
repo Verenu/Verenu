@@ -68,5 +68,9 @@ test('startup log classification exposes only fixed categories, never raw text',
   assert.deepEqual(classifyStartupLog(log), ['rust-compiler-error', 'linker-error', 'disk-full', 'runtime-panic']);
   assert.deepEqual(classifyStartupLog('error: failed to run custom build command for private-package\nerror: failed to get private-dependency'), ['build-script-error', 'dependency-error']);
   assert.deepEqual(classifyStartupLog('private transcript and token'), []);
+  assert.deepEqual(classifyStartupLog("thread 'main' panicked at private-file:\nfailed to prepare isolated dev session: private details"), ['runtime-panic', 'dev-session-prepare-panic']);
+  assert.deepEqual(classifyStartupLog("thread 'main' panicked at private-file:\nerror building Verenu: private details"), ['runtime-panic', 'app-build-panic']);
+  assert.deepEqual(classifyStartupLog('error[E0308]: compiler error\n  .expect("error building Verenu")'), ['rust-compiler-error']);
+  assert.deepEqual(classifyStartupLog("thread 'main' panicked at private-file: error building Verenu: private details"), ['runtime-panic', 'app-build-panic']);
   assert.equal(JSON.stringify(classifyStartupLog(log)).includes('private'), false);
 });

@@ -43,6 +43,8 @@ export function classifyStartupLog(log) {
     ['dependency-error', /(?:^|\n)\s*error: failed to (?:get|download|fetch)\b/],
     ['disk-full', /(?:no space left on device|not enough space on the disk)/i],
     ['runtime-panic', /(?:^|\n)\s*thread [^\r\n]{1,200} panicked at /],
+    ['dev-session-prepare-panic', /(?:^|\n)\s*thread [^\r\n]{1,200} panicked at [^\r\n]*(?:\r?\n[ \t]*)?failed to prepare isolated dev session/],
+    ['app-build-panic', /(?:^|\n)\s*thread [^\r\n]{1,200} panicked at [^\r\n]*(?:\r?\n[ \t]*)?error building Verenu/],
   ];
   return checks.filter(([, pattern]) => pattern.test(text)).map(([category]) => category);
 }
