@@ -318,7 +318,8 @@
 
   .axis span:last-child { text-align: right; }
 
-  rect { transition: fill var(--ui-duration-fast) var(--ui-ease-out), y var(--ui-duration-base) var(--ui-ease-out), height var(--ui-duration-base) var(--ui-ease-out); }
+  .word-bar,
+  .github-bar { transition: fill var(--ui-duration-fast) var(--ui-ease-out), d var(--ui-duration-base) var(--ui-ease-out); }
 
   .area-path,
   .line-path {
