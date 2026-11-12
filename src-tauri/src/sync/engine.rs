@@ -4128,8 +4128,8 @@ mod payload_tests {
              VALUES (2, 'context', 'Work', 'W', 'casual', 'light', '#123456', 'Keep café',
                 1, 1, '2026-01-02', '2026-01-01', '2026-01-02');
              INSERT INTO dictionary (id, uuid, term, mistake, auto_learned, correction_count,
-                confidence_tier, last_seen_at, created_at)
-             VALUES (1, 'dictionary', 'café', 'legacy mistake', 1, 7, 'high', '2026-01-02', '2026-01-01');
+                confidence_tier, replacement_confidence, last_seen_at, created_at)
+             VALUES (1, 'dictionary', 'café', 'legacy mistake', 1, 7, 'high', 'high', '2026-01-02', '2026-01-01');
              INSERT INTO dictionary_contexts (context_id, dictionary_id) VALUES (2, 1);
              INSERT INTO dictionary_corrections (uuid, dictionary_id, context_id, mistake,
                 auto_learned, correction_count, confidence_tier, last_seen_at, created_at)
@@ -4156,7 +4156,7 @@ mod payload_tests {
                 "dictionary",
                 json!({
                     "term": "café", "mistake": null, "auto_learned": true,
-                    "correction_count": 7, "confidence_tier": "high", "last_seen_at": "2026-01-02",
+                    "correction_count": 7, "confidence_tier": "high", "replacement_confidence": "high", "last_seen_at": "2026-01-02",
                     "created_at": "2026-01-01"
                 }),
             ),
