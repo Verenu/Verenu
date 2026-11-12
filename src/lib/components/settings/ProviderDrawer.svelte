@@ -14,6 +14,7 @@
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
   import { customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
   import Callout from '../Callout.svelte';
+  import Disclosure from '../Disclosure.svelte';
   import CompactSelect from '../CompactSelect.svelte';
   import Toggle from '../Toggle.svelte';
   import ModelIdInput from './ModelIdInput.svelte';
@@ -277,11 +278,11 @@
 
 {#snippet advanced()}
   {#if editing}
-    <details><summary>Advanced</summary>
+    <Disclosure label="Advanced" id="provider-advanced" class="more-fields"><div class="fields">
       <label>API key header<input bind:value={editing.auth_header} placeholder={editing.protocol === 'anthropic' ? 'x-api-key' : 'Authorization: Bearer (default)'} disabled={busy} /></label>
       <label>Extra headers (JSON)<textarea use:autosize={headers} bind:value={headers} rows="3" spellcheck="false" disabled={busy}></textarea></label>
       {#if editing.supports_cleanup}<label>Cleanup request options (JSON)<textarea use:autosize={overrides} bind:value={overrides} rows="3" spellcheck="false" disabled={busy}></textarea></label>{/if}
-    </details>
+    </div></Disclosure>
   {/if}
 {/snippet}
 
@@ -298,13 +299,13 @@
 
     <div class="cap-grid" role="group" aria-label="What this provider handles">
       <div class="cap" class:on={editing.supports_transcription} class:off={editing.protocol === 'anthropic'}>
-        <ProviderCaps transcription />
+        <ProviderCaps transcription iconOnly />
         <span class="cap-title">Transcription</span>
         <Toggle checked={editing.supports_transcription} disabled={editing.protocol === 'anthropic' || busy} label="Enable custom transcription" onchange={v => setCapability('transcription', v)} />
       </div>
       <div class="cap" class:on={editing.supports_cleanup}>
-        <ProviderCaps cleanup />
-        <span class="cap-title">Cleanup</span>
+        <ProviderCaps cleanup iconOnly />
+        <span class="cap-title">Clean-up</span>
         <Toggle checked={editing.supports_cleanup} disabled={editing.protocol === 'anthropic' || busy} label="Enable custom cleanup" onchange={v => setCapability('cleanup', v)} />
       </div>
     </div>
@@ -354,10 +355,10 @@
               <div class="stack">
                 {#if searching}
                   <div class="pane" in:fly={{ y: motionPx(8), duration: motionMs(MOTION_MS.base), easing: cubicOut }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
-                    <div class="grid">
+                    {#if matchCount}<div class="grid">
                       {#each matches.builtins as b (b.id)}<div class="cell" animate:flip={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>{@render builtinCard(b)}</div>{/each}
                       {#each matches.presets as p (p.id)}<div class="cell" animate:flip={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>{@render card(p)}</div>{/each}
-                    </div>
+                    </div>{/if}
                     {#if !matchCount}
                       <div class="no-match" in:fade={{ duration: motionMs(MOTION_MS.base), delay: motionMs(60) }}>
                         <p>No match for “{search}”.</p>
@@ -368,17 +369,17 @@
                 {:else}
                   <div class="pane" in:fly={{ y: motionPx(-6), duration: motionMs(MOTION_MS.base), easing: cubicOut }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
                     {#if available.length}
-                      <div class="group-title">Providers</div>
+                      <div class="group-title">Built in</div>
                       <div class="grid">{#each available as b (b.id)}{@render builtinCard(b)}{/each}</div>
                     {/if}
                     {#if allowCustom}
                       <div class="group-title">Popular</div>
                       <div class="grid">{#each popular as p (p.id)}{@render card(p)}{/each}</div>
-                      <div class="group-title">Local</div>
+                      <div class="group-title">On your own machine</div>
                       <div class="grid">{#each rest('local') as p (p.id)}{@render card(p)}{/each}</div>
-                      <button type="button" class="disclosure" aria-expanded={showMore} onclick={() => showMore = !showMore}><span class="chev" class:open={showMore}>›</span> More<span>{rest('cloud').length + rest('gateway').length}</span></button>
+                      <button type="button" class="disclosure" aria-expanded={showMore} onclick={() => showMore = !showMore}><svg class="ui-chevron" class:open={showMore} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg> More providers<span>{rest('cloud').length + rest('gateway').length}</span></button>
                       {#if showMore}
-                        <div class="disclosed" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
+                        <div class="disclosed" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
                           <div class="grid">{#each [...rest('cloud'), ...rest('gateway')] as p (p.id)}{@render card(p)}{/each}</div>
                         </div>
                       {/if}
@@ -397,6 +398,7 @@
               <h3>{builtin.label}</h3>
               <ProviderCaps transcription={builtin.transcription} cleanup={builtin.cleanup} />
             </div>
+            <p class="editor-note">Paste a key from your {builtin.label} account. Verenu checks it with {builtin.label} before saving, then stores it in this device's secure storage.</p>
             <label>
               <span class="label-row">API key <button type="button" class="link" onclick={() => openExternal(builtin!.keyUrl)}>Get a key ↗</button></span>
               <input type="password" bind:value={key} use:focusOnMount autocomplete="off" aria-label={`${builtin.label} API key`} placeholder={keyStatus[builtin.id] ? 'Saved. Enter a new key to replace it' : builtin.placeholder} disabled={busy} aria-invalid={error ? 'true' : 'false'} />
@@ -427,10 +429,10 @@
                 <label>Base URL<input type="url" bind:value={editing.base_url} placeholder={urlExample} required disabled={busy} /></label>
               {/if}
               {@render destination()}
-              <details><summary>Customize</summary>
+              <Disclosure label="Customize" id="provider-customize" class="more-fields"><div class="fields">
                 {@render fullFields(!needsUrl)}
                 {@render advanced()}
-              </details>
+              </div></Disclosure>
             {/if}
             {@render clearKey()}
             <div class="actions sticky">
@@ -450,41 +452,48 @@
   .drawer-backdrop { position: absolute; inset: 0; background: var(--overlay); }
   .drawer { position: relative; display: flex; flex-direction: column; width: min(480px, 100vw); height: 100%; box-sizing: border-box; padding-top: var(--native-titlebar-height, 0px); background: var(--bg-elev); border-left: 1px solid var(--line); box-shadow: var(--shadow-elev); outline: none; }
   .head-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .drawer-head { flex: none; display: flex; align-items: center; justify-content: space-between; min-height: 56px; box-sizing: border-box; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); font-size: 13px; font-weight: 600; color: var(--ink); }
-  .drawer-close { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--ink-soft); cursor: pointer; }
+  .head-left span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drawer-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 56px; box-sizing: border-box; padding: 12px 14px 12px 20px; border-bottom: 1px solid var(--line-soft); font-size: 14px; font-weight: 600; letter-spacing: -0.01em; color: var(--ink); }
+  .drawer-close { flex: none; width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--ink-soft); cursor: pointer; transition: background-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out), transform var(--ui-duration-fast) var(--ui-ease-out); }
+  .head-left .drawer-close { margin-left: -8px; }
   .drawer-close:hover:not(:disabled) { background: var(--control-hover); color: var(--ink); }
-  .drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; overscroll-behavior: contain; }
+  .drawer-close:active:not(:disabled) { transform: scale(0.92); }
+  .drawer-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px; overscroll-behavior: contain; }
   .views { display: grid; min-height: 100%; }
   .views > :global(*) { grid-area: 1 / 1; min-width: 0; }
-  h3 { font-size: 16px; margin: 0; font-weight: 600; flex: 1; min-width: 0; }
+  h3 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: -0.015em; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
   .picker { display: grid; gap: 14px; }
   .search-row { display: flex; gap: 8px; align-items: center; }
-  .search { flex: 1; min-width: 0; font-family: inherit; }
+  .search { flex: 1; min-width: 0; font-family: inherit; font-size: 13px; }
   .search::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
   .own { display: inline-flex; align-items: center; gap: 6px; flex: none; }
   .stack { display: grid; }
-  .stack > .pane { grid-area: 1 / 1; display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .stack > .pane { grid-area: 1 / 1; display: grid; gap: 8px; align-content: start; min-width: 0; }
   .cell { min-width: 0; }
-  .group-title { margin-top: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-mute); }
-  .grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
-  .card { display: flex; align-items: center; gap: 12px; width: 100%; box-sizing: border-box; text-align: left; padding: 9px 12px 9px 9px; border: 1px solid var(--line-soft); border-radius: 14px; background: transparent; color: var(--ink); cursor: pointer; min-width: 0; font: inherit; transition: background 120ms ease, border-color 120ms ease, transform 120ms ease; }
-  .card:hover { background: var(--control-hover); border-color: var(--line-strong); }
-  .card:active { transform: scale(0.99); }
-  .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .group-title { margin: 10px 0 0 2px; font-size: 12px; font-weight: 600; color: var(--ink-mute); }
+  .pane > .group-title:first-child { margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: 1fr; border: 1px solid var(--line); border-radius: var(--r-lg, 14px); overflow: hidden; }
+  .grid:empty { display: none; }
+  .grid > :global(* + *) { border-top: 1px solid var(--line-soft); }
+  .card { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; box-sizing: border-box; text-align: left; padding: 9px 12px; border: 0; background: transparent; color: var(--ink); cursor: pointer; min-width: 0; font: inherit; transition: background-color var(--ui-duration-fast) var(--ui-ease-out); }
+  .card:hover { background: var(--control-hover); }
+  .card:active { background: var(--control-active); }
+  .card:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 12px; }
   .card-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .disclosure { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 4px; padding: 10px 2px; border: 0; border-top: 1px solid var(--line-soft); background: none; color: var(--ink-soft); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; }
-  .disclosure span:last-child { margin-left: auto; font-weight: 400; color: var(--ink-mute); font-size: 11px; }
+  .disclosure { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 6px; padding: 10px 2px; border: 0; background: none; color: var(--ink-soft); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left; transition: color var(--ui-duration-fast) var(--ui-ease-out); }
+  .disclosure:hover { color: var(--ink); }
+  .disclosure span:last-child { margin-left: auto; font-weight: 400; color: var(--ink-mute); font-size: 11.5px; font-variant-numeric: tabular-nums; }
   .disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
-  .chev { display: inline-block; width: 10px; transition: transform 150ms ease; color: var(--ink-mute); }
-  .chev.open { transform: rotate(90deg); }
   .disclosed { display: grid; gap: 10px; }
-  .no-match { display: grid; justify-items: start; gap: 8px; font-size: 12px; color: var(--ink-soft); }
+  .no-match { display: grid; justify-items: start; gap: 8px; padding: 6px 2px; font-size: 12px; color: var(--ink-soft); }
   .no-match p { margin: 0; overflow-wrap: anywhere; }
 
   .provider-editor { display: flex; flex-direction: column; gap: 16px; min-height: 100%; }
   .editor-head { display: flex; align-items: center; gap: 12px; }
+  .editor-note { margin: -4px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-mute); }
   .models-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 14px; transition: grid-template-columns 320ms cubic-bezier(0.22, 1, 0.36, 1), column-gap 320ms cubic-bezier(0.22, 1, 0.36, 1); }
   .models-row.no-tx { grid-template-columns: minmax(0, 0fr) minmax(0, 1fr); column-gap: 0; }
   .models-row.no-cl { grid-template-columns: minmax(0, 1fr) minmax(0, 0fr); column-gap: 0; }
@@ -493,30 +502,31 @@
   .mfield.off { opacity: 0; pointer-events: none; max-height: 0; }
   .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .full { grid-column: 1 / -1; }
-  label, .field { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--ink-soft); min-width: 0; }
+  label, .field { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 500; color: var(--ink-soft); min-width: 0; }
   .label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-  input, textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: var(--ink); font-family: var(--mono); font-size: 12px; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: transparent; color: var(--ink); font-family: var(--mono); font-size: 12px; font-weight: 400; transition: border-color var(--ui-duration-fast) var(--ui-ease-out), box-shadow var(--ui-duration-fast) var(--ui-ease-out); }
+  input::placeholder, textarea::placeholder { color: var(--ink-faint); }
   textarea { resize: none; overflow: hidden; }
-  input:focus, textarea:focus { outline: none; border-color: var(--line-strong); }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--ui-focus-ring); }
   input[aria-invalid='true'] { border-color: var(--danger); }
 
   .cap-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .cap { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; transition: border-color 120ms ease, background 120ms ease; }
+  .cap { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; transition: border-color var(--ui-duration-fast) var(--ui-ease-out), background-color var(--ui-duration-fast) var(--ui-ease-out); }
   .cap.on { border-color: var(--line-strong); background: var(--paper-2); }
   .cap.off { opacity: 0.6; }
   .cap-title { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--ink); }
 
-  .link { padding: 0; border: 0; background: none; color: var(--ink-mute); text-decoration: underline; cursor: pointer; font: inherit; font-size: 11px; }
+  .link { padding: 0; border: 0; background: none; color: var(--ink-mute); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 400; transition: color var(--ui-duration-fast) var(--ui-ease-out); }
   .link:hover { color: var(--ink); }
   .link.clear { align-self: flex-start; font-size: 12px; color: var(--danger); }
 
-  details { border-top: 1px solid var(--line-soft); padding-top: 12px; display: flex; flex-direction: column; gap: 14px; }
-  details > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
-  .actions.sticky { position: sticky; bottom: -18px; margin: auto -18px -18px; padding: 12px 18px 16px; border-top: 1px solid var(--line-soft); background: linear-gradient(to top, var(--bg-elev) 70%, transparent); }
+  .provider-editor :global(.more-fields) { border-top: 1px solid var(--line-soft); padding-top: 8px; }
+  .fields { display: flex; flex-direction: column; gap: 14px; padding: 8px 3px 4px; }
+  .actions.sticky { position: sticky; bottom: -20px; margin: auto -20px -20px; padding: 12px 20px 16px; border-top: 1px solid var(--line-soft); background: var(--bg-elev); }
   .provider-error { flex-basis: 100%; }
   @media (max-width: 560px) {
     .models-row, .models-row.no-tx, .models-row.no-cl { grid-template-columns: minmax(0, 1fr); column-gap: 0; row-gap: 14px; transition: none; }
     .mfield > :global(.mid) { min-width: 0; }
     .mfield.off { margin-top: -14px; } .form-grid, .cap-grid { grid-template-columns: 1fr; } .drawer-body { padding: 14px; } .actions.sticky { margin: auto -14px -14px; bottom: -14px; padding: 12px 14px 16px; } }
-  @media (prefers-reduced-motion: reduce) { .card, .chev, .models-row, .mfield { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .card, .models-row, .mfield, .drawer-close, input, textarea { transition: none; } }
 </style>

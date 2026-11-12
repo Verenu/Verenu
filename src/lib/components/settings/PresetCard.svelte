@@ -5,6 +5,8 @@
   import { slide } from 'svelte/transition';
   import { consentBlocked } from '../../legal/consentStore.svelte';
   import { cubicOut } from 'svelte/easing';
+  import { isCustomProviderId } from '../../customProviders.svelte';
+  import { providerDisplayLabel, splitModelId } from './models';
 
   let {
     preset,
@@ -25,7 +27,12 @@
     busy = false,
     recommended = false,
     onToggleDetails,
+    layout = 'rows',
+    index = 0,
   }: {
+    /** `cards` lays presets out side by side with the details panel under the whole row. */
+    layout?: 'rows' | 'cards';
+    index?: number;
     preset: Preset;
     active?: boolean;
     downloadMb?: number;
@@ -51,6 +58,12 @@
   const speechChain = $derived(preset.target ? [preset.target.transcriptionDefaultModel, ...preset.target.transcriptionFallbacks] : []);
   const cleanupChain = $derived(preset.target?.cleanupEnabled && preset.target.cleanupDefaultModel ? [preset.target.cleanupDefaultModel, ...preset.target.cleanupFallbacks] : []);
   const measured = $derived(performance.find(sample => sample.id === preset.target?.transcriptionDefaultModel && sample.task === 'transcription' && sample.samples >= 3));
+
+  /** A custom provider's id is a UUID, so name it the way the user did. */
+  function chainLabel(id: string): string {
+    const parsed = splitModelId(id);
+    return parsed && isCustomProviderId(parsed.provider) ? `${providerDisplayLabel(parsed.provider)}: ${parsed.model}` : modelLabel(id);
+  }
 
   function formatSize(mb: number): string {
     return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
@@ -89,7 +102,7 @@
 <svelte:window onkeydown={handleDeleteModalKeydown} />
 
 {#if isAddKey}
-  <div class="preset-row preset-info">
+  <div class="preset-row preset-info" class:cards={layout === 'cards'}>
     <div class="preset-main">
       <span class="preset-name">{preset.name}</span>
       <span class="preset-tagline" title={preset.tagline}>{preset.tagline}</span>
@@ -97,7 +110,8 @@
     <button class="btn-ghost btn-compact" type="button" onclick={() => onAddKey?.()}>Open API keys</button>
   </div>
 {:else}
-  <div class="preset-row" class:preset-active={active} class:open={showDetails} class:inert-row={needsDownload} class:consent-dim={consentBlocked() && !preset.offline}>
+  <div class="preset-row" class:cards={layout === 'cards'} class:preset-active={active} class:open={showDetails} class:inert-row={needsDownload} class:consent-dim={consentBlocked() && !preset.offline} style:--i={index}>
+    <div class="preset-face">
     <button
       class="preset-select"
       class:consent-dim={consentDim}
@@ -124,7 +138,7 @@
         {#if actionLabel}
           <button class="preset-action" class:danger={cancelable} class:consent-dim={consentDim} aria-disabled={consentDim || undefined} type="button" disabled={busy && !downloading} onclick={handleAction}>{actionLabel}</button>
         {:else if measured}
-          <span class="preset-speed">{(measured.latency_ms / 1000).toFixed(1)}s</span>
+          <span class="preset-speed" title="Measured on this device">{(measured.latency_ms / 1000).toFixed(1)}s{layout === 'cards' ? ' average' : ''}</span>
         {/if}
         <button
           class="preset-more"
@@ -134,15 +148,19 @@
           aria-controls={detailsId}
           onclick={(event) => { event.stopPropagation(); onToggleDetails?.(); }}
         >
+          {#if layout === 'cards'}<span class="more-label" aria-hidden="true">Details</span>{/if}
           <svg class="ui-chevron" class:open={showDetails} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
         </button>
       </div>
     </div>
+    {#if downloading}<span class="preset-progress" aria-hidden="true"><i></i></span>{/if}
+    </div>
     {#if showDetails}
       <div id={detailsId} class="preset-details" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
+        {#if layout === 'cards'}<p class="details-title">{preset.offline ? 'Local' : 'Cloud'} {preset.name}</p>{/if}
         <dl>
-          <dt>Speech</dt><dd>{speechChain.map(modelLabel).join(' → ')}</dd>
-          <dt>Cleanup</dt><dd>{cleanupChain.length ? cleanupChain.map(modelLabel).join(' → ') : 'Off'}</dd>
+          <dt>Speech</dt><dd>{speechChain.map(chainLabel).join(' → ')}</dd>
+          <dt>Cleanup</dt><dd>{cleanupChain.length ? cleanupChain.map(chainLabel).join(' → ') : 'Off'}</dd>
           <dt>Mode</dt><dd>{preset.offline ? 'On-device only' : 'Cloud first, local fallback'} · {preset.target?.dualTranscription ? 'two speech models cross-check' : 'one speech model'}</dd>
         </dl>
         {#if onUseFallback || onTestLocal || manageable}
@@ -209,6 +227,8 @@
   .preset-row.preset-active { background: var(--control-active); }
   .preset-row:has(.preset-select:active:not(:disabled)) { background: var(--control-active); }
   .preset-select:disabled { pointer-events: none; }
+
+  .preset-face { position: relative; }
 
   .preset-select {
     position: absolute;
@@ -344,8 +364,68 @@
 
   .preset-confirm-wrap { position: fixed; inset: 0; z-index: 120; }
 
+  .preset-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; overflow: hidden; pointer-events: none; }
+  .preset-progress i { display: block; width: 40%; height: 100%; background: var(--ink); animation: preset-progress 1.4s var(--ui-ease-out) infinite; }
+  @keyframes preset-progress { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+  .details-title { margin: 0 0 8px; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+
+  /* Cards: each preset is a tile, and the open details panel spans the row below the tiles. */
+  .preset-row.cards { display: contents; }
+  .cards .preset-face {
+    order: 0;
+    display: flex;
+    min-width: 0;
+    border-radius: var(--r-lg, 14px);
+    background: var(--settings-card-bg, var(--bg-elev));
+    box-shadow: inset 0 0 0 1px var(--line);
+    overflow: hidden;
+    transition: box-shadow var(--ui-duration-base) var(--ui-ease-out), background-color var(--ui-duration-fast) var(--ui-ease-out), transform var(--ui-duration-fast) var(--ui-ease-out);
+  }
+  .preset-row.cards:hover:not(.inert-row) { background: none; }
+  .cards:not(.inert-row):not(.preset-active) .preset-face:hover { box-shadow: inset 0 0 0 1px var(--line-strong); background: var(--control-hover); }
+  .cards .preset-face:has(.preset-select:active:not(:disabled)) { transform: scale(0.985); }
+  .cards.open .preset-face { box-shadow: inset 0 0 0 1px var(--line-strong); }
+  .cards.preset-active .preset-face { box-shadow: inset 0 0 0 1.5px var(--ink); background: var(--settings-card-bg, var(--bg-elev)); }
+  .cards .preset-select { border-radius: var(--r-lg, 14px); }
+  .cards .preset-line {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'main radio' 'trail trail';
+    grid-template-rows: 1fr auto;
+    align-items: start;
+    gap: 10px 8px;
+    min-height: 116px;
+    padding: 14px 8px 6px 14px;
+  }
+  .cards .preset-radio { grid-area: radio; width: 18px; height: 18px; margin: 1px 6px 0 0; }
+  .cards .preset-radio.on { animation: preset-check var(--ui-duration-base) var(--ui-ease-out); }
+  .cards .preset-radio svg { transition: transform var(--ui-duration-base) var(--ui-ease-out); transform: scale(0.4); }
+  .cards .preset-radio.on svg { transform: scale(1); }
+  @keyframes preset-check { 0% { transform: scale(0.8); } 60% { transform: scale(1.14); } 100% { transform: scale(1.05); } }
+  .cards .preset-main { grid-area: main; grid-template-columns: minmax(0, 1fr); row-gap: 6px; align-items: start; }
+  .cards .preset-name { flex-wrap: wrap; row-gap: 4px; font-size: 14px; letter-spacing: -0.01em; }
+  .cards .preset-tagline { -webkit-line-clamp: 4; line-clamp: 4; }
+  .cards .preset-trail { grid-area: trail; width: auto; justify-content: space-between; min-height: 36px; }
+  .cards .preset-action { margin-left: -8px; }
+  .cards .preset-more { display: inline-flex; align-items: center; gap: 4px; width: auto; height: 30px; margin-left: auto; padding: 0 6px 0 8px; font-family: var(--sans); font-size: 12px; font-weight: 500; }
+  .cards.open .preset-more { color: var(--ink); }
+  .cards .preset-speed { color: var(--ink-mute); }
+  .cards .preset-details {
+    order: 1;
+    grid-column: 1 / -1;
+    padding: 12px 14px;
+    border-radius: var(--r-md);
+    background: var(--paper-2);
+  }
+  .preset-info.cards { display: flex; grid-column: 1 / -1; border: 1px dashed var(--line-strong); border-radius: var(--r-lg, 14px); }
+  .preset-info.cards .preset-main { grid-template-columns: minmax(0, 1fr); row-gap: 2px; }
+
   @media (prefers-reduced-motion: reduce) {
     .preset-radio { transition: none; transform: none; }
+    .cards .preset-face, .cards .preset-radio svg { transition: none; }
+    .cards .preset-radio.on, .preset-progress i { animation: none; }
+    .preset-progress i { width: 100%; opacity: 0.4; }
   }
 
   @container settings-panel (max-width: 560px) {
@@ -358,5 +438,14 @@
     .preset-speed { display: none; }
     .preset-details { padding-left: 12px; }
     .preset-actions :global(.btn-ghost) { min-height: 40px; flex: 1 1 auto; }
+
+    /* One column: each details panel follows its own card. */
+    .cards .preset-face { order: calc(var(--i) * 2); }
+    .cards .preset-details { order: calc(var(--i) * 2 + 1); padding-left: 14px; }
+    .cards .preset-line { min-height: 0; padding: 12px 6px 4px 14px; flex-wrap: nowrap; }
+    .cards .preset-trail { display: flex; }
+    .cards .preset-more { order: 0; width: auto; height: 40px; }
+    .cards .preset-action { order: 0; flex-basis: auto; margin-left: -8px; padding-left: 8px; }
+    .cards .preset-speed { display: inline; }
   }
 </style>

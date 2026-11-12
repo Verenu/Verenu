@@ -4,7 +4,7 @@
   import { refreshAppleIntelligence } from '../../appleIntelligence.svelte';
   import { onMount } from 'svelte';
   import { beginCustomProviderRefresh, customProviderStore } from '../../customProviders.svelte';
-  import { slide } from 'svelte/transition';
+  import { fly, slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { invoke } from '../../tauri';
   import {
@@ -28,7 +28,7 @@
     cancelLocalLlmModelDownload,
     deleteLocalLlmModel,
   } from '../../localLlmStore.svelte';
-  import { MOTION_MS, motionMs } from '../../motion';
+  import { MOTION_MS, motionMs, motionPx } from '../../motion';
   import Toggle from '../Toggle.svelte';
   import Callout from '../Callout.svelte';
   import CompactSelect from '../CompactSelect.svelte';
@@ -843,10 +843,20 @@
   migrateAndLoad()
     .catch((err) => console.error('load models failed', err))
     .finally(() => { hydrated = true; });
+
+  // One dot travels the connector when either model changes, so a setup click reads as a change to the flow above it.
+  let flowPulse = $state(0);
+  let flowSeen = '';
+  $effect(() => {
+    const signature = `${transcriptionDefaultModel}|${cleanupDefaultModel}|${cleanupEnabled}`;
+    if (!hydrated) return;
+    if (flowSeen && flowSeen !== signature) flowPulse += 1;
+    flowSeen = signature;
+  });
 </script>
 
 <h2 class="settings-h">Models</h2>
-<p class="settings-lede">Pick a setup and Verenu chooses the speech model, clean-up model, and backups for you.</p>
+<p class="settings-lede">Dictation runs in two steps: one model writes down what you said, then one cleans it up. Pick a setup, or choose each model yourself.</p>
 <ConsentHint banner feature="Cloud transcription and cleanup, and model downloads" />
 
 {#if modelConflict}
@@ -860,8 +870,65 @@
 {/if}
 
 <div class="models-body" class:hydrating={!hydrated} inert={modelConflict}>
-<div data-setting-target="model-presets">
+<div class="active-head first">
+  <h3 class="settings-subhead">Model selection</h3>
+  {#key activePresetName}
+    <span class="active-state" in:fly={{ y: motionPx(4), duration: motionMs(MOTION_MS.base), easing: cubicOut }}>{activePresetName ? `Setup: ${activePresetName}` : 'Custom selection'}</span>
+  {/key}
+</div>
+<div class="flow">
+  <ModelTaskTile
+    type="transcription"
+    step={1}
+    {advancedModelUi}
+    {apiKeyStatus}
+    context={pickerContext('transcription')}
+    defaultModel={transcriptionDefaultModel}
+    fallbackModels={transcriptionFallbackModels}
+    onSelectModel={selectModel}
+    onAddFallback={addFallbackModel}
+    onRemoveFallback={removeFallbackModel}
+    onMoveFallback={moveFallbackModel}
+    onAddCustomModel={addCustomModelForTask}
+    onOpenApiKeys={openApiKeysSection}
+    local={localControls('transcription')}
+  />
+
+  <span class="flow-link" class:off={!cleanupEnabled} aria-hidden="true">
+    <svg class="flow-arrow" viewBox="0 0 28 12" width="28" height="12"><path d="M1 6h24M21 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    {#key flowPulse}{#if flowPulse}<i class="flow-dot"></i>{/if}{/key}
+  </span>
+
+  <ModelTaskTile
+    type="cleanup"
+    step={2}
+    enabled={cleanupEnabled}
+    {advancedModelUi}
+    {apiKeyStatus}
+    context={pickerContext('cleanup')}
+    defaultModel={cleanupDefaultModel}
+    fallbackModels={cleanupFallbackModels}
+    onSelectModel={selectModel}
+    onAddFallback={addFallbackModel}
+    onRemoveFallback={removeFallbackModel}
+    onMoveFallback={moveFallbackModel}
+    onAddCustomModel={addCustomModelForTask}
+    onOpenApiKeys={openApiKeysSection}
+    local={localControls('cleanup')}
+  />
+</div>
+
+<div class="setting-row models-row advanced-row" data-setting-target="advanced-models">
+  <div>
+    <div class="label">Advanced models</div>
+    <div class="desc">Choose specific models, edit backups and cleanup prompts, and compare two speech models.</div>
+  </div>
+  <Toggle checked={advancedModelUi} onchange={handleAdvancedModelUi} label="Advanced models" bind:error={advancedModelUiError} />
+</div>
+
+<div class="presets" data-setting-target="model-presets">
   <ModelPresetPicker
+    layout="cards"
     {apiKeyStatus}
     {hardware}
     localSupported={localModelsSupported}
@@ -880,54 +947,10 @@
     pendingPresetId={pendingPreset?.id ?? null}
     bind:activeLabel={activePresetName}
   />
-  {#if localTestResult}<p class="models-note" role="status">{localTestResult}</p>{/if}
+  {#if localTestResult}<p class="models-note" role="status" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>{localTestResult}</p>{/if}
 </div>
-
-<div class="active-head">
-  <h3 class="settings-subhead">Model selection</h3>
-  <span class="active-state">{activePresetName ? `Setup: ${activePresetName}` : 'Custom selection'}</span>
-</div>
-<ModelTaskTile
-  type="transcription"
-  {advancedModelUi}
-  {apiKeyStatus}
-  context={pickerContext('transcription')}
-  defaultModel={transcriptionDefaultModel}
-  fallbackModels={transcriptionFallbackModels}
-  onSelectModel={selectModel}
-  onAddFallback={addFallbackModel}
-  onRemoveFallback={removeFallbackModel}
-  onMoveFallback={moveFallbackModel}
-  onAddCustomModel={addCustomModelForTask}
-  onOpenApiKeys={openApiKeysSection}
-  local={localControls('transcription')}
-/>
-
-<ModelTaskTile
-  type="cleanup"
-  enabled={cleanupEnabled}
-  {advancedModelUi}
-  {apiKeyStatus}
-  context={pickerContext('cleanup')}
-  defaultModel={cleanupDefaultModel}
-  fallbackModels={cleanupFallbackModels}
-  onSelectModel={selectModel}
-  onAddFallback={addFallbackModel}
-  onRemoveFallback={removeFallbackModel}
-  onMoveFallback={moveFallbackModel}
-  onAddCustomModel={addCustomModelForTask}
-  onOpenApiKeys={openApiKeysSection}
-  local={localControls('cleanup')}
-/>
 
 <h3 class="settings-subhead">Model settings</h3>
-<div class="setting-row models-row" data-setting-target="advanced-models">
-  <div>
-    <div class="label">Advanced models</div>
-    <div class="desc">Choose specific models, edit backups and cleanup prompts, and compare two speech models.</div>
-  </div>
-  <Toggle checked={advancedModelUi} onchange={handleAdvancedModelUi} label="Advanced models" bind:error={advancedModelUiError} />
-</div>
 {#if advancedModelUi}
   <div class="setting-row models-row" data-setting-target="models-strategy" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
     <div>
@@ -979,7 +1002,7 @@
   .models-body.hydrating { opacity: 0; }
 
   .models-note {
-    margin: 8px 0 0;
+    margin: 8px 2px 0;
     font-family: var(--sans);
     font-size: 11.5px;
     line-height: 1.45;
@@ -995,6 +1018,8 @@
     margin: 28px 0 8px;
   }
 
+  .active-head.first { margin-top: 4px; }
+
   .active-head :global(.settings-subhead) {
     margin: 0;
   }
@@ -1005,7 +1030,61 @@
     color: var(--ink-mute);
   }
 
+  /* Speech is transcribed, then cleaned up: the two tiles sit in that order with a connector between them. */
+  .flow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .flow-link {
+    position: relative;
+    align-self: start;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 12px;
+    margin-top: 18px;
+    color: var(--ink-faint);
+    transition: opacity var(--ui-duration-base) var(--ui-ease-out);
+  }
+
+  .flow-link.off { opacity: 0.45; }
+  .flow-arrow { display: block; }
+
+  .flow-dot {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: var(--ink);
+    opacity: 0;
+    animation: flow-travel 620ms var(--ui-ease-out) 120ms both;
+  }
+
+  @keyframes flow-travel {
+    0% { opacity: 0; transform: translate3d(-4px, 0, 0) scale(0.6); }
+    25% { opacity: 1; transform: translate3d(4px, 0, 0) scale(1); }
+    75% { opacity: 1; }
+    100% { opacity: 0; transform: translate3d(24px, 0, 0) scale(0.6); }
+  }
+
+  .advanced-row { margin-top: 8px; }
+  .presets { margin-top: 28px; }
+
   .models-row {
     min-height: 64px;
+  }
+
+  @container settings-panel (max-width: 560px) {
+    .flow { grid-template-columns: minmax(0, 1fr); }
+    .flow-link { justify-self: start; height: 28px; margin: 0 0 0 10px; transform: rotate(90deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .flow-dot { animation: none; }
   }
 </style>

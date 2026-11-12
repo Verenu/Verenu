@@ -1,8 +1,9 @@
 <script lang="ts">
   import { openCleanupPromptEditor, cleanupPromptStore } from '../../stores.svelte';
-  import { fly } from 'svelte/transition';
+  import { fade, fly } from 'svelte/transition';
+  import { flip } from 'svelte/animate';
   import { cubicOut } from 'svelte/easing';
-  import { MOTION_MS, motionMs } from '../../motion';
+  import { MOTION_MS, motionMs, motionPx } from '../../motion';
   import { getProviderLogo, getProviderPlate } from '../../setup/ProviderLogos';
   import type { ProviderId } from '../../settings';
   import { customProvider } from '../../customProviders.svelte';
@@ -24,6 +25,7 @@
 
   let {
     type,
+    step,
     advancedModelUi,
     enabled = true,
     apiKeyStatus,
@@ -39,6 +41,8 @@
     local,
   }: {
     type: TaskType;
+    /** Position in the dictation flow: speech is transcribed first, then cleaned up. */
+    step: 1 | 2;
     advancedModelUi: boolean;
     enabled?: boolean;
     apiKeyStatus: Record<ProviderId, boolean>;
@@ -82,30 +86,45 @@
 
   const promptCustomized = $derived(!!cleanupPromptStore.override.trim());
 
+  // A new model rises into the same row. One element is animated in place, so the tile never holds two copies of a model.
+  let activeEl = $state<HTMLElement | null>(null);
+  let shownModel: string | null = null;
+  $effect(() => {
+    const next = defaultModel;
+    if (shownModel !== null && shownModel !== next) {
+      activeEl?.animate?.(
+        [
+          { opacity: 0, transform: `translate3d(0, ${motionPx(8)}px, 0)` },
+          { opacity: 1, transform: 'translate3d(0, 0, 0)' },
+        ],
+        { duration: motionMs(MOTION_MS.panel), easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+      );
+    }
+    shownModel = next;
+  });
+
+  const role = $derived(
+    type === 'transcription'
+      ? 'Turns your speech into text.'
+      : enabled ? 'Fixes punctuation, filler words, and formatting.' : 'Off. Text is inserted as transcribed.',
+  );
+
   function chipLabel(id: string): string {
     const parsed = splitModelId(id);
     return parsed ? qualifiedModelLabel(parsed.provider, parsed.model) : id;
   }
 </script>
 
-<section class="task-tile" class:is-off={!enabled} data-setting-target={`models-${type}`}>
+<section class="task-tile" class:is-off={!enabled} class:is-advanced={advancedModelUi} data-setting-target={`models-${type}`}>
   <header class="tile-head">
-    <span class="head-title">{taskLabel(type)}</span>
-    {#if !enabled}<span class="state-chip">Off</span>{/if}
-    {#if type === 'cleanup' && advancedModelUi && parsedDefault}
-      <button
-        class="tile-btn"
-        type="button"
-        onclick={(event) =>
-          openCleanupPromptEditor(
-            parsedDefault.provider,
-            parsedDefault.model,
-            (event.currentTarget as HTMLButtonElement).getBoundingClientRect(),
-          )}
-      >
-        Edit prompt{promptCustomized ? ' •' : ''}
-      </button>
-    {/if}
+    <span class="head-step" aria-hidden="true">{step}</span>
+    <span class="head-text">
+      <span class="head-line">
+        <span class="head-title">{taskLabel(type)}</span>
+        {#if !enabled}<span class="state-chip">Off</span>{/if}
+      </span>
+      <span class="head-role">{role}</span>
+    </span>
   </header>
 
   {#if missingKeysMessage || unavailable.length}
@@ -119,99 +138,111 @@
     </div>
   {/if}
 
-  <div class="tile-row">
-    <span class="row-label">Model</span>
-    <div class="active-row">
-      {#if parsedDefault && activeRow}
-        <span
-          class="active-logo"
-          class:plate-bleed={getProviderPlate(parsedDefault.provider, parsedDefault.model) === 'bleed'}
-        >
-          {@html getProviderLogo(parsedDefault.provider, parsedDefault.model)}
-        </span>
-        <span class="active-text">
-          <span class="active-name" title={activeRow.label}>{activeRow.label}</span>
-          <span class="active-sub">
-            <span class="summary-item provider-chip">{providerDisplayLabel(parsedDefault.provider)}</span>
-            <span class="summary-item model-chip">{parsedDefault.model}</span>
-            {#if fallbackModels.length > 0}
-              <span class="summary-item fallback-chip">
-                {fallbackModels.length} fallback{fallbackModels.length !== 1 ? 's' : ''}
-              </span>
-            {/if}
+  <div class="active-stack">
+      <div class="active-row" bind:this={activeEl}>
+        {#if parsedDefault && activeRow}
+          <span
+            class="active-logo"
+            class:plate-bleed={getProviderPlate(parsedDefault.provider, parsedDefault.model) === 'bleed'}
+          >
+            {@html getProviderLogo(parsedDefault.provider, parsedDefault.model)}
           </span>
-        </span>
-      {:else}
-        <span class="active-logo"></span>
-        <span class="active-text">
-          <span class="active-name active-none">No model selected</span>
-          <span class="active-sub">Pick a setup above or choose a model</span>
-        </span>
-      {/if}
-    </div>
-    <div class="row-action">
-      {#if advancedModelUi}
-        <button class="tile-btn tile-btn-primary" type="button" aria-label="Change model" onclick={(event) => openPicker('select', event)}>
-          Change
-        </button>
-      {/if}
-    </div>
+          <span class="active-text">
+            <span class="active-name" title={activeRow.label}>{activeRow.label}</span>
+            <span class="active-sub">
+              <span class="summary-item provider-chip">{providerDisplayLabel(parsedDefault.provider)}</span>
+              <span class="summary-item model-chip" title={parsedDefault.model}>{parsedDefault.model}</span>
+              {#if fallbackModels.length > 0}
+                <span class="summary-item fallback-chip">
+                  {fallbackModels.length} fallback{fallbackModels.length !== 1 ? 's' : ''}
+                </span>
+              {/if}
+            </span>
+          </span>
+        {:else}
+          <span class="active-logo"></span>
+          <span class="active-text">
+            <span class="active-name active-none">No model selected</span>
+            <span class="active-sub">Pick a setup below or choose a model</span>
+          </span>
+        {/if}
+      </div>
   </div>
 
   {#if advancedModelUi}
-    <div class="tile-row tile-row-top">
-      <span class="row-label">Fallbacks</span>
-      <div class="fallback-block">
-        <ul class="fallback-list">
-          {#each fallbackModels as id, index (id)}
-            {@const parsed = splitModelId(id)}
-            <li
-              class="fallback-chip-item"
-              in:fly={{ y: -6, duration: motionMs(MOTION_MS.base), easing: cubicOut }}
-              out:fly={{ y: -6, duration: motionMs(MOTION_MS.fast), easing: cubicOut }}
-            >
-              <span class="chip-index">{index + 1}</span>
-              {#if parsed}
-                <span
-                  class="chip-logo"
-                  class:plate-bleed={getProviderPlate(parsed.provider, parsed.model) === 'bleed'}
-                >
-                  {@html getProviderLogo(parsed.provider, parsed.model)}
-                </span>
-              {/if}
-              <span class="chip-name">{chipLabel(id)}</span>
-              <span class="chip-controls">
-                <button
-                  class="chip-btn"
-                  type="button"
-                  disabled={index === 0}
-                  aria-label="Move {chipLabel(id)} earlier"
-                  onclick={() => onMoveFallback(type, id, -1)}>↑</button
-                >
-                <button
-                  class="chip-btn"
-                  type="button"
-                  disabled={index === fallbackModels.length - 1}
-                  aria-label="Move {chipLabel(id)} later"
-                  onclick={() => onMoveFallback(type, id, 1)}>↓</button
-                >
-                <button
-                  class="chip-btn chip-remove"
-                  type="button"
-                  aria-label="Remove {chipLabel(id)} from the fallback chain"
-                  onclick={() => onRemoveFallback(type, id)}>×</button
-                >
+    <div class="fallback-block">
+      <span class="row-label">If it fails, try</span>
+      <ul class="fallback-list">
+        {#each fallbackModels as id, index (id)}
+          {@const parsed = splitModelId(id)}
+          <li
+            class="fallback-chip-item"
+            animate:flip={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}
+            in:fly={{ y: motionPx(-6), duration: motionMs(MOTION_MS.base), easing: cubicOut }}
+            out:fade={{ duration: motionMs(MOTION_MS.fast) }}
+          >
+            <span class="chip-index">{index + 1}</span>
+            {#if parsed}
+              <span
+                class="chip-logo"
+                class:plate-bleed={getProviderPlate(parsed.provider, parsed.model) === 'bleed'}
+              >
+                {@html getProviderLogo(parsed.provider, parsed.model)}
               </span>
-            </li>
-          {:else}
-            <li class="fallback-empty">None. This task fails if the model above can’t run.</li>
-          {/each}
-        </ul>
-      </div>
-      <div class="row-action">
-        <button class="tile-btn add-fallback" type="button" aria-label="Add fallback" onclick={(event) => openPicker('fallback', event)}>Add</button>
-      </div>
+            {/if}
+            <span class="chip-name" title={chipLabel(id)}>{chipLabel(id)}</span>
+            <span class="chip-controls">
+              <button
+                class="chip-btn"
+                type="button"
+                disabled={index === 0}
+                aria-label="Move {chipLabel(id)} earlier"
+                onclick={() => onMoveFallback(type, id, -1)}
+                ><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button
+              >
+              <button
+                class="chip-btn"
+                type="button"
+                disabled={index === fallbackModels.length - 1}
+                aria-label="Move {chipLabel(id)} later"
+                onclick={() => onMoveFallback(type, id, 1)}
+                ><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button
+              >
+              <button
+                class="chip-btn chip-remove"
+                type="button"
+                aria-label="Remove {chipLabel(id)} from the fallback chain"
+                onclick={() => onRemoveFallback(type, id)}
+                ><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button
+              >
+            </span>
+          </li>
+        {:else}
+          <li class="fallback-empty">Nothing. This step fails if the model above can’t run.</li>
+        {/each}
+      </ul>
     </div>
+
+    <footer class="tile-actions">
+      <button class="tile-btn tile-btn-primary" type="button" aria-label="Change model" onclick={(event) => openPicker('select', event)}>
+        Change
+      </button>
+      <button class="tile-btn add-fallback" type="button" aria-label="Add fallback" onclick={(event) => openPicker('fallback', event)}>Add fallback</button>
+      {#if type === 'cleanup' && parsedDefault}
+        <button
+          class="tile-btn tile-btn-quiet"
+          type="button"
+          onclick={(event) =>
+            openCleanupPromptEditor(
+              parsedDefault.provider,
+              parsedDefault.model,
+              (event.currentTarget as HTMLButtonElement).getBoundingClientRect(),
+            )}
+        >
+          Edit prompt{promptCustomized ? ' •' : ''}
+        </button>
+      {/if}
+    </footer>
   {/if}
 </section>
 
@@ -239,29 +270,71 @@
 
 <style>
   .task-tile {
-    --tile-label-col: 88px;
-    --tile-action-col: 76px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
     border: 1px solid var(--line);
-    border-radius: var(--r-lg);
+    border-radius: var(--r-lg, 14px);
     background: var(--settings-card-bg, var(--bg-elev));
-    padding: 0 16px;
-    margin-bottom: 12px;
+    padding: 14px 14px 12px;
+    transition: border-color var(--ui-duration-base) var(--ui-ease-out);
   }
 
   .tile-head {
     display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .head-step {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--ink);
+    color: var(--bg-elev);
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    transition: background-color var(--ui-duration-base) var(--ui-ease-out), color var(--ui-duration-base) var(--ui-ease-out);
+  }
+
+  .is-off .head-step {
+    background: var(--paper-3);
+    color: var(--ink-mute);
+  }
+
+  .head-text {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .head-line {
+    display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 44px;
-    border-bottom: 1px solid var(--line);
+    min-height: 20px;
   }
 
   .head-title {
-    flex: 1;
     font-family: var(--sans);
     font-size: 14px;
     font-weight: 600;
+    letter-spacing: -0.01em;
     color: var(--ink);
+  }
+
+  .head-role {
+    font-family: var(--sans);
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--ink-mute);
   }
 
   .state-chip {
@@ -274,71 +347,12 @@
     font-weight: 500;
   }
 
-  .tile-btn {
-    flex: none;
-    min-width: 64px;
-    min-height: 28px;
-    font-family: var(--sans);
-    font-size: 12px;
-    font-weight: 500;
-    padding: 0 12px;
-    border: 1px solid var(--line-strong);
-    border-radius: var(--ui-dropdown-radius);
-    background: transparent;
-    color: var(--ink-soft);
-    cursor: pointer;
-    transition: background-color var(--ui-duration-fast) var(--ui-ease-out), border-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
-    white-space: nowrap;
-  }
+  .tile-warnings { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 
-  .tile-btn:hover {
-    background: var(--control-hover);
-    color: var(--ink);
-  }
-
-  .tile-btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-    box-shadow: var(--ui-focus-ring);
-  }
-
-  .tile-btn-primary {
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
-    color: var(--accent-ink);
-  }
-
-  .tile-row {
-    display: grid;
-    grid-template-columns: var(--tile-label-col) minmax(0, 1fr) var(--tile-action-col);
-    align-items: center;
-    column-gap: 12px;
-    min-height: 56px;
-    padding: 8px 0;
-  }
-
-  .tile-row + .tile-row {
-    border-top: 1px solid var(--line);
-  }
-
-  .tile-row-top {
-    align-items: start;
-  }
-
-  .tile-row-top .row-label,
-  .tile-row-top .row-action {
-    padding-top: 6px;
-  }
-
-  .row-label {
-    font-family: var(--sans);
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--ink-mute);
-  }
-
-  .row-action {
-    display: flex;
-    justify-content: flex-end;
+  .active-stack {
+    margin-top: 14px;
+    border-radius: var(--r-md);
+    background: var(--paper-2);
   }
 
   .active-row {
@@ -346,9 +360,10 @@
     align-items: center;
     gap: 11px;
     min-width: 0;
+    padding: 10px;
   }
 
-  .is-off .active-row {
+  .is-off .active-row > * {
     opacity: 0.55;
   }
 
@@ -357,19 +372,19 @@
     flex-shrink: 0;
     display: grid;
     place-items: center;
-    border-radius: 8px;
+    border-radius: 9px;
     overflow: hidden;
     color: var(--ink-soft);
   }
 
   .active-logo {
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
   }
 
   .active-logo :global(svg) {
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
   }
 
   .chip-logo {
@@ -397,8 +412,9 @@
 
   .active-name {
     font-family: var(--sans);
-    font-size: 13.5px;
-    font-weight: 500;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
     color: var(--ink);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -407,6 +423,7 @@
 
   .active-none {
     color: var(--ink-mute);
+    font-weight: 500;
   }
 
   .active-sub {
@@ -416,6 +433,9 @@
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
+    font-family: var(--sans);
+    font-size: 11.5px;
+    color: var(--ink-mute);
   }
 
   .summary-item {
@@ -448,10 +468,18 @@
     flex: none;
   }
 
-  .tile-warnings { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-
   .fallback-block {
     min-width: 0;
+    margin-top: 14px;
+  }
+
+  .row-label {
+    display: block;
+    margin: 0 0 4px 2px;
+    font-family: var(--sans);
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--ink-mute);
   }
 
   .fallback-list {
@@ -465,17 +493,19 @@
   .fallback-chip-item {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: 8px;
     min-height: 32px;
-    margin-inline: -6px;
-    padding: 0 6px;
+    margin-inline: -4px;
+    padding: 0 2px 0 6px;
     border-radius: var(--r-sm);
     font-family: var(--sans);
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--ink-soft);
+    transition: background-color var(--ui-duration-fast) var(--ui-ease-out);
   }
 
-  .fallback-chip-item:hover {
+  .fallback-chip-item:hover,
+  .fallback-chip-item:focus-within {
     background: var(--control-hover);
   }
 
@@ -497,27 +527,21 @@
 
   .chip-controls {
     display: flex;
-    gap: 1px;
     flex-shrink: 0;
   }
 
   .chip-btn {
-    width: 22px;
-    height: 22px;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
     border: none;
-    border-radius: 5px;
+    border-radius: 6px;
     background: transparent;
     color: var(--ink-faint);
-    font-size: 11px;
-    line-height: 1;
     cursor: pointer;
-    opacity: 0;
-    transition: opacity var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out);
-  }
-
-  .fallback-chip-item:hover .chip-btn,
-  .fallback-chip-item:focus-within .chip-btn {
-    opacity: 1;
+    transition: background-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out), transform var(--ui-duration-fast) var(--ui-ease-out);
   }
 
   .chip-btn:focus-visible {
@@ -526,19 +550,21 @@
   }
 
   .chip-btn:hover:not(:disabled) {
+    background: var(--paper-3);
     color: var(--ink);
   }
 
+  .chip-btn:active:not(:disabled) {
+    transform: scale(0.9);
+  }
+
   .chip-btn:disabled {
-    opacity: 0;
+    opacity: 0.3;
     cursor: default;
   }
 
-  .fallback-chip-item:hover .chip-btn:disabled {
-    opacity: 0.25;
-  }
-
-  .chip-remove:hover {
+  .chip-remove:hover:not(:disabled) {
+    background: var(--danger-bg);
     color: var(--danger);
   }
 
@@ -546,33 +572,75 @@
     min-height: 32px;
     display: flex;
     align-items: center;
+    padding-left: 2px;
     font-family: var(--sans);
     font-size: 12px;
+    line-height: 1.4;
     color: var(--ink-mute);
   }
 
+  .tile-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: auto;
+    padding-top: 12px;
+  }
+
+  .tile-btn {
+    flex: none;
+    min-height: 30px;
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 0 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--ui-dropdown-radius);
+    background: transparent;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: background-color var(--ui-duration-fast) var(--ui-ease-out), border-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out), transform var(--ui-duration-fast) var(--ui-ease-out);
+    white-space: nowrap;
+  }
+
+  .tile-btn:hover {
+    background: var(--control-hover);
+    color: var(--ink);
+  }
+
+  .tile-btn:active {
+    transform: scale(0.97);
+  }
+
+  .tile-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    box-shadow: var(--ui-focus-ring);
+  }
+
+  .tile-btn-primary {
+    border-color: var(--ink);
+    background: var(--ink);
+    color: var(--bg-elev);
+  }
+
+  .tile-btn-primary:hover {
+    background: var(--ink-strong);
+    color: var(--bg-elev);
+  }
+
+  .tile-btn-quiet {
+    margin-left: auto;
+  }
+
   @container settings-panel (max-width: 480px) {
-    .task-tile {
-      --tile-label-col: 1fr;
-      --tile-action-col: auto;
-    }
+    .tile-btn { min-height: 36px; }
+    .tile-btn-quiet { margin-left: 0; }
+    .chip-btn { width: 32px; height: 32px; }
+    .fallback-chip-item { min-height: 40px; }
+  }
 
-    .tile-row {
-      grid-template-columns: minmax(0, 1fr) auto;
-      row-gap: 4px;
-    }
-
-    .row-label {
-      grid-column: 1 / -1;
-    }
-
-    .tile-row-top .row-label,
-    .tile-row-top .row-action {
-      padding-top: 0;
-    }
-
-    .tile-btn {
-      min-height: 36px;
-    }
+  @media (prefers-reduced-motion: reduce) {
+    .task-tile, .head-step, .fallback-chip-item, .chip-btn, .tile-btn { transition: none; }
   }
 </style>

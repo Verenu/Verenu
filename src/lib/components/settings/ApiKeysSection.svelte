@@ -6,10 +6,13 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { slide } from 'svelte/transition';
+  import { fade, fly, scale, slide } from 'svelte/transition';
+  import { flip } from 'svelte/animate';
+  import { cubicOut } from 'svelte/easing';
   import Callout from '../Callout.svelte';
   import { formatIpcError } from '../../errors';
-  import { MOTION_MS, motionMs } from '../../motion';
+  import { listItemCollapse, MOTION_MS, motionMs, motionPx } from '../../motion';
+  import { loadSettingsSnapshot } from '../../settings';
   import { customProviderStore, refreshCustomProviders, type CustomProvider } from '../../customProviders.svelte';
   import { presetForUrl, displayHost } from '../../customProviderPresets';
   import { presetLogoHtml } from '../../customProviderLogos';
@@ -24,6 +27,7 @@
   import ProviderCaps from './ProviderCaps.svelte';
   import ProviderDrawer from './ProviderDrawer.svelte';
   import ProviderTile from './ProviderTile.svelte';
+  import { providerUse, usageLabel, usageLevel, type UsageSettings } from './providerUsage';
 
   const MAX_CUSTOM = 12;
 
@@ -36,10 +40,40 @@
   let notice = $state('');
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
-  const addedBuiltins = $derived(BUILTIN_PROVIDERS.filter(p => keyStatus[p.id]));
+  let usage = $state<UsageSettings>({});
+
+  type Connected = {
+    id: string;
+    name: string;
+    host: string | null;
+    logo: string | null;
+    plate: 'bleed' | 'none';
+    color?: string;
+    transcription: boolean;
+    cleanup: boolean;
+    needsKey: boolean;
+    builtin?: BuiltinProvider;
+    custom?: CustomProvider;
+  };
+
   const customs = $derived(customProviderStore.providers);
-  const count = $derived(addedBuiltins.length + customs.length);
+  const connected = $derived<Connected[]>([
+    ...BUILTIN_PROVIDERS.filter(p => keyStatus[p.id]).map(p => ({
+      id: p.id, name: p.label, host: null, logo: getProviderLogo(p.id), plate: getProviderPlate(p.id),
+      transcription: p.transcription, cleanup: p.cleanup, needsKey: false, builtin: p,
+    })),
+    ...customs.map(p => {
+      const match = presetForUrl(p.base_url, p.protocol);
+      return {
+        id: p.id, name: p.name, host: displayHost(p.base_url), logo: presetLogoHtml(match?.id), plate: 'none' as const, color: match?.color,
+        transcription: p.supports_transcription, cleanup: p.supports_cleanup, needsKey: p.requires_key && !keyStatus[p.id], custom: p,
+      };
+    }),
+  ]);
+  const available = $derived(BUILTIN_PROVIDERS.filter(p => !keyStatus[p.id]));
+  const count = $derived(connected.length);
   const atLimit = $derived(customs.length >= MAX_CUSTOM);
+  const allowCustom = $derived(!isAndroid && !atLimit);
 
   function flash(message: string) {
     notice = message;
@@ -66,9 +100,28 @@
     return keyStatus;
   }
 
-  async function refresh() {
-    await Promise.all([loadKeyStatus(), isAndroid ? Promise.resolve() : refreshCustomProviders()]);
+  /** Which provider runs which task. The list still works when this read fails. */
+  async function loadUsage() {
+    try { usage = await loadSettingsSnapshot(); }
+    catch (err) { console.warn('provider usage unavailable:', err); }
   }
+
+  async function refresh() {
+    await Promise.all([loadKeyStatus(), isAndroid ? Promise.resolve() : refreshCustomProviders(), loadUsage()]);
+  }
+
+  function edit(item: Connected) {
+    if (item.builtin) drawer?.edit({ kind: 'builtin', id: item.builtin.id });
+    else if (item.custom) drawer?.edit({ kind: 'custom', provider: item.custom });
+  }
+
+  function remove(item: Connected) {
+    if (item.builtin) return removeBuiltin(item.builtin);
+    if (item.custom) return removeCustom(item.custom);
+  }
+
+  const capsText = (p: { transcription: boolean; cleanup: boolean }) =>
+    p.transcription && p.cleanup ? 'Transcription and clean-up' : p.transcription ? 'Transcription only' : 'Clean-up only';
 
   async function saveBuiltinKey(provider: BuiltinProvider['id'], raw: string): Promise<{ error?: string; notice?: string }> {
     const key = raw.trim();
@@ -118,7 +171,7 @@
       }
       await invoke('delete_api_key', { provider: provider.id });
       if (isAndroid) await invoke('android_keystore_save', { provider: provider.id, key: '' });
-      await loadKeyStatus();
+      await Promise.all([loadKeyStatus(), loadUsage()]);
       confirming = null;
       window.dispatchEvent(new CustomEvent('verenu:api-key-deleted', { detail: { provider: provider.id } }));
       flash('Provider removed.');
@@ -148,82 +201,133 @@
 
 {#snippet trash()}<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8h5.8l.6-8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>{/snippet}
 {#snippet pencil()}<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10.5 3l2.5 2.5L6 12.5 3 13l.5-3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>{/snippet}
+{#snippet plus()}<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>{/snippet}
 
 <div class="page-head">
   <h2 class="settings-h page-title">Providers</h2>
   <GatedButton class="btn-primary btn-compact add" data-setting-target="custom-providers" onclick={() => drawer?.openPicker()}>
-    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>
+    {@render plus()}
     Add provider
   </GatedButton>
 </div>
-<p class="panel-note">{isAndroid ? 'Keys are encrypted in the Android Keystore.' : 'Keys stay on this device and are never shown again.'}</p>
+<p class="panel-note">A provider is an AI service that runs your models. {isAndroid ? 'Keys are encrypted in the Android Keystore.' : 'Keys stay on this device and are never shown again.'}</p>
 <ConsentHint banner feature="Adding or changing cloud providers" thenEnable={() => drawer?.openPicker()} />
 
-{#if count}
-  <ul class="list" aria-label="Your providers">
-    {#each addedBuiltins as item (item.id)}
-      <li class="row" data-setting-target={`api-key-${item.id}`}>
-        <ProviderTile name={item.label} logo={getProviderLogo(item.id)} plate={getProviderPlate(item.id)} />
-        <div class="info"><span class="name">{item.label}</span></div>
-        <ProviderCaps transcription={item.transcription} cleanup={item.cleanup} />
-        <div class="actions">
-          <GatedButton class="icon-btn" aria-label={`Replace ${item.label} key`} title="Replace key" disabled={busy} onclick={() => drawer?.edit({ kind: 'builtin', id: item.id })}>{@render pencil()}</GatedButton>
-          <button type="button" class="icon-btn danger" aria-label={`Remove ${item.label}`} title="Remove" disabled={busy} onclick={() => (confirming = item.id)}>{@render trash()}</button>
-        </div>
-        {#if confirming === item.id}
-          <div class="confirm" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
-            <span>Remove the saved {item.label} key?</span>
-            <button class="btn-danger btn-compact" type="button" disabled={busy} onclick={() => removeBuiltin(item)}>Remove</button>
-            <button class="btn-ghost btn-compact" type="button" disabled={busy} onclick={() => (confirming = null)}>Cancel</button>
-          </div>
-        {/if}
-      </li>
-    {/each}
-    {#each customs as provider (provider.id)}
-      {@const match = presetForUrl(provider.base_url, provider.protocol)}
-      <li class="row" data-setting-target={`api-key-${provider.id}`}>
-        <ProviderTile name={provider.name} logo={presetLogoHtml(match?.id)} color={match?.color} />
-        <div class="info">
-          <span class="name">{provider.name}
-            {#if provider.requires_key && !keyStatus[provider.id]}<span class="pill warn">Needs key</span>{/if}
-          </span>
-          <span class="sub">{displayHost(provider.base_url)}</span>
-        </div>
-        <ProviderCaps transcription={provider.supports_transcription} cleanup={provider.supports_cleanup} />
-        <div class="actions">
-          <GatedButton class="icon-btn" aria-label={`Edit ${provider.name}`} title="Edit" disabled={busy} onclick={() => drawer?.edit({ kind: 'custom', provider })}>{@render pencil()}</GatedButton>
-          <button type="button" class="icon-btn danger" aria-label={`Remove ${provider.name}`} title="Remove" disabled={busy} onclick={() => (confirming = provider.id)}>{@render trash()}</button>
-        </div>
-        {#if confirming === provider.id}
-          <div class="confirm" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>
-            <span>Remove {provider.name} and its saved key?</span>
-            <button class="btn-danger btn-compact" type="button" disabled={busy} onclick={() => removeCustom(provider)}>Remove provider</button>
-            <button class="btn-ghost btn-compact" type="button" disabled={busy} onclick={() => (confirming = null)}>Cancel</button>
-          </div>
-        {/if}
-      </li>
-    {/each}
-  </ul>
-{:else if loaded}
-  <div class="empty">
-    <span class="empty-icon" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M18 6l-2.5 2.5M8.5 15.5L6 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-    </span>
-    <p class="empty-title">No providers yet</p>
-    <GatedButton class="btn-primary btn-compact" onclick={() => drawer?.openPicker()}>Choose a provider</GatedButton>
+<div class="providers" class:loading={!loaded}>
+  <div class="group-head">
+    <h3 class="settings-subhead">Connected</h3>
+    {#if count}<span class="group-meta">{count} {count === 1 ? 'provider' : 'providers'}</span>{/if}
   </div>
-{/if}
+  {#if count}
+    <ul class="list" aria-label="Your providers">
+      {#each connected as item (item.id)}
+        {@const use = providerUse(item.id, usage)}
+        {@const level = item.needsKey ? 'idle' : usageLevel(use)}
+        <li
+          class="row"
+          data-setting-target={`api-key-${item.id}`}
+          animate:flip={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}
+          in:fly={{ y: motionPx(-8), duration: motionMs(MOTION_MS.panel), easing: cubicOut }}
+          out:listItemCollapse={{ duration: MOTION_MS.base }}
+        >
+          <div class="row-line">
+            <ProviderTile name={item.name} logo={item.logo} plate={item.plate} color={item.color} />
+            <div class="info">
+              <span class="name">{item.name}</span>
+              <span class="sub">
+                {#if item.needsKey}
+                  <span class="pill warn">Needs key</span>
+                {:else}
+                  <span class="use use-{level}"><i aria-hidden="true"></i><span>{usageLabel(use)}</span></span>
+                {/if}
+                {#if item.host}<span class="host">{item.host}</span>{/if}
+              </span>
+            </div>
+            <div class="caps"><ProviderCaps transcription={item.transcription} cleanup={item.cleanup} /></div>
+            <div class="actions">
+              <GatedButton class="icon-btn" aria-label={item.builtin ? `Replace ${item.name} key` : `Edit ${item.name}`} title={item.builtin ? 'Replace key' : 'Edit'} disabled={busy} onclick={() => edit(item)}>{@render pencil()}</GatedButton>
+              <button type="button" class="icon-btn danger" aria-label={`Remove ${item.name}`} title="Remove" aria-expanded={confirming === item.id} disabled={busy} onclick={() => (confirming = confirming === item.id ? null : item.id)}>{@render trash()}</button>
+            </div>
+          </div>
+          {#if confirming === item.id}
+            <div class="confirm" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
+              <span>
+                {item.builtin ? `Remove the saved ${item.name} key?` : `Remove ${item.name} and its saved key?`}
+                {#if level !== 'idle'}Its models leave your {level === 'main' ? 'selection' : 'backups'}.{/if}
+              </span>
+              <button class="btn-danger btn-compact" type="button" disabled={busy} onclick={() => remove(item)}>{item.builtin ? 'Remove' : 'Remove provider'}</button>
+              <button class="btn-ghost btn-compact" type="button" disabled={busy} onclick={() => (confirming = null)}>Cancel</button>
+            </div>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  {:else if loaded}
+    <div class="empty" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
+      <p class="empty-title">Nothing connected yet</p>
+      <p class="empty-copy">Cloud models need a provider. On-device models work without one.</p>
+      {#if !available.length}<GatedButton class="btn-primary btn-compact" onclick={() => drawer?.openPicker()}>Choose a provider</GatedButton>{/if}
+    </div>
+  {/if}
 
-{#if error}<div class="error"><Callout severity="error" compact>{error}</Callout></div>{/if}
-{#if notice}<p class="notice" role="status" transition:slide={{ duration: motionMs(MOTION_MS.fast) }}>{notice}</p>{/if}
+  {#if error}<div class="error"><Callout severity="error" compact>{error}</Callout></div>{/if}
+  {#if notice}
+    <p class="notice" role="status" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="m3.5 8.5 3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>{notice}</span>
+    </p>
+  {/if}
 
-{#if loaded}<p class="fineprint">Logos belong to their owners. Verenu is not affiliated with these companies.</p>{/if}
+  {#if loaded && (available.length || allowCustom)}
+    <div class="group-head">
+      <h3 class="settings-subhead">Available</h3>
+      <span class="group-meta">Add a key to connect</span>
+    </div>
+    <div class="avail" role="group" aria-label="Available providers">
+      {#each available as item (item.id)}
+        <div
+          class="avail-cell"
+          animate:flip={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}
+          in:fade={{ duration: motionMs(MOTION_MS.base) }}
+          out:scale={{ start: 0.96, duration: motionMs(MOTION_MS.fast), easing: cubicOut }}
+        >
+          <GatedButton class="avail-tile" aria-label={`Add ${item.label}`} onclick={() => drawer?.edit({ kind: 'builtin', id: item.id })}>
+            <ProviderTile name={item.label} logo={getProviderLogo(item.id)} plate={getProviderPlate(item.id)} />
+            <span class="avail-text">
+              <span class="avail-name">{item.label}</span>
+              <span class="avail-caps">{capsText(item)}</span>
+            </span>
+            <span class="avail-plus" aria-hidden="true">{@render plus()}</span>
+          </GatedButton>
+        </div>
+      {/each}
+      {#if allowCustom}
+        <div class="avail-cell wide">
+          <GatedButton class="avail-tile more" aria-label="Browse other providers" onclick={() => drawer?.openPicker()}>
+            <span class="more-mark" aria-hidden="true">
+              <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="3.5" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor"/></svg>
+            </span>
+            <span class="avail-text">
+              <span class="avail-name">Other providers</span>
+              <span class="avail-caps">Ollama, LM Studio, Anthropic, or your own endpoint</span>
+            </span>
+            <span class="avail-plus" aria-hidden="true">
+              <svg viewBox="0 0 16 16" width="12" height="12"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+          </GatedButton>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  {#if loaded}<p class="fineprint">Logos belong to their owners. Verenu is not affiliated with these companies.</p>{/if}
+</div>
 
 <ProviderDrawer
   bind:this={drawer}
   builtins={BUILTIN_PROVIDERS}
   {keyStatus}
-  allowCustom={!isAndroid && !atLimit}
+  {allowCustom}
   {saveBuiltinKey}
   onchange={refresh}
   onnotice={flash}
@@ -234,31 +338,85 @@
   .page-head h2.page-title { margin: 0; }
   :global(.add) { display: inline-flex; align-items: center; gap: 6px; flex: none; }
 
-  .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  .row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-lg, 14px); background: var(--settings-card-bg, var(--bg-elev)); transition: border-color 140ms ease, background 140ms ease; }
-  .row:hover { border-color: var(--line-strong); }
-  .info { flex: 1; min-width: 0; display: grid; gap: 2px; }
-  .name { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; color: var(--ink); }
-  .sub { font-size: 11.5px; color: var(--ink-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pill { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .providers { transition: opacity var(--ui-duration-base) var(--ui-ease-out); }
+  .providers.loading { opacity: 0; }
+
+  .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 28px 0 8px; }
+  .group-head:first-child { margin-top: 4px; }
+  .group-head :global(.settings-subhead) { margin: 0; }
+  .group-meta { font-size: 11.5px; color: var(--ink-mute); }
+
+  .list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-lg, 14px); background: var(--settings-card-bg, var(--bg-elev)); overflow: hidden; }
+  .row { border-top: 1px solid var(--line); }
+  .row:first-child { border-top: 0; }
+  .row-line { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: 'tile info caps actions'; align-items: center; column-gap: 12px; min-height: 64px; padding: 10px 10px 10px 14px; }
+  .row-line > :global(.tile) { grid-area: tile; }
+  .info { grid-area: info; min-width: 0; display: grid; gap: 3px; }
+  .caps { grid-area: caps; display: flex; }
+  .actions { grid-area: actions; display: flex; gap: 2px; }
+  .name { font-size: 13.5px; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11.5px; color: var(--ink-mute); }
+  .use { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+  .use span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .use i { flex: none; width: 7px; height: 7px; box-sizing: border-box; border-radius: 50%; border: 1.5px solid var(--ink-faint); transition: background-color var(--ui-duration-base) var(--ui-ease-out), border-color var(--ui-duration-base) var(--ui-ease-out); }
+  .use-main { color: var(--ink-soft); }
+  .use-main i { background: var(--success); border-color: var(--success); }
+  .use-backup i { border-color: var(--success); }
+  .host { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+  .host::before { content: ''; display: inline-block; width: 1px; height: 9px; margin-right: 8px; background: var(--line-strong); }
+  .pill { flex: none; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
   .pill.warn { background: var(--warning-bg); color: var(--warning); }
-  .actions { display: flex; gap: 2px; flex: none; }
-  :global(.icon-btn) { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--ink-mute); cursor: pointer; transition: background 120ms ease, color 120ms ease, transform 120ms ease; }
+
+  :global(.icon-btn) { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--ink-mute); cursor: pointer; transition: background-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out), transform var(--ui-duration-fast) var(--ui-ease-out); }
   :global(.icon-btn):hover:not(:disabled) { background: var(--control-hover); color: var(--ink); }
-  :global(.icon-btn).danger:hover:not(:disabled) { background: var(--danger-bg); color: var(--danger); }
+  :global(.icon-btn).danger:hover:not(:disabled), :global(.icon-btn).danger[aria-expanded='true'] { background: var(--danger-bg); color: var(--danger); }
   :global(.icon-btn):active:not(:disabled) { transform: scale(0.92); }
   :global(.icon-btn):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   :global(.icon-btn):disabled { opacity: 0.4; cursor: default; }
-  .confirm { width: 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--ink-soft); }
+
+  .confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 14px 12px 62px; font-size: 12px; line-height: 1.45; color: var(--ink-soft); }
   .confirm span { flex: 1 1 200px; }
 
-  .empty { display: grid; justify-items: center; gap: 10px; padding: 36px 16px; border: 1px dashed var(--line); border-radius: var(--r-lg, 14px); text-align: center; }
-  .empty-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 14px; background: var(--paper-2); color: var(--ink-mute); }
+  .empty { display: grid; justify-items: start; gap: 4px; padding: 18px 16px; border: 1px dashed var(--line-strong); border-radius: var(--r-lg, 14px); }
   .empty-title { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--ink); }
+  .empty-copy { margin: 0; font-size: 12px; line-height: 1.45; color: var(--ink-mute); }
+  .empty :global(.btn-primary) { margin-top: 8px; }
 
   .error { margin: 12px 0 0; }
-  .notice { margin: 12px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 12px; background: var(--success-bg); color: var(--ink); }
+  .notice { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; padding: 9px 12px; border: 1px solid var(--success-line); border-radius: 10px; font-size: 12px; line-height: 1.4; background: var(--success-bg); color: var(--ink); }
+  .notice svg { flex: none; color: var(--success); }
+
+  .avail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .avail-cell { min-width: 0; }
+  .avail-cell.wide { grid-column: 1 / -1; }
+  :global(.avail-tile) { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 60px; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-lg, 14px); background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; transition: background-color var(--ui-duration-fast) var(--ui-ease-out), border-color var(--ui-duration-fast) var(--ui-ease-out), transform var(--ui-duration-fast) var(--ui-ease-out); }
+  :global(.avail-tile):hover { background: var(--settings-card-bg, var(--bg-elev)); border-color: var(--line-strong); }
+  :global(.avail-tile):active { transform: scale(0.985); }
+  :global(.avail-tile.more) { border-style: dashed; border-color: var(--line-strong); }
+  .avail-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+  .avail-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .avail-caps { font-size: 11.5px; line-height: 1.35; color: var(--ink-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .avail-plus { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: var(--ink-faint); transition: background-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out), transform var(--ui-duration-base) var(--ui-ease-out); }
+  :global(.avail-tile):hover .avail-plus { background: var(--ink); color: var(--bg-elev); transform: rotate(90deg); }
+  :global(.avail-tile.more):hover .avail-plus { transform: translateX(2px); }
+  .more-mark { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--paper-2); color: var(--ink-mute); }
+
   .fineprint { margin: 18px 0 0; font-size: 11px; color: var(--ink-faint); }
 
-  @media (prefers-reduced-motion: reduce) { .icon-btn, .row { transition: none; } }
+  @container settings-panel (max-width: 520px) {
+    .row-line { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: 'tile info actions' '. caps caps'; row-gap: 8px; padding-block: 12px; }
+    .confirm { padding-left: 14px; }
+    .sub { flex-wrap: wrap; row-gap: 2px; }
+    .use { align-items: baseline; }
+    .use span { white-space: normal; }
+    .host { max-width: 100%; }
+    .host::before { display: none; }
+    .avail { grid-template-columns: minmax(0, 1fr); }
+    :global(.icon-btn) { width: 40px; height: 40px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.icon-btn), :global(.avail-tile), .avail-plus, .use i, .providers { transition: none; }
+    :global(.avail-tile):hover .avail-plus { transform: none; }
+  }
 </style>
