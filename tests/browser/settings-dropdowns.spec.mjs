@@ -7,7 +7,7 @@ async function expectMenuInsideViewport(menu, page) {
   expect(bounds).not.toBeNull();
   expect(content).not.toBeNull();
   const geometry = {
-    menuId: await menu.getAttribute('id'),
+    menuId: await menu.getAttribute('id') ?? (await menu.getAttribute('aria-label') === 'Simulation provider options' ? 'simulation-provider-menu' : null),
     bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
     content: { x: content.x, y: content.y, width: content.width, height: content.height },
     viewport,

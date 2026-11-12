@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
+import { sessionIdentityMismatch, sessionStartupDiagnostics, startupLogDiagnostics } from '../../scripts/verification/session.mjs';
 
 test('backend identity comparison names stale source fields without exposing worktree paths', () => {
   const runner = { commit: 'runner-commit', fingerprint: 'a'.repeat(64), worktree: 'D:\\a\\Verenu\\Verenu' };
@@ -61,4 +61,11 @@ test('startup diagnostics ignore manifests owned by another process', () => {
     status: 'stopped',
     childFailure: { component: 'tauri', kind: 'unexpected-exit', exitCode: 1 },
   }, 42), { manifestState: 'missing' });
+});
+
+test('startup log diagnostics expose only fixed categories and Rust error codes', () => {
+  const result = startupLogDiagnostics('private path and token\nerror[E0425]: secret text\nerror: could not compile private package\nNo space left on device');
+  assert.deepEqual(result, { rustErrorCodes: ['E0425'], categories: ['disk-full', 'cargo-compile-error'] });
+  assert.equal(JSON.stringify(result).includes('private'), false);
+  assert.equal(JSON.stringify(result).includes('secret'), false);
 });

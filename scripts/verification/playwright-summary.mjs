@@ -3,7 +3,7 @@ import path from 'node:path';
 import { root } from './identity.mjs';
 import { safeBrowserSourceFile, safeFailureAttempts } from './playwright-diagnostics.mjs';
 
-const menuIds = new Set(['history-retention-menu', 'transcription-mode-menu']);
+const menuIds = new Set(['history-retention-menu', 'transcription-mode-menu', 'simulation-provider-menu']);
 const geometryChecks = new Set([
   'left-edge', 'right-viewport', 'top-panel', 'bottom-panel', 'left-panel', 'right-panel',
 ]);

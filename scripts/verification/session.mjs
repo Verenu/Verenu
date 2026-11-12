@@ -33,6 +33,20 @@ export function sessionStartupDiagnostics(manifest, launcherPid, launcher = {}) 
   return result;
 }
 
+export function startupLogDiagnostics(log) {
+  const plain = log.replace(/\u001b\[[0-9;]*m/g, '');
+  const rustErrorCodes = [...new Set([...plain.matchAll(/\berror\[(E\d{4})\]/g)].map(match => match[1]))].slice(0, 20);
+  const patterns = [
+    ['disk-full', /no space left on device|there is not enough space on the disk/i],
+    ['permission-denied', /permission denied|access is denied/i],
+    ['linker-error', /linking with .+ failed|linker .+ not found/i],
+    ['custom-build-error', /failed to run custom build command/i],
+    ['dependency-download-error', /failed to download|failed to fetch/i],
+    ['cargo-compile-error', /could not compile/i],
+  ];
+  return { rustErrorCodes, categories: patterns.filter(([, pattern]) => pattern.test(plain)).map(([category]) => category) };
+}
+
 export function sessionIdentityMismatch(expected, actual, sourceChanges = undefined) {
   const fields = [];
   if (expected?.fingerprint !== actual?.fingerprint) fields.push('fingerprint');
@@ -56,7 +70,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   const sourceAtStart = sourceSnapshot();
   const sessionDirectory = path.join(os.homedir(), '.local', 'state', 'verenu', 'dev-sessions', id);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const log = await fs.open(path.join(directory, `startup-${Date.now()}.log`), 'w', 0o600);
+  const logPath = path.join(directory, `startup-${Date.now()}.log`);
+  const log = await fs.open(logPath, 'w', 0o600);
   let child;
   try {
     assertRunning();
@@ -123,7 +138,14 @@ export async function startOwnedSession({ id, fixtures, native = false, director
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error('Owned session startup timed out');
-  } catch (error) { await stop(); throw error; }
+  } catch (error) {
+    await stop();
+    if (error.startupFailure) {
+      const output = await fs.readFile(logPath, 'utf8').catch(() => '');
+      error.startupFailure.logDiagnostics = startupLogDiagnostics(output);
+    }
+    throw error;
+  }
 }
 export async function invokeSession(session, command, args = {}) {
   const response = await fetch(new URL('/__verenu_dev/invoke', session.access.localAccessUrl), { method: 'POST', headers: { Authorization: `Bearer ${session.access.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args }), signal: AbortSignal.timeout(30_000) });
