@@ -335,6 +335,7 @@ enum ProviderHttpError {
         status: reqwest::StatusCode,
         request_id: String,
         preview: String,
+        openrouter_provider_restriction: bool,
     },
 }
 
@@ -353,6 +354,7 @@ impl ProviderHttpError {
                 status,
                 request_id,
                 preview,
+                ..
             } => {
                 let error = anyhow::Error::new(source).context(format!(
                     "{context} status={status} request_id={request_id} body_preview={preview}"
@@ -426,6 +428,7 @@ async fn ensure_provider_success(
                 status,
                 request_id,
                 preview,
+                openrouter_provider_restriction: false,
             });
         }
     }
@@ -433,15 +436,34 @@ async fn ensure_provider_success(
     if let Err(source) = resp.error_for_status_ref() {
         let body = resp.text().await.unwrap_or_default();
         let preview = sanitize_error_body_preview(&body);
+        let openrouter_provider_restriction = provider == "OpenRouter"
+            && status.as_u16() == 404
+            && is_openrouter_provider_restriction_body(&body);
         return Err(ProviderHttpError::NonSuccess {
             source,
             status,
             request_id,
             preview,
+            openrouter_provider_restriction,
         });
     }
 
     Ok(resp)
+}
+
+fn is_openrouter_provider_restriction_body(body: &str) -> bool {
+    const PREFIX: &str = "No allowed providers are available for the selected model.";
+    if body.trim_start().starts_with(PREFIX) {
+        return true;
+    }
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .is_some_and(|value| {
+            value
+                .pointer("/error/message")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| message.starts_with(PREFIX))
+        })
 }
 
 pub fn classify_unauthorized_body(body: &str) -> AuthErrorCategory {
@@ -790,6 +812,7 @@ mod tests {
                     status,
                     request_id,
                     preview,
+                    openrouter_provider_restriction,
                 } = error
                 else {
                     panic!("expected HTTP error");
@@ -797,11 +820,13 @@ mod tests {
                 assert_eq!(status.as_u16(), 500);
                 assert_eq!(request_id, "fixture");
                 assert_eq!(preview, "Invalid API Key");
+                assert!(!openrouter_provider_restriction);
                 let error = super::ProviderHttpError::NonSuccess {
                     source,
                     status,
                     request_id,
                     preview,
+                    openrouter_provider_restriction,
                 }
                 .into_error(None, "", context);
                 assert_eq!(error.to_string(), format!("{context} status=500 Internal Server Error request_id=fixture body_preview=Invalid API Key"));
