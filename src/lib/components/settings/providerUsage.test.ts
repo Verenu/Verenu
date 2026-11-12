@@ -43,6 +43,9 @@ describe('providerUse', () => {
   it('falls back to the older model and provider fields the way the backend does', () => {
     expect(usageLabel(providerUse('groq', {}))).toBe('Runs transcription and clean-up');
     const legacy = { transcription_model: 'openai/whisper-1', cleanup_model: 'gpt-5-mini', cleanup_provider: 'openai' };
+    // An unset older model is a Groq model in the backend, whatever provider is saved beside it.
+    expect(providerUse('openai', { transcription_provider: 'openai' }).transcription).toBeNull();
+    expect(providerUse('openai', { transcription_default_model: ' OpenAI/whisper-1' }).transcription).toBe('main');
     expect(providerUse('openai', legacy)).toEqual({ transcription: 'main', cleanup: 'main' });
     expect(usageLabel(providerUse('groq', legacy))).toBe('Not in use');
   });
@@ -52,5 +55,17 @@ describe('providerUse', () => {
     expect(providerUse('openai', dual).transcription).toBe('main');
     expect(providerUse('xai', dual).transcription).toBe('backup');
     expect(providerUse('openai', { ...dual, dual_transcription_enabled: false }).transcription).toBe('backup');
+  });
+
+  it('treats every cloud provider as running when an automatic mode orders models by speed', () => {
+    const auto = { ...settings, transcription_fallback_models: ['openai/gpt-4o-mini-transcribe', 'local/parakeet-v3', 'xai/grok-stt'], model_selection_mode: 'balanced' };
+    expect(providerUse('openai', auto).transcription).toBe('main');
+    expect(providerUse('xai', auto).transcription).toBe('main');
+    expect(providerUse('local', auto).transcription).toBe('backup');
+    // Quality pins its first two speech models and orders the rest.
+    const quality = { ...auto, model_selection_mode: 'quality' };
+    expect(providerUse('openai', quality).transcription).toBe('main');
+    expect(providerUse('xai', quality).transcription).toBe('backup');
+    expect(providerUse('custom:12345678-1234-1234-8234-1234567890ab', quality).cleanup).toBe('main');
   });
 });
