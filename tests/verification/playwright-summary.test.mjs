@@ -115,6 +115,18 @@ test('failed dropdown cases expose only allowlisted geometry and assertion lines
   assert.equal(JSON.stringify(summary).includes('do-not-share'), false);
 });
 
+test('simulation provider geometry is retained without private extra fields', () => {
+  const report = { suites: [{ file: 'tests/browser/settings-dropdowns.spec.mjs', specs: [
+    spec({ title: 'simulation provider', status: 'unexpected', results: [{ status: 'failed', errors: [{
+      message: 'MENU_GEOMETRY:{"menuId":"simulation-provider-menu","check":"bottom-panel","bounds":{"x":1,"y":2,"width":3,"height":4,"privateText":"secret"},"content":{"x":5,"y":6,"width":7,"height":8},"viewport":{"width":390,"height":844},"privateText":"secret"}\n' + 'secret'.repeat(500),
+    }] }] }),
+  ] }] };
+  const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+  assert.equal(summary.tests[0].menuGeometry.menuId, 'simulation-provider-menu');
+  assert.equal(summary.tests[0].menuGeometry.check, 'bottom-panel');
+  assert.equal(JSON.stringify(summary).includes('secret'), false);
+});
+
 test('successful test results do not erase a failed browser process', () => {
   const summary = summarizePlaywrightReport({ suites: [{ specs: [spec()] }] }, {
     processStatus: 'failed', exitCode: 1, processReason: 'Process ended with SIGABRT', projectRoot: '/repo',
