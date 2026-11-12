@@ -39,13 +39,15 @@ const onDevice = (id: string) => id === 'local' || id === 'apple-intelligence';
 
 /**
  * How many leading cloud providers of a chain can run first. A manual selection runs the main model, plus the first
- * fallback when two speech models are compared. The Quality setup pins its first two speech models. Every other
- * automatic mode reorders cloud models by measured speed, so any of them can run first.
+ * fallback when two speech models are compared, and so does the Quality setup for speech. Every other automatic
+ * mode reorders cloud models by measured speed, so any of them can run first.
  */
 function running(task: 'transcription' | 'cleanup', settings: UsageSettings, cloud: number): number {
   const mode = settings.model_selection_mode ?? 'manual';
-  if (mode === 'manual') return task === 'transcription' && settings.dual_transcription_enabled === true ? 2 : 1;
-  return task === 'transcription' && mode === 'quality' ? 2 : cloud;
+  const compared = task === 'transcription' && settings.dual_transcription_enabled === true ? 2 : 1;
+  // Quality keeps its first two speech models in their saved order; the second runs only when two are compared.
+  if (mode === 'manual' || (task === 'transcription' && mode === 'quality')) return compared;
+  return cloud;
 }
 
 function taskUse(target: string, task: 'transcription' | 'cleanup', settings: UsageSettings): TaskUse {

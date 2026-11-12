@@ -62,9 +62,10 @@ describe('providerUse', () => {
     expect(providerUse('openai', auto).transcription).toBe('main');
     expect(providerUse('xai', auto).transcription).toBe('main');
     expect(providerUse('local', auto).transcription).toBe('backup');
-    // Quality pins its first two speech models and orders the rest.
-    const quality = { ...auto, model_selection_mode: 'quality' };
+    // Quality keeps its first two speech models in order; the second runs only when two are compared.
+    const quality = { ...auto, model_selection_mode: 'quality', dual_transcription_enabled: true };
     expect(providerUse('openai', quality).transcription).toBe('main');
+    expect(providerUse('openai', { ...quality, dual_transcription_enabled: false }).transcription).toBe('backup');
     expect(providerUse('xai', quality).transcription).toBe('backup');
     expect(providerUse('custom:12345678-1234-1234-8234-1234567890ab', quality).cleanup).toBe('main');
   });
