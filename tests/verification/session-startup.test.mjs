@@ -64,8 +64,8 @@ test('startup diagnostics ignore manifests owned by another process', () => {
 });
 
 test('startup log diagnostics expose only fixed categories and Rust error codes', () => {
-  const result = startupLogDiagnostics('private path and token\nerror[E0425]: secret text\nerror: could not compile private package\nNo space left on device');
-  assert.deepEqual(result, { rustErrorCodes: ['E0425'], categories: ['disk-full', 'cargo-compile-error'] });
+  const result = startupLogDiagnostics('private path and token\nerror[E0425]: secret text\nerror: could not compile private package\nNo space left on device\nfailed to run custom build command for `verenu v1.0.0`\nfailed to run custom build command for `private v1.0.0`', '[[package]]\nname = "verenu"');
+  assert.deepEqual(result, { rustErrorCodes: ['E0425'], buildPackages: ['verenu'], categories: ['disk-full', 'custom-build-error', 'cargo-compile-error'] });
   assert.equal(JSON.stringify(result).includes('private'), false);
   assert.equal(JSON.stringify(result).includes('secret'), false);
 });

@@ -33,18 +33,23 @@ export function sessionStartupDiagnostics(manifest, launcherPid, launcher = {}) 
   return result;
 }
 
-export function startupLogDiagnostics(log) {
+export function startupLogDiagnostics(log, cargoLock = '') {
   const plain = log.replace(/\u001b\[[0-9;]*m/g, '');
   const rustErrorCodes = [...new Set([...plain.matchAll(/\berror\[(E\d{4})\]/g)].map(match => match[1]))].slice(0, 20);
+  const knownPackages = new Set([...cargoLock.matchAll(/^name = "([a-zA-Z0-9_-]+)"$/gm)].map(match => match[1]));
+  const buildPackages = [...new Set([...plain.matchAll(/failed to run custom build command for [`']([a-zA-Z0-9_-]+) v\d/g)]
+    .map(match => match[1]).filter(name => knownPackages.has(name)))].slice(0, 20);
   const patterns = [
     ['disk-full', /no space left on device|there is not enough space on the disk/i],
     ['permission-denied', /permission denied|access is denied/i],
     ['linker-error', /linking with .+ failed|linker .+ not found/i],
     ['custom-build-error', /failed to run custom build command/i],
+    ['missing-file', /no such file or directory|the system cannot find the file specified/i],
+    ['build-script-panic', /thread ['"]main['"] panicked/i],
     ['dependency-download-error', /failed to download|failed to fetch/i],
     ['cargo-compile-error', /could not compile/i],
   ];
-  return { rustErrorCodes, categories: patterns.filter(([, pattern]) => pattern.test(plain)).map(([category]) => category) };
+  return { rustErrorCodes, buildPackages, categories: patterns.filter(([, pattern]) => pattern.test(plain)).map(([category]) => category) };
 }
 
 export function sessionIdentityMismatch(expected, actual, sourceChanges = undefined) {
@@ -142,7 +147,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
     await stop();
     if (error.startupFailure) {
       const output = await fs.readFile(logPath, 'utf8').catch(() => '');
-      error.startupFailure.logDiagnostics = startupLogDiagnostics(output);
+      const cargoLock = await fs.readFile(path.join(root, 'src-tauri', 'Cargo.lock'), 'utf8').catch(() => '');
+      error.startupFailure.logDiagnostics = startupLogDiagnostics(output, cargoLock);
     }
     throw error;
   }
