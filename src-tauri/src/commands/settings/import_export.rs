@@ -1728,7 +1728,10 @@ mod tests {
             )
             .unwrap());
         assert!(!exportable_setting_keys().any(|key| key == store::T3_CONNECTION));
+        assert!(!exportable_setting_keys().any(|key| key == store::T3_DICTIONARY_OWNERSHIP));
+        assert!(!exportable_setting_keys().any(|key| key == store::T3_CREDENTIAL_CLEANUP));
         assert!(!exportable_setting_keys().any(|key| key == store::KEY_T3_INTEGRATION));
+        assert!(!exportable_setting_keys().any(|key| key == store::KEY_T3_INTEGRATION_ALTERNATE));
     }
 
     #[test]

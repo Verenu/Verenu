@@ -108,7 +108,7 @@ export async function connectT3(pairingLink: string): Promise<boolean> {
 }
 
 export function startT3Refresh(): () => void {
-  return startPolling(() => updateT3('pull_t3_skills', { force: false }, { background: true }), 60_000, { hiddenIntervalMs: 15 * 60_000 }).stop;
+  return startPolling(() => updateT3('pull_t3_skills', { force: false }, { background: true }), 60_000, { hiddenIntervalMs: 60_000 }).stop;
 }
 
 

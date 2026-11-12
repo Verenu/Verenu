@@ -253,7 +253,7 @@ pub(crate) async fn delete_nonlegal_credentials(app: &tauri::AppHandle, snapshot
     #[cfg(not(target_os = "android"))]
     {
         use crate::data::store;
-        for provider in [store::GROQ, store::OPENAI, store::GOOGLE, store::ASSEMBLYAI, store::OPENROUTER, store::XAI, store::T3_INTEGRATION] {
+        for provider in [store::GROQ, store::OPENAI, store::GOOGLE, store::ASSEMBLYAI, store::OPENROUTER, store::XAI, store::T3_INTEGRATION, store::T3_INTEGRATION_ALTERNATE] {
             crate::data::credentials::delete_saved(app, provider)?;
         }
         for provider in crate::api::custom::parse_stored(snapshot.get(store::CUSTOM_PROVIDERS)) {

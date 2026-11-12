@@ -334,6 +334,7 @@ pub async fn fetch_catalogs(
 
 pub struct DictionarySync {
     pub synced_terms: Vec<String>,
+    pub synced_entries: Vec<t3_dictionary::Entry>,
     pub skipped: usize,
 }
 
@@ -344,6 +345,38 @@ fn shared_dictionary(config: &Value) -> Result<Vec<t3_dictionary::Entry>, String
     serde_json::from_value(value.clone()).map_err(|_| "T3 returned an unsupported dictionary.".into())
 }
 
+fn recovered_dictionary_ownership(
+    existing: &[t3_dictionary::Entry],
+    _previously_synced: &[String],
+    previous_entries: &[t3_dictionary::Entry],
+    pending: &[t3_dictionary::Entry],
+) -> Vec<String> {
+    // A legacy name alone cannot prove that T3 has not changed the entry.
+    let mut owned: Vec<String> = Vec::new();
+    for entry in previous_entries.iter().chain(pending) {
+        if existing.contains(entry) && !owned.iter().any(|term| term.eq_ignore_ascii_case(&entry.term)) {
+            owned.push(entry.term.clone());
+        }
+    }
+    owned
+}
+
+fn dictionary_recovery_entries(
+    existing: &[t3_dictionary::Entry],
+    owned: &[String],
+    merged: &t3_dictionary::Merge,
+) -> Vec<t3_dictionary::Entry> {
+    let mut recovery: Vec<_> = existing.iter()
+        .filter(|entry| owned.iter().any(|term| term.eq_ignore_ascii_case(&entry.term)))
+        .cloned().collect();
+    for entry in merged.entries.iter().filter(|entry| merged.synced_terms.contains(&entry.term)) {
+        if !recovery.contains(entry) {
+            recovery.push(entry.clone());
+        }
+    }
+    recovery
+}
+
 /// Writes Verenu's vocabulary into T3's shared dictionary, keeping every entry
 /// that Verenu did not write earlier. T3 is only updated when the merged list
 /// differs from what it already has.
@@ -351,15 +384,24 @@ pub async fn sync_dictionary(
     base: &Url,
     token: &str,
     previously_synced: &[String],
+    previous_entries: &[t3_dictionary::Entry],
+    pending: &[t3_dictionary::Entry],
     wanted: &[t3_dictionary::Entry],
+    prepare: impl FnOnce(&[t3_dictionary::Entry]) -> Result<(), String>,
 ) -> Result<DictionarySync, String> {
     let _consent = crate::legal_consent::network_permit().await.map_err(|e| e.to_string())?;
     tokio::time::timeout(TIMEOUT, async {
         let mut socket = open_socket(base, token, "Could not open the T3 connection. Check the T3 version and pairing address.").await?;
         let config = call(&mut socket, "1", "server.getConfig", json!({}), "T3 could not read its settings. Reconnect with a fresh pairing link.").await?;
         let existing = shared_dictionary(&config)?;
-        let merged = t3_dictionary::merge(&existing, previously_synced, wanted);
+        let owned = recovered_dictionary_ownership(&existing, previously_synced, previous_entries, pending);
+        let merged = t3_dictionary::merge(&existing, &owned, wanted);
         if merged.entries != existing {
+            // Persist the exact intended entries before the remote write. If
+            // the process stops after T3 accepts it, the next run can recover
+            // ownership without treating a different T3 entry as ours.
+            let recovery = dictionary_recovery_entries(&existing, &owned, &merged);
+            prepare(&recovery)?;
             call(
                 &mut socket,
                 "2",
@@ -370,8 +412,12 @@ pub async fn sync_dictionary(
             .await?;
         }
         let _ = socket.close(None).await;
+        let synced_entries = merged.entries.iter()
+            .filter(|entry| merged.synced_terms.contains(&entry.term))
+            .cloned().collect();
         Ok(DictionarySync {
             synced_terms: merged.synced_terms,
+            synced_entries,
             skipped: merged.skipped,
         })
     }).await.map_err(|_| "Sharing your dictionary with T3 timed out. It will retry.".to_string())?

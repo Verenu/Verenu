@@ -21,6 +21,8 @@ pub struct DictionarySync {
     /// Terms Verenu wrote, so a later sync can replace them without touching
     /// entries added in T3.
     pub synced_terms: Vec<String>,
+    pub synced_entries: Vec<t3_dictionary::Entry>,
+    pub pending_entries: Vec<t3_dictionary::Entry>,
     pub fingerprint: String,
     pub synced_at: u64,
     pub attempted_at: u64,
@@ -48,12 +50,18 @@ pub struct Connection {
     #[serde(default)]
     pub scopes: Vec<String>,
     #[serde(default)]
+    pub alternate_credential: bool,
+    #[serde(default)]
     pub dictionary: DictionarySync,
 }
 
 impl Connection {
     pub fn can_share_dictionary(&self) -> bool {
         self.scopes.iter().any(|scope| scope == t3::SETTINGS_SCOPE)
+    }
+
+    fn credential_provider(&self) -> &'static str {
+        if self.alternate_credential { store::T3_INTEGRATION_ALTERNATE } else { store::T3_INTEGRATION }
     }
 }
 
@@ -80,16 +88,38 @@ fn dictionary_due(connection: &Connection, fingerprint: &str, timestamp: u64, fo
         return false;
     }
     let state = &connection.dictionary;
-    let retry_gap = if state.error.is_some() { 900 } else { 30 };
+    let retry_gap = if state.error.is_some() { 60 } else { 30 };
     force
         || (timestamp.saturating_sub(state.attempted_at) >= retry_gap
             && (state.fingerprint != fingerprint
+                || !state.pending_entries.is_empty()
+                || state.error.is_some()
                 || timestamp.saturating_sub(state.synced_at) >= 86400))
 }
 
-/// Everything in Verenu's dictionary, newest first, shaped for T3.
-async fn wanted_dictionary(app: &AppHandle) -> Result<Vec<t3_dictionary::Entry>, String> {
-    let entries = run_db(app, "t3_dictionary", db::query_dictionary).await?;
+// A paired environment has one shared dictionary, even when multiple T3
+// windows are open. Its source is the Context assigned to the T3 app, not a
+// window-specific Context which could change as focus moves.
+fn t3_environment_context(db: &db::Db) -> anyhow::Result<i64> {
+    let targets = db::query_context_targets(db, None)?
+        .into_iter()
+        .filter(|target| crate::system::t3_skills::is_t3_app(&target.executable))
+        .map(|target| target.context_id);
+    let mut contexts: Vec<i64> = targets.collect();
+    if contexts.is_empty() {
+        contexts.push(db::everywhere_context_id(db)?);
+    }
+    contexts.sort_unstable();
+    contexts.dedup();
+    if contexts.len() > 1 {
+        anyhow::bail!("T3 app targets belong to different Contexts; assign them to one Context before sharing with the T3 environment");
+    }
+    Ok(contexts[0])
+}
+
+fn dictionary_for_t3(db: &db::Db) -> anyhow::Result<Vec<t3_dictionary::Entry>> {
+    let context = t3_environment_context(db)?;
+    let entries = db::query_effective_dictionary_for_context(db, context)?;
     Ok(entries
         .iter()
         .filter_map(|entry| {
@@ -105,6 +135,11 @@ async fn wanted_dictionary(app: &AppHandle) -> Result<Vec<t3_dictionary::Entry>,
         .collect())
 }
 
+/// Share only the vocabulary effective for the local T3 target.
+async fn wanted_dictionary(app: &AppHandle) -> Result<Vec<t3_dictionary::Entry>, String> {
+    run_db(app, "t3_dictionary", dictionary_for_t3).await
+}
+
 fn record_dictionary_result(
     state: &mut DictionarySync,
     fingerprint: &str,
@@ -115,6 +150,8 @@ fn record_dictionary_result(
     match result {
         Ok(synced) => {
             state.synced_terms = synced.synced_terms;
+            state.synced_entries = synced.synced_entries;
+            state.pending_entries.clear();
             state.skipped = synced.skipped;
             state.fingerprint = fingerprint.to_string();
             state.synced_at = timestamp;
@@ -127,6 +164,13 @@ fn record_dictionary_result(
 fn connection(settings: &store::SettingsSnapshot) -> Option<Connection> {
     settings
         .get(store::T3_CONNECTION)
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn saved_dictionary(settings: &store::SettingsSnapshot, environment: &str) -> Option<DictionarySync> {
+    settings.get(store::T3_DICTIONARY_OWNERSHIP)?
+        .get(environment)
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
 }
@@ -216,24 +260,12 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     let previous = connection(&previous_snapshot);
-    let mut dictionary = previous
+    let dictionary = previous
         .as_ref()
         .filter(|old| old.environment_id == environment)
         .map(|old| old.dictionary.clone())
+        .or_else(|| saved_dictionary(&previous_snapshot, environment))
         .unwrap_or_default();
-    if exchange.scopes.iter().any(|scope| scope == t3::SETTINGS_SCOPE) {
-        let result = match wanted_dictionary(&app).await {
-            Ok(wanted) => {
-                let fingerprint = t3_dictionary::fingerprint(&wanted);
-                let synced =
-                    t3::sync_dictionary(&target.base_url, &token, &dictionary.synced_terms, &wanted)
-                        .await;
-                (fingerprint, synced)
-            }
-            Err(error) => (String::new(), Err(error)),
-        };
-        record_dictionary_result(&mut dictionary, &result.0, result.1, now());
-    }
     let selected = previous
         .as_ref()
         .filter(|old| old.environment_id == environment)
@@ -266,23 +298,24 @@ pub async fn connect_t3(app: AppHandle, pairing_link: String) -> Result<Status, 
             .map(|old| old.excluded_skills.clone())
             .unwrap_or_default(),
         scopes: exchange.scopes,
+        alternate_credential: previous.as_ref().is_some_and(|old| !old.alternate_credential),
         dictionary,
     };
     let value = serde_json::to_value(&current).map_err(|_| "Cannot save T3 connection.")?;
     let app_copy = app.clone();
     run_blocking("commit_t3_pairing", move || {
         let _guard = guard;
-        let previous_token = crate::data::credentials::get(store::T3_INTEGRATION);
         commit_pairing(
             &settings,
             value,
             previous_value,
             &token,
-            &previous_token,
-            |value| crate::data::credentials::save(&app_copy, store::T3_INTEGRATION, value),
+            |provider, value| crate::data::credentials::save(&app_copy, provider, value),
         )
     })
-    .await
+    .await?;
+    drop(_consent);
+    pull_t3_skills(app, Some(true)).await
 }
 
 fn commit_pairing(
@@ -290,33 +323,52 @@ fn commit_pairing(
     value: serde_json::Value,
     previous_value: serde_json::Value,
     token: &str,
-    previous_token: &str,
-    mut save_credential: impl FnMut(&str) -> Result<(), String>,
+    mut save_credential: impl FnMut(&str, &str) -> Result<(), String>,
 ) -> Result<Status, String> {
-    save_credential(token)?;
-    if let Err(error) = settings
-        .set(store::T3_CONNECTION, value)
-        .and_then(|_| settings.save())
-    {
-        settings.set(store::T3_CONNECTION, previous_value)?;
-        save_credential(previous_token)?;
-        return Err(error);
+    let snapshot = settings.snapshot()?;
+    let mut ownership = snapshot.get(store::T3_DICTIONARY_OWNERSHIP)
+        .and_then(serde_json::Value::as_object).cloned().unwrap_or_default();
+    let next: Connection = serde_json::from_value(value.clone()).map_err(|_| "Cannot save T3 connection.")?;
+    if let Ok(previous) = serde_json::from_value::<Connection>(previous_value) {
+        if next.credential_provider() == previous.credential_provider() {
+            return Err("Cannot replace the active T3 credential before saving the new pairing.".into());
+        }
+        ownership.insert(previous.environment_id, serde_json::to_value(previous.dictionary)
+            .map_err(|_| "Cannot save T3 dictionary ownership.")?);
     }
+    // If pairing is interrupted, the inactive slot may contain a new token.
+    // Persist the cleanup intent before writing it to the native store.
+    settings.save_value(store::T3_CREDENTIAL_CLEANUP, true.into())?;
+    save_credential(next.credential_provider(), token)?;
+    settings.save_values([
+        (store::T3_CONNECTION, value),
+        (store::T3_DICTIONARY_OWNERSHIP, serde_json::Value::Object(ownership)),
+    ])?;
     Ok(status(&settings.snapshot()?))
 }
 
 #[tauri::command]
 pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Status, String> {
+    let settings = store::settings_handle(&app)?;
+    cleanup_t3_credentials_locked(settings.clone(), crate::data::credentials::delete).await?;
     let _consent = crate::legal_consent::network_permit().await.map_err(|error| error.to_string())?;
     let _guard = operation_lock().lock().await;
-    let settings = store::settings_handle(&app)?;
     let Some(mut current) = connection(&settings.snapshot()?) else {
         return Ok(status(&settings.snapshot()?));
     };
     let force = force.unwrap_or(false);
     let skills_due = refresh_due(&current, now(), force);
+    let mut dictionary_error = false;
     let wanted = if current.can_share_dictionary() {
-        wanted_dictionary(&app).await.ok()
+        match wanted_dictionary(&app).await {
+            Ok(wanted) => Some(wanted),
+            Err(error) => {
+                record_dictionary_result(&mut current.dictionary, "", Err(error), now());
+                current.dictionary.attempted_at = 0;
+                dictionary_error = true;
+                None
+            }
+        }
     } else {
         None
     };
@@ -324,7 +376,15 @@ pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Statu
     let dictionary_due = fingerprint
         .as_deref()
         .is_some_and(|fingerprint| dictionary_due(&current, fingerprint, now(), force));
+    if !skills_due && !dictionary_due && !dictionary_error {
+        return Ok(status(&settings.snapshot()?));
+    }
     if !skills_due && !dictionary_due {
+        settings.set(
+            store::T3_CONNECTION,
+            serde_json::to_value(&current).map_err(|_| "Cannot save T3 skills.")?,
+        )?;
+        settings.save()?;
         return Ok(status(&settings.snapshot()?));
     }
     let timestamp = now();
@@ -335,8 +395,9 @@ pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Statu
         if current.expires_at <= now() {
             return Err("T3 pairing expired. Reconnect with a fresh pairing link.".to_string());
         }
-        let token = run_blocking("read_t3_credential", || {
-            let token = crate::data::credentials::get(store::T3_INTEGRATION);
+        let provider = current.credential_provider();
+        let token = run_blocking("read_t3_credential", move || {
+            let token = crate::data::credentials::get(provider);
             if token.is_empty() {
                 Err("T3 credential is unavailable. Reconnect from the desktop app.".into())
             } else {
@@ -372,7 +433,14 @@ pub async fn pull_t3_skills(app: AppHandle, force: Option<bool>) -> Result<Statu
         let (fingerprint, wanted) = (fingerprint.unwrap_or_default(), wanted.unwrap_or_default());
         let result = match &access {
             Ok((base, token)) => {
-                t3::sync_dictionary(base, token, &current.dictionary.synced_terms, &wanted).await
+                let prior = current.dictionary.synced_terms.clone();
+                let prior_entries = current.dictionary.synced_entries.clone();
+                let pending = current.dictionary.pending_entries.clone();
+                t3::sync_dictionary(base, token, &prior, &prior_entries, &pending, &wanted, |recovery| {
+                    current.dictionary.pending_entries = recovery.to_vec();
+                    settings.save_value(store::T3_CONNECTION,
+                        serde_json::to_value(&current).map_err(|_| "Cannot save T3 dictionary recovery state.")?)
+                }).await
             }
             Err(error) => Err(error.clone()),
         };
@@ -463,11 +531,14 @@ pub async fn disconnect_t3(app: AppHandle) -> Result<Status, String> {
     }
     let guard = operation_lock().lock().await;
     let settings = store::settings_handle(&app)?;
+    let active = connection(&settings.snapshot()?).map(|value| value.credential_provider());
     let transaction_settings = settings.clone();
     run_blocking("delete_t3_credential", move || {
         let _guard = guard;
         commit_disconnect(&transaction_settings, || {
-            crate::data::credentials::delete(store::T3_INTEGRATION)
+            let inactive = if active == Some(store::T3_INTEGRATION_ALTERNATE) { store::T3_INTEGRATION } else { store::T3_INTEGRATION_ALTERNATE };
+            crate::data::credentials::delete(inactive)?;
+            crate::data::credentials::delete(active.unwrap_or(store::T3_INTEGRATION))
         })?;
         Ok(status(&transaction_settings.snapshot()?))
     })
@@ -478,18 +549,114 @@ fn commit_disconnect(
     settings: &store::SettingsHandle,
     delete_credential: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
+    let snapshot = settings.snapshot()?;
+    let mut ownership = snapshot.get(store::T3_DICTIONARY_OWNERSHIP)
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(current) = connection(&snapshot) {
+        ownership.insert(current.environment_id, serde_json::to_value(current.dictionary)
+            .map_err(|_| "Cannot save T3 dictionary ownership.")?);
+    }
     settings
         .save_values_with_commit(
-            [(store::T3_CONNECTION, serde_json::Value::Null)],
+            [
+                (store::T3_CONNECTION, serde_json::Value::Null),
+                (store::T3_DICTIONARY_OWNERSHIP, serde_json::Value::Object(ownership)),
+                (store::T3_CREDENTIAL_CLEANUP, true.into()),
+            ],
             |_| Ok(()),
             delete_credential,
         )
-        .map(|_| ())
+        .and_then(|_| settings.save_value(store::T3_CREDENTIAL_CLEANUP, false.into()))
+}
+
+fn cleanup_t3_credentials(
+    settings: &store::SettingsHandle,
+    mut delete_credential: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let snapshot = settings.snapshot()?;
+    if snapshot.get(store::T3_CREDENTIAL_CLEANUP).and_then(serde_json::Value::as_bool) != Some(true) {
+        return Ok(());
+    }
+    let active = connection(&snapshot).map(|value| value.credential_provider());
+    for provider in [store::T3_INTEGRATION, store::T3_INTEGRATION_ALTERNATE] {
+        if Some(provider) != active {
+            delete_credential(provider)?;
+        }
+    }
+    settings.save_value(store::T3_CREDENTIAL_CLEANUP, false.into())
+}
+
+async fn cleanup_t3_credentials_locked(
+    settings: store::SettingsHandle,
+    delete_credential: impl FnMut(&str) -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    let guard = operation_lock().lock().await;
+    run_blocking("cleanup_t3_credentials", move || {
+        let _guard = guard;
+        cleanup_t3_credentials(&settings, delete_credential)
+    }).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn t3_dictionary_tracks_only_effective_context_and_deletions() {
+        let db = db::open(":memory:").unwrap();
+        let coding = db::insert_context_returning(&db, "Coding", None, None, None, None, false).unwrap();
+        let other = db::insert_context_returning(&db, "Other", None, None, None, None, false).unwrap();
+        db::assign_context_target(&db, coding.id, "t3code").unwrap();
+        db::insert_dictionary_entry_returning(&db, "Shared", None, Some(db::EVERYWHERE_CONTEXT_ID)).unwrap();
+        let local = db::insert_dictionary_entry_returning(&db, "Coding only", None, Some(coding.id)).unwrap();
+        db::insert_dictionary_entry_returning(&db, "Other only", None, Some(other.id)).unwrap();
+        let wanted = dictionary_for_t3(&db).unwrap();
+        assert_eq!(wanted.len(), 2);
+        assert!(wanted.iter().any(|entry| entry.term == "Shared"));
+        assert!(wanted.iter().any(|entry| entry.term == "Coding only"));
+        db::set_dictionary_context_assignment(&db, coding.id, local.id, false).unwrap();
+        let after = dictionary_for_t3(&db).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].term, "Shared");
+        let previous = t3_dictionary::merge(&[], &[], &wanted);
+        let updated = t3_dictionary::merge(&previous.entries, &previous.synced_terms, &after);
+        assert_eq!(updated.entries, after);
+    }
+
+    #[test]
+    fn t3_dictionary_rejects_ambiguous_target_contexts() {
+        let db = db::open(":memory:").unwrap();
+        let first = db::insert_context_returning(&db, "First", None, None, None, None, false).unwrap();
+        let second = db::insert_context_returning(&db, "Second", None, None, None, None, false).unwrap();
+        db::assign_context_target(&db, first.id, "t3code").unwrap();
+        db::assign_context_target(&db, second.id, "t3-code").unwrap();
+        assert!(dictionary_for_t3(&db).is_err());
+    }
+
+    #[test]
+    fn t3_environment_uses_app_context_regardless_of_window_rules() {
+        let db = db::open(":memory:").unwrap();
+        let app = db::insert_context_returning(&db, "App", None, None, None, None, false).unwrap();
+        let window = db::insert_context_returning(&db, "Window", None, None, None, None, false).unwrap();
+        db::assign_context_target(&db, app.id, "t3code").unwrap();
+        let rule = db::create_sub_app(&db, db::NewSubApp {
+            executable: "t3code", app_name: None, label: "Project", icon: None,
+            title_pattern: "Project", match_mode: db::TitleMatchMode::Contains,
+        }).unwrap();
+        db::assign_sub_app(&db, rule.id, Some(window.id)).unwrap();
+        assert_eq!(t3_environment_context(&db).unwrap(), app.id);
+        db::assign_sub_app(&db, rule.id, Some(app.id)).unwrap();
+        assert!(dictionary_for_t3(&db).is_ok());
+        let other_executable = db::create_sub_app(&db, db::NewSubApp {
+            executable: "t3-code", app_name: None, label: "Other project", icon: None,
+            title_pattern: "Other project", match_mode: db::TitleMatchMode::Contains,
+        }).unwrap();
+        db::assign_sub_app(&db, other_executable.id, Some(app.id)).unwrap();
+        assert_eq!(t3_environment_context(&db).unwrap(), app.id);
+    }
+
     fn sample() -> Connection {
         Connection {
             id: "sample".into(),
@@ -504,6 +671,7 @@ mod tests {
             error: None,
             excluded_skills: Vec::new(),
             scopes: vec![t3::READ_SCOPE.into(), t3::SETTINGS_SCOPE.into()],
+            alternate_credential: false,
             dictionary: DictionarySync::default(),
             catalogs: vec![Catalog {
                 environment_id: "sample".into(),
@@ -567,7 +735,7 @@ mod tests {
         record_dictionary_result(
             &mut value.dictionary,
             "a",
-            Ok(t3::DictionarySync { synced_terms: vec!["Omarchy".into()], skipped: 2 }),
+            Ok(t3::DictionarySync { synced_terms: vec!["Omarchy".into()], synced_entries: vec![], skipped: 2 }),
             time,
         );
         assert_eq!(value.dictionary.synced_terms, ["Omarchy"]);
@@ -582,8 +750,9 @@ mod tests {
         assert_eq!(value.dictionary.error.as_deref(), Some("down"));
         assert_eq!(value.dictionary.synced_terms, ["Omarchy"]);
         assert_eq!(value.dictionary.fingerprint, "a");
-        assert!(!dictionary_due(&value, "b", time + 999, false));
-        assert!(dictionary_due(&value, "b", time + 1000, false));
+        assert!(!dictionary_due(&value, "b", time + 159, false));
+        assert!(dictionary_due(&value, "b", time + 160, false));
+        assert!(dictionary_due(&value, "a", time + 160, false));
     }
 
     #[test]
@@ -691,7 +860,9 @@ mod tests {
                 .unwrap_or(0)
         ));
         let settings = store::SettingsHandle::empty_for_test(path.clone());
-        let previous = serde_json::to_value(sample()).unwrap();
+        let mut original = sample();
+        original.dictionary.synced_terms = vec!["Synthetic term".into()];
+        let previous = serde_json::to_value(original).unwrap();
         settings
             .save_value(store::T3_CONNECTION, previous.clone())
             .unwrap();
@@ -719,11 +890,14 @@ mod tests {
             Some(serde_json::Value::Null)
         );
         assert!(captured_catalog(&settings.snapshot().unwrap()).is_none());
+        let restored = saved_dictionary(&settings.snapshot().unwrap(), "sample").unwrap();
+        assert_eq!(restored.synced_terms, ["Synthetic term"]);
+        assert!(saved_dictionary(&settings.snapshot().unwrap(), "other").is_none());
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn t3_pairing_restores_credential_when_settings_cannot_be_saved() {
+    fn t3_pairing_does_not_replace_active_credential_when_settings_cannot_be_saved() {
         let blocker = std::env::temp_dir().join(format!("verenu-t3-{}", uuid::Uuid::new_v4()));
         std::fs::write(&blocker, b"synthetic fixture").unwrap();
         let settings = store::SettingsHandle::empty_for_test(blocker.join("settings.json"));
@@ -731,20 +905,22 @@ mod tests {
         settings
             .set(store::T3_CONNECTION, previous.clone())
             .unwrap();
-        let mut credential = "old synthetic token".to_string();
+        let mut credentials = std::collections::HashMap::from([(store::T3_INTEGRATION.to_string(), "old synthetic token".to_string())]);
+        let mut replacement = sample();
+        replacement.alternate_credential = true;
         let result = commit_pairing(
             &settings,
-            serde_json::json!({"id": "replacement"}),
+            serde_json::to_value(replacement).unwrap(),
             previous.clone(),
             "new synthetic token",
-            "old synthetic token",
-            |value| {
-                credential = value.to_string();
+            |provider, value| {
+                credentials.insert(provider.to_string(), value.to_string());
                 Ok(())
             },
         );
         assert!(result.is_err());
-        assert_eq!(credential, "old synthetic token");
+        assert_eq!(credentials.get(store::T3_INTEGRATION).map(String::as_str), Some("old synthetic token"));
+        assert!(!credentials.contains_key(store::T3_INTEGRATION_ALTERNATE));
         assert_eq!(settings.get(store::T3_CONNECTION), Some(previous));
         std::fs::remove_file(blocker).unwrap();
     }
@@ -754,14 +930,14 @@ mod tests {
         let path = std::env::temp_dir().join(format!("verenu-t3-{}.json", uuid::Uuid::new_v4()));
         let settings = store::SettingsHandle::empty_for_test(path.clone());
         let value = serde_json::to_value(sample()).unwrap();
-        let mut credential = "old synthetic token".to_string();
+        let mut credential = String::new();
         let result = commit_pairing(
             &settings,
             value.clone(),
             serde_json::Value::Null,
             "new synthetic token",
-            "old synthetic token",
-            |token| {
+            |provider, token| {
+                assert_eq!(provider, store::T3_INTEGRATION);
                 credential = token.to_string();
                 Ok(())
             },
@@ -771,6 +947,65 @@ mod tests {
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved[store::T3_CONNECTION], value);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn t3_credential_cleanup_retries_after_interruption_and_keeps_active_slot() {
+        let path = std::env::temp_dir().join(format!("verenu-t3-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings.save_values([
+            (store::T3_CONNECTION, serde_json::Value::Null),
+            (store::T3_CREDENTIAL_CLEANUP, true.into()),
+        ]).unwrap();
+        let mut remaining = std::collections::HashSet::from([store::T3_INTEGRATION, store::T3_INTEGRATION_ALTERNATE]);
+        let first = cleanup_t3_credentials(&settings, |provider| {
+            if provider == store::T3_INTEGRATION_ALTERNATE { return Err("interrupted".into()); }
+            remaining.remove(provider);
+            Ok(())
+        });
+        assert!(first.is_err());
+        assert_eq!(settings.get(store::T3_CREDENTIAL_CLEANUP), Some(true.into()));
+        cleanup_t3_credentials(&settings, |provider| { remaining.remove(provider); Ok(()) }).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(settings.get(store::T3_CREDENTIAL_CLEANUP), Some(false.into()));
+
+        let mut current = sample();
+        current.alternate_credential = true;
+        settings.save_values([
+            (store::T3_CONNECTION, serde_json::to_value(current).unwrap()),
+            (store::T3_CREDENTIAL_CLEANUP, true.into()),
+        ]).unwrap();
+        let mut deleted = Vec::new();
+        cleanup_t3_credentials(&settings, |provider| { deleted.push(provider.to_string()); Ok(()) }).unwrap();
+        assert_eq!(deleted, [store::T3_INTEGRATION]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn t3_cancelled_cleanup_keeps_pairing_locked_until_deletion_finishes() {
+        let path = std::env::temp_dir().join(format!("verenu-t3-{}.json", uuid::Uuid::new_v4()));
+        let settings = store::SettingsHandle::empty_for_test(path.clone());
+        settings.save_values([
+            (store::T3_CONNECTION, serde_json::to_value(sample()).unwrap()),
+            (store::T3_CREDENTIAL_CLEANUP, true.into()),
+        ]).unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let mut started = Some(started_tx);
+        let task = tokio::spawn(cleanup_t3_credentials_locked(settings, move |_| {
+            if let Some(started) = started.take() {
+                let _ = started.send(());
+                finish_rx.recv().unwrap();
+            }
+            Ok(())
+        }));
+        started_rx.await.unwrap();
+        task.abort();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), operation_lock().lock()).await.is_err());
+        finish_tx.send(()).unwrap();
+        let guard = tokio::time::timeout(std::time::Duration::from_secs(5), operation_lock().lock()).await.unwrap();
+        drop(guard);
         std::fs::remove_file(path).unwrap();
     }
 }
