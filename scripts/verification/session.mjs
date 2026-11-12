@@ -39,6 +39,15 @@ export function startupLogDiagnostics(log, cargoLock = '') {
   const knownPackages = new Set([...cargoLock.matchAll(/^name = "([a-zA-Z0-9_-]+)"$/gm)].map(match => match[1]));
   const buildPackages = [...new Set([...plain.matchAll(/failed to run custom build command for [`']([a-zA-Z0-9_-]+) v\d/g)]
     .map(match => match[1]).filter(name => knownPackages.has(name)))].slice(0, 20);
+  const failureOutput = plain.slice(Math.max(0, plain.lastIndexOf('failed to run custom build command')))
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/\b[A-Za-z]:[\\/][^\r\n]*/g, ' ')
+    .replace(/\\\\[^\r\n]*/g, ' ')
+    .replace(/\b[\w.-]+[\\/][^\r\n]*/g, ' ')
+    .replace(/(^|[\s'"`])\/(?!\/)[^\r\n]*/gm, '$1 ')
+    .toLowerCase();
+  const unclassifiedLogTokens = ['access', 'archive', 'certificate', 'connection', 'corrupt', 'denied', 'download', 'eof', 'extract', 'file', 'hash', 'http', 'invalid', 'link', 'network', 'panic', 'proxy', 'read', 'request', 'response', 'status', 'timeout', 'tls', 'unable', 'verify', 'write']
+    .filter(word => new RegExp(`\\b${word}\\b`).test(failureOutput));
   const patterns = [
     ['disk-full', /no space left on device|there is not enough space on the disk/i],
     ['permission-denied', /permission denied|access is denied/i],
@@ -56,7 +65,7 @@ export function startupLogDiagnostics(log, cargoLock = '') {
     ['dependency-download-error', /failed to download|failed to fetch/i],
     ['cargo-compile-error', /could not compile/i],
   ];
-  return { rustErrorCodes, buildPackages, categories: patterns.filter(([, pattern]) => pattern.test(plain)).map(([category]) => category) };
+  return { rustErrorCodes, buildPackages, unclassifiedLogTokens, categories: patterns.filter(([, pattern]) => pattern.test(plain)).map(([category]) => category) };
 }
 
 export function sessionIdentityMismatch(expected, actual, sourceChanges = undefined) {

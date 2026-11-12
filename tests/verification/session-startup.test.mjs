@@ -65,13 +65,18 @@ test('startup diagnostics ignore manifests owned by another process', () => {
 
 test('startup log diagnostics expose only fixed categories and Rust error codes', () => {
   const result = startupLogDiagnostics('private path and token\nerror[E0425]: secret text\nerror: could not compile private package\nNo space left on device\nfailed to run custom build command for `verenu v1.0.0`\nfailed to run custom build command for `private v1.0.0`', '[[package]]\nname = "verenu"');
-  assert.deepEqual(result, { rustErrorCodes: ['E0425'], buildPackages: ['verenu'], categories: ['disk-full', 'custom-build-error', 'cargo-compile-error'] });
+  assert.deepEqual(result, { rustErrorCodes: ['E0425'], buildPackages: ['verenu'], unclassifiedLogTokens: [], categories: ['disk-full', 'custom-build-error', 'cargo-compile-error'] });
   assert.equal(JSON.stringify(result).includes('private'), false);
   assert.equal(JSON.stringify(result).includes('secret'), false);
 });
 
 test('ORT startup diagnostics classify extraction without exposing paths or URLs', () => {
   const result = startupLogDiagnostics('Extraction of prebuilt binaries downloaded from `https://private.invalid/token` failed: Failed to create file in C:\\private: already exists');
-  assert.deepEqual(result, { rustErrorCodes: [], buildPackages: [], categories: ['ort-extraction-error', 'file-already-exists'] });
+  assert.deepEqual(result, { rustErrorCodes: [], buildPackages: [], unclassifiedLogTokens: ['file'], categories: ['ort-extraction-error', 'file-already-exists'] });
   assert.equal(JSON.stringify(result).includes('private'), false);
+});
+
+test('diagnostic words are not inferred from paths with spaces', () => {
+  const result = startupLogDiagnostics('failed to run custom build command\nprocess: C:\\Program Files\\network\\timeout\\build.exe (exit code: 1)\nprocess: /home/ci/network/timeout/build\nprocess: src/network/timeout.rs\nprocess: \\\\server\\network\\timeout\\build.exe');
+  assert.deepEqual(result.unclassifiedLogTokens, []);
 });
