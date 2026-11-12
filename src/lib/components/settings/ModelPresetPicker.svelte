@@ -161,8 +161,8 @@
   .group-status { font-family: var(--sans); font-size: 11.5px; color: var(--ink-mute); }
   .preset-list {
     border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: var(--bg-elev);
+    border-radius: var(--r-lg);
+    background: var(--settings-card-bg, var(--bg-elev));
     overflow: hidden;
   }
   .empty-note { margin: 10px 0 0; font-family: var(--sans); font-size: 12px; color: var(--ink-mute); }
