@@ -87,14 +87,14 @@ async fn live_t3_dictionary_sync_preserves_native_entries() {
         Entry { term: "Verenu".into(), aliases: vec!["Vreenu".into(), "ver new".into()] },
         Entry { term: "Omarchy".into(), aliases: vec![] },
     ];
-    let first = sync_dictionary(base, &granted.token, &[], &wanted).await.expect("first sync");
+    let first = sync_dictionary(base, &granted.token, &[], &[], &[], &wanted, |_| Ok(())).await.expect("first sync");
     assert_eq!(first.synced_terms, ["Verenu", "Omarchy"]);
     let after_first = read().await;
     assert_eq!(after_first.as_array().unwrap().len(), 3);
     assert_eq!(after_first[0]["term"], "NativeT3Term");
     assert_eq!(after_first[1]["aliases"], json!(["Vreenu", "ver new"]));
     // Removing Omarchy in Verenu removes only Omarchy.
-    let second = sync_dictionary(base, &granted.token, &first.synced_terms, &wanted[..1]).await.expect("second sync");
+    let second = sync_dictionary(base, &granted.token, &first.synced_terms, &first.synced_entries, &[], &wanted[..1], |_| Ok(())).await.expect("second sync");
     assert_eq!(second.synced_terms, ["Verenu"]);
     let after_second = read().await;
     let terms: Vec<_> = after_second.as_array().unwrap().iter().map(|entry| entry["term"].as_str().unwrap()).collect();

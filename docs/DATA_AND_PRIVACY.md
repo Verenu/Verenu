@@ -234,16 +234,25 @@ conversations; pairing does not identify the active conversation.
 Browser-hosted T3 windows are not detected as desktop T3 targets.
 
 Pairing also asks T3 for permission to change its settings, which Verenu uses
-only to keep T3's shared dictionary up to date. Verenu writes every dictionary
-term and its mistranscription values into that environment's shared dictionary
+only to keep T3's shared dictionary up to date. Verenu writes dictionary
+terms effective in the Context assigned to the T3 app (including Everywhere) and
+their mistranscription values into that environment's shared dictionary
 (the environment decides who can read it), replacing only the entries Verenu
-wrote before. Entries added in T3 are preserved, and Verenu stops at T3's
-100-entry limit. Terms are re-sent when your dictionary changes and at least
-daily while Verenu runs. The list of terms Verenu wrote is kept in the local
-connection record, which is excluded from backups and LAN sync. Disconnecting
-leaves the entries already in T3. Pairings without settings access keep
-working for skills and show a prompt to reconnect. T3 stores its cleanup
-instructions on each device, so Verenu does not send any.
+wrote before. Entries added or edited in T3 are preserved when they do not
+race with a sync, and Verenu stops at T3's 100-entry limit. T3's settings API
+replaces the entire list and has no conditional update, so simultaneous T3
+edits can race with a sync. Terms are re-sent when your dictionary changes and
+at least daily while Verenu runs. The app-level Context applies to the whole
+paired environment; window-specific rules do not change it. If T3 app targets
+belong to different Contexts, sharing stops until they are assigned to one
+Context. Local ownership and recovery records are excluded from backups and
+LAN sync. Disconnecting leaves the entries in T3 and retains their ownership
+for a later reconnection to that environment. Older pairings that recorded only
+term names cannot safely establish ownership of existing entries, so those
+entries remain in T3 until removed there. Pairings without settings access
+keep working for skills and show a prompt to reconnect. T3's pairing API does
+not expose its per-device cleanup instructions or a snippet expansion library,
+so Verenu cannot sync those through the pairing.
 
 Skill conversion requires a working cleanup provider. If all cleanup providers
 fail, Verenu preserves the transcript without adding skill mentions. Default

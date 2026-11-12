@@ -594,6 +594,18 @@ pub fn run() {
                 );
             }
             start_frontend_watchdog(app.handle(), frontend_readiness.clone());
+            // Keep the paired environment current even when the settings
+            // window is closed or its WebView timers are suspended.
+            #[cfg(desktop)]
+            if !is_dev_session() {
+                let t3_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let _ = commands::pull_t3_skills(t3_app.clone(), Some(false)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    }
+                });
+            }
             #[cfg(unix)]
             {
                 use tokio::signal::unix::{signal, SignalKind};

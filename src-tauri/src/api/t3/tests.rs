@@ -103,9 +103,10 @@ async fn t3_dictionary_sync_merges_into_shared_dictionary_and_writes_only_change
         updates
     });
     let wanted = [Entry { term: "Omarchy".into(), aliases: vec!["omar key".into()] }];
-    let first = sync_dictionary(&base, "tok", &["Stale".into()], &wanted).await.unwrap();
+    let stale = [Entry { term: "Stale".into(), aliases: vec![] }];
+    let first = sync_dictionary(&base, "tok", &["Stale".into()], &stale, &[], &wanted, |_| Ok(())).await.unwrap();
     assert_eq!(first.synced_terms, ["Omarchy"]);
-    let second = sync_dictionary(&base, "tok", &first.synced_terms, &wanted).await.unwrap();
+    let second = sync_dictionary(&base, "tok", &first.synced_terms, &first.synced_entries, &[], &wanted, |_| Ok(())).await.unwrap();
     assert_eq!(second.skipped, 0);
     let updates = server.await.unwrap();
     assert_eq!(updates.len(), 1, "the unchanged second sync must not write");
@@ -113,6 +114,43 @@ async fn t3_dictionary_sync_merges_into_shared_dictionary_and_writes_only_change
         updates[0],
         json!({"patch":{"speechProjectCustomWords":[{"term":"Kubernetes","aliases":[]},{"term":"Omarchy","aliases":["omar key"]}]}})
     );
+}
+
+#[test]
+fn interrupted_dictionary_write_recovers_only_matching_entries() {
+    use crate::system::t3_dictionary::{self, Entry};
+    let pending = vec![
+        Entry { term: "Written".into(), aliases: vec!["spoken".into()] },
+        Entry { term: "Changed in T3".into(), aliases: vec!["old".into()] },
+    ];
+    let existing = vec![
+        pending[0].clone(),
+        Entry { term: "Changed in T3".into(), aliases: vec!["new".into()] },
+        Entry { term: "Native".into(), aliases: vec![] },
+    ];
+    let owned = recovered_dictionary_ownership(&existing, &[], &[], &pending);
+    assert_eq!(owned, ["Written"]);
+    let recovered = t3_dictionary::merge(&existing, &owned, &[]);
+    assert_eq!(recovered.entries, existing[1..]);
+    let owned_after_t3_edit = recovered_dictionary_ownership(
+        &existing, &["Changed in T3".into()], &pending[1..], &[],
+    );
+    assert!(owned_after_t3_edit.is_empty());
+    let legacy = recovered_dictionary_ownership(&existing, &["Changed in T3".into()], &[], &[]);
+    assert!(legacy.is_empty(), "a legacy term name cannot establish ownership");
+}
+
+#[test]
+fn repeated_interruption_keeps_prior_pending_ownership() {
+    use crate::system::t3_dictionary::{self, Entry};
+    let entry = Entry { term: "Synthetic".into(), aliases: vec![] };
+    let existing = vec![entry.clone()];
+    let first_pending = vec![entry];
+    let owned = recovered_dictionary_ownership(&existing, &[], &[], &first_pending);
+    let deletion = t3_dictionary::merge(&existing, &owned, &[]);
+    let second_pending = dictionary_recovery_entries(&existing, &owned, &deletion);
+    let owned_after_restart = recovered_dictionary_ownership(&existing, &[], &[], &second_pending);
+    assert!(t3_dictionary::merge(&existing, &owned_after_restart, &[]).entries.is_empty());
 }
 
 #[test]
