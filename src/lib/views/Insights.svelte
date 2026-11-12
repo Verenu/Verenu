@@ -140,7 +140,7 @@
     <div>
       <h1 class="page-h">Insights</h1>
       {#if !isAndroid}
-        <p class="page-sub">How much you dictate, how fast, and what it costs. Dictation statistics are computed locally. Optionally compare GitHub contributions.</p>
+        <p class="page-sub">How much you dictate, how fast, and what it costs. Computed on this device.</p>
       {/if}
     </div>
 
@@ -275,7 +275,7 @@
 <style>
   .github-warning { margin: -6px 0 20px; color: var(--ink-mute); font-size: 11.5px; line-height: 1.5; }
   .content-inner {
-    width: min(100%, var(--page-max));
+    width: min(100%, var(--page-column));
     margin-inline: auto;
     padding: var(--page-pad-y) var(--page-pad-x) 36px;
     min-width: 0;

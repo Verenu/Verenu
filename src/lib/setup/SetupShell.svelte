@@ -215,6 +215,11 @@
 
   :global(.setup-overlay .pick-card:active) { transform: scale(0.985); }
 
+  /* Each step moves focus to its heading for screen readers. A heading is not a control, so it shows no ring. */
+  :global(.setup-overlay :is(h1, h2, .settings-h, .settings-subhead)[tabindex='-1']:focus) {
+    outline: none;
+  }
+
   :global(.setup-overlay .pick-card:focus-visible) {
     outline: 2px solid var(--accent);
     outline-offset: 2px;

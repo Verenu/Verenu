@@ -156,7 +156,7 @@
     height: 24px;
     padding: 0 9px;
     border-radius: 5px;
-    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    background: color-mix(in srgb, var(--accent) 13%, transparent);
     min-width: 0;
     overflow: hidden;
   }

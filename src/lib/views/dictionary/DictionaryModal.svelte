@@ -287,8 +287,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 20px 14px;
-    border-bottom: 1px solid var(--line-soft);
+    padding: 20px 20px 0;
   }
 
   .modal-title {
@@ -314,15 +313,14 @@
   .icon-btn:hover { background: var(--control-active); color: var(--ink-strong); }
 
   .modal-body {
-    padding: 18px 20px 14px;
+    padding: 14px 20px 18px;
     display: flex;
     flex-direction: column;
     gap: 2px;
   }
 
   .modal-footer {
-    padding: 12px 20px 16px;
-    border-top: 1px solid var(--line-soft);
+    padding: 0 20px 20px;
     display: flex;
     flex-direction: column;
     gap: 10px;

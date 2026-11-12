@@ -617,6 +617,9 @@
 
   .panel-inner[aria-busy='true'] { opacity: 0.55; }
 
+  /* Section titles start on the same line as the app's page titles, clear of the native window controls. */
+  :global(.app.app-linux) .panel-inner { margin-top: var(--native-chrome-below-clearance); }
+
   .panel-inner {
     transition: opacity var(--ui-duration-fast) var(--ui-ease-out);
     width: min(100%, 680px);

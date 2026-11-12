@@ -117,21 +117,25 @@
   .cost-table th,
   .cost-table td {
     text-align: left;
-    padding: 7px 6px;
+    padding: 9px 6px;
     border-bottom: 1px solid var(--line);
     font-weight: 400;
   }
-  .cost-table th:first-child { width: 34%; }
+  .cost-table th:first-child { width: 30%; padding-left: 0; }
+  .cost-table th:last-child, .cost-table td:last-child { padding-right: 0; }
+  .cost-table thead th:nth-child(2) { width: 16%; }
+  .cost-table thead th:nth-child(3) { width: 21%; }
+  .cost-table thead th:nth-child(4) { width: 11%; }
+  .cost-table thead th:nth-child(5) { width: 13%; }
   .cost-table thead th {
-    font-size: 10px;
-    letter-spacing: 0;
-    text-transform: none;
+    font-size: 11px;
     color: var(--ink-mute);
+    padding-top: 0;
   }
   .cost-table tbody tr:last-child th,
   .cost-table tbody tr:last-child td { border-bottom: 0; }
 
-  .num {
+  .cost-table .num {
     text-align: right;
     font-variant-numeric: tabular-nums;
     color: var(--ink-soft);
@@ -157,7 +161,7 @@
 
   @container insights (max-width: 420px) {
     .avg-cost { display: none; }
-    .cost-table th:first-child { width: auto; }
+    .cost-table thead th { width: auto; }
     .model { overflow-wrap: anywhere; }
   }
 

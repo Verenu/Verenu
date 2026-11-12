@@ -558,7 +558,7 @@
 <style>
   .content-inner {
     /* One reading column. Wider rows push history text past a comfortable line length. */
-    width: min(100%, 920px);
+    width: min(100%, var(--page-column));
     margin-inline: auto;
     padding: var(--page-pad-y) var(--page-pad-x) 36px;
     min-width: 0;
