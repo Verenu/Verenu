@@ -1,6 +1,6 @@
 ---
 name: verenu-control
-description: "Use for Verenu dictation problems, top recurring issues over a date range, cleanup/capitalization/spacing or prompt diagnosis, settings toggles, and recommending or reorganizing Context groups. Uses the running native app's supported local agent API."
+description: "Use for Verenu agent access and tokens, keeping access for later, dictation problems, recurring issues, cleanup or prompt diagnosis, settings, and Context groups. Uses the running native app's supported local agent API."
 ---
 
 # Control and diagnose Verenu
@@ -17,6 +17,18 @@ features, or recommendations for Context groups, also read
    continue only if it says `approved`. Pass the same grant-file path on each
    CLI invocation. If the request is rejected or expires, remove the grant file
    and make a fresh request. `disconnect` revokes and removes the session grant.
+   Default to temporary access. Only when the user requests long-term access,
+   use `connect --long-term`. On Linux or macOS, create an owner-only directory
+   under `$HOME/.verenu-agent-state/agent-grants/` with `umask 077` and use a
+   purpose-specific absolute grant-file path there. The CLI checks the directory
+   and its ancestors; if it rejects them, choose a trusted private location.
+   Record the path, never the token, for future sessions. For later authorized
+   work, look for existing purpose-specific grant files under
+   `$HOME/.verenu-agent-state/agent-grants/`, not in the app profile directory.
+   Set `VERENU_AGENT_GRANT_FILE` to the matching file and run `status` before
+   requesting another grant. Never print the file or its contents. Long-term access persists across
+   restarts until revoked; `disconnect` revokes it. If authorization's outcome is
+   uncertain, preserve the file and check its status instead of requesting again.
    Do not ask the user to restart Verenu or paste a token. Never print the grant
    file contents. Existing `VERENU_AGENT_TOKEN` and `VERENU_AGENT_PORT` grants
    remain supported for scripted launches. The

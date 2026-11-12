@@ -4,9 +4,10 @@
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../motion';
   import Toggle from './Toggle.svelte';
 
-  let { busy, code, ondeny, onapprove }: {
+  let { busy, code, persistent = false, ondeny, onapprove }: {
     busy: boolean;
     code: string;
+    persistent?: boolean;
     ondeny: () => void;
     onapprove: (scopes: string[]) => void;
   } = $props();
@@ -41,12 +42,13 @@
   in:modalCard={{ duration: 220, distance: motionPx(MOTION_PX.panel), scaleFrom: 0.97 }}
   out:modalCard={{ duration: 160, distance: motionPx(MOTION_PX.nudge), scaleFrom: 0.985 }}>
   <div class="ui-modal-head"><h2 id="agent-pair-title" class="ui-modal-title">Allow agent access?</h2></div>
-  <div class="ui-modal-body"><p id="agent-pair-body" class="ui-modal-copy">Check that the agent's code matches: {code}. Choose what this agent can access. Access expires after one hour or when Verenu quits. Read access includes history metadata.</p>
+  <div class="ui-modal-body"><p id="agent-pair-body" class="ui-modal-copy">Check that the agent's code matches: {code}. Choose what this agent can access. {persistent ? 'This agent requests long-term access that persists until revoked, including after Verenu restarts.' : 'Access expires after one hour or when Verenu quits.'} Read access includes history metadata.</p>
     <div class="agent-permissions">
       {#each permissions as permission (permission.id)}
         <div class="agent-permission"><span>{permission.label}</span><Toggle checked={selected.includes(permission.id)} label={permission.label} disabled={busy} onchange={(enabled) => { selected = enabled ? [...selected, permission.id] : selected.filter((id) => id !== permission.id); }} /></div>
       {/each}
     </div>
+    {#if persistent}<p class="ui-modal-copy">Anyone with this agent's token can use its permissions until access is revoked.</p>{/if}
     <p class="ui-modal-copy">Deleting also requires permission to change the affected area. Provider tests may incur charges.</p>
   </div>
   <div class="ui-modal-foot"><div class="ui-modal-actions">
