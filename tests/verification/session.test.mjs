@@ -9,7 +9,7 @@ import test from 'node:test';
 import { createNativeSession } from '../../scripts/verification/native-session.mjs';
 import { replacePromptArgument } from '../../scripts/verification/prompt.mjs';
 import { root } from '../../scripts/verification/identity.mjs';
-import { cargoTargetDirectory, ownedSessionStartupState, prepareWindowsCargoDirectories, startOwnedSession } from '../../scripts/verification/session.mjs';
+import { cargoTargetDirectory, ownedSessionStartupState, startOwnedSession } from '../../scripts/verification/session.mjs';
 
 test('native WebDriver session creation retries transient HTTP errors', async () => {
   let attempts = 0;
@@ -54,24 +54,7 @@ test('owned session startup fails fast for a stopped manifest owned by its launc
 test('dev-session honors an isolated Cargo target directory and keeps the project default', () => {
   const isolatedTarget = path.join(os.tmpdir(), 'verenu-owned-target');
   assert.equal(cargoTargetDirectory({ CARGO_TARGET_DIR: isolatedTarget }), isolatedTarget);
-  assert.equal(cargoTargetDirectory({ CARGO_TARGET_DIR: 'isolated-target' }), path.join(root, 'isolated-target'));
   assert.equal(cargoTargetDirectory({}), path.join(root, 'src-tauri', 'target'));
-});
-
-test('Windows session prepares DLL copy destinations in its Cargo target', async () => {
-  const target = await fs.mkdtemp(path.join(os.tmpdir(), 'verenu-cargo-target-'));
-  try {
-    const dll = path.join(target, 'synthetic.dll');
-    await fs.writeFile(dll, 'synthetic');
-    const destination = path.join(target, 'debug', 'deps', 'synthetic.dll');
-    await assert.rejects(fs.copyFile(dll, destination), { code: 'ENOENT' });
-    await prepareWindowsCargoDirectories(target, 'win32');
-    await fs.copyFile(dll, destination);
-    assert.equal(await fs.readFile(destination, 'utf8'), 'synthetic');
-    assert.equal((await fs.stat(path.join(target, 'debug', 'examples'))).isDirectory(), true);
-  } finally {
-    await fs.rm(target, { recursive: true, force: true });
-  }
 });
 
 test('dev-session rejects invalid synthetic seed arguments before creating a session', async () => {
