@@ -1697,9 +1697,7 @@ mod tests {
     }
 
     fn reset() {
-        init_with_config(small_config());
-        reset_for_tests();
-        set_profiler_enabled(false);
+        with_store(|state| *state = DiagnosticsStore::new(small_config()));
     }
 
     #[test]
@@ -1729,6 +1727,7 @@ mod tests {
     #[test]
     fn agent_log_query_filters_and_reports_coverage() {
         let _guard = TEST_LOCK.lock().expect("test lock");
+        init();
         reset();
         for (timestamp, level, subsystem) in [
             (100, LogLevel::Info, "pipeline"),
