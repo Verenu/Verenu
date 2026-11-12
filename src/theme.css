@@ -100,6 +100,7 @@
   --page-pad-x: clamp(18px, 3vw, 42px);
   --page-pad-y: clamp(16px, 2.4vw, 30px);
   --page-max: 1160px;
+  --page-column: 920px;
   --page-readable: 680px;
 
   --sidebar-w: 220px;

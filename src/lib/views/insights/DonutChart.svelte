@@ -434,7 +434,7 @@
   .donut {
     display: flex;
     align-items: center;
-    gap: 18px;
+    gap: 28px;
     flex-wrap: wrap;
   }
 
@@ -481,8 +481,8 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    flex: 0 1 560px;
-    width: min(100%, 560px);
+    flex: 0 1 340px;
+    width: min(100%, 340px);
     min-width: 0;
     display: flex;
     flex-direction: column;

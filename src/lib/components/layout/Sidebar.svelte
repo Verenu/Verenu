@@ -797,7 +797,7 @@
 
 {#if contextMenu && menuContext}
   <div
-    class="ui-dropdown-menu ctx-menu"
+    class="ui-dropdown-menu ui-dropdown-menu--padded ctx-menu"
     role="menu"
     tabindex="-1"
     bind:this={contextMenuEl}
@@ -1452,8 +1452,9 @@
     max-width: 200px;
   }
   .ctx-menu-delete { transition: color .15s ease, background-color .15s ease; }
-  .ctx-menu-delete:hover { color: var(--danger); }
-  .ctx-menu-delete.is-armed { color: var(--danger); font-weight: 500; background: var(--danger-bg); }
+  .ctx-menu .ctx-menu-delete:hover { color: var(--danger); }
+  .ctx-menu .ctx-menu-delete.is-armed,
+  .ctx-menu .ctx-menu-delete.is-armed:hover { color: var(--danger); font-weight: 500; background: var(--danger-bg); }
 
   .dl-panel {
     margin: 0 8px 6px;

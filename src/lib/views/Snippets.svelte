@@ -202,6 +202,8 @@
     min-width: 0;
   }
 
+  :global(.app.app-linux) .page-h { margin-top: var(--native-chrome-below-clearance); }
+
   .page-h {
     font-family: var(--sans);
     font-size: 23px;

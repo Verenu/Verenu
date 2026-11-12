@@ -5,7 +5,8 @@
   import { portal } from '../portal';
   import { encodeContextIcon, parseContextIcon, iconText, iconKindFor } from '../contextIcon';
   import { onMount, tick, untrack } from 'svelte';
-  import { fly, slide } from 'svelte/transition';
+  import { fade, fly, slide } from 'svelte/transition';
+  import Callout from '../components/Callout.svelte';
   import { crossfade } from 'svelte/transition';
   import { flip } from 'svelte/animate';
   import { cubicOut, expoOut } from 'svelte/easing';
@@ -1085,11 +1086,14 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
+{#snippet plusIcon()}
+  <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+{/snippet}
+
 <div class="content-inner contexts-page" class:modal-open={modal !== null}>
   {#if contextErrorMessage}
-    <div class="load-warning" role="alert">
-      <span>{contextErrorMessage}</span>
-      <button class="btn-ghost" type="button" onclick={() => contextErrorMessage = ''}>Dismiss</button>
+    <div class="load-warning">
+      <Callout severity="error" onDismiss={() => contextErrorMessage = ''}>{contextErrorMessage}</Callout>
     </div>
   {/if}
 
@@ -1122,130 +1126,30 @@
           out:pageSwap|global={{ axis: 'y', distance: -contextsStore.selectDir * motionPx(MOTION_PX.lift), duration: motionMs(MOTION_MS.base) }}
         >
         <div class="context-header">
-          <div>
-            <h2>{selectedContext.name}</h2>
+          <div class="context-title">
+            <div class="context-title-row">
+              <h2>{selectedContext.name}</h2>
+              {#if !isAndroid}
+                <button class="icon-btn context-edit-icon" type="button" aria-label="Edit context group" title="Edit context group" onclick={() => openContextModal('edit', selectedContext.id)}>
+                  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /></svg>
+                </button>
+              {/if}
+            </div>
             <p>{selectedContext.is_everywhere ? 'Used for every dictation. Matching context groups can override style and add instructions or content.' : 'Layers over Everywhere when this context group matches.'}</p>
             {#if isAndroid}
               <button class="btn-ghost btn-compact context-edit-btn" type="button" onclick={() => openContextModal('edit', selectedContext.id)}>Edit context group</button>
             {/if}
           </div>
-          {#if !selectedContext.is_everywhere}
-            <div class="context-actions">
-              <button class="btn-ghost btn-compact app-picker-trigger" type="button" bind:this={appPickerTrigger} onclick={() => void toggleAppPicker()} aria-expanded={appPickerOpen} aria-haspopup="listbox">
-                Add app
-                <svg class="ui-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-              </button>
-              {#if appPickerOpen}
-                <div class="app-picker ui-dropdown-menu" use:portalOnAndroid role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
-                  <input
-                    class="ui-input ui-input--dense app-picker-search"
-                    type="text"
-                    role="combobox"
-                    aria-expanded="true"
-                    aria-controls={appPickerMenuId}
-                    placeholder="Search apps…"
-                    bind:value={appPickerQuery}
-                    bind:this={appPickerInput}
-                    onkeydown={handleAppPickerInputKeydown}
-                    autocomplete="off"
-                  />
-                  <div id={appPickerMenuId} role="listbox" aria-label="Apps" class="app-picker-list">
-                    {#if appPickerMatches.length === 0}
-                      <span class="picker-empty">{installedApps.length === 0 ? 'No apps discovered yet.' : 'No matching apps.'}</span>
-                    {:else}
-                      {#each appPickerMatches as app (app.exe)}
-                        <button
-                          class="ui-dropdown-option"
-                          type="button"
-                          role="option"
-                          aria-selected="false"
-                          onclick={() => void assignApp(app)}
-                          onkeydown={(event) => handleListboxOptionKeydown(event, appPickerMenuId, () => appPickerInput?.focus())}
-                        >
-                          <AppIcon exe={app.exe} label={app.name} size={16} />
-                          <span>{cleanAppName(app.name || app.exe)}</span>
-                          {#if !isAndroid}<span class="app-exe">{app.exe}</span>{/if}
-                        </button>
-                      {/each}
-                    {/if}
-                  </div>
-                </div>
-              {/if}
-              <button class="btn-ghost btn-compact app-picker-trigger" type="button" bind:this={websitePickerTrigger} onclick={() => void toggleWebsitePicker()} aria-expanded={websitePickerOpen} aria-haspopup="dialog">
-                Add website
-              </button>
-              {#if websitePickerOpen}
-                <div class="app-picker ui-dropdown-menu website-picker" use:portalOnAndroid role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
-                  <input
-                    class="ui-input ui-input--dense app-picker-search"
-                    type="text"
-                    placeholder="mail.google.com"
-                    bind:value={websiteInput}
-                    bind:this={websiteInputEl}
-                    oninput={() => websiteError = ''}
-                    onkeydown={handleWebsiteInputKeydown}
-                    autocomplete="off"
-                  />
-                  {#if websiteInput.trim() && !websiteError}
-                    <p class="domain-preview" class:is-valid={websiteValid}>
-                      {#if websiteValid}
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                        Will match <strong>{websitePreview}</strong>
-                      {:else}
-                        That doesn't look like a domain yet
-                      {/if}
-                    </p>
-                  {/if}
-                  {#if websiteError}<p class="save-error">{websiteError}</p>{/if}
-                  <button class="btn-primary btn-compact" type="button" onclick={() => void assignWebsite()} disabled={!websiteValid}>Add</button>
-                </div>
-              {/if}
-              {#if !isAndroid}
-              <button class="btn-ghost btn-compact app-picker-trigger" type="button" onclick={toggleSubAppPicker} aria-expanded={subAppPickerOpen} aria-haspopup="listbox">
-                Add sub-app
-                <svg class="ui-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-              </button>
-              {/if}
-              {#if subAppPickerOpen}
-                <div class="app-picker ui-dropdown-menu sub-app-picker" role="listbox" aria-label="Sub-apps" tabindex="-1" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
-                  {#if unassignedSubApps.length === 0}
-                    <span class="picker-empty">
-                      {#if desktopShortcut('capture')?.active === null}
-                      No sub-apps to add. Choose an available capture shortcut in Settings → Sub-apps.
-                      {:else}
-                      No sub-apps to add. Focus a window and press
-                      {#each captureKeys as key, index}{#if index > 0}+{/if}<kbd>{key}</kbd>{/each}
-                      to capture one.
-                      {/if}
-                    </span>
-                  {:else}
-                    <div class="app-picker-list">
-                      {#each unassignedSubApps as subApp (subApp.id)}
-                        <button class="ui-dropdown-option" type="button" role="option" aria-selected="false" onclick={() => void assignSubApp(subApp)}>
-                          <SubAppIcon {subApp} label={appLabel(subApp.executable, subApp)} />
-                          <span>{subApp.label}</span>
-                          <span class="app-exe">{appLabel(subApp.executable, subApp)}</span>
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
+          {#if contextStats && contextStats.dictations > 0}
+            <div class="context-stats" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
+              <span class="context-stat"><strong>{contextStats.words.toLocaleString()}</strong> {contextStats.words === 1 ? 'word' : 'words'}</span>
+              <span class="context-stat"><strong>{contextStats.dictations.toLocaleString()}</strong> {contextStats.dictations === 1 ? 'dictation' : 'dictations'}</span>
+              {#if contextStats.last_used_at}
+                <span class="context-stat context-stat-last"><strong>{fmtDictionaryDate(contextStats.last_used_at)}</strong> last used</span>
               {/if}
             </div>
           {/if}
         </div>
-
-        {#if contextStats && contextStats.dictations > 0}
-          <div class="context-stats" in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }}>
-            <span class="context-stat"><strong>{contextStats.words.toLocaleString()}</strong> {contextStats.words === 1 ? 'word' : 'words'}</span>
-            <span class="context-stat-sep" aria-hidden="true">·</span>
-            <span class="context-stat"><strong>{contextStats.dictations.toLocaleString()}</strong> {contextStats.dictations === 1 ? 'dictation' : 'dictations'}</span>
-            {#if contextStats.last_used_at}
-              <span class="context-stat-sep" aria-hidden="true">·</span>
-              <span class="context-stat">last used {fmtDictionaryDate(contextStats.last_used_at)}</span>
-            {/if}
-          </div>
-        {/if}
 
         {#if !selectedContext.is_everywhere}
           <div class="target-strip">
@@ -1290,7 +1194,110 @@
                 </button>
               </span>
             {/each}
-            {#if selectedTargets.length === 0 && selectedWebsites.length === 0 && selectedSubApps.length === 0}<span class="target-empty">No apps or sites assigned yet</span>{/if}
+            {#if selectedTargets.length === 0 && selectedWebsites.length === 0 && selectedSubApps.length === 0}<span class="target-empty">None yet. Add one so this group applies automatically.</span>{/if}
+            <div class="context-actions">
+              <button class="target-add app-picker-trigger" type="button" bind:this={appPickerTrigger} onclick={() => void toggleAppPicker()} aria-label="Add app" aria-expanded={appPickerOpen} aria-haspopup="listbox">
+                {@render plusIcon()}App
+              </button>
+              {#if appPickerOpen}
+                <div class="app-picker ui-dropdown-menu ui-dropdown-menu--padded" use:portalOnAndroid role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
+                  <input
+                    class="ui-input ui-input--dense app-picker-search"
+                    type="text"
+                    role="combobox"
+                    aria-expanded="true"
+                    aria-controls={appPickerMenuId}
+                    placeholder="Search apps…"
+                    bind:value={appPickerQuery}
+                    bind:this={appPickerInput}
+                    onkeydown={handleAppPickerInputKeydown}
+                    autocomplete="off"
+                  />
+                  <div id={appPickerMenuId} role="listbox" aria-label="Apps" class="app-picker-list">
+                    {#if appPickerMatches.length === 0}
+                      <span class="picker-empty">{installedApps.length === 0 ? 'No apps discovered yet.' : 'No matching apps.'}</span>
+                    {:else}
+                      {#each appPickerMatches as app (app.exe)}
+                        <button
+                          class="ui-dropdown-option"
+                          type="button"
+                          role="option"
+                          aria-selected="false"
+                          onclick={() => void assignApp(app)}
+                          onkeydown={(event) => handleListboxOptionKeydown(event, appPickerMenuId, () => appPickerInput?.focus())}
+                        >
+                          <AppIcon exe={app.exe} label={app.name} size={16} />
+                          <span>{cleanAppName(app.name || app.exe)}</span>
+                          {#if !isAndroid}<span class="app-exe">{app.exe}</span>{/if}
+                        </button>
+                      {/each}
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+              <button class="target-add app-picker-trigger" type="button" bind:this={websitePickerTrigger} onclick={() => void toggleWebsitePicker()} aria-label="Add website" aria-expanded={websitePickerOpen} aria-haspopup="dialog">
+                {@render plusIcon()}Website
+              </button>
+              {#if websitePickerOpen}
+                <div class="app-picker ui-dropdown-menu ui-dropdown-menu--padded website-picker" use:portalOnAndroid role="presentation" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
+                  <div class="website-picker-row">
+                    <input
+                      class="ui-input ui-input--dense app-picker-search"
+                      type="text"
+                      placeholder="mail.google.com"
+                      aria-label="Website domain"
+                      bind:value={websiteInput}
+                      bind:this={websiteInputEl}
+                      oninput={() => websiteError = ''}
+                      onkeydown={handleWebsiteInputKeydown}
+                      autocomplete="off"
+                    />
+                    <button class="btn-primary btn-compact" type="button" onclick={() => void assignWebsite()} disabled={!websiteValid}>Add</button>
+                  </div>
+                  {#if websiteInput.trim() && !websiteError}
+                    <p class="domain-preview" class:is-valid={websiteValid}>
+                      {#if websiteValid}
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                        Will match <strong>{websitePreview}</strong>
+                      {:else}
+                        That doesn't look like a domain yet
+                      {/if}
+                    </p>
+                  {/if}
+                  {#if websiteError}<p class="save-error">{websiteError}</p>{/if}
+                </div>
+              {/if}
+              {#if !isAndroid}
+              <button class="target-add app-picker-trigger" type="button" onclick={toggleSubAppPicker} aria-label="Add sub-app" aria-expanded={subAppPickerOpen} aria-haspopup="listbox">
+                {@render plusIcon()}Sub-app
+              </button>
+              {/if}
+              {#if subAppPickerOpen}
+                <div class="app-picker ui-dropdown-menu ui-dropdown-menu--padded sub-app-picker" role="listbox" aria-label="Sub-apps" tabindex="-1" onpointerdown={(event) => event.stopPropagation()} in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}>
+                  {#if unassignedSubApps.length === 0}
+                    <span class="picker-empty">
+                      {#if desktopShortcut('capture')?.active === null}
+                      No sub-apps to add. Choose an available capture shortcut in Settings → Sub-apps.
+                      {:else}
+                      No sub-apps to add. Focus a window and press
+                      {#each captureKeys as key, index}{#if index > 0}+{/if}<kbd>{key}</kbd>{/each}
+                      to capture one.
+                      {/if}
+                    </span>
+                  {:else}
+                    <div class="app-picker-list">
+                      {#each unassignedSubApps as subApp (subApp.id)}
+                        <button class="ui-dropdown-option" type="button" role="option" aria-selected="false" onclick={() => void assignSubApp(subApp)}>
+                          <SubAppIcon {subApp} label={appLabel(subApp.executable, subApp)} />
+                          <span>{subApp.label}</span>
+                          <span class="app-exe">{appLabel(subApp.executable, subApp)}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
           </div>
         {/if}
 
@@ -1320,7 +1327,7 @@
           <div class="library-search">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
             <input class="ui-input ui-input--dense" type="text" placeholder={tab === 'vocabulary' ? 'Search vocabulary…' : 'Search snippets…'} bind:value={search} aria-label="Search this context group" />
-            {#if search}<button class="clear-btn ui-focus-ring" type="button" aria-label="Clear search" onclick={() => search = ''}>×</button>{/if}
+            {#if search}<button class="clear-btn ui-focus-ring" type="button" aria-label="Clear search" onclick={() => search = ''}><svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>{/if}
           </div>
           <button class="btn-primary btn-compact" type="button" onclick={tab === 'vocabulary' ? openAddDictionary : openAddSnippet}>
             {tab === 'vocabulary' ? '+ Term' : '+ Snippet'}
@@ -1341,17 +1348,12 @@
               {:else if tab === 'vocabulary'}
                 {#if filteredDictionary.length === 0}
                   <div class="section-empty">
-                    <div class="section-empty-mark" aria-hidden="true">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></svg>
-                    </div>
-                    <div>
-                      <p>{search ? 'No matching terms' : 'No vocabulary in this context group'}</p>
-                      <span>{search ? 'Try a different search.' : 'Add terms Verenu should recognize here.'}</span>
-                    </div>
+                    <p>{search ? 'No matching terms' : 'No vocabulary in this context group'}</p>
+                    <span>{search ? 'Try a different search.' : 'Add terms Verenu should recognize here.'}</span>
                     {#if search}
                       <button class="btn-ghost btn-compact" type="button" onclick={() => search = ''}>Clear search</button>
                     {:else}
-                      <button class="btn-primary btn-compact" type="button" onclick={openAddDictionary}>Add term</button>
+                      <button class="btn-ghost btn-compact" type="button" onclick={openAddDictionary}>Add term</button>
                     {/if}
                   </div>
                 {:else}
@@ -1390,17 +1392,12 @@
               {:else}
                 {#if filteredSnippets.length === 0}
                   <div class="section-empty">
-                    <div class="section-empty-mark" aria-hidden="true">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2Z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>
-                    </div>
-                    <div>
-                      <p>{search ? 'No matching snippets' : 'No snippets in this context group'}</p>
-                      <span>{search ? 'Try a different search.' : 'Add a spoken trigger for repeated text.'}</span>
-                    </div>
+                    <p>{search ? 'No matching snippets' : 'No snippets in this context group'}</p>
+                    <span>{search ? 'Try a different search.' : 'Add a spoken trigger for repeated text.'}</span>
                     {#if search}
                       <button class="btn-ghost btn-compact" type="button" onclick={() => search = ''}>Clear search</button>
                     {:else}
-                      <button class="btn-primary btn-compact" type="button" onclick={openAddSnippet}>Add snippet</button>
+                      <button class="btn-ghost btn-compact" type="button" onclick={openAddSnippet}>Add snippet</button>
                     {/if}
                   </div>
                 {:else}
@@ -1446,7 +1443,7 @@
 
 {#if openRowMenu && rowMenuPos}
   <div
-    class="ui-dropdown-menu row-menu-fixed"
+    class="ui-dropdown-menu ui-dropdown-menu--padded row-menu-fixed"
     use:portal
     use:fitMenuToViewport={rowMenuPos.above}
     role="menu"
@@ -1781,7 +1778,7 @@
   {#if modalAppQuery.trim() && modalAppMatchPos}
     <div
       id="context-app-matches"
-      class="ui-dropdown-menu modal-app-matches"
+      class="ui-dropdown-menu ui-dropdown-menu--padded modal-app-matches"
       use:portal
       role="listbox"
       tabindex="-1"
@@ -1813,7 +1810,7 @@
   {/if}
   {#if openFieldMenu && fieldMenuPos}
     <div
-      class="ui-dropdown-menu field-menu-fixed"
+      class="ui-dropdown-menu ui-dropdown-menu--padded field-menu-fixed"
       use:portal
       use:fitMenuToViewport={fieldMenuPos.above}
       role="listbox"
@@ -1824,18 +1821,18 @@
       in:fly={{ y: motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.fast) }} out:fly={{ y: motionPx(MOTION_PX.nudge) * 0.6, duration: motionMs(120) }}
     >
       {#if openFieldMenu === 'tone'}
-        <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalTone === null} onclick={() => { modalTone = null; closeFieldMenu(); }}>{inheritedStyleLabel('tone')}</button>
+        <button class="ui-dropdown-option" type="button" role="option" class:active={modalTone === null} aria-selected={modalTone === null} onclick={() => { modalTone = null; closeFieldMenu(); }}>{inheritedStyleLabel('tone')}</button>
         {#each profileOptions as profile}
-          <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalTone === profile.id} onclick={() => { modalTone = profile.id; closeFieldMenu(); }}>{profile.label}</button>
+          <button class="ui-dropdown-option" type="button" role="option" class:active={modalTone === profile.id} aria-selected={modalTone === profile.id} onclick={() => { modalTone = profile.id; closeFieldMenu(); }}>{profile.label}</button>
         {/each}
       {:else if openFieldMenu === 'cleanup'}
-        <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalCleanupIntensity === null} onclick={() => { modalCleanupIntensity = null; closeFieldMenu(); }}>{inheritedStyleLabel('cleanup')}</button>
+        <button class="ui-dropdown-option" type="button" role="option" class:active={modalCleanupIntensity === null} aria-selected={modalCleanupIntensity === null} onclick={() => { modalCleanupIntensity = null; closeFieldMenu(); }}>{inheritedStyleLabel('cleanup')}</button>
         {#each cleanupIntensityOptions as choice}
-          <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalCleanupIntensity === choice.id} onclick={() => { modalCleanupIntensity = choice.id; closeFieldMenu(); }}>{choice.label}</button>
+          <button class="ui-dropdown-option" type="button" role="option" class:active={modalCleanupIntensity === choice.id} aria-selected={modalCleanupIntensity === choice.id} onclick={() => { modalCleanupIntensity = choice.id; closeFieldMenu(); }}>{choice.label}</button>
         {/each}
       {:else}
         {#each contextualFormattingOptions as option}
-          <button class="ui-dropdown-option" type="button" role="option" aria-selected={modalContextualFormattingChoice === option.value} onclick={() => { modalContextualFormattingChoice = option.value; closeFieldMenu(); }}>{option.value === 'inherit' && isEditingEverywhere() ? 'Use app setting' : option.label}</button>
+          <button class="ui-dropdown-option" type="button" role="option" class:active={modalContextualFormattingChoice === option.value} aria-selected={modalContextualFormattingChoice === option.value} onclick={() => { modalContextualFormattingChoice = option.value; closeFieldMenu(); }}>{option.value === 'inherit' && isEditingEverywhere() ? 'Use app setting' : option.label}</button>
         {/each}
       {/if}
     </div>
@@ -1844,24 +1841,12 @@
 
 <style>
   .content-inner {
-    width: min(100%, var(--page-max));
+    width: min(100%, var(--page-column));
     margin-inline: auto;
     padding: var(--page-pad-y) var(--page-pad-x) 36px;
     min-width: 0;
   }
-  .load-warning {
-    margin: 0 0 16px;
-    padding: 8px 10px;
-    border-radius: var(--r-sm);
-    border: 1px solid var(--danger-line);
-    background: var(--danger-bg);
-    color: var(--danger);
-    font-size: 11.5px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-  }
+  .load-warning { margin: 0 0 16px; }
   .contexts-page { min-width: 0; }
 
   .ctx-chips { display: none; }
@@ -1926,28 +1911,34 @@
   }
   .context-header, .target-strip, .library-toolbar { display: flex; align-items: center; }
   .context-main { min-width: 0; position: relative; }
-  .context-stats {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 7px;
-    margin: -8px 0 16px;
-    font-size: 11.5px;
-    color: var(--ink-mute);
-  }
-  .context-stats strong { color: var(--ink-soft); font-weight: 550; font-variant-numeric: tabular-nums; }
-  .context-stat-sep { color: var(--ink-faint); }
-  .context-header { justify-content: space-between; gap: 16px; margin-bottom: 16px; position: relative; z-index: 2; }
-  .context-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; position: relative; z-index: 2; }
-  .context-header h2 { font-family: var(--sans); font-size: 23px; font-weight: 600; letter-spacing: -.025em; line-height: 1.1; margin: 4px 0 6px; color: var(--ink); }
-  .context-header p { color: var(--ink-mute); font-size: 12px; margin: 0; line-height: 1.45; }
-  .target-strip { flex-wrap: wrap; gap: 6px; padding: 9px 0 14px; border-top: 1px solid var(--line-soft); }
-  .target-label { color: var(--ink-mute); font-family: var(--sans); font-size: 11px; letter-spacing: 0; text-transform: none; margin-right: 3px; }
-  .target-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px 4px 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-elev); color: var(--ink-soft); font-size: 11px; }
-  .target-chip button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 16px; width: 16px; height: 16px; border: 0; background: transparent; color: var(--ink-faint); padding: 0; line-height: 0; cursor: pointer; border-radius: 4px; }
+  .context-header { align-items: flex-end; justify-content: space-between; gap: 16px 28px; margin-bottom: 20px; }
+  :global(.app.app-linux) .context-header { margin-top: var(--native-chrome-below-clearance); }
+  .context-title { min-width: 0; }
+  .context-title-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; min-width: 0; }
+  .context-header h2 { font-family: var(--sans); font-size: 23px; font-weight: 600; letter-spacing: -.025em; line-height: 1.1; margin: 0; color: var(--ink); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .context-header p { color: var(--ink-mute); font-size: 12.5px; margin: 0; line-height: 1.45; }
+  .context-edit-icon { color: var(--ink-faint); opacity: 0; transition: opacity var(--ui-duration-fast) var(--ui-ease-out), background-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out); }
+  .context-header:hover .context-edit-icon, .context-edit-icon:focus-visible { opacity: 1; }
+  @media (hover: none) { .context-edit-icon { opacity: 1; } }
+  .context-edit-btn { margin-top: 10px; }
+  /* The same number-over-label readout as the Home header, so every page reports usage the same way. */
+  .context-stats { display: flex; align-items: flex-end; gap: 28px; flex: none; }
+  .context-stat { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; font-size: 11.5px; line-height: 1.2; color: var(--ink-mute); white-space: nowrap; }
+  .context-stat strong { font-size: 20px; font-weight: 600; letter-spacing: -.02em; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .target-strip { flex-wrap: wrap; gap: 6px; margin-bottom: 22px; padding: 9px 9px 9px 14px; min-height: 46px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-elev); position: relative; z-index: 2; }
+  .target-label { color: var(--ink-mute); font-family: var(--sans); font-size: 12px; margin-right: 6px; }
+  .target-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 5px 0 5px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink-soft); font-size: 12px; }
+  .target-chip button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 16px; width: 16px; height: 16px; border: 0; background: transparent; color: var(--ink-faint); padding: 0; line-height: 0; cursor: pointer; border-radius: 4px; transition: background-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out); }
   .target-chip button svg { display: block; flex: 0 0 auto; }
   .target-chip button:hover { color: var(--danger); background: var(--danger-bg); }
-  .target-empty { color: var(--ink-faint); font-size: 11px; font-style: italic; }
+  .target-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .target-empty { color: var(--ink-faint); font-size: 12px; }
+  .context-actions { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; position: relative; }
+  .target-add { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--ink-mute); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; transition: background-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out); }
+  .target-add:hover, .target-add[aria-expanded='true'] { background: var(--control-active); color: var(--ink); }
+  .target-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .website-picker-row { display: flex; align-items: center; gap: 6px; }
+  .website-picker-row .ui-input { flex: 1; min-width: 0; }
   .sub-app-picker { width: min(300px, calc(100vw - 64px)); }
   .sub-app-picker .picker-empty { line-height: 1.6; }
   .sub-app-picker kbd { font-family: var(--mono); font-size: 10px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper-2); color: var(--ink-mute); }
@@ -1963,10 +1954,10 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    padding: 8px;
+    padding: 6px;
   }
   .app-picker-search { flex: 0 0 auto; width: 100%; }
-  .app-picker-list { min-height: 0; max-height: 240px; overflow: auto; display: flex; flex-direction: column; gap: 1px; }
+  .app-picker-list { min-height: 0; max-height: 240px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
   .website-picker { width: min(280px, calc(100vw - 64px)); }
   .ui-dropdown-option { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; }
   .app-exe { color: var(--ink-faint); font-family: var(--mono); font-size: 10px; margin-left: auto; }
@@ -2018,10 +2009,10 @@
     flex-wrap: wrap;
     gap: 20px;
     border-bottom: 1px solid var(--line);
-    margin-bottom: 14px;
+    margin-bottom: 12px;
   }
   .tab {
-    padding: 0 0 9px;
+    padding: 0 0 10px;
     font-size: 13px;
     color: var(--ink-mute);
     border: 0;
@@ -2035,41 +2026,46 @@
   .tab:hover { color: var(--ink-soft); }
   .tab.active { color: var(--ink); font-weight: 500; }
   .active-bar { position: absolute; bottom: -1px; left: 0; right: 0; height: 1px; background: var(--ink); }
-  .tab-count { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); background: var(--bg-elev); border: 1px solid var(--line); border-radius: 99px; padding: 1px 6px; }
+  .tab-count { font-size: 12px; font-weight: 400; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
   .tab.active .tab-count { color: var(--ink-mute); }
   .tab-panel { min-width: 0; transition: opacity .18s ease; }
   .tab-panel.is-refreshing { opacity: .5; }
-  .library-toolbar { gap: 7px; flex-wrap: wrap; margin: 4px 0 16px; }
-  .library-search { flex: 1 1 190px; min-width: 150px; height: 32px; padding: 0 9px; display: flex; align-items: center; gap: 7px; background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-mute); }
-  .library-search .ui-input { min-width: 0; flex: 1; border-color: transparent; background: transparent; }
-  .library-search .ui-input:focus-visible { border-color: var(--line-strong); outline: none; }
-  .clear-btn { border: 0; background: transparent; color: var(--ink-mute); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
-  .section-empty { min-height: 112px; display: flex; align-items: center; gap: 12px; padding: 18px 16px; border: 1px dashed var(--line); border-radius: var(--r-md); background: color-mix(in srgb, var(--bg-elev) 62%, transparent); }
-  .section-empty-mark { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: 0 0 30px; background: var(--paper); color: var(--ink-faint); }
-  .section-empty p { margin: 0 0 2px; color: var(--ink-soft); font-size: 12px; font-weight: 500; }
-  .section-empty span { display: block; color: var(--ink-mute); font-size: 11px; line-height: 1.4; }
-  .section-empty .btn-compact { margin-left: auto; flex: 0 0 auto; }
-  .item-list { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: var(--bg-elev); }
-  .item-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 14px; padding: 11px 8px 11px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
-  .item-row:last-child { border-bottom: 0; }
-  .item-row:hover { background: var(--control-hover); }
+  .library-toolbar { gap: 8px; margin: 0 0 6px; }
+  .library-toolbar .btn-primary { flex: none; }
+  .library-search { flex: 1 1 120px; min-width: 0; height: 30px; padding: 0 6px 0 10px; display: flex; align-items: center; gap: 8px; background: transparent; border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink-faint); transition: border-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out); }
+  .library-search:hover { border-color: var(--line-strong); }
+  .library-search:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong)); color: var(--ink-soft); }
+  .library-search .ui-input { min-width: 0; flex: 1; border: 0; padding: 0; background: transparent; font-size: 12.5px; }
+  .clear-btn { display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-mute); cursor: pointer; padding: 0; }
+  .clear-btn:hover { background: var(--control-active); color: var(--ink); }
+  .section-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 56px 4px 40px; }
+  .section-empty p { margin: 0; color: var(--ink-soft); font-size: 15px; font-weight: 500; }
+  .section-empty span { display: block; color: var(--ink-mute); font-size: 12.5px; line-height: 1.5; max-width: 380px; }
+  .section-empty .btn-compact { margin-top: 10px; }
+  /* Hairline rows on the page, like Home history, instead of a boxed table. */
+  .item-list { border-bottom: 1px solid var(--line); }
+  .item-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 14px; min-height: 48px; padding: 8px 2px 8px 6px; border-top: 1px solid var(--line); cursor: pointer; transition: background-color var(--ui-duration-fast) var(--ui-ease-out); }
+  .item-row:first-child { border-top-color: transparent; }
+  .item-row:hover { background: color-mix(in srgb, var(--control-hover) 70%, transparent); }
   .item-row.inherited-only:not(.dictionary-customizable) { cursor: default; }
   .item-main { display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; }
   .item-term { font-size: 13px; font-weight: 500; color: var(--ink); flex-shrink: 0; }
   .item-auto-star { color: var(--accent); flex-shrink: 0; position: relative; top: -1px; }
   .item-often { font-family: var(--sans); font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--ink-mute); flex-shrink: 0; }
   .item-arrow { color: var(--ink-faint); flex-shrink: 0; }
-  .item-detail { font-size: 12.5px; color: var(--ink-mute); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-  .item-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
-  .item-kebab { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-faint); cursor: pointer; flex-shrink: 0; }
+  .item-detail { font-size: 12.5px; color: var(--ink-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .item-meta { display: flex; align-items: baseline; gap: 14px; font-size: 11.5px; color: var(--ink-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .item-kebab { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-faint); cursor: pointer; flex-shrink: 0; transition: background-color var(--ui-duration-fast) var(--ui-ease-out), color var(--ui-duration-fast) var(--ui-ease-out); }
+  .item-kebab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .item-kebab:hover, .item-kebab[aria-expanded="true"] { background: var(--control-active); color: var(--ink-soft); }
   .row-menu-fixed { position: fixed; z-index: 60; min-width: 140px; max-width: 220px; }
-  .row-menu-move-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; }
+  .row-menu-move-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
   .row-menu-move-list .ui-dropdown-option { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row-menu-back { color: var(--ink-mute); }
   .row-menu-delete { transition: color .15s ease, background-color .15s ease; }
-  .row-menu-delete:hover { color: var(--danger); }
-  .row-menu-delete.is-armed { color: var(--danger); font-weight: 500; background: var(--danger-bg); }
+  .row-menu-fixed .row-menu-delete:hover { color: var(--danger); }
+  .row-menu-fixed .row-menu-delete.is-armed,
+  .row-menu-fixed .row-menu-delete.is-armed:hover { color: var(--danger); font-weight: 500; background: var(--danger-bg); }
   @media (max-width: 720px) {
     .item-row { grid-template-columns: 1fr auto; }
     .item-meta { display: none; }
@@ -2108,7 +2104,8 @@
   .domain-preview { display: flex; align-items: center; gap: 5px; color: var(--ink-faint); font-size: 11px; margin: 5px 0 0; }
   .domain-preview.is-valid { color: var(--ink-mute); }
   .domain-preview svg { color: var(--accent); flex-shrink: 0; }
-  .ui-modal-foot { display: flex; flex-direction: column; gap: 10px; }
+  /* The body scrolls under the footer, so the footer needs an edge. */
+  .ui-modal-foot { display: flex; flex-direction: column; gap: 10px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
   .save-error { color: var(--danger); background: var(--danger-bg); border: 1px solid var(--danger-line); border-radius: var(--r-sm); font-size: 11.5px; margin: 0; padding: 6px 10px; }
 
   @media (max-width: 900px) {
@@ -2116,7 +2113,8 @@
   }
   @media (max-width: 650px) {
     .context-header { align-items: flex-start; flex-direction: column; }
-    .section-empty { align-items: flex-start; flex-wrap: wrap; }
-    .section-empty .btn-compact { margin-left: 42px; }
+    .context-header h2 { white-space: normal; }
+    .context-stats { gap: 22px; }
+    .context-actions { margin-left: 0; width: 100%; justify-content: flex-start; }
   }
 </style>

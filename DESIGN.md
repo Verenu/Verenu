@@ -18,6 +18,10 @@ This is the source of truth for shared frontend controls. Use it before adding o
 
 Do not define `.btn-primary`, `.btn-ghost`, `.btn-danger`, `.ui-dropdown-*`, or their basic interactive states inside a Svelte component. Add a semantic modifier only for layout or content that the primitive cannot know, such as a menu width or text truncation.
 
+## Page layout
+
+Home, Insights, Style, and context group pages sit in one centered column, `--page-column` in `src/theme.css`. A page starts with its title and one line of description on the left and, where it has usage figures, a number-over-label readout on the right. On Linux the header takes `--native-chrome-below-clearance` as its top margin so the title clears the window controls and stays on the same line on every page. Settings keeps its own narrower measure and the legacy two-pane pages keep `--page-max`; both take the same top clearance, so only their left edge differs.
+
 ## Standard controls
 
 ### Buttons

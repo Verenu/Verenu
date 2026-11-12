@@ -258,7 +258,7 @@
         <div class="stat">
           <span class="stat-label">Longest streak</span>
           <span class="stat-value">{streak.longest_days} {streak.longest_days === 1 ? 'day' : 'days'}</span>
-          <span class="stat-sub">{fmtNumber(streak.longest_words)} words{#if longestRange} · {longestRange}{/if}</span>
+          <span class="stat-sub">{fmtNumber(streak.longest_words)} words{#if longestRange}{' · '}{longestRange}{/if}</span>
         </div>
         {#if bestWeekday}
           <div class="stat">
