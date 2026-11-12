@@ -77,6 +77,7 @@
   );
 
   const barWidth = $derived(daily.length > 0 ? Math.min(28, (W / daily.length) * 0.55) : 0);
+  const seriesBarWidth = $derived(github ? (barWidth - 2) / 2 : barWidth);
 
   let hover = $state<number | null>(null);
   let plotWidth = $state(0);
@@ -158,7 +159,7 @@
     aria-valuemax={Math.max(0, daily.length - 1)}
     aria-valuenow={selectedIndex}
     aria-valuetext={selectedDay ? `${fmtDayLong(selectedDay.day)}: ${fmtNumber(selectedDay.words)} words${github ? `, ${describeActivity(activity[selectedIndex])}` : ''}` : undefined}
-    aria-label={summary + (github ? ` ${activityRangeDescription(knownActivityTotal, activity, github)}. Lines use independent scales to compare trends.` : '') + ' Use arrow keys to explore each day.'}
+    aria-label={summary + (github ? ` ${activityRangeDescription(knownActivityTotal, activity, github)}. ${asBars ? 'Bars' : 'Lines'} use independent scales to compare trends.` : '') + ' Use arrow keys to explore each day.'}
     tabindex={daily.length ? 0 : undefined}
     onkeydown={onKey}
     onblur={() => { hover = null; }}
@@ -184,12 +185,24 @@
       {#if asBars}
         {#each daily as d, i}
           <rect
+            class="word-bar"
             x={x(i) - barWidth / 2}
             y={d.words > 0 ? y(d.words) : H - PAD_BOTTOM - 1}
-            width={barWidth}
+            width={seriesBarWidth}
             height={d.words > 0 ? Math.max(1, H - PAD_BOTTOM - y(d.words)) : 1}
             fill={hover === i ? 'var(--accent)' : 'color-mix(in srgb, var(--accent) 55%, transparent)'}
           ><title>{fmtDayLong(d.day)} — {fmtNumber(d.words)} words</title></rect>
+          {#if github && activity[i] !== null}
+            {@const count = activity[i] ?? 0}
+            <rect
+              class="github-bar"
+              x={x(i) + barWidth / 2 - seriesBarWidth}
+              y={count > 0 ? activityY(count) : H - PAD_BOTTOM - 1}
+              width={seriesBarWidth}
+              height={count > 0 ? Math.max(1, H - PAD_BOTTOM - activityY(count)) : 1}
+              fill={hover === i ? 'var(--success)' : 'color-mix(in srgb, var(--success) 55%, transparent)'}
+            ><title>{fmtDayLong(d.day)} — {describeActivity(count)}</title></rect>
+          {/if}
         {/each}
       {:else}
         <path d={areaPath} fill="color-mix(in srgb, var(--accent) 18%, transparent)" mask="url(#{gradientId}-mask)" class="area-path" />
@@ -203,7 +216,7 @@
           class="line-path"
         />
       {/if}
-      {#if github}
+      {#if github && !asBars}
         <path d={githubArea} fill="color-mix(in srgb, var(--success) 10%, transparent)" mask="url(#{gradientId}-mask)" />
         <path d={githubPath} fill="none" stroke="var(--success)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" class="github-line" />
       {/if}
