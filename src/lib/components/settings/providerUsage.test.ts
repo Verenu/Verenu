@@ -39,4 +39,18 @@ describe('providerUse', () => {
   it('treats missing settings as not in use', () => {
     expect(usageLabel(providerUse('xai', {}))).toBe('Not in use');
   });
+
+  it('falls back to the older model and provider fields the way the backend does', () => {
+    expect(usageLabel(providerUse('groq', {}))).toBe('Runs transcription and clean-up');
+    const legacy = { transcription_model: 'openai/whisper-1', cleanup_model: 'gpt-5-mini', cleanup_provider: 'openai' };
+    expect(providerUse('openai', legacy)).toEqual({ transcription: 'main', cleanup: 'main' });
+    expect(usageLabel(providerUse('groq', legacy))).toBe('Not in use');
+  });
+
+  it('counts the first fallback as running transcription when two models are compared', () => {
+    const dual = { ...settings, transcription_fallback_models: ['openai/gpt-4o-mini-transcribe', 'xai/grok-stt'], dual_transcription_enabled: true };
+    expect(providerUse('openai', dual).transcription).toBe('main');
+    expect(providerUse('xai', dual).transcription).toBe('backup');
+    expect(providerUse('openai', { ...dual, dual_transcription_enabled: false }).transcription).toBe('backup');
+  });
 });

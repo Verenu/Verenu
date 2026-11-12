@@ -253,7 +253,7 @@
             <div class="confirm" transition:slide={{ duration: motionMs(MOTION_MS.base), easing: cubicOut }}>
               <span>
                 {item.builtin ? `Remove the saved ${item.name} key?` : `Remove ${item.name} and its saved key?`}
-                {#if level !== 'idle'}Its models leave your {level === 'main' ? 'selection' : 'backups'}.{/if}
+                {#if level !== 'idle'}{item.builtin ? `${item.name} models stop working until you add a key again.` : `Its models leave your ${level === 'main' ? 'selection' : 'backups'}.`}{/if}
               </span>
               <button class="btn-danger btn-compact" type="button" disabled={busy} onclick={() => remove(item)}>{item.builtin ? 'Remove' : 'Remove provider'}</button>
               <button class="btn-ghost btn-compact" type="button" disabled={busy} onclick={() => (confirming = null)}>Cancel</button>
