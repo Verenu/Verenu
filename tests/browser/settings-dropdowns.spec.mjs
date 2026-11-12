@@ -33,7 +33,9 @@ async function waitForPanelMotion(target) {
   await expect(target).toBeVisible();
   await target.evaluate(async (element) => {
     const panel = element.closest('.panel-inner') ?? element;
-    const animations = panel.getAnimations({ subtree: true });
+    const animations = panel.getAnimations({ subtree: true }).filter((animation) =>
+      animation.effect?.getComputedTiming().iterations !== Infinity,
+    );
     await Promise.all(animations.map((animation) => animation.finished.catch(() => {})));
   });
 }
