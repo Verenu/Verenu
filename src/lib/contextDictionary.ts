@@ -160,6 +160,7 @@ export function normalizeContextDictionaryEntry(value: unknown, contextId: numbe
     inherited_from_everywhere: booleanValue(row.inherited_from_everywhere, false),
     assigned_to_context: booleanValue(row.assigned_to_context, true),
     term: requiredText(row.term ?? row.canonical_term, 'term'),
+    replacement_confidence: row.replacement_confidence === 'low' || row.replacement_confidence === 'high' ? row.replacement_confidence : 'default',
     mistake: nullableText(row.mistake) ?? correctionMistake,
     auto_learned: autoLearned,
     correction_count: correctionCount,
@@ -209,7 +210,8 @@ export async function editContextDictionaryEntry(
   contextId: number,
   term: string,
   mistake: string | null,
-  expected?: Pick<DictionaryEntry, 'term' | 'mistake'>,
+  expected?: Pick<DictionaryEntry, 'term' | 'mistake' | 'replacement_confidence'>,
+  replacementConfidence?: DictionaryEntry['replacement_confidence'],
 ): Promise<void> {
   const dictionaryId = dictionaryEntryId(entry);
   await invoke('edit_dictionary_entry', {
@@ -218,6 +220,7 @@ export async function editContextDictionaryEntry(
     term,
     mistake,
     expected,
+    replacementConfidence,
   });
 }
 

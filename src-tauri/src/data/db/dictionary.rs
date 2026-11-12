@@ -23,6 +23,8 @@ pub struct DictionaryCorrection {
 pub struct DictionaryEntry {
     pub id: i64,
     pub term: String,
+    #[serde(default = "default_replacement_confidence")]
+    pub replacement_confidence: String,
     pub mistake: Option<String>,
     pub auto_learned: bool,
     pub correction_count: i64,
@@ -43,10 +45,13 @@ pub struct DictionaryEntry {
     pub assigned_to_context: bool,
 }
 
+fn default_replacement_confidence() -> String { "default".to_string() }
+
 fn dictionary_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DictionaryEntry> {
     Ok(DictionaryEntry {
         id: row.get(0)?,
         term: row.get(1)?,
+        replacement_confidence: row.get(8)?,
         mistake: row.get(2)?,
         auto_learned: row.get::<_, i64>(3)? != 0,
         correction_count: row.get(4)?,
@@ -86,6 +91,7 @@ pub struct AutoLearnStatusSummary {
 #[derive(Debug)]
 struct LegacyDictionaryFields {
     term: String,
+    replacement_confidence: String,
     mistake: Option<String>,
     auto_learned: bool,
     correction_count: i64,
@@ -258,14 +264,14 @@ fn query_dictionary_conn(
 ) -> Result<Vec<DictionaryEntry>> {
     let canonical_sql = if context_id.is_some() {
         "SELECT d.id, d.term, d.mistake, d.auto_learned, d.correction_count,
-                d.confidence_tier, d.last_seen_at, d.created_at
+                d.confidence_tier, d.last_seen_at, d.created_at, d.replacement_confidence
            FROM dictionary d
            INNER JOIN dictionary_contexts dc ON dc.dictionary_id = d.id
           WHERE dc.context_id = ?1
           ORDER BY d.created_at DESC"
     } else {
         "SELECT id, term, mistake, auto_learned, correction_count, confidence_tier,
-                last_seen_at, created_at
+                last_seen_at, created_at, replacement_confidence
            FROM dictionary
           WHERE ?1 IS NULL
           ORDER BY created_at DESC"
@@ -277,6 +283,7 @@ fn query_dictionary_conn(
                 row.get(0)?,
                 LegacyDictionaryFields {
                     term: row.get(1)?,
+                    replacement_confidence: row.get(8)?,
                     mistake: row.get(2)?,
                     auto_learned: row.get::<_, i64>(3)? != 0,
                     correction_count: row.get(4)?,
@@ -349,6 +356,7 @@ fn materialize_dictionary_entry(
         return DictionaryEntry {
             id,
             term: legacy.term,
+            replacement_confidence: legacy.replacement_confidence,
             mistake: legacy.mistake,
             auto_learned: legacy.auto_learned,
             correction_count: legacy.correction_count,
@@ -389,6 +397,7 @@ fn materialize_dictionary_entry(
     DictionaryEntry {
         id,
         term: legacy.term,
+        replacement_confidence: legacy.replacement_confidence,
         mistake: (!mistake.is_empty()).then_some(mistake),
         auto_learned,
         correction_count,
@@ -920,7 +929,7 @@ pub fn move_dictionary_entry_by_term_to_context(
     let conn = lock_conn(db)?;
     Ok(conn.query_row(
         "SELECT id, term, mistake, auto_learned, correction_count, confidence_tier,
-                last_seen_at, created_at
+                last_seen_at, created_at, replacement_confidence
          FROM dictionary WHERE id = ?1",
         params![dictionary_id],
         dictionary_entry_from_row,
@@ -1593,12 +1602,25 @@ pub fn update_dictionary_entry_for_context(
 pub struct ExpectedDictionaryEntry {
     pub term: String,
     pub mistake: Option<String>,
+    #[serde(default)]
+    pub replacement_confidence: Option<String>,
 }
 
+#[cfg(test)]
 pub fn update_dictionary_entry_if_unchanged(
     db: &Db, context_id: Option<i64>, id: i64, term: &str, mistake: Option<&str>,
     expected: &ExpectedDictionaryEntry,
 ) -> Result<()> {
+    update_dictionary_entry_with_confidence(db, context_id, id, term, mistake, expected, None)
+}
+
+pub fn update_dictionary_entry_with_confidence(
+    db: &Db, context_id: Option<i64>, id: i64, term: &str, mistake: Option<&str>,
+    expected: &ExpectedDictionaryEntry, confidence: Option<&str>,
+) -> Result<()> {
+    if confidence.is_some_and(|value| !matches!(value, "low" | "default" | "high")) {
+        anyhow::bail!("Invalid replacement confidence");
+    }
     let normalized_term = require_nonempty_trimmed("Term", term)?;
     let normalized_mistake = normalize_optional_trimmed(mistake);
     validate_char_limit("Term", &normalized_term, DICTIONARY_ENTRY_CHAR_LIMIT)?;
@@ -1619,6 +1641,7 @@ pub fn update_dictionary_entry_if_unchanged(
             entry.mistake
         };
         entry.term == expected.term && mistake == expected.mistake
+            && expected.replacement_confidence.as_ref().is_none_or(|value| *value == entry.replacement_confidence)
     }) {
         anyhow::bail!("This vocabulary entry changed while you were editing. Close and reopen it before saving.");
     }
@@ -1639,6 +1662,9 @@ pub fn update_dictionary_entry_if_unchanged(
         }
     };
     update_dictionary_entry_for_context_conn(&tx, target, id, &normalized_term, normalized_mistake.as_deref())?;
+    if let Some(confidence) = confidence {
+        tx.execute("UPDATE dictionary SET replacement_confidence = ?1 WHERE id = ?2", params![confidence, id])?;
+    }
     tx.commit()?;
     Ok(())
 }

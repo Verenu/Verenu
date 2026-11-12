@@ -35,6 +35,7 @@ type DevSnippet = {
 type DevDictionaryEntry = {
   id: number;
   term: string;
+  replacement_confidence?: 'low' | 'default' | 'high';
   mistake: string | null;
   auto_learned: boolean;
   correction_count: number;
@@ -1830,6 +1831,8 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     }
     case 'edit_dictionary_entry': {
       const id = Number(args?.id);
+      const replacementConfidence = args?.replacementConfidence;
+      if (replacementConfidence !== undefined && replacementConfidence !== 'low' && replacementConfidence !== 'default' && replacementConfidence !== 'high') throw new Error('Invalid replacement confidence');
       const term = assertDevText(args?.term, 'Term').trim();
       const mistakeText = typeof args?.mistake === 'string' ? args.mistake.trim() : '';
       const mistake = mistakeText || null;
@@ -1855,7 +1858,7 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
         ? current.context_corrections?.map(item => item.mistake).join(', ') || null
         : current?.mistake;
       if (expected && typeof expected === 'object' && 'term' in expected && 'mistake' in expected &&
-          (!current || current.term !== expected.term || currentMistake !== expected.mistake)) {
+          (!current || current.term !== expected.term || currentMistake !== expected.mistake || ('replacement_confidence' in expected && (current.replacement_confidence ?? 'default') !== expected.replacement_confidence))) {
         throw new Error('This vocabulary entry changed while you were editing. Close and reopen it before saving.');
       }
       if (contextId !== null) {
@@ -1871,12 +1874,12 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
           bucket.push(id);
         }
         writeDevContextAssignments(assignments);
-        rows[index] = { ...rows[index], term };
+        rows[index] = { ...rows[index], term, replacement_confidence: replacementConfidence ?? rows[index].replacement_confidence };
         const correctionId = setDevDictionaryCorrection(id, contextId, mistake);
         writeDevList(DEV_DICTIONARY_KEY, rows);
         emitDevTauriEvent('verenu:dictionary-updated', { context_id: contextId, dictionary_id: id, correction_id: correctionId });
       } else {
-        rows[index] = { ...rows[index], term, mistake };
+        rows[index] = { ...rows[index], term, mistake, replacement_confidence: replacementConfidence ?? rows[index].replacement_confidence };
         writeDevList(DEV_DICTIONARY_KEY, rows);
         emitDevTauriEvent('verenu:dictionary-updated', { context_id: null, dictionary_id: id });
       }

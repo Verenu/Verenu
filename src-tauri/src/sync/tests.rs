@@ -763,6 +763,21 @@ fn test_dictionary_op(term: &str, ts_ms: i64) -> super::protocol::SyncOp {
     }
 }
 
+#[test]
+fn dictionary_confidence_syncs_and_old_payload_preserves_it() {
+    let db = test_db(&uuid("confidence-sync"));
+    let mut op = test_dictionary_op("SyntheticTerm", 100);
+    op.payload.as_mut().unwrap()["replacement_confidence"] = json!("high");
+    let conn = db.lock().unwrap();
+    engine::apply_ops(&conn, &[op.clone()]).unwrap();
+    op.ts_ms = 200;
+    op.origin_seq = 200;
+    op.payload.as_mut().unwrap().as_object_mut().unwrap().remove("replacement_confidence");
+    engine::apply_ops(&conn, &[op]).unwrap();
+    let confidence: String = conn.query_row("SELECT replacement_confidence FROM dictionary WHERE term='SyntheticTerm'", [], |r| r.get(0)).unwrap();
+    assert_eq!(confidence, "high");
+}
+
 fn correction_row_uuid(conn: &rusqlite::Connection, context_id: i64, dictionary_id: i64) -> String {
     conn.query_row(
         "SELECT uuid FROM dictionary_corrections

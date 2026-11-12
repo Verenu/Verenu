@@ -68,6 +68,15 @@ describe('Context dictionary DTO compatibility', () => {
     expect(entry.dictionary_id).toBe(4);
     expect(entry.correction_id).toBeNull();
     expect(entry.mistake).toBe('Ackme');
+    expect(entry.replacement_confidence).toBe('default');
+  });
+
+  it('preserves replacement confidence and sends it with the edit', async () => {
+    ipc.invoke.mockReset().mockResolvedValue(undefined);
+    const [entry] = normalizeContextDictionary([{ id: 4, term: 'Acme', mistake: 'Ackme', replacement_confidence: 'high', created_at: '2026-01-01T00:00:00Z' }], 1);
+    expect(entry.replacement_confidence).toBe('high');
+    await editContextDictionaryEntry(entry, 1, 'Acme', 'Ackme', { term: 'Acme', mistake: 'Ackme', replacement_confidence: 'high' }, 'low');
+    expect(ipc.invoke).toHaveBeenCalledWith('edit_dictionary_entry', expect.objectContaining({ replacementConfidence: 'low', expected: { term: 'Acme', mistake: 'Ackme', replacement_confidence: 'high' } }));
   });
 
   it('normalizes unknown correction confidence tiers to a safe value', () => {
