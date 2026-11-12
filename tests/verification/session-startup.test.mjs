@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cargoPackageNames, classifyPanicLocation, classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
+import { cargoPackageNames, classifyPanicLocation, classifyPanicOsError, classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
 
 test('backend identity comparison names stale source fields without exposing worktree paths', () => {
   const runner = { commit: 'runner-commit', fingerprint: 'a'.repeat(64), worktree: 'D:\\a\\Verenu\\Verenu' };
@@ -25,6 +25,12 @@ test('panic location includes only allowlisted sources and numeric lines', () =>
   assert.deepEqual(classifyPanicLocation("thread 'main' panicked at src/data/db/schema.rs:42:5:\nprivate"), { source: 'app-source', line: 42 });
   assert.equal(classifyPanicLocation("thread 'main' panicked at C:\\private\\secret.rs:20:5:\nprivate"), null);
   assert.equal(classifyPanicLocation('error: source example tauri-2.8.0/src/lib.rs:135:9'), null);
+});
+
+test('panic OS error classification retains only the numeric code', () => {
+  assert.equal(classifyPanicOsError("thread 'main' panicked at private.rs:42:5:\r\ncalled `Result::unwrap()` on an `Err` value: Os { code: 5, kind: PermissionDenied, message: \"private\" }"), 5);
+  assert.equal(classifyPanicOsError('compiler output Os { code: 5, kind: PermissionDenied }'), null);
+  assert.equal(classifyPanicOsError("thread 'main' panicked at private.rs:42:5:\nOs { code: 99999, kind: Other }"), null);
 });
 
 test('backend identity mismatch can include repo-relative digests without source contents', () => {

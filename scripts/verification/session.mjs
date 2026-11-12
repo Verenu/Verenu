@@ -54,6 +54,14 @@ export function cargoPackageNames(lockfile) {
   return new Set([...lockfile.matchAll(/^name = "([a-zA-Z0-9_-]+)"\r?$/gm)].map((match) => match[1]));
 }
 
+export function classifyPanicOsError(log) {
+  if (typeof log !== 'string') return null;
+  const match = log.replace(/\u001b\[[0-9;]*m/g, '').match(/(?:^|\n)\s*thread [^\r\n]{1,200} panicked at [^\r\n]*(?:\r?\n[^\r\n]*)?\bOs \{ code: (\d{1,5}), kind:/);
+  if (!match) return null;
+  const code = Number(match[1]);
+  return code <= 65535 ? code : null;
+}
+
 export function classifyPanicLocation(log, packages = new Set()) {
   if (typeof log !== 'string') return null;
   const match = log.replace(/\u001b\[[0-9;]*m/g, '').match(/(?:^|\n)\s*thread [^\r\n]{1,200} panicked at ([^\r\n]{1,1024}?):(\d{1,6}):\d{1,6}:/);
@@ -177,6 +185,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
           const lockfile = await fs.readFile(path.join(root, 'src-tauri', 'Cargo.lock'), 'utf8').catch(() => '');
           const panicLocation = classifyPanicLocation(text, cargoPackageNames(lockfile));
           if (panicLocation) error.startupFailure.panicLocation = panicLocation;
+          const osErrorCode = classifyPanicOsError(text);
+          if (osErrorCode !== null) error.startupFailure.panicOsErrorCode = osErrorCode;
         } finally { await file.close(); }
       } catch {}
     }
