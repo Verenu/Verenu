@@ -81,6 +81,8 @@ describe('CleanupCard', () => {
     const partial = render(CleanupCard, { props: { cleanup: { ...EMPTY_INSIGHTS.cleanup, raw_words: 100, clean_words: 90, vocabulary_replacements: 3, activity_incomplete: true, activity_tracked_dictations: 4 } } }).body;
     expect(partial).toContain('≥');
     expect(partial).toContain('trimmed');
+    // Terms learned is a lifetime count and must say so beside range-filtered figures.
+    expect(partial).toMatch(/Terms learned<\/dt>[\s\S]*?all time/);
     const none = render(CleanupCard, { props: { cleanup: EMPTY_INSIGHTS.cleanup } }).body;
     expect(none).toContain('No cleaned dictations in this range yet.');
   });

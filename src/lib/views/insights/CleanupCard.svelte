@@ -81,7 +81,8 @@
     </div>
     <div>
       <dt>Terms learned</dt>
-      <dd><AnimatedNumber value={cleanup.auto_learned_terms} from={0} /></dd>
+      <!-- A lifetime count across every context; the range and context filters do not apply. -->
+      <dd><AnimatedNumber value={cleanup.auto_learned_terms} from={0} /><span class="dd-scope">all time</span></dd>
     </div>
   </dl>
   {#if cleanup.activity_incomplete}
@@ -171,6 +172,15 @@
     color: var(--ink);
     font-variant-numeric: tabular-nums;
     overflow-wrap: anywhere;
+  }
+
+  .dd-scope {
+    display: block;
+    margin-top: 2px;
+    font-size: 10.5px;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: var(--ink-faint);
   }
 
   .hint { margin: 10px 0 0; font-size: 11px; line-height: 1.45; color: var(--ink-faint); }
