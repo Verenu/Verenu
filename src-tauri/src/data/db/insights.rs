@@ -239,13 +239,15 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
     })
 }
 
-/// Counts the rows `query_text_metrics` reads, with the same filter.
+/// Counts saved dictations that the daily totals also count, so the two compare directly.
+/// Rows held from a backup restore are excluded from the totals and so are excluded here.
 fn query_text_dictations(conn: &Connection, range: &DateRange, context_id: Option<i64>) -> Result<i64> {
     conn.query_row(
         "SELECT COUNT(*) FROM transcriptions
          WHERE (activity_day BETWEEN ?1 AND ?2
            OR (activity_day IS NULL AND date(created_at, 'localtime') BETWEEN ?1 AND ?2))
-           AND (?3 IS NULL OR context_id = ?3)",
+           AND (?3 IS NULL OR context_id = ?3)
+           AND NOT EXISTS (SELECT 1 FROM backup_held_history h WHERE h.uuid = transcriptions.uuid)",
         params![range.start_day.to_string(), range.end_day.to_string(), context_id],
         |r| r.get(0),
     )
@@ -1146,6 +1148,18 @@ mod tests {
         assert_eq!(pairs, vec![(chat, 5, 2), (work, 4, 1)]);
         assert_eq!(all.cleanup.text_dictations, all.totals.total_transcriptions);
         assert_eq!(all.cleanup.text_dictations, 4);
+
+        // A row held from a backup restore must not stand in for a counted dictation.
+        {
+            let conn = lock_conn(&db).expect("lock");
+            conn.execute(
+                "INSERT INTO backup_held_history(uuid) SELECT uuid FROM transcriptions WHERE id = ?1",
+                params![a],
+            )
+            .expect("hold row");
+        }
+        let held = query_insights(&db, 30, None).expect("with held row");
+        assert_eq!(held.cleanup.text_dictations, 3);
 
         let scoped = query_insights(&db, 30, Some(work)).expect("scoped");
         assert!(scoped.contexts.is_empty());
