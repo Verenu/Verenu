@@ -3,7 +3,12 @@
   import { fmtNumber } from './helpers';
   import type { InsightsCleanup } from './types';
 
-  let { cleanup }: { cleanup: InsightsCleanup } = $props();
+  let { cleanup, wordsInRange = 0 }: { cleanup: InsightsCleanup; wordsInRange?: number } = $props();
+
+  // Word counts here come from dictation text still kept in history, while the range total
+  // comes from daily statistics that outlive history retention. Say so when they diverge.
+  const textMissing = $derived(cleanup.raw_words <= 0 && cleanup.clean_words <= 0 && wordsInRange > 0);
+  const textPartial = $derived(!textMissing && wordsInRange > 0 && cleanup.clean_words < wordsInRange * 0.9);
 
   const rawMax = $derived(Math.max(cleanup.raw_words, cleanup.clean_words, 1));
   const changePct = $derived(
@@ -48,7 +53,9 @@
       <span class="compare-num">{fmtNumber(cleanup.clean_words)}</span>
     </div>
     <p class="compare-note">
-      {#if changePct === null}
+      {#if textMissing}
+        Dictation text for this range is no longer in history, so this comparison is unavailable.
+      {:else if changePct === null}
         No cleaned dictations in this range yet.
       {:else if changePct < -0.05}
         Cleanup trimmed <strong>{fmtChange(changePct)}</strong> of the spoken words.
@@ -57,6 +64,7 @@
       {:else}
         Cleanup kept your word count the same.
       {/if}
+      {#if textPartial}{' '}Based on dictations still saved in history.{/if}
     </p>
   </div>
 

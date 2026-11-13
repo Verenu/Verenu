@@ -279,7 +279,7 @@
         {#if showContexts}
           <ContextBreakdown usage={data.contexts} totalWords={data.totals.words_in_range} contexts={contextOptions} onpick={pickFromBreakdown} />
         {/if}
-        <CleanupCard cleanup={data.cleanup} />
+        <CleanupCard cleanup={data.cleanup} wordsInRange={data.totals.words_in_range} />
       </div>
       <StreakHeatmap daily={data.streak_daily} streak={data.streak} historyStartedOn={data.history_started_on} />
       <WordStats words={data.words} totals={data.totals} />

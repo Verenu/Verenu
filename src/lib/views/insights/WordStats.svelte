@@ -3,20 +3,12 @@
   import { cubicOut } from 'svelte/easing';
   import { motionMs } from '../../motion';
   import { fmtCompact, fmtNumber } from './helpers';
-  import { fmtPercent } from './analytics';
   import AnimatedNumber from './AnimatedNumber.svelte';
   import type { InsightsTotals, InsightsWords } from './types';
 
   let { words, totals }: { words: InsightsWords; totals: InsightsTotals } = $props();
 
   const max = $derived(Math.max(...words.top.map((w) => w.count), 0));
-  // Share of distinct words among everything said in the range. Only meaningful with
-  // enough text; a handful of words is always "100% unique".
-  const variety = $derived(
-    totals.words_in_range >= 200 && words.unique_words > 0
-      ? Math.min(1, words.unique_words / totals.words_in_range)
-      : null,
-  );
 
   /** Full digits up to a million; past that a compact figure keeps the grid cell readable. */
   function fmtFigure(n: number): string {
@@ -63,12 +55,6 @@
       <div>
         <dt>Unique words</dt>
         <dd title={fmtNumber(words.unique_words)}><AnimatedNumber value={words.unique_words} from={0} format={fmtFigure} /></dd>
-      </div>
-      <div>
-        <dt>Word variety</dt>
-        <dd title="Distinct words as a share of all words in this range">
-          {#if variety === null}—{:else}{fmtPercent(variety)}{/if}
-        </dd>
       </div>
       <div>
         <dt>Words per dictation</dt>
@@ -209,7 +195,7 @@
     order: -1;
     margin: 0;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 16px 18px;
     padding-bottom: 18px;
     border-bottom: 1px solid var(--line);
