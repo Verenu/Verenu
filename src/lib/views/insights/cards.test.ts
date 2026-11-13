@@ -86,12 +86,15 @@ describe('CleanupCard', () => {
   });
 
   it('separates expired or partial history text from the range total', () => {
-    const expired = render(CleanupCard, { props: { cleanup: EMPTY_INSIGHTS.cleanup, wordsInRange: 500 } }).body;
+    const expired = render(CleanupCard, { props: { cleanup: { ...EMPTY_INSIGHTS.cleanup, text_dictations: 0 }, totalDictations: 5 } }).body;
     expect(expired).toContain('no longer in history');
     expect(expired).not.toContain('No cleaned dictations');
-    const partial = render(CleanupCard, { props: { cleanup: { ...EMPTY_INSIGHTS.cleanup, raw_words: 110, clean_words: 100 }, wordsInRange: 500 } }).body;
+    // One dictation of fifty missing still qualifies the comparison.
+    const partial = render(CleanupCard, { props: { cleanup: { ...EMPTY_INSIGHTS.cleanup, raw_words: 520, clean_words: 498, text_dictations: 49 }, totalDictations: 50 } }).body;
     expect(partial).toContain('Based on dictations still saved in history.');
-    const full = render(CleanupCard, { props: { cleanup: { ...EMPTY_INSIGHTS.cleanup, raw_words: 520, clean_words: 498 }, wordsInRange: 500 } }).body;
+    const full = render(CleanupCard, { props: { cleanup: { ...EMPTY_INSIGHTS.cleanup, raw_words: 520, clean_words: 498, text_dictations: 50 }, totalDictations: 50 } }).body;
     expect(full).not.toContain('Based on dictations still saved');
+    const older = render(CleanupCard, { props: { cleanup: { ...EMPTY_INSIGHTS.cleanup, text_dictations: undefined }, totalDictations: 5 } }).body;
+    expect(older).toContain('No cleaned dictations in this range yet.');
   });
 });

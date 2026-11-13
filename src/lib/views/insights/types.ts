@@ -47,6 +47,8 @@ export interface InsightsCleanup {
   snippet_expansions: number;
   activity_incomplete: boolean;
   activity_tracked_dictations: number;
+  /** Dictations in range whose text is still saved; absent from older backends. */
+  text_dictations?: number;
 }
 
 export interface InsightsWords {

@@ -36,7 +36,7 @@ function emptyScenario(p: DevPayload): DevPayload {
     history_started_on: null,
     hourly: new Array(24).fill(0),
     providers: [],
-    cleanup: { ...p.cleanup, raw_words: 0, clean_words: 0, edits_applied: 0, vocabulary_replacements: 0, snippet_expansions: 0, activity_tracked_dictations: 0 },
+    cleanup: { ...p.cleanup, raw_words: 0, clean_words: 0, edits_applied: 0, vocabulary_replacements: 0, snippet_expansions: 0, activity_tracked_dictations: 0, text_dictations: 0 },
     words: { top: [], unique_words: 0, longest_word: null, avg_word_length: 0 },
     contexts: [],
   };
@@ -59,7 +59,7 @@ function singleScenario(p: DevPayload): DevPayload {
     history_started_on: today?.day ?? null,
     hourly,
     providers: [{ model: 'whisper-large-v3-turbo', provider: 'groq', task: 'transcription', calls: 1, audio_ms: 6_000, input_chars: 0, output_chars: 0 }],
-    cleanup: { raw_words: 13, clean_words: 12, edits_applied: 1, dictionary_fixes: 0, auto_learned_terms: 0, vocabulary_replacements: 0, snippet_expansions: 0, activity_incomplete: false, activity_tracked_dictations: 1 },
+    cleanup: { raw_words: 13, clean_words: 12, edits_applied: 1, dictionary_fixes: 0, auto_learned_terms: 0, vocabulary_replacements: 0, snippet_expansions: 0, activity_incomplete: false, activity_tracked_dictations: 1, text_dictations: 1 },
     words: { top: [{ word: 'hello', count: 1 }], unique_words: 9, longest_word: 'dictation', avg_word_length: 4.2 },
     contexts: p.contexts.slice(0, 1).map((c) => ({ ...c, words: 12, transcriptions: 1 })),
   };
@@ -69,7 +69,7 @@ function freshScenario(p: DevPayload): DevPayload {
   return {
     ...p,
     totals: { ...p.totals, words_prev_range: 0, best_wpm: 0, avg_wpm: 0 },
-    cleanup: { ...p.cleanup, activity_incomplete: true, activity_tracked_dictations: 0 },
+    cleanup: { ...p.cleanup, activity_incomplete: true, activity_tracked_dictations: 0, text_dictations: 0 },
   };
 }
 
@@ -248,6 +248,7 @@ function baseInsights(days: number, contextId: number | null, contextIds: number
       snippet_expansions: 12,
       activity_incomplete: false,
       activity_tracked_dictations: transcriptions,
+      text_dictations: transcriptions,
     },
     words: {
       top: [

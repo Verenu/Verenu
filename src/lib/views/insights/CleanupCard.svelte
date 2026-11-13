@@ -3,12 +3,14 @@
   import { fmtNumber } from './helpers';
   import type { InsightsCleanup } from './types';
 
-  let { cleanup, wordsInRange = 0 }: { cleanup: InsightsCleanup; wordsInRange?: number } = $props();
+  let { cleanup, totalDictations = 0 }: { cleanup: InsightsCleanup; totalDictations?: number } = $props();
 
-  // Word counts here come from dictation text still kept in history, while the range total
-  // comes from daily statistics that outlive history retention. Say so when they diverge.
-  const textMissing = $derived(cleanup.raw_words <= 0 && cleanup.clean_words <= 0 && wordsInRange > 0);
-  const textPartial = $derived(!textMissing && wordsInRange > 0 && cleanup.clean_words < wordsInRange * 0.9);
+  // Word counts here come from dictation text still kept in history, while the dictation total
+  // comes from daily statistics that outlive history retention. Say so whenever any are missing.
+  // An older backend without `text_dictations` gives no coverage signal, so no qualifier.
+  const saved = $derived(cleanup.text_dictations);
+  const textMissing = $derived(saved !== undefined && saved <= 0 && totalDictations > 0);
+  const textPartial = $derived(saved !== undefined && saved > 0 && saved < totalDictations);
 
   const rawMax = $derived(Math.max(cleanup.raw_words, cleanup.clean_words, 1));
   const changePct = $derived(

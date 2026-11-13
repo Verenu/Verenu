@@ -85,6 +85,10 @@ pub struct InsightsCleanup {
     pub snippet_expansions: i64,
     pub activity_incomplete: bool,
     pub activity_tracked_dictations: i64,
+    /// Dictations in the range whose text is still saved. `raw_words`, `clean_words`,
+    /// and `edits_applied` cover only these; compare with `total_transcriptions`.
+    #[serde(default)]
+    pub text_dictations: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -158,6 +162,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         cleanup_lifetime,
         activity,
         contexts,
+        text_dictations,
     ) = {
         let conn = lock_conn(db)?;
         let history_started_on = history_started_on_conn(&conn, context_id)?;
@@ -182,6 +187,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         } else {
             Vec::new()
         };
+        let text_dictations = query_text_dictations(&conn, &range, context_id)?;
 
         (
             totals,
@@ -198,6 +204,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
             cleanup_lifetime,
             activity,
             contexts,
+            text_dictations,
         )
     };
 
@@ -211,6 +218,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         snippet_expansions: activity.1,
         activity_incomplete: activity.2 || totals.total_transcriptions > activity.4,
         activity_tracked_dictations: activity.3,
+        text_dictations,
     };
     let streak = compute_streak(&lifetime_streak_daily);
 
@@ -229,6 +237,19 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         words,
         contexts,
     })
+}
+
+/// Counts the rows `query_text_metrics` reads, with the same filter.
+fn query_text_dictations(conn: &Connection, range: &DateRange, context_id: Option<i64>) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM transcriptions
+         WHERE (activity_day BETWEEN ?1 AND ?2
+           OR (activity_day IS NULL AND date(created_at, 'localtime') BETWEEN ?1 AND ?2))
+           AND (?3 IS NULL OR context_id = ?3)",
+        params![range.start_day.to_string(), range.end_day.to_string(), context_id],
+        |r| r.get(0),
+    )
+    .map_err(Into::into)
 }
 
 fn query_context_usage(conn: &Connection, range: &DateRange) -> Result<Vec<InsightsContextUsage>> {
@@ -1123,6 +1144,8 @@ mod tests {
             .map(|c| (c.context_id, c.words, c.transcriptions))
             .collect();
         assert_eq!(pairs, vec![(chat, 5, 2), (work, 4, 1)]);
+        assert_eq!(all.cleanup.text_dictations, all.totals.total_transcriptions);
+        assert_eq!(all.cleanup.text_dictations, 4);
 
         let scoped = query_insights(&db, 30, Some(work)).expect("scoped");
         assert!(scoped.contexts.is_empty());
