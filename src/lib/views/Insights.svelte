@@ -9,15 +9,17 @@
   import { startPolling } from '../polling';
   import { listenForSyncCompletion } from '../syncStore.svelte';
   import { formatIpcError } from '../stores';
-  import { MOTION_MS, motionMs } from '../motion';
+  import { MOTION_MS, motionMs, reducedMotionEnabled } from '../motion';
   import Dropdown from '../components/Dropdown.svelte';
-  import HeroStats from './insights/HeroStats.svelte';
+  import KpiTiles from './insights/KpiTiles.svelte';
   import DailyChart from './insights/DailyChart.svelte';
   import { githubState, refreshGithub } from '../githubStore.svelte';
   import StreakHeatmap from './insights/StreakHeatmap.svelte';
   import CostBreakdown from './insights/CostBreakdown.svelte';
-  import HourStrip from './insights/HourStrip.svelte';
+  import RhythmCard from './insights/RhythmCard.svelte';
   import WordStats from './insights/WordStats.svelte';
+  import CleanupCard from './insights/CleanupCard.svelte';
+  import ContextBreakdown from './insights/ContextBreakdown.svelte';
   import type { PricingSnapshot } from './insights/pricing';
   import { isAndroid } from '../platform';
   import { contextsStore, loadContexts, orderedContexts } from '../contextsStore.svelte';
@@ -30,7 +32,6 @@
   let status = $state<'loading' | 'loaded' | 'error'>('loading');
   let error = $state('');
   let rangeOpen = $state(false);
-  let displayVersion = $state(0);
   let pricing = $state<PricingSnapshot | null>(null);
   const github = $derived(githubState.snapshot);
 
@@ -42,6 +43,7 @@
   const activeContext = $derived(contextOptions.find((c) => c.id === contextId) ?? null);
   const contextLabel = $derived(activeContext?.name ?? 'All contexts');
   const isEmpty = $derived(!data || data.totals.total_transcriptions === 0);
+  const showContexts = $derived(contextId === null && (data?.contexts?.length ?? 0) > 0);
 
   $effect(() => {
     if (contextId === null || contextOptions.length === 0) return;
@@ -62,7 +64,6 @@
       data = payload ?? EMPTY_INSIGHTS;
       status = 'loaded';
       error = '';
-      if (!opts?.silent) displayVersion += 1;
     } catch (err) {
       if (!mounted || token !== fetchToken) return;
       console.error('IPC get_insights failed:', err);
@@ -90,6 +91,18 @@
     if (next === contextId) return;
     contextId = next;
     load();
+  }
+
+  let root = $state<HTMLDivElement | null>(null);
+
+  function pickFromBreakdown(next: number) {
+    pickContext(next);
+    // The breakdown sits mid-page; bring the filtered headline figures into view.
+    let scroller: HTMLElement | null = root?.parentElement ?? null;
+    const scrolls = (el: HTMLElement) =>
+      el.scrollHeight > el.clientHeight + 1 && /(auto|scroll)/.test(getComputedStyle(el).overflowY);
+    while (scroller && !scrolls(scroller)) scroller = scroller.parentElement;
+    scroller?.scrollTo({ top: 0, behavior: reducedMotionEnabled() ? 'auto' : 'smooth' });
   }
 
   async function loadPricing() {
@@ -135,7 +148,7 @@
   });
 </script>
 
-<div class="content-inner">
+<div class="content-inner" bind:this={root}>
   <div class="head">
     <div>
       <h1 class="page-h">Insights</h1>
@@ -234,9 +247,10 @@
     </div>
   {:else if status === 'loading' && !data}
     <div class="skeletons" aria-busy="true" aria-label="Loading insights">
-      <div class="skeleton skeleton-band"></div>
+      <div class="skeleton-kpis">
+        <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+      </div>
       <div class="skeleton tall"></div>
-      <div class="skeleton"></div>
       <div class="skeleton"></div>
     </div>
   {:else if data && isEmpty && !github}
@@ -257,18 +271,21 @@
       <p class="fetch-status fetch-status-quiet" role="status" aria-live="polite">Refreshing insights…</p>
     {/if}
 
-    {#key displayVersion}
-      <div class="insights-results" in:fade={{ duration: motionMs(MOTION_MS.base) }}>
-        <HeroStats {data} />
-
-        <DailyChart daily={data.daily} {rangeLabel} {github} />
-        <StreakHeatmap daily={data.streak_daily} streak={data.streak} historyStartedOn={data.history_started_on} />
-        <HourStrip hourly={data.hourly} />
-        <WordStats words={data.words} cleanup={data.cleanup} totals={data.totals} />
-        <ConsentHint feature="Provider pricing for cost estimates" thenEnable={loadPricing} />
-        <CostBreakdown providers={data.providers} {rangeLabel} {pricing} />
+    <div class="insights-results" class:refreshing={status === 'loading'}>
+      <KpiTiles {data} rangeDays={range} />
+      <DailyChart daily={data.daily} {rangeLabel} {github} />
+      <RhythmCard hourly={data.hourly} daily={data.daily} />
+      <div class="pair">
+        {#if showContexts}
+          <ContextBreakdown usage={data.contexts} totalWords={data.totals.words_in_range} contexts={contextOptions} onpick={pickFromBreakdown} />
+        {/if}
+        <CleanupCard cleanup={data.cleanup} totalDictations={data.totals.total_transcriptions} />
       </div>
-    {/key}
+      <StreakHeatmap daily={data.streak_daily} streak={data.streak} historyStartedOn={data.history_started_on} />
+      <WordStats words={data.words} totals={data.totals} />
+      <ConsentHint feature="Provider pricing for cost estimates" thenEnable={loadPricing} />
+      <CostBreakdown providers={data.providers} {rangeLabel} {pricing} wordsInRange={data.totals.words_in_range} />
+    </div>
   {/if}
 </div>
 
@@ -360,34 +377,71 @@
     white-space: nowrap;
   }
 
+  .insights-results {
+    --insights-gap: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--insights-gap);
+    min-width: 0;
+    transition: opacity var(--ui-duration-base) var(--ui-ease-out);
+  }
+  .insights-results.refreshing { opacity: 0.6; }
+
+  /* Cards rise in one after another on first render. Later data changes morph in place. */
+  .insights-results > :global(*) {
+    animation: insights-rise 560ms var(--ui-ease-out) both;
+  }
+  .insights-results > :global(*:nth-child(2)) { animation-delay: 70ms; }
+  .insights-results > :global(*:nth-child(3)) { animation-delay: 130ms; }
+  .insights-results > :global(*:nth-child(4)) { animation-delay: 180ms; }
+  .insights-results > :global(*:nth-child(5)) { animation-delay: 220ms; }
+  .insights-results > :global(*:nth-child(n + 6)) { animation-delay: 250ms; }
+
+  .insights-results :global(.kpi) { animation: insights-rise 560ms var(--ui-ease-out) both; }
+  .insights-results :global(.kpi:nth-child(2)) { animation-delay: 40ms; }
+  .insights-results :global(.kpi:nth-child(3)) { animation-delay: 80ms; }
+  .insights-results :global(.kpi:nth-child(4)) { animation-delay: 120ms; }
+
+  @keyframes insights-rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  .pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+    gap: var(--insights-gap);
+    min-width: 0;
+  }
+
   .content-inner :global(.card) {
+    position: relative;
     display: flex;
     flex-direction: column;
     min-width: 0;
-    margin-bottom: 30px;
+    padding: 18px 20px 20px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--bg-elev);
+    transition: border-color var(--ui-duration-fast) var(--ui-ease-out);
   }
-
-  .content-inner :global(.card:last-child) { margin-bottom: 0; }
-
-  .insights-results { min-width: 0; }
+  .content-inner :global(.card:hover) { border-color: var(--line-strong); }
 
   .content-inner :global(.card-head) {
     display: flex;
-    align-items: flex-end;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 8px 12px;
     flex-wrap: wrap;
-    padding-bottom: 8px;
-    margin-bottom: 14px;
-    border-bottom: 1px solid var(--line);
+    margin-bottom: 16px;
   }
 
   .content-inner :global(.card-h) {
     font-family: var(--sans);
-    font-size: 13px;
-    font-weight: 500;
+    font-size: 13.5px;
+    font-weight: 600;
     margin: 0;
-    color: var(--ink-soft);
+    color: var(--ink);
     letter-spacing: -0.01em;
   }
 
@@ -401,12 +455,19 @@
   .skeletons {
     display: flex;
     flex-direction: column;
-    gap: 30px;
+    gap: 12px;
   }
 
+  .skeleton-kpis {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .skeleton-kpis .skeleton { height: 128px; }
+
   .skeleton {
-    height: 96px;
-    border-radius: var(--r-sm);
+    height: 180px;
+    border-radius: var(--r-md);
     background: linear-gradient(
       100deg,
       var(--bg-elev) 30%,
@@ -416,8 +477,7 @@
     background-size: 300% 100%;
     animation: shimmer 1.4s linear infinite;
   }
-  .skeleton.tall { height: 200px; }
-  .skeleton-band { height: 116px; }
+  .skeleton.tall { height: 280px; }
 
   @keyframes shimmer {
     from { background-position: 150% 0; }
@@ -459,7 +519,22 @@
     .range-picker { max-width: 100%; }
   }
 
+  @container insights (max-width: 760px) {
+    .skeleton-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+
+  @container insights (max-width: 520px) {
+    .content-inner :global(.card) { padding: 15px 14px 16px; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .skeleton { animation-duration: 2.6s; }
+    .insights-results > :global(*),
+    .insights-results :global(.kpi) { animation-name: insights-fade; animation-duration: 200ms; animation-delay: 0ms !important; }
+  }
+
+  @keyframes insights-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
 </style>

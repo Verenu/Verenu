@@ -110,7 +110,7 @@ export function fmtHour(hour: number): string {
   return `${h} ${suffix}`;
 }
 
-export const PACE_TICKS = 44;
+export const PACE_TICKS = 30;
 
 export function paceScale(bestWpm: number, ticks = PACE_TICKS): { max: number; bestTick: number } {
   const max = Math.min(250, Math.max(200, Math.ceil(bestWpm / 50) * 50));

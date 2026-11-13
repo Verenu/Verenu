@@ -1,4 +1,108 @@
-export function devInsights(days: number, contextId: number | null): unknown {
+type DevPayload = ReturnType<typeof baseInsights>;
+
+export function devInsightsPricing(): unknown {
+  return { fetched_at: 0, rates: [] };
+}
+
+/**
+ * Browser-preview insights. `scenario` (from localStorage `verenu:dev-insights-scenario`)
+ * reshapes the payload so edge cases can be inspected without a real database.
+ */
+export function devInsights(
+  days: number,
+  contextId: number | null,
+  contextIds: number[] = [],
+  scenario: string | null = null,
+): unknown {
+  const payload = baseInsights(days, contextId, contextIds);
+  if (scenario === 'empty') return emptyScenario(payload);
+  if (scenario === 'single') return singleScenario(payload);
+  if (scenario === 'extreme') return extremeScenario(payload);
+  if (scenario === 'fresh') return freshScenario(payload);
+  return payload;
+}
+
+function zeroDays(days: Array<{ day: string; words: number; transcriptions: number; speaking_ms: number }>) {
+  return days.map((d) => ({ ...d, words: 0, transcriptions: 0, speaking_ms: 0 }));
+}
+
+function emptyScenario(p: DevPayload): DevPayload {
+  return {
+    ...p,
+    totals: { ...p.totals, total_words: 0, total_transcriptions: 0, total_speaking_ms: 0, avg_words_per_transcription: 0, avg_wpm: 0, best_wpm: 0, words_in_range: 0, words_prev_range: 0 },
+    streak: { current_days: 0, longest_days: 0, longest_started_on: null, longest_ended_on: null, longest_words: 0, active_days: 0 },
+    daily: zeroDays(p.daily),
+    streak_daily: zeroDays(p.streak_daily),
+    history_started_on: null,
+    hourly: new Array(24).fill(0),
+    providers: [],
+    cleanup: { ...p.cleanup, raw_words: 0, clean_words: 0, edits_applied: 0, vocabulary_replacements: 0, snippet_expansions: 0, activity_tracked_dictations: 0, text_dictations: 0 },
+    words: { top: [], unique_words: 0, longest_word: null, avg_word_length: 0 },
+    contexts: [],
+  };
+}
+
+function singleScenario(p: DevPayload): DevPayload {
+  const daily = zeroDays(p.daily);
+  const today = daily[daily.length - 1];
+  if (today) Object.assign(today, { words: 12, transcriptions: 1, speaking_ms: 6_000 });
+  const streakDaily = zeroDays(p.streak_daily);
+  Object.assign(streakDaily[streakDaily.length - 1], { words: 12, transcriptions: 1, speaking_ms: 6_000 });
+  const hourly = new Array(24).fill(0);
+  hourly[9] = 12;
+  return {
+    ...p,
+    totals: { total_words: 12, total_transcriptions: 1, total_speaking_ms: 6_000, avg_words_per_transcription: 12, avg_wpm: 120, best_wpm: 120, words_in_range: 12, words_prev_range: 0 },
+    streak: { current_days: 1, longest_days: 1, longest_started_on: today?.day ?? null, longest_ended_on: today?.day ?? null, longest_words: 12, active_days: 1 },
+    daily,
+    streak_daily: streakDaily,
+    history_started_on: today?.day ?? null,
+    hourly,
+    providers: [{ model: 'whisper-large-v3-turbo', provider: 'groq', task: 'transcription', calls: 1, audio_ms: 6_000, input_chars: 0, output_chars: 0 }],
+    cleanup: { raw_words: 13, clean_words: 12, edits_applied: 1, dictionary_fixes: 0, auto_learned_terms: 0, vocabulary_replacements: 0, snippet_expansions: 0, activity_incomplete: false, activity_tracked_dictations: 1, text_dictations: 1 },
+    words: { top: [{ word: 'hello', count: 1 }], unique_words: 9, longest_word: 'dictation', avg_word_length: 4.2 },
+    contexts: p.contexts.slice(0, 1).map((c) => ({ ...c, words: 12, transcriptions: 1 })),
+  };
+}
+
+function freshScenario(p: DevPayload): DevPayload {
+  return {
+    ...p,
+    totals: { ...p.totals, words_prev_range: 0, best_wpm: 0, avg_wpm: 0 },
+    cleanup: { ...p.cleanup, activity_incomplete: true, activity_tracked_dictations: 0, text_dictations: 0 },
+  };
+}
+
+function extremeScenario(p: DevPayload): DevPayload {
+  const k = 4_000;
+  const daily = p.daily.map((d) => ({ ...d, words: d.words * k, transcriptions: d.transcriptions * k, speaking_ms: d.speaking_ms * k }));
+  const words = daily.reduce((sum, d) => sum + d.words, 0);
+  return {
+    ...p,
+    totals: { ...p.totals, total_words: words * 9, total_transcriptions: p.totals.total_transcriptions * k, total_speaking_ms: p.totals.total_speaking_ms * k, avg_words_per_transcription: 9_999, avg_wpm: 412.6, best_wpm: 1_250, words_in_range: words, words_prev_range: Math.round(words / 40) },
+    daily,
+    streak_daily: p.streak_daily.map((d) => ({ ...d, words: d.words * k })),
+    hourly: p.hourly.map((n) => n * k),
+    providers: [
+      ...p.providers.map((row) => ({ ...row, calls: row.calls * k, audio_ms: row.audio_ms * k, input_chars: row.input_chars * k, output_chars: row.output_chars * k })),
+      { model: 'some-provider/an-extremely-long-model-identifier-that-keeps-going-v9000-preview-instruct', provider: 'openrouter', task: 'cleanup', calls: 3, audio_ms: 0, input_chars: 900, output_chars: 800 },
+    ],
+    cleanup: { ...p.cleanup, raw_words: words * 2, clean_words: words, edits_applied: 98_765_432, vocabulary_replacements: 1_234_567, snippet_expansions: 765_432 },
+    words: {
+      top: [
+        { word: 'pneumonoultramicroscopicsilicovolcanoconiosis', count: 9_876_543 },
+        { word: 'Donaudampfschifffahrtsgesellschaftskapitän', count: 4_321_000 },
+        { word: 'ok', count: 12 },
+      ],
+      unique_words: 123_456_789,
+      longest_word: 'a'.repeat(320),
+      avg_word_length: 23.9,
+    },
+    contexts: p.contexts.map((c) => ({ ...c, words: c.words * k, transcriptions: c.transcriptions * k })),
+  };
+}
+
+function baseInsights(days: number, contextId: number | null, contextIds: number[]) {
   const span = days > 0 ? days : 120;
   const scale = contextId === null ? 1 : 1 / (1 + (contextId % 5));
   const noise = (n: number) =>
@@ -103,7 +207,7 @@ export function devInsights(days: number, contextId: number | null): unknown {
     },
     daily,
     streak_daily: streakDaily,
-    history_started_on: streakDaily[Math.max(0, streakDaily.length - 240)]?.day ?? null,
+    history_started_on: (streakDaily[Math.max(0, streakDaily.length - 240)]?.day ?? null) as string | null,
     hourly,
     providers: [
       {
@@ -144,6 +248,7 @@ export function devInsights(days: number, contextId: number | null): unknown {
       snippet_expansions: 12,
       activity_incomplete: false,
       activity_tracked_dictations: transcriptions,
+      text_dictations: transcriptions,
     },
     words: {
       top: [
@@ -163,6 +268,15 @@ export function devInsights(days: number, contextId: number | null): unknown {
       unique_words: 7_412,
       longest_word: 'internationalisation',
       avg_word_length: 4.7,
-    },
+    } as { top: Array<{ word: string; count: number }>; unique_words: number; longest_word: string | null; avg_word_length: number },
+    contexts: contextId === null ? splitByContext(wordsInRange, transcriptions, contextIds) : [],
   };
+}
+
+function splitByContext(words: number, transcriptions: number, ids: number[]) {
+  const weights = [0.46, 0.27, 0.14, 0.08, 0.05];
+  return ids.slice(0, weights.length).map((id, i) => {
+    const share = weights[i] / weights.slice(0, Math.min(ids.length, weights.length)).reduce((a, b) => a + b, 0);
+    return { context_id: id, words: Math.round(words * share * 0.94), transcriptions: Math.max(1, Math.round(transcriptions * share * 0.94)) };
+  });
 }
