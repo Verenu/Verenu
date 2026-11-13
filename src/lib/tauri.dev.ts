@@ -1,5 +1,5 @@
 import { DEV_LOCAL_STT_MANIFESTS, DEV_LOCAL_LLM_MANIFESTS } from './tauri.dev.models';
-import { devInsights } from './tauri.dev.insights';
+import { devInsights, devInsightsPricing } from './tauri.dev.insights';
 import { defaultHotkey } from './platform';
 import type {
   CommandArgs,
@@ -1208,10 +1208,13 @@ export async function devInvoke<T>(command: string, args?: CommandArgs): Promise
     case 'get_insights': {
       const raw = args?.contextId ?? args?.context_id;
       const id = raw === null || raw === undefined ? null : Number(raw);
-      return devInsights(Number(args?.days ?? 30), id) as T;
+      const scenario = typeof localStorage === 'undefined' ? null : localStorage.getItem('verenu:dev-insights-scenario');
+      if (scenario === 'error') throw new Error('Insights query failed (dev scenario)');
+      if (scenario === 'slow') await new Promise((resolve) => setTimeout(resolve, 2500));
+      return devInsights(Number(args?.days ?? 30), id, readDevContexts().map((context) => context.id), scenario) as T;
     }
     case 'get_insights_pricing':
-      return { fetched_at: 0, rates: [] } as T;
+      return devInsightsPricing() as T;
     case 'get_github_commits':
     case 'get_github_username_suggestion':
       return null as T;

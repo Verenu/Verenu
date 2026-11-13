@@ -21,6 +21,16 @@ pub struct Insights {
     pub providers: Vec<InsightsProviderUsage>,
     pub cleanup: InsightsCleanup,
     pub words: InsightsWords,
+    /// Words per context group in the range. Empty when the request is scoped to one context.
+    #[serde(default)]
+    pub contexts: Vec<InsightsContextUsage>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InsightsContextUsage {
+    pub context_id: i64,
+    pub words: i64,
+    pub transcriptions: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -147,6 +157,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         changed_words,
         cleanup_lifetime,
         activity,
+        contexts,
     ) = {
         let conn = lock_conn(db)?;
         let history_started_on = history_started_on_conn(&conn, context_id)?;
@@ -166,6 +177,11 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
             query_text_metrics(&conn, &range, context_id)?;
         let cleanup_lifetime = query_cleanup_lifetime(&conn, context_id)?;
         let activity = query_cleanup_activity(&conn, &range, context_id)?;
+        let contexts = if context_id.is_none() {
+            query_context_usage(&conn, &range)?
+        } else {
+            Vec::new()
+        };
 
         (
             totals,
@@ -181,6 +197,7 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
             changed_words,
             cleanup_lifetime,
             activity,
+            contexts,
         )
     };
 
@@ -210,7 +227,34 @@ pub fn query_insights(db: &Db, days: i64, context_id: Option<i64>) -> Result<Ins
         providers,
         cleanup,
         words,
+        contexts,
     })
+}
+
+fn query_context_usage(conn: &Connection, range: &DateRange) -> Result<Vec<InsightsContextUsage>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, SUM(s.total_words), SUM(s.total_transcriptions)
+           FROM transcription_context_daily_stats s
+           JOIN contexts c ON c.uuid = s.context_uuid
+          WHERE s.day >= ?1 AND s.day <= ?2
+          GROUP BY c.id
+         HAVING SUM(s.total_words) > 0 OR SUM(s.total_transcriptions) > 0
+          ORDER BY SUM(s.total_words) DESC, c.id ASC",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            range.start_day.format("%Y-%m-%d").to_string(),
+            range.end_day.format("%Y-%m-%d").to_string()
+        ],
+        |r| {
+            Ok(InsightsContextUsage {
+                context_id: r.get(0)?,
+                words: r.get(1)?,
+                transcriptions: r.get(2)?,
+            })
+        },
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
 pub fn insert_api_calls(db: &Db, calls: &[ApiCall]) -> Result<()> {
@@ -1051,6 +1095,37 @@ mod tests {
             all.cleanup.auto_learned_terms
         );
         assert_eq!(scoped.totals.total_words, 6);
+    }
+
+    #[test]
+    fn unscoped_insights_break_words_down_by_context_in_range() {
+        let db = test_db();
+        let work = insert_context_returning(&db, "Work", None, None, None, None, false)
+            .expect("context")
+            .id;
+        let chat = insert_context_returning(&db, "Chat", None, None, None, None, false)
+            .expect("context")
+            .id;
+        let a = insert_on_day(&db, 1, "alpha bravo charlie delta", 4, 2_000);
+        set_context(&db, a, work);
+        let b = insert_on_day(&db, 2, "echo foxtrot", 2, 2_000);
+        set_context(&db, b, chat);
+        let c = insert_on_day(&db, 3, "golf hotel india", 3, 2_000);
+        set_context(&db, c, chat);
+        let old = insert_on_day(&db, 40, "outside the range entirely here", 5, 2_000);
+        set_context(&db, old, work);
+        insert_on_day(&db, 1, "unattributed", 1, 1_000);
+
+        let all = query_insights(&db, 30, None).expect("unscoped");
+        let pairs: Vec<(i64, i64, i64)> = all
+            .contexts
+            .iter()
+            .map(|c| (c.context_id, c.words, c.transcriptions))
+            .collect();
+        assert_eq!(pairs, vec![(chat, 5, 2), (work, 4, 1)]);
+
+        let scoped = query_insights(&db, 30, Some(work)).expect("scoped");
+        assert!(scoped.contexts.is_empty());
     }
 
     #[test]

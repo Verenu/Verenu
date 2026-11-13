@@ -2,21 +2,28 @@
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { motionMs } from '../../motion';
-  import { fmtNumber } from './helpers';
+  import { fmtCompact, fmtNumber } from './helpers';
+  import { fmtPercent } from './analytics';
   import AnimatedNumber from './AnimatedNumber.svelte';
-  import type { InsightsCleanup, InsightsTotals, InsightsWords } from './types';
+  import type { InsightsTotals, InsightsWords } from './types';
 
-  let {
-    words,
-    cleanup,
-    totals,
-  }: { words: InsightsWords; cleanup: InsightsCleanup; totals: InsightsTotals } = $props();
+  let { words, totals }: { words: InsightsWords; totals: InsightsTotals } = $props();
 
   const max = $derived(Math.max(...words.top.map((w) => w.count), 0));
-
-  const trimPct = $derived(
-    cleanup.raw_words > 0 ? ((cleanup.clean_words - cleanup.raw_words) / cleanup.raw_words) * 100 : null
+  // Share of distinct words among everything said in the range. Only meaningful with
+  // enough text; a handful of words is always "100% unique".
+  const variety = $derived(
+    totals.words_in_range >= 200 && words.unique_words > 0
+      ? Math.min(1, words.unique_words / totals.words_in_range)
+      : null,
   );
+
+  /** Full digits up to a million; past that a compact figure keeps the grid cell readable. */
+  function fmtFigure(n: number): string {
+    if (Math.abs(n) < 1_000_000) return fmtNumber(n);
+    const { value, suffix } = fmtCompact(n);
+    return `${value}${suffix}`;
+  }
 
   const HARD_CHAR_CAP = 300;
   let wordExpanded = $state(false);
@@ -26,26 +33,28 @@
   });
 </script>
 
-<section class="card">
+<section class="card vocab-card" aria-labelledby="vocab-h">
   <header class="card-head">
     <div>
-      <h2 class="card-h">Your vocabulary</h2>
+      <h2 class="card-h" id="vocab-h">Your vocabulary</h2>
       <p class="card-sub">Most-used words, everyday filler excluded</p>
     </div>
   </header>
 
   <div class="split">
     {#if words.top.length > 0}
-      <ul class="word-list">
-        {#each words.top as entry}
-          <li>
-            <span class="word-bar" style:width={`${max > 0 ? Math.max(14, (entry.count / max) * 100) : 0}%`}>
-              <span class="word">{entry.word}</span>
+      <ol class="word-list" style:--rows={Math.ceil(words.top.length / 2)}>
+        {#each words.top as entry, i (entry.word)}
+          <li style:--i={i}>
+            <span class="rank" aria-hidden="true">{i + 1}</span>
+            <span class="word-track">
+              <span class="word-fill" style:transform="scaleX({max > 0 ? Math.max(0.04, entry.count / max) : 0})"></span>
+              <span class="word" title={entry.word}>{entry.word}</span>
             </span>
             <span class="word-count">{fmtNumber(entry.count)}</span>
           </li>
         {/each}
-      </ul>
+      </ol>
     {:else}
       <p class="foot">Not enough dictation yet to find your favourite words.</p>
     {/if}
@@ -53,7 +62,21 @@
     <dl class="figures">
       <div>
         <dt>Unique words</dt>
-        <dd><AnimatedNumber value={words.unique_words} /></dd>
+        <dd title={fmtNumber(words.unique_words)}><AnimatedNumber value={words.unique_words} from={0} format={fmtFigure} /></dd>
+      </div>
+      <div>
+        <dt>Word variety</dt>
+        <dd title="Distinct words as a share of all words in this range">
+          {#if variety === null}—{:else}{fmtPercent(variety)}{/if}
+        </dd>
+      </div>
+      <div>
+        <dt>Words per dictation</dt>
+        <dd><AnimatedNumber value={totals.avg_words_per_transcription} from={0} /></dd>
+      </div>
+      <div>
+        <dt>Dictations</dt>
+        <dd title={fmtNumber(totals.total_transcriptions)}><AnimatedNumber value={totals.total_transcriptions} from={0} format={fmtFigure} /></dd>
       </div>
       <div>
         <dt>Average word length</dt>
@@ -91,82 +114,88 @@
                 <path d="m6 9 6 6 6-6"/>
               </svg>
             </button>
-            {#if wordExpanded}
-              <div id="insights-longest-word-full" class="word-full scroll-styled" transition:slide={{ duration: motionMs(220), easing: cubicOut }}>
-                {rawWord}
-              </div>
-            {/if}
           </dd>
         {/if}
       </div>
-      <div>
-        <dt>Words per dictation</dt>
-        <dd><AnimatedNumber value={totals.avg_words_per_transcription} /></dd>
-      </div>
-      <div>
-        <dt>Cleanup effect</dt>
-        <dd>
-          {#if trimPct === null}
-            —
-          {:else if trimPct < 0}
-            trimmed <AnimatedNumber value={Math.abs(trimPct)} format={(n) => `${n.toFixed(1)}%`} />
-          {:else if trimPct > 0}
-            grew <AnimatedNumber value={trimPct} format={(n) => `${n.toFixed(1)}%`} />
-          {:else}
-            no change
-          {/if}
-        </dd>
-      </div>
-      <div>
-        <dt>Dictations</dt>
-        <dd><AnimatedNumber value={totals.total_transcriptions} /></dd>
-      </div>
     </dl>
   </div>
+  {#if wordExpanded && rawWord}
+    <div id="insights-longest-word-full" class="word-full scroll-styled" transition:slide={{ duration: motionMs(220), easing: cubicOut }}>
+      {rawWord}
+    </div>
+  {/if}
 </section>
 
 <style>
-
   .split {
-    display: grid;
-    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-    gap: 24px;
-    align-items: start;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-width: 0;
   }
 
   .word-list {
     list-style: none;
     margin: 0;
     padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-  }
-  .word-list li {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(var(--rows, 6), auto);
+    grid-auto-flow: column;
+    gap: 5px 28px;
     min-width: 0;
   }
 
-  .word-bar {
+  .word-list li {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    animation: word-in 420ms var(--ui-ease-out) both;
+    animation-delay: calc(var(--i) * 28ms + 100ms);
+  }
+
+  @keyframes word-in {
+    from { opacity: 0; transform: translateX(-6px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  .rank {
+    font-size: 10.5px;
+    color: var(--ink-faint);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .word-track {
+    position: relative;
     display: flex;
     align-items: center;
     height: 24px;
-    padding: 0 9px;
-    border-radius: 5px;
-    background: color-mix(in srgb, var(--accent) 13%, transparent);
     min-width: 0;
-    overflow: hidden;
+    border-radius: 6px;
   }
 
+  .word-fill {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: color-mix(in srgb, var(--accent) 12%, var(--paper-2));
+    transform-origin: left;
+    transition: transform 560ms var(--ui-ease-out);
+  }
+  .word-list li:first-child .word-fill { background: color-mix(in srgb, var(--accent) 20%, var(--paper-2)); }
+
   .word {
+    position: relative;
+    padding: 0 9px;
     font-size: 11.5px;
     color: var(--ink);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    min-width: 0;
   }
 
   .word-count {
@@ -177,28 +206,34 @@
   }
 
   .figures {
+    order: -1;
     margin: 0;
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px 18px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 16px 18px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--line);
   }
   .figures div { min-width: 0; }
   .figures dt {
-    font-size: 10.5px;
-    letter-spacing: 0;
-    text-transform: none;
+    font-size: 11px;
     color: var(--ink-mute);
     margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .figures dd {
     margin: 0;
     font-family: var(--sans);
     font-size: 18px;
-    font-weight: 500;
+    font-weight: 600;
+    letter-spacing: -0.02em;
     color: var(--ink);
     line-height: 1.15;
     overflow: hidden;
     text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
   }
   .dd-word { font-size: 15px; }
 
@@ -235,6 +270,7 @@
     color: var(--accent-ink);
     border-color: var(--accent-ink);
   }
+  .word-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
   .word-chevron {
     flex: 0 0 auto;
     color: var(--ink-mute);
@@ -243,12 +279,14 @@
   .word-toggle.open .word-chevron { transform: rotate(180deg); }
 
   .word-full {
-    margin-top: 8px;
-    padding-right: 6px;
+    margin-top: 14px;
+    padding: 10px 12px;
     max-height: 130px;
     overflow-y: auto;
+    border-radius: var(--r-sm);
+    background: var(--paper-2);
     font-family: var(--sans);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--ink);
     line-height: 1.45;
@@ -261,11 +299,20 @@
     color: var(--ink-mute);
   }
 
-  @container insights (max-width: 500px) {
-    .split { grid-template-columns: 1fr; gap: 20px; }
+  @container insights (max-width: 760px) {
+    .figures { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+
+  @container insights (max-width: 560px) {
+    .word-list { grid-template-columns: minmax(0, 1fr); grid-auto-flow: row; grid-template-rows: none; }
   }
 
   @container insights (max-width: 400px) {
-    .figures { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .word-list li { animation: none; }
+    .word-fill { transition-duration: 1ms; }
   }
 </style>
