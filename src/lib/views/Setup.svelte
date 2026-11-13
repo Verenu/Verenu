@@ -2,7 +2,7 @@
   import { formatIpcError } from '../errors';
   import { invoke } from '../tauri';
   import { consentBlocked, handleConsentError, requireConsent } from '../legal/consentStore.svelte';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { appStore } from '../stores';
   import { loadSettingsSnapshot, saveSetting, type CleanupIntensity, type ProviderId, type ProviderModelMap, type ToneId } from '../settings';
   import { refreshTranscriptionModel } from '../transcriptionModelStore.svelte';
@@ -22,6 +22,7 @@
   import type { Preset } from '../components/settings/modelPresets';
   import { splitModelId } from '../components/settings/models';
   import { parseSetupProgress, resumeStep } from '../setup/setupProgress';
+  import { credentialStatusWithin } from '../setup/credentialStatus';
   import { setupCleanupEnabled, setupDefaultModels, setupModelReadiness } from '../setup/setupModelReadiness';
   import { appleIntelligence, refreshAppleIntelligence } from '../appleIntelligence.svelte';
   import { appleCleanupReadiness, applyAppleCleanup, applyAppleCleanupDefaults } from '../setup/appleCleanup';
@@ -104,6 +105,9 @@
   let allCoreGranted = $state(false);
   let modelPreset = $state<Preset | null>(null);
   let providerExplicitlySelected = $state(false);
+  let holdSavedProgress = $state(false);
+  let keyStatusRevision = 0;
+  let latestKeyStatus: Partial<Record<ProviderId, boolean>> | null = null;
   let presetKeyStatus = $derived.by(() => {
     if (!providerExplicitlySelected) return providerKeyStatus;
     return Object.fromEntries(Object.entries(providerKeyStatus).map(([id, present]) =>
@@ -158,6 +162,9 @@
   let toneName = $derived(toneCards.find((t) => t.id === tone)?.name ?? '');
   let languageLabel = $derived(getTranscriptionLanguageLabel(language));
 
+  let setupMounted = true;
+  onDestroy(() => { setupMounted = false; });
+
   onMount(async () => {
     sendSetupEvent('setup_started');
     preserveModels = localStorage.getItem('verenu-setup-reconcile') === '1';
@@ -180,11 +187,19 @@
         });
     }
     try {
+      const initialStatusRevision = keyStatusRevision;
+      const statusRequest = invoke<Record<ProviderId, boolean> | null>('get_api_key_status');
+      void statusRequest.then(status => {
+        if (setupMounted && status && initialStatusRevision === keyStatusRevision) {
+          latestKeyStatus = status;
+          providerKeyStatus = { ...providerKeyStatus, ...status, local: true };
+        }
+      }).catch(() => {});
       const [
         snapshot, keyStatus, savedAnalytics, savedProgress,
       ] = await Promise.all([
         loadSettingsSnapshot(),
-        invoke<Record<ProviderId, boolean> | null>('get_api_key_status'),
+        credentialStatusWithin(statusRequest, 2000),
         invoke<boolean | null>('get_setting', { key: 'analytics_enabled' }),
         invoke<unknown>('get_setting', { key: 'setup_progress' }),
       ]);
@@ -210,12 +225,13 @@
       if (savedCleanupEnabled === false) cleanupIntensity = 'none';
       preserveDisabledIntensity = savedCleanupEnabled === false;
       if (savedTone && toneCards.some((t) => t.id === savedTone)) tone = savedTone;
-      if (keyStatus) {
-        providerKeyStatus = { ...providerKeyStatus, ...keyStatus, local: true };
+      const currentKeyStatus = initialStatusRevision === keyStatusRevision ? keyStatus : latestKeyStatus;
+      if (currentKeyStatus) {
+        providerKeyStatus = { ...providerKeyStatus, ...currentKeyStatus, local: true };
       }
       if (savedMute === true) usesHeadphones = false;
       analyticsEnabled = savedAnalytics ?? true;
-      await resumeSavedProgress(progress, keyStatus);
+      await resumeSavedProgress(progress, currentKeyStatus);
     } catch {}
     progressLoaded = true;
   });
@@ -223,8 +239,13 @@
   onMount(() => {
     let mounted = true;
     const refreshKeys = () => {
+      const revision = ++keyStatusRevision;
+      latestKeyStatus = null;
       void invoke<Record<ProviderId, boolean>>('get_api_key_status').then(status => {
-        if (mounted) providerKeyStatus = { ...providerKeyStatus, ...status, local: true };
+        if (mounted && revision === keyStatusRevision) {
+          latestKeyStatus = status;
+          providerKeyStatus = { ...providerKeyStatus, ...status, local: true };
+        }
       }).catch(() => {});
     };
     window.addEventListener('verenu:api-key-saved', refreshKeys);
@@ -236,19 +257,28 @@
     };
   });
 
-  async function resumeSavedProgress(saved: ReturnType<typeof parseSetupProgress>, keyStatus: Record<ProviderId, boolean> | null) {
+  async function resumeSavedProgress(saved: ReturnType<typeof parseSetupProgress>, keyStatus: Partial<Record<ProviderId, boolean>> | null) {
     if (!saved) return;
     if (!preserveModels && !preserveProvider && saved.provider && providers.some((p) => p.id === saved.provider) && (saved.provider !== 'local' || localAiSupported)) {
       provider = saved.provider as WizardProviderId;
     }
     let keys: Partial<Record<ProviderId, boolean>> = { ...(keyStatus ?? {}) };
+    let statusUnknown = keyStatus?.[keyProvider] === undefined;
     if (isAndroid && '__TAURI_INTERNALS__' in window) {
-      try {
-        const durable = await invoke<Partial<Record<ProviderId, boolean>>>('plugin:verenu-security|getCredentialStatus');
+      const revision = keyStatusRevision;
+      const durable = await credentialStatusWithin(invoke<Partial<Record<ProviderId, boolean>>>('plugin:verenu-security|getCredentialStatus'), 2000);
+      if (revision !== keyStatusRevision) {
+        keys = { ...(latestKeyStatus ?? {}) };
+        statusUnknown = keys[keyProvider] === undefined;
+      } else if (durable) {
         keys = { ...keys, ...Object.fromEntries(Object.entries(durable).filter(([, present]) => present)) };
+        if (keys[keyProvider]) statusUnknown = false;
         providerKeyStatus = { ...providerKeyStatus, ...keys, local: true };
-      } catch {}
+      } else {
+        statusUnknown = !keys[keyProvider];
+      }
     }
+    holdSavedProgress = statusUnknown && keyProvider !== 'local' && saved.step > apiKeyStep;
     step = resumeStep(saved.step, {
       apiKeyStep,
       doneStep,
@@ -258,7 +288,7 @@
 
   $effect(() => {
     const progress = { step, provider };
-    if (progressLoaded) void saveSetting('setup_progress', progress).catch(() => {});
+    if (progressLoaded && !holdSavedProgress) void saveSetting('setup_progress', progress).catch(() => {});
   });
 
   $effect(() => {
@@ -326,6 +356,7 @@
 
   async function animateTo(target: number, dir: 'forward' | 'back') {
     if (animating) return;
+    holdSavedProgress = false;
     const currentStep = setupStepName(step);
     const enteredAt = setupStepEnteredAt.get(step);
     if (currentStep && enteredAt !== undefined) {
@@ -406,6 +437,8 @@
         console.warn('Android in-memory credential cache unavailable; continuing with rotation', error);
       }
       if (isAndroid) await invoke('android_keystore_save', { provider: keyProvider, key: trimmed });
+      keyStatusRevision += 1;
+      latestKeyStatus = { ...(latestKeyStatus ?? {}), [keyProvider]: true };
       providerKeyStatus = { ...providerKeyStatus, [keyProvider]: true };
       keySaved = true;
       apiKeyDraft = '';

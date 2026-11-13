@@ -6,18 +6,8 @@ const { tauriMock, APP_VERSION } = require('./_tauri-mock.cjs');
 const TARGET_URL = 'http://localhost:1420';
 const TIMEOUT = 10_000;
 
-async function waitForMappingRowOpacity(page, exe, timeout = 1_000) {
-  const handle = await page.waitForFunction(
-    ({ exe }) => {
-      const rows = Array.from(document.querySelectorAll('.mapping-row'));
-      const row = rows.find((el) => el.textContent?.includes(exe));
-      if (!row) return false;
-      const opacity = Number.parseFloat(getComputedStyle(row).opacity);
-      return opacity > 0 && opacity < 1 ? opacity : false;
-    },
-    { exe },
-    { timeout },
-  );
+async function waitForMappingRowOpacity(page, timeout = 1_000) {
+  const handle = await page.waitForFunction(() => window.__mappingDeleteOpacity || false, null, { timeout });
   return Number(await handle.jsonValue());
 }
 
@@ -91,11 +81,24 @@ async function waitForMappingRowOpacity(page, exe, timeout = 1_000) {
     // Deleting should animate out instead of disappearing in a single frame
     const mappingRow = page.locator('.mapping-row').filter({ hasText: 'chrome.exe' }).first();
     const deleteBtn = mappingRow.locator('.mapping-delete-btn');
+    await deleteBtn.evaluate((button) => {
+      const row = button.closest('.mapping-row');
+      window.__mappingDeleteOpacity = null;
+      button.addEventListener('click', () => {
+        const started = performance.now();
+        const sample = () => {
+          if (!row.isConnected || performance.now() - started >= 1000) return;
+          const opacity = Number.parseFloat(getComputedStyle(row).opacity);
+          if (opacity > 0 && opacity < 1) window.__mappingDeleteOpacity = opacity;
+          else requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      }, { capture: true, once: true });
+    });
     await deleteBtn.click();
     try {
-      const rowOpacity = await waitForMappingRowOpacity(page, 'chrome.exe');
-      const rowsDuringDelete = await page.locator('.mapping-row').count();
-      console.log(`chrome.exe mapping animating out with ${rowsDuringDelete} row in DOM at opacity ${rowOpacity.toFixed(2)}.`);
+      const rowOpacity = await waitForMappingRowOpacity(page);
+      console.log(`chrome.exe mapping observed during deletion at opacity ${rowOpacity.toFixed(2)}.`);
     } catch (err) {
       errors.push(`Mapping row should pass through a mid-animation opacity after delete click: ${err.message}`);
     }

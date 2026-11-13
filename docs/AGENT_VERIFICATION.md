@@ -255,6 +255,21 @@ Shortcut and clipboard checks still need dedicated desktop targets. Record
 Windows, macOS, and Hyprland/Wayland results separately. Xvfb cannot establish
 Hyprland portal behavior.
 
+For an isolated X11 fixture on a headless Linux host, provide both an
+accessibility session bus and a window manager so the GTK entry can receive
+focus. For example, with `dbus-run-session`, `xvfb-run`, and `openbox` installed:
+
+```bash
+dbus-run-session -- xvfb-run -a sh -c '
+  openbox >/dev/null 2>&1 & wm_pid=$!
+  trap "kill $wm_pid 2>/dev/null" EXIT
+  npm run test:native:fixtures
+'
+```
+
+This checks AT-SPI focused text under X11 only. It does not establish native
+shortcut, permission, or Hyprland/Wayland behavior.
+
 ## Evaluate agents
 
 ```bash

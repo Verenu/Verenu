@@ -21,13 +21,13 @@ export function desktopShortcut(id: ShortcutStatus['id']): ShortcutStatus | unde
 
 export async function loadDesktopShortcuts(): Promise<void> {
   if (!isLinuxDesktop) return;
+  const sequence = ++loadSequence;
+  const revision = statusRevision;
   listening ??= listen<ShortcutStatus[]>('verenu:shortcuts-changed', (event) => {
     statusRevision += 1;
     shortcutStatus.items = Array.isArray(event.payload) ? event.payload : [];
   }).then(() => undefined).catch(() => { listening = undefined; });
   await listening;
-  const sequence = ++loadSequence;
-  const revision = statusRevision;
   try {
     const items = await invoke<ShortcutStatus[]>('get_shortcut_status');
     if (sequence !== loadSequence || revision !== statusRevision) return;
