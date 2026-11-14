@@ -47,6 +47,8 @@ export interface InsightsCleanup {
   snippet_expansions: number;
   activity_incomplete: boolean;
   activity_tracked_dictations: number;
+  /** Dictations in range whose text is still saved; absent from older backends. */
+  text_dictations?: number;
 }
 
 export interface InsightsWords {
@@ -54,6 +56,12 @@ export interface InsightsWords {
   unique_words: number;
   longest_word: string | null;
   avg_word_length: number;
+}
+
+export interface InsightsContextUsage {
+  context_id: number;
+  words: number;
+  transcriptions: number;
 }
 
 export interface InsightsPayload {
@@ -69,6 +77,8 @@ export interface InsightsPayload {
   providers: InsightsProviderUsage[];
   cleanup: InsightsCleanup;
   words: InsightsWords;
+  /** Per-context words in range. Empty when scoped to one context; absent from older backends. */
+  contexts?: InsightsContextUsage[];
 }
 
 export const EMPTY_INSIGHTS: InsightsPayload = {
@@ -110,6 +120,7 @@ export const EMPTY_INSIGHTS: InsightsPayload = {
     activity_tracked_dictations: 0,
   },
   words: { top: [], unique_words: 0, longest_word: null, avg_word_length: 0 },
+  contexts: [],
 };
 
 export const RANGE_OPTIONS: Array<{ value: InsightsRange; label: string }> = [

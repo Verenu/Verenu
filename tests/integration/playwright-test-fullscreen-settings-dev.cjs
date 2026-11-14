@@ -176,7 +176,14 @@ async function gotoSection(page, label) {
       await new Promise((res) => {
         const f = () => {
           seen.add(Math.round(top()));
-          if (performance.now() - t0 < 400) requestAnimationFrame(f); else res();
+          const active = document.querySelector('.settings-nav-item.active');
+          const rail = document.querySelector('.nav-section');
+          const targetTop = active && rail
+            ? active.getBoundingClientRect().top - rail.getBoundingClientRect().top
+            : null;
+          const settled = active === target && targetTop !== null && Math.abs(top() - targetTop) <= 2;
+          if (performance.now() - t0 < 2000 && !(settled && seen.size > 2)) requestAnimationFrame(f);
+          else res();
         };
         requestAnimationFrame(f);
       });
@@ -186,6 +193,7 @@ async function gotoSection(page, label) {
         before,
         distinct: seen.size,
         end: Math.round(top()),
+        targetActive: active === target,
         activeTop: active && rail
           ? Math.round(active.getBoundingClientRect().top - rail.getBoundingClientRect().top)
           : null,
@@ -194,6 +202,7 @@ async function gotoSection(page, label) {
     check(pillTravel !== null,
       'Expected a .rail-pill and section entries in the rail to measure the highlight against');
     if (pillTravel) {
+      check(pillTravel.targetActive, 'Privacy should be the active section after it is selected');
       check(pillTravel.distinct > 2,
         `The highlight should slide between sections rather than jump (saw ${pillTravel.distinct} positions)`);
       check(pillTravel.activeTop !== null && Math.abs(pillTravel.end - pillTravel.activeTop) <= 2,

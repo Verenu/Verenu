@@ -3,15 +3,18 @@
   import { fmtDuration, fmtNumber, fmtUsd } from './helpers';
   import DonutChart, { type DonutSegment } from './DonutChart.svelte';
   import { isAndroid } from '../../platform';
+  import { costPerThousandWords } from './analytics';
   import type { InsightsProviderUsage } from './types';
 
-  let { providers, rangeLabel, pricing }: {
+  let { providers, rangeLabel, pricing, wordsInRange = 0 }: {
     providers: InsightsProviderUsage[];
     rangeLabel: string;
     pricing: PricingSnapshot | null;
+    wordsInRange?: number;
   } = $props();
 
   const summary = $derived(estimateCost(providers, pricing));
+  const perThousand = $derived(costPerThousandWords(summary.rows.some((row) => row.cost !== null) ? summary.total : null, wordsInRange));
 
   function segmentColor(index: number, count: number): string {
     if (count <= 1) return 'var(--accent)';
@@ -54,13 +57,19 @@
       <h2 class="card-h">Estimated API cost</h2>
       <p class="card-sub">{rangeLabel} · billed by your provider, not by Verenu</p>
     </div>
+    {#if perThousand !== null}
+      <div class="readout">
+        <span class="readout-num">{perThousand > 0 && perThousand < 1 ? `$${perThousand.toFixed(3)}` : fmtUsd(perThousand)}</span>
+        <span class="readout-label">per 1,000 words</span>
+      </div>
+    {/if}
   </header>
 
   {#if summary.rows.length === 0}
     <p class="foot">No API usage recorded in this range.</p>
   {:else}
     {#if segments.length > 0}
-      <DonutChart {segments} primaryLabel={fmtUsd(summary.total)} secondaryLabel="total" showLegend={!isAndroid} />
+      <DonutChart {segments} primaryLabel={summary.total > 0 && summary.total < 0.01 ? "<$0.01" : fmtUsd(summary.total)} secondaryLabel="total" showLegend={!isAndroid} />
     {/if}
 
     <div class="cost-scroll scroll-styled">
@@ -100,6 +109,17 @@
 </section>
 
 <style>
+  .readout { text-align: right; white-space: nowrap; }
+  .readout-num {
+    display: block;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .readout-label { font-size: 11px; color: var(--ink-mute); }
 
   .cost-scroll {
     margin-top: 16px;
@@ -147,6 +167,7 @@
     font-family: var(--mono);
     font-size: 11px;
     color: var(--ink);
+    overflow-wrap: anywhere;
   }
   .task {
     display: block;
@@ -159,10 +180,27 @@
     .avg-usage { display: none; }
   }
 
+  /* On a phone each model becomes a stacked row: name on top, figures beneath. */
   @container insights (max-width: 420px) {
-    .avg-cost { display: none; }
-    .cost-table thead th { width: auto; }
+    .cost-table, .cost-table tbody { display: block; min-width: 0; }
+    .cost-table thead { display: none; }
+    .cost-table tr {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      column-gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .cost-table tbody tr:last-child { border-bottom: 0; }
+    .cost-table th,
+    .cost-table td { padding: 0; border: 0; }
+    .cost-table th[scope="row"] { grid-column: 1 / -1; width: auto; padding: 0 0 6px; }
+    .cost-table .avg-usage,
+    .cost-table .avg-cost { display: none; }
+    .cost-table td.num { text-align: left; }
+    .cost-table td.num:last-child { text-align: right; }
     .model { overflow-wrap: anywhere; }
+    .readout { text-align: left; }
   }
 
   .foot {

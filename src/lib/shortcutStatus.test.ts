@@ -55,3 +55,21 @@ it('keeps a newer shortcut event when the status snapshot returns late', async (
 
   expect(desktopShortcut('dictation')).toEqual(failure);
 });
+
+it('keeps an event received while the shortcut listener is being registered', async () => {
+  vi.resetModules();
+  let finishListening!: () => void;
+  let onStatus!: (event: { payload: unknown[] }) => void;
+  vi.mocked(listen).mockImplementationOnce((_event, handler) => {
+    onStatus = handler as typeof onStatus;
+    return new Promise((resolve) => { finishListening = () => resolve(() => {}); });
+  });
+  vi.mocked(invoke).mockResolvedValueOnce([]);
+  const { loadDesktopShortcuts: load, desktopShortcut: shortcut } = await import('./shortcutStatus.svelte');
+  const failure = { id: 'dictation', requested: 'Ctrl + Super', active: null, codes: [], note: 'unavailable' };
+  const loading = load();
+  onStatus({ payload: [failure] });
+  finishListening();
+  await loading;
+  expect(shortcut('dictation')).toEqual(failure);
+});

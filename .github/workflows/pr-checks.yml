@@ -403,6 +403,11 @@ jobs:
           node-version: 24
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+        if: runner.os != 'Windows'
+      # ort-sys rc.12 assumes Cargo's pre-1.100 build layout when copying DLLs.
+      # transcribe-rs pins rc.12; remove this pin when it supports a fixed ort.
+      - uses: dtolnay/rust-toolchain@1.99.1
+        if: runner.os == 'Windows'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: src-tauri
@@ -414,6 +419,9 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
             libxdo-dev libssl-dev libayatana-appindicator3-dev libasound2-dev xvfb dbus-x11
       - run: npm ci
+      - name: Build Windows native test dependencies
+        if: runner.os == 'Windows'
+        run: cargo build --manifest-path src-tauri/Cargo.toml --no-default-features --features native-testing
       - name: Test native WebView and IPC
         if: runner.os != 'Linux'
         run: npm run test:native:webview -- --report tests/reports/native.json

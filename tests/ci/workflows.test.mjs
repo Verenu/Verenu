@@ -337,6 +337,11 @@ test('PR checks compile and run Android native regressions and native WebViews',
   assert.equal(jobs.android.steps.find(step => step.uses === 'android-actions/setup-android@v3').with.packages, 'platform-tools');
   assert.equal(jobs.android.steps.find(step => step.with?.name === 'android-unit-reports').with['if-no-files-found'], 'ignore');
   assert.deepEqual(jobs.native.strategy.matrix.os, ['windows-latest', 'macos-latest', 'ubuntu-latest']);
+  assert.ok(jobs.native.steps.some(step => step.uses === 'dtolnay/rust-toolchain@1.99.1' && step.if === "runner.os == 'Windows'"));
+  assert.ok(jobs.native.steps.some(step => step.uses === 'dtolnay/rust-toolchain@stable' && step.if === "runner.os != 'Windows'"));
+  const windowsBuild = jobs.native.steps.find(step => step.name === 'Build Windows native test dependencies');
+  assert.equal(windowsBuild.if, "runner.os == 'Windows'");
+  assert.equal(windowsBuild.run, 'cargo build --manifest-path src-tauri/Cargo.toml --no-default-features --features native-testing');
   assert.match(jobs.native.steps.find(step => step.if === "runner.os == 'Linux'" && step.run?.includes('test:native:webview')).run, /XDG_RUNTIME_DIR/);
   const shared = YAML.parse(fs.readFileSync(path.join(root, '.github/actions/regression-checks/action.yml'), 'utf8'));
   assert.match(shared.runs.steps.find(step => step.run?.includes('test:session:owned')).run, /XDG_RUNTIME_DIR/);

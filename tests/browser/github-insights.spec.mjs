@@ -109,6 +109,16 @@ test('connected GitHub activity stays in the chart without a status row and reta
     await expect(chart).toBeVisible();
     await expect(page.locator('.chart-legend')).toContainText(/Contributions|Public commits/);
     await expect(page.locator('.github-line')).toHaveCount(1);
+    await page.getByRole('button', { name: 'Last 30 days' }).click();
+    await page.getByRole('option', { name: 'Last 7 days' }).click();
+    const plot = page.locator('.plot').first();
+    await expect(plot.locator('.word-bar')).toHaveCount(7);
+    await expect(plot.locator('.github-bar')).toHaveCount(2);
+    await expect(plot.locator('.github-line')).toHaveCount(0);
+    await expect(plot).toHaveAttribute('aria-label', /Bars use independent scales/);
+    await plot.focus();
+    await page.keyboard.press('End');
+    await expect(plot).toHaveAttribute('aria-valuetext', /3 contributions/);
     await expect(page.locator('.github-warning')).toContainText('GitHub activity may be incomplete.');
     await expect(page.locator('.github-status')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Manage in Settings', exact: true })).toHaveCount(0);

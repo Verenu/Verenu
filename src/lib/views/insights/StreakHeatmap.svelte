@@ -17,7 +17,6 @@
   const MIN_WEEKS = 18;
   const RIGHT_GUTTER = 10;
   const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
   interface GridCell { day: string; words: number; noData: boolean; streakDays: number }
 
@@ -121,23 +120,6 @@
     return labels;
   });
 
-  const bestWeekday = $derived.by(() => {
-    const sums = new Array(7).fill(0);
-    const counts = new Array(7).fill(0);
-    for (const d of daily) {
-      if (d.words <= 0) continue;
-      const dow = parseLocalDay(d.day).getDay();
-      sums[dow] += d.words;
-      counts[dow] += 1;
-    }
-    const averages = sums.map((s, i) => (counts[i] > 0 ? s / counts[i] : 0));
-    const peak = Math.max(...averages);
-    if (peak <= 0) return null;
-    const activeDays = counts.filter((c) => c > 0).length;
-    if (activeDays < 3) return null;
-    return { name: WEEKDAY_NAMES[averages.indexOf(peak)], avg: peak };
-  });
-
   const rangeActivity = $derived.by(() => {
     let days = 0;
     let words = 0;
@@ -182,12 +164,12 @@
 <section class="card">
   <header class="card-head">
     <div>
-      <h2 class="card-h"><AnimatedNumber value={streak.current_days} /> day streak</h2>
-      <p class="card-sub">{fmtNumber(visibleActiveDays)} active days shown · {visibleRangeLabel}</p>
+      <h2 class="card-h">Consistency</h2>
+      <p class="card-sub">{fmtNumber(visibleActiveDays)} active days · {visibleRangeLabel}</p>
     </div>
     <div class="best">
-      <span class="best-num"><AnimatedNumber value={streak.longest_days} /></span>
-      <span class="best-label">longest</span>
+      <span class="best-num"><AnimatedNumber value={streak.current_days} from={0} /></span>
+      <span class="best-label">day streak</span>
     </div>
   </header>
 
@@ -213,10 +195,11 @@
         role="img"
         aria-label={`Daily activity calendar. Current streak ${streak.current_days} days, longest ${streak.longest_days} days.`}
       >
-        {#each cells as cell}
+        {#each cells as cell, i}
           {#if cell.noData}
             <span
               class="cell cell-nodata"
+              style:--col={Math.floor(i / 7)}
               role="presentation"
               onpointerenter={(e) => onEnter(cell, e)}
               onpointerleave={clearHover}
@@ -225,6 +208,7 @@
             <span
               class="cell"
               role="presentation"
+              style:--col={Math.floor(i / 7)}
               style:background={streakColor(cell.streakDays, longestVisibleScale)}
               onpointerenter={(e) => onEnter(cell, e)}
               onpointerleave={clearHover}
@@ -241,7 +225,7 @@
       {#each legendDays as day}
         <span class="cell cell-key" style:background={streakColor(day, longestVisibleScale)} aria-hidden="true"></span>
       {/each}
-      <span class="legend-label legend-label-more">Day {longestVisibleScale}</span>
+      {#if longestVisibleScale > 1}<span class="legend-label legend-label-more">Day {longestVisibleScale}</span>{/if}
       <span class="legend-gap"></span>
       <span class="cell cell-nodata" aria-hidden="true"></span>
       <span class="legend-label">Not tracked</span>
@@ -260,13 +244,6 @@
           <span class="stat-value">{streak.longest_days} {streak.longest_days === 1 ? 'day' : 'days'}</span>
           <span class="stat-sub">{fmtNumber(streak.longest_words)} words{#if longestRange}{' · '}{longestRange}{/if}</span>
         </div>
-        {#if bestWeekday}
-          <div class="stat">
-            <span class="stat-label">Best day</span>
-            <span class="stat-value">{bestWeekday.name}</span>
-            <span class="stat-sub">{fmtNumber(bestWeekday.avg)} words on average</span>
-          </div>
-        {/if}
         <div class="stat">
           <span class="stat-label">Average active day</span>
           <span class="stat-sub">{fmtNumber(rangeActivity.average)} words per active day</span>
@@ -312,7 +289,7 @@
   .best-num {
     display: block;
     font-family: var(--sans);
-    font-size: 19px;
+    font-size: 20px;
     font-weight: 600;
     color: var(--ink);
     line-height: 1.1;
@@ -401,6 +378,20 @@
     display: block;
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent);
     transition: background-color var(--ui-duration-base) var(--ui-ease-out);
+  }
+  .grid .cell {
+    animation: cell-in 380ms var(--ui-ease-out) both;
+    animation-delay: calc(var(--col, 0) * 9ms + 120ms);
+  }
+  .grid .cell:hover { box-shadow: inset 0 0 0 1.5px var(--ink-soft); }
+
+  @keyframes cell-in {
+    from { opacity: 0; scale: 0.4; }
+    to { opacity: 1; scale: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .grid .cell { animation: none; }
   }
   .cell-nodata {
     background: color-mix(in srgb, var(--ink) 11%, transparent);

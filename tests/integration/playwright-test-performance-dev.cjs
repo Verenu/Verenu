@@ -18,9 +18,12 @@ const sections = ['Models', 'Privacy', 'Audio', 'About', 'General'];
   await seedDevState(page, { settings: { setup_complete: true, legacy_features_enabled: true } });
   await page.addInitScript(() => {
     window.__verenuLongTasks = 0;
+    window.__verenuLongTaskDetails = [];
     try {
       new PerformanceObserver((list) => {
-        window.__verenuLongTasks += list.getEntries().filter((entry) => entry.duration > 50).length;
+        const entries = list.getEntries().filter((entry) => entry.duration > 50);
+        window.__verenuLongTasks += entries.length;
+        window.__verenuLongTaskDetails.push(...entries.map((entry) => ({ start_ms: Math.round(entry.startTime), duration_ms: Math.round(entry.duration) })));
       }).observe({ type: 'longtask', buffered: true });
     } catch {}
   });
@@ -48,14 +51,20 @@ const sections = ['Models', 'Privacy', 'Audio', 'About', 'General'];
     const settingsStart = performance.now();
     await page.locator('.nav-item:has-text("Settings")').click({ timeout: TIMEOUT });
     await page.locator('.settings-page').waitFor({ state: 'visible', timeout: TIMEOUT });
+    // Count the entrance animation under Settings opening, not section changes.
+    // The trial waits for actionability without activating the section.
+    await page.locator('.settings-nav-item', { hasText: sections[0] }).click({ trial: true, timeout: TIMEOUT });
     const settingsOpen = performance.now() - settingsStart;
-
     const sectionTimes = [];
+    const sectionActions = {};
     for (const label of sections) {
       const sectionStart = performance.now();
       await page.locator('.settings-nav-item', { hasText: label }).click({ timeout: TIMEOUT });
+      const clicked = performance.now();
       await page.locator('h2.settings-h', { hasText: label }).waitFor({ state: 'visible', timeout: TIMEOUT });
-      sectionTimes.push(performance.now() - sectionStart);
+      const visible = performance.now();
+      sectionTimes.push(visible - sectionStart);
+      sectionActions[label] = { click_ms: round(clicked - sectionStart), visible_ms: round(visible - clicked) };
     }
     const sorted = [...sectionTimes].sort((a, b) => a - b);
     const sectionP95 = sorted[Math.ceil(sorted.length * 0.95) - 1] || 0;
@@ -65,13 +74,17 @@ const sections = ['Models', 'Privacy', 'Audio', 'About', 'General'];
     await page.locator('.settings-page').waitFor({ state: 'hidden', timeout: TIMEOUT });
     const settingsClose = performance.now() - closeStart;
     const longTasks = await page.evaluate(() => window.__verenuLongTasks || 0);
+    const longTaskDetails = await page.evaluate(() => window.__verenuLongTaskDetails || []);
 
     const measurements = {
       navigation_visible_ms: round(navigationVisible),
       settings_open_ms: round(settingsOpen),
       section_change_p95_ms: round(sectionP95),
+      section_change_ms: Object.fromEntries(sections.map((label, index) => [label, round(sectionTimes[index])])),
+      section_actions_ms: sectionActions,
       settings_close_ms: round(settingsClose),
       long_tasks_over_50ms: longTasks,
+      long_task_details: longTaskDetails,
       uncaught_errors: pageErrors.length,
     };
     const mapping = {

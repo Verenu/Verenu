@@ -6,6 +6,7 @@
   import RollingNumber from './RollingNumber.svelte';
   import ChartTooltip from './ChartTooltip.svelte';
   import type { InsightsDay } from './types';
+  import { dailyAverage } from './analytics';
   import { activityDescription, activityLabel, activityRangeDescription, alignActivity, activityPath, type GithubSnapshot } from './github';
 
   let { daily, rangeLabel, github = null }: { daily: InsightsDay[]; rangeLabel: string; github?: GithubSnapshot | null } = $props();
@@ -77,6 +78,14 @@
   );
 
   const barWidth = $derived(daily.length > 0 ? Math.min(28, (W / daily.length) * 0.55) : 0);
+  const seriesBarWidth = $derived(github ? (barWidth - 2) / 2 : barWidth);
+
+  function barPath(left: number, top: number, width: number, height: number): string {
+    const radius = Math.min(2, width / 2, height);
+    const right = left + width;
+    const bottom = top + height;
+    return `M ${left} ${bottom} V ${top + radius} Q ${left} ${top} ${left + radius} ${top} H ${right - radius} Q ${right} ${top} ${right} ${top + radius} V ${bottom} Z`;
+  }
 
   let hover = $state<number | null>(null);
   let plotWidth = $state(0);
@@ -124,6 +133,9 @@
   }
 
   const total = $derived(daily.reduce((sum, d) => sum + d.words, 0));
+  const average = $derived(dailyAverage(daily));
+  const showAverage = $derived(daily.length > 1 && average > 0);
+  const averageY = $derived(y(Math.min(average, max)));
   const best = $derived(daily.reduce<InsightsDay | null>((b, d) => (!b || d.words > b.words ? d : b), null));
   const summary = $derived(
     daily.length === 0
@@ -140,7 +152,7 @@
     </div>
     <div class="readout" aria-live="polite">
       <span class="readout-num"><RollingNumber value={active ? active.words : total} format={fmtNumber} /></span>
-      <span class="readout-day">{active ? fmtDayLong(active.day) : 'total'}</span>
+      <span class="readout-day">{active ? fmtDayLong(active.day) : showAverage ? `total · ${fmtNumber(average)} a day` : 'total'}</span>
     </div>
   </header>
 
@@ -158,20 +170,24 @@
     aria-valuemax={Math.max(0, daily.length - 1)}
     aria-valuenow={selectedIndex}
     aria-valuetext={selectedDay ? `${fmtDayLong(selectedDay.day)}: ${fmtNumber(selectedDay.words)} words${github ? `, ${describeActivity(activity[selectedIndex])}` : ''}` : undefined}
-    aria-label={summary + (github ? ` ${activityRangeDescription(knownActivityTotal, activity, github)}. Lines use independent scales to compare trends.` : '') + ' Use arrow keys to explore each day.'}
+    aria-label={summary + (github ? ` ${activityRangeDescription(knownActivityTotal, activity, github)}. ${asBars ? 'Bars' : 'Lines'} use independent scales to compare trends.` : '') + ' Use arrow keys to explore each day.'}
     tabindex={daily.length ? 0 : undefined}
     onkeydown={onKey}
     onblur={() => { hover = null; }}
     onpointermove={onMove}
     onpointerleave={() => { hover = null; plotRect = null; }}
   >
-    <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none">
+    <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" class:bars={asBars}>
       <defs>
         <linearGradient id={gradientId} x1="0" x2="1" y1="0" y2="0">
           <stop offset="0%" stop-color="white" stop-opacity="0" />
           <stop offset="4%" stop-color="white" stop-opacity="1" />
           <stop offset="96%" stop-color="white" stop-opacity="1" />
           <stop offset="100%" stop-color="white" stop-opacity="0" />
+        </linearGradient>
+        <linearGradient id="{gradientId}-area" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28" />
+          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02" />
         </linearGradient>
         <mask id="{gradientId}-mask" maskUnits="userSpaceOnUse" x="0" y="0" width={W} height={H}>
           <rect x="0" y="0" width={W} height={H} fill="url(#{gradientId})" />
@@ -183,29 +199,48 @@
       />
       {#if asBars}
         {#each daily as d, i}
-          <rect
-            x={x(i) - barWidth / 2}
-            y={d.words > 0 ? y(d.words) : H - PAD_BOTTOM - 1}
-            width={barWidth}
-            height={d.words > 0 ? Math.max(1, H - PAD_BOTTOM - y(d.words)) : 1}
+          {@const wordTop = d.words > 0 ? y(d.words) : H - PAD_BOTTOM - 1}
+          {@const wordHeight = d.words > 0 ? Math.max(1, H - PAD_BOTTOM - y(d.words)) : 1}
+          <path
+            class="word-bar"
+            d={barPath(x(i) - barWidth / 2, wordTop, seriesBarWidth, wordHeight)}
             fill={hover === i ? 'var(--accent)' : 'color-mix(in srgb, var(--accent) 55%, transparent)'}
-          ><title>{fmtDayLong(d.day)} — {fmtNumber(d.words)} words</title></rect>
+          ><title>{fmtDayLong(d.day)} — {fmtNumber(d.words)} words</title></path>
+          {#if github && activity[i] !== null}
+            {@const count = activity[i] ?? 0}
+            {@const activityTop = count > 0 ? activityY(count) : H - PAD_BOTTOM - 1}
+            {@const activityHeight = count > 0 ? Math.max(1, H - PAD_BOTTOM - activityY(count)) : 1}
+            <path
+              class="github-bar"
+              d={barPath(x(i) + barWidth / 2 - seriesBarWidth, activityTop, seriesBarWidth, activityHeight)}
+              fill={hover === i ? 'var(--success)' : 'color-mix(in srgb, var(--success) 55%, transparent)'}
+            ><title>{fmtDayLong(d.day)} — {describeActivity(count)}</title></path>
+          {/if}
         {/each}
       {:else}
-        <path d={areaPath} fill="color-mix(in srgb, var(--accent) 18%, transparent)" mask="url(#{gradientId}-mask)" class="area-path" />
+        <path d={areaPath} fill="url(#{gradientId}-area)" mask="url(#{gradientId}-mask)" class="area-path" />
         <path
           d={linePath}
           fill="none"
           stroke="var(--accent)"
-          stroke-width="1.5"
+          stroke-width="1.75"
           stroke-linejoin="round"
+          stroke-linecap="round"
           vector-effect="non-scaling-stroke"
           class="line-path"
         />
       {/if}
-      {#if github}
+      {#if github && !asBars}
         <path d={githubArea} fill="color-mix(in srgb, var(--success) 10%, transparent)" mask="url(#{gradientId}-mask)" />
         <path d={githubPath} fill="none" stroke="var(--success)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" class="github-line" />
+      {/if}
+      {#if showAverage}
+        <line
+          class="avg-line"
+          x1="0" y1={averageY} x2={W} y2={averageY}
+          stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2 4"
+          vector-effect="non-scaling-stroke"
+        />
       {/if}
       {#if daily.length > 0}
         <line
@@ -225,6 +260,9 @@
         style:top="{cursorPoint.y}px"
         aria-hidden="true"
       ></span>
+    {/if}
+    {#if showAverage}
+      <span class="avg-label" class:hidden={hover !== null} style:top="{averageY}px" aria-hidden="true">avg</span>
     {/if}
     <div class="axis">
       <span>{daily.length ? fmtDayLong(daily[0].day) : ''}</span>
@@ -255,7 +293,8 @@
     display: block;
     font-family: var(--sans);
     font-size: 20px;
-    font-weight: 500;
+    font-weight: 600;
+    letter-spacing: -0.02em;
     color: var(--ink);
     line-height: 1.1;
     font-variant-numeric: tabular-nums;
@@ -267,7 +306,7 @@
 
   .plot { flex: 1; position: relative; }
   .plot:focus-visible { outline: 1px solid var(--ink-mute); outline-offset: 4px; border-radius: var(--r-sm); }
-  .chart-legend { display: flex; align-items: center; gap: 16px; font-size: 11px; color: var(--ink-soft); margin: 0 0 12px; }
+  .chart-legend { display: flex; align-items: center; gap: 16px; font-size: 11px; color: var(--ink-soft); margin: -6px 0 12px; }
   .legend-item { display: inline-flex; align-items: center; gap: 6px; }
   .legend-line { width: 14px; border-top: 2px solid var(--accent); }
   .legend-line.commits { border-color: var(--success); }
@@ -300,24 +339,51 @@
 
   .axis span:last-child { text-align: right; }
 
-  rect { transition: fill var(--ui-duration-fast) var(--ui-ease-out), y var(--ui-duration-base) var(--ui-ease-out), height var(--ui-duration-base) var(--ui-ease-out); }
+  .word-bar,
+  .github-bar { transition: fill var(--ui-duration-fast) var(--ui-ease-out), d var(--ui-duration-base) var(--ui-ease-out); }
 
   .area-path,
   .line-path {
     transition: d var(--ui-duration-base) var(--ui-ease-out);
   }
 
-  .line-path {
-    animation: daily-line-in 260ms var(--ui-ease-out) both;
+  /* The series sweeps in from the left the first time the chart mounts. */
+  svg {
+    animation: daily-reveal 1100ms cubic-bezier(0.65, 0, 0.35, 1) both 120ms;
+  }
+  svg.bars { animation: none; }
+  svg.bars .word-bar,
+  svg.bars .github-bar {
+    transform-box: fill-box;
+    transform-origin: bottom;
+    animation: daily-bar-grow 620ms var(--ui-ease-out) both 160ms;
   }
 
-  @keyframes daily-line-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
+  @keyframes daily-reveal {
+    from { clip-path: inset(-24px 100% -24px -24px); }
+    to { clip-path: inset(-24px -24px -24px -24px); }
   }
+
+  @keyframes daily-bar-grow {
+    from { scale: 1 0; }
+    to { scale: 1 1; }
+  }
+
+  .avg-label {
+    position: absolute;
+    right: 0;
+    transform: translateY(calc(-100% - 2px));
+    padding: 0 2px;
+    font-size: 9.5px;
+    line-height: 1;
+    color: var(--ink-faint);
+    pointer-events: none;
+    transition: opacity var(--ui-duration-fast) var(--ui-ease-out);
+  }
+  .avg-label.hidden { opacity: 0; }
 
   @media (prefers-reduced-motion: reduce) {
-    .line-path { animation: none; }
+    svg, svg.bars .word-bar, svg.bars .github-bar { animation: none; }
   }
 
   .cursor-line {
