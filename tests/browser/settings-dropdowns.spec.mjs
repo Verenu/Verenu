@@ -191,6 +191,21 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
     });
     expect(lastOptionIsUncovered).toBe(true);
 
+    if (page.viewportSize().width <= 440) {
+      await page.keyboard.press('Escape');
+      const viewport = page.viewportSize();
+      await page.setViewportSize({ width: viewport.width, height: 650 });
+      await provider.evaluate((element) => element.scrollIntoView({ block: 'end', inline: 'nearest' }));
+      await provider.click();
+      await waitForPanelMotion(providerMenu);
+      await expectMenuInsideViewport(providerMenu, page);
+      const triggerBounds = await provider.boundingBox();
+      const menuBounds = await providerMenu.boundingBox();
+      expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(triggerBounds.y);
+      await page.keyboard.press('Escape');
+      await page.setViewportSize(viewport);
+    }
+
     await page.getByRole('tab', { name: 'Logs' }).click();
     const logLevel = page.getByRole('group', { name: 'Log level' });
     await expect(logLevel.getByRole('button', { name: 'Problems' })).toBeVisible();
