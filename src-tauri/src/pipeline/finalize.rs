@@ -435,6 +435,7 @@ mod tests {
     fn entry(term: &str) -> db::DictionaryEntry {
         db::DictionaryEntry {
             id: 1,
+            replacement_confidence: "default".into(),
             term: term.to_string(),
             mistake: None,
             auto_learned: false,

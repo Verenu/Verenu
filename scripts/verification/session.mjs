@@ -9,6 +9,15 @@ export function cargoTargetDirectory(environment = process.env) {
   return environment.CARGO_TARGET_DIR || path.join(root, 'src-tauri', 'target');
 }
 
+export async function cargoDebugDirectoryStatus(target = cargoTargetDirectory(), stat = fs.stat) {
+  const directoryExists = async (directory) => stat(directory).then((entry) => entry.isDirectory()).catch((error) => ['ENOENT', 'ENOTDIR'].includes(error.code) ? false : null);
+  const debug = path.join(target, 'debug');
+  const [profile, examples, deps] = await Promise.all([
+    directoryExists(debug), directoryExists(path.join(debug, 'examples')), directoryExists(path.join(debug, 'deps')),
+  ]);
+  return { profile, examples, deps };
+}
+
 export function ownedSessionStartupState(manifest, launcherPid) {
   if (!manifest || manifest.launcherPid !== launcherPid) return null;
   if (manifest.status === 'ready') return 'ready';
@@ -31,6 +40,51 @@ export function sessionStartupDiagnostics(manifest, launcherPid, launcher = {}) 
   if (typeof launcher.signal === 'string' && /^SIG[A-Z0-9]+$/.test(launcher.signal)) result.launcherSignal = launcher.signal;
   if (typeof launcher.errorCode === 'string' && /^E[A-Z0-9_]+$/.test(launcher.errorCode)) result.launcherSpawnErrorCode = launcher.errorCode;
   return result;
+}
+
+export function classifyStartupLog(log) {
+  if (typeof log !== 'string') return [];
+  const text = log.replace(/\u001b\[[0-9;]*m/g, '');
+  const checks = [
+    ['rust-compiler-error', /(?:^|\n)\s*error\[E\d{4}\]:/],
+    ['linker-error', /(?:^|\n)\s*error: linking with\b/],
+    ['build-script-error', /(?:^|\n)\s*error: failed to run custom build command\b/],
+    ['dependency-error', /(?:^|\n)\s*error: failed to (?:get|download|fetch)\b/],
+    ['disk-full', /(?:no space left on device|not enough space on the disk)/i],
+    ['runtime-panic', /(?:^|\n)\s*thread [^\r\n]{1,200} panicked at /],
+    ['dev-session-prepare-panic', /(?:^|\n)\s*thread [^\r\n]{1,200} panicked at [^\r\n]*(?:\r?\n[ \t]*)?failed to prepare isolated dev session/],
+    ['app-build-panic', /(?:^|\n)\s*thread [^\r\n]{1,200} panicked at [^\r\n]*(?:\r?\n[ \t]*)?error building Verenu/],
+  ];
+  return checks.filter(([, pattern]) => pattern.test(text)).map(([category]) => category);
+}
+
+export function cargoPackageNames(lockfile) {
+  if (typeof lockfile !== 'string') return new Set();
+  return new Set([...lockfile.matchAll(/^name = "([a-zA-Z0-9_-]+)"\r?$/gm)].map((match) => match[1]));
+}
+
+export function classifyPanicOsError(log) {
+  if (typeof log !== 'string') return null;
+  const match = log.replace(/\u001b\[[0-9;]*m/g, '').match(/(?:^|\n)\s*thread [^\r\n]{1,200} panicked at [^\r\n]*(?:\r?\n[^\r\n]*)?\bOs \{ code: (\d{1,5}), kind:/);
+  if (!match) return null;
+  const code = Number(match[1]);
+  return code <= 65535 ? code : null;
+}
+
+export function classifyPanicLocation(log, packages = new Set()) {
+  if (typeof log !== 'string') return null;
+  const match = log.replace(/\u001b\[[0-9;]*m/g, '').match(/(?:^|\n)\s*thread [^\r\n]{1,200} panicked at ([^\r\n]{1,1024}?):(\d{1,6}):\d{1,6}:/);
+  if (!match) return null;
+  const location = match[1].replace(/\\/g, '/');
+  const line = Number(match[2]);
+  if (line < 1) return null;
+  const crate = location.match(/(?:^|\/)([a-zA-Z0-9_-]+)-\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?\/(?:[^/]+\/)*[^/]+\.rs$/)?.[1];
+  if (crate && packages.has(crate)) return { source: crate, line };
+  if (location === 'src/lib.rs') return { source: 'app-lib', line };
+  if (location === 'src/dev_session.rs') return { source: 'dev-session', line };
+  if (/^src\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.rs$/.test(location)) return { source: 'app-source', line };
+  if (/^(?:.*\/)?library\/(?:core|std|alloc)\/src\/.+\.rs$/.test(location)) return { source: 'rust-standard-library', line };
+  return null;
 }
 
 export function sessionIdentityMismatch(expected, actual, sourceChanges = undefined) {
@@ -56,7 +110,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   const sourceAtStart = sourceSnapshot();
   const sessionDirectory = path.join(os.homedir(), '.local', 'state', 'verenu', 'dev-sessions', id);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const log = await fs.open(path.join(directory, `startup-${Date.now()}.log`), 'w', 0o600);
+  const logPath = path.join(directory, `startup-${Date.now()}.log`);
+  const log = await fs.open(logPath, 'w', 0o600);
   let child;
   try {
     assertRunning();
@@ -123,7 +178,32 @@ export async function startOwnedSession({ id, fixtures, native = false, director
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error('Owned session startup timed out');
-  } catch (error) { await stop(); throw error; }
+  } catch (error) {
+    await stop();
+    if (error.startupFailure) {
+      try {
+        const file = await fs.open(logPath, 'r');
+        try {
+          const stat = await file.stat();
+          const size = Math.min(stat.size, 256 * 1024);
+          const buffer = Buffer.alloc(size);
+          const { bytesRead } = await file.read(buffer, 0, size, stat.size - size);
+          const text = buffer.subarray(0, bytesRead).toString('utf8');
+          const categories = classifyStartupLog(text);
+          if (categories.length) error.startupFailure.logCategories = categories;
+          const lockfile = await fs.readFile(path.join(root, 'src-tauri', 'Cargo.lock'), 'utf8').catch(() => '');
+          const panicLocation = classifyPanicLocation(text, cargoPackageNames(lockfile));
+          if (panicLocation) error.startupFailure.panicLocation = panicLocation;
+          const osErrorCode = classifyPanicOsError(text);
+          if (osErrorCode !== null) error.startupFailure.panicOsErrorCode = osErrorCode;
+          if (process.platform === 'win32' && panicLocation?.source === 'ort-sys' && osErrorCode === 3) {
+            error.startupFailure.cargoDebugDirectories = await cargoDebugDirectoryStatus();
+          }
+        } finally { await file.close(); }
+      } catch {}
+    }
+    throw error;
+  }
 }
 export async function invokeSession(session, command, args = {}) {
   const response = await fetch(new URL('/__verenu_dev/invoke', session.access.localAccessUrl), { method: 'POST', headers: { Authorization: `Bearer ${session.access.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args }), signal: AbortSignal.timeout(30_000) });

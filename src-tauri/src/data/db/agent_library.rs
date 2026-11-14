@@ -25,6 +25,8 @@ struct Correction {
 #[derive(Debug, Serialize, Deserialize)]
 struct Entry {
     kind: String, uuid: String, id: i64, name: String,
+    #[serde(default)]
+    replacement_confidence: Option<String>,
     mistake: Option<String>, auto_learned: i64, correction_count: i64,
     confidence_tier: Option<String>, last_seen_at: Option<String>,
     expansion: Option<String>, instructions: Option<String>, use_count: i64,
@@ -51,12 +53,12 @@ fn read_entries(conn: &Connection, items: &[LibraryItem]) -> Result<Vec<Entry>> 
     for item in items {
         let mut entry = match item.kind.as_str() {
             "dictionary" => conn.query_row(
-                "SELECT id,uuid,term,mistake,auto_learned,correction_count,confidence_tier,last_seen_at,created_at FROM dictionary WHERE uuid=?1",
-                [&item.uuid], |r| Ok(Entry { kind: item.kind.clone(), id:r.get(0)?, uuid:r.get(1)?, name:r.get(2)?, mistake:r.get(3)?, auto_learned:r.get(4)?, correction_count:r.get(5)?, confidence_tier:Some(r.get(6)?), last_seen_at:r.get(7)?, created_at:r.get(8)?, expansion:None, instructions:None, use_count:0, assignments:vec![], corrections:vec![], local_matches:0, local_last_matched_at:None }),
+                "SELECT id,uuid,term,mistake,auto_learned,correction_count,confidence_tier,last_seen_at,created_at,replacement_confidence FROM dictionary WHERE uuid=?1",
+                [&item.uuid], |r| Ok(Entry { kind: item.kind.clone(), id:r.get(0)?, uuid:r.get(1)?, name:r.get(2)?, mistake:r.get(3)?, auto_learned:r.get(4)?, correction_count:r.get(5)?, confidence_tier:Some(r.get(6)?), last_seen_at:r.get(7)?, created_at:r.get(8)?, replacement_confidence:Some(r.get(9)?), expansion:None, instructions:None, use_count:0, assignments:vec![], corrections:vec![], local_matches:0, local_last_matched_at:None }),
             ).optional()?,
             "snippet" => conn.query_row(
                 "SELECT id,uuid,trigger,expansion,instructions,use_count,created_at FROM snippets WHERE uuid=?1",
-                [&item.uuid], |r| Ok(Entry { kind:item.kind.clone(), id:r.get(0)?, uuid:r.get(1)?, name:r.get(2)?, expansion:Some(r.get(3)?), instructions:Some(r.get(4)?), use_count:r.get(5)?, created_at:r.get(6)?, mistake:None, auto_learned:0, correction_count:0, confidence_tier:None, last_seen_at:None, assignments:vec![], corrections:vec![], local_matches:0, local_last_matched_at:None }),
+                [&item.uuid], |r| Ok(Entry { kind:item.kind.clone(), id:r.get(0)?, uuid:r.get(1)?, name:r.get(2)?, expansion:Some(r.get(3)?), instructions:Some(r.get(4)?), use_count:r.get(5)?, created_at:r.get(6)?, replacement_confidence:None, mistake:None, auto_learned:0, correction_count:0, confidence_tier:None, last_seen_at:None, assignments:vec![], corrections:vec![], local_matches:0, local_last_matched_at:None }),
             ).optional()?,
             _ => unreachable!(),
         }.context("A selected item no longer exists")?;
@@ -144,7 +146,7 @@ pub fn undo_library_delete(db: &Db, request_id: &str) -> Result<Value> {
             ensure!(!changed, "Cannot restore a correction that changed after deletion");
         }
         if e.kind == "dictionary" {
-            tx.execute("INSERT INTO dictionary(uuid,term,mistake,auto_learned,correction_count,confidence_tier,last_seen_at,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)", params![e.uuid,e.name,e.mistake,e.auto_learned,e.correction_count,e.confidence_tier,e.last_seen_at,e.created_at]).context("Cannot restore a dictionary item; it may have been recreated or changed")?;
+            tx.execute("INSERT INTO dictionary(uuid,term,mistake,auto_learned,correction_count,confidence_tier,last_seen_at,created_at,replacement_confidence) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![e.uuid,e.name,e.mistake,e.auto_learned,e.correction_count,e.confidence_tier,e.last_seen_at,e.created_at,e.replacement_confidence.as_deref().unwrap_or("default")]).context("Cannot restore a dictionary item; it may have been recreated or changed")?;
         } else {
             tx.execute("INSERT INTO snippets(uuid,trigger,expansion,instructions,use_count,created_at) VALUES (?1,?2,?3,?4,?5,?6)", params![e.uuid,e.name,e.expansion,e.instructions,e.use_count,e.created_at]).context("Cannot restore a snippet; it may have been recreated or changed")?;
         }

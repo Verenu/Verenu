@@ -86,6 +86,22 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn replacement_confidence_survives_backup_export_and_import() {
+    let source = Fixture::new();
+    let dest = Fixture::new();
+    let entry = db::insert_dictionary_entry_returning(&source.db, "SyntheticTerm", Some("synthetic-term"), None).unwrap();
+    source.db.lock().unwrap().execute("UPDATE dictionary SET replacement_confidence='high' WHERE id=?1", [entry.id]).unwrap();
+    let (dictionary, _) = source.library();
+    let item = dictionary.into_iter().find(|entry| entry.term == "SyntheticTerm").unwrap();
+    assert_eq!(item.replacement_confidence, "high");
+    let mut stats = LibraryImportStats::default();
+    let conn = dest.db.lock().unwrap();
+    let id = import_canonical_dictionary_conn(&conn, &item, &mut stats).unwrap().unwrap();
+    let restored: String = conn.query_row("SELECT replacement_confidence FROM dictionary WHERE id=?1", [id], |row| row.get(0)).unwrap();
+    assert_eq!(restored, "high");
+}
+
+#[test]
 fn resolving_backup_alias_does_not_duplicate_overlapping_legacy_usage() {
     let source = Fixture::new();
     let dest = Fixture::new();

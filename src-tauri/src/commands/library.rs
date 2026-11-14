@@ -186,11 +186,16 @@ pub async fn edit_dictionary_entry(
     mistake: Option<String>,
     context_id: Option<i64>,
     expected: Option<db::ExpectedDictionaryEntry>,
+    replacement_confidence: Option<String>,
 ) -> Result<(), String> {
     let event_app = app.clone();
     run_db(&app, "edit_dictionary_entry", move |db| {
+        if replacement_confidence.is_some() && expected.is_none() {
+            anyhow::bail!("Replacement confidence requires an expected entry snapshot");
+        }
+        let event_context = if replacement_confidence.is_some() { None } else { context_id };
         let result = if let Some(expected) = expected.as_ref() {
-            db::update_dictionary_entry_if_unchanged(db, context_id, id, &term, mistake.as_deref(), expected)
+            db::update_dictionary_entry_with_confidence(db, context_id, id, &term, mistake.as_deref(), expected, replacement_confidence.as_deref())
         } else { match context_id {
             Some(context_id) => db::update_dictionary_entry_for_context(
                 db,
@@ -202,7 +207,7 @@ pub async fn edit_dictionary_entry(
             None => db::update_dictionary_entry(db, id, &term, mistake.as_deref()),
         }};
         if result.is_ok() {
-            emit_dictionary_updated(&event_app, context_id, id);
+            emit_dictionary_updated(&event_app, event_context, id);
         }
         result
     })

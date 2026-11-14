@@ -7,7 +7,7 @@ async function expectMenuInsideViewport(menu, page) {
   expect(bounds).not.toBeNull();
   expect(content).not.toBeNull();
   const geometry = {
-    menuId: await menu.getAttribute('id'),
+    menuId: await menu.getAttribute('id') ?? (await menu.getAttribute('aria-label') === 'Simulation provider options' ? 'simulation-provider-menu' : null),
     bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
     content: { x: content.x, y: content.y, width: content.width, height: content.height },
     viewport,
@@ -174,12 +174,13 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
     await waitForPanelMotion(provider);
     await expect(provider).toHaveClass(/ui-dropdown-trigger--compact/);
     await expect(provider).not.toHaveClass(/btn-ghost/);
-    await provider.evaluate((element) => element.scrollIntoView({ block: 'center', inline: 'nearest' }));
+    await provider.evaluate((element) => element.scrollIntoView({ block: 'end', inline: 'nearest' }));
     await provider.click();
 
     const providerMenu = page.getByRole('listbox', { name: 'Simulation provider options' });
     await waitForPanelMotion(providerMenu);
     await expect(providerMenu).toHaveClass(/ui-dropdown-menu--padded/);
+    if (test.info().project.name === 'phone') await expect(providerMenu).toHaveClass(/open-up/);
     await expectMenuInsideViewport(providerMenu, page);
     const lastProviderOption = providerMenu.locator('.ui-dropdown-option').last();
     const lastOptionIsUncovered = await lastProviderOption.evaluate((element) => {
