@@ -17,6 +17,25 @@ const harnesses = [
 ];
 const exists = async (name) => fs.stat(name).then(() => true, () => false);
 
+async function verifyPrivateDirectory(directory) {
+  if (process.platform === 'win32') return;
+  const real = await fs.realpath(directory);
+  const own = process.getuid();
+  let current = real;
+  while (true) {
+    const stat = await fs.stat(current);
+    const isParent = current !== real;
+    if (!stat.isDirectory() || (stat.uid !== own && stat.uid !== 0) ||
+        (!isParent && (stat.uid !== own || (stat.mode & 0o077))) ||
+        (isParent && (stat.mode & 0o022) && !(stat.uid === 0 && (stat.mode & 0o1000)))) {
+      throw new Error('Agent grant directory and its ancestors must be trusted');
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+}
+
 export async function detectedHarnesses(home = os.homedir()) {
   const rows = await Promise.all(harnesses.map(async (h) => ({ ...h, detected: await exists(path.join(home, h.config)), destination: path.join(home, h.skills, 'verenu-control') })));
   return rows.filter((h) => h.detected);
@@ -78,9 +97,9 @@ async function resolveSession(env) {
     const session = await readDescriptor(filename);
     if (!session) continue;
     try {
-      const response = await fetch(`http://127.0.0.1:${session.port}/v1/status`, { redirect: 'error', signal: AbortSignal.timeout(1000) });
+      const response = await fetch(`http://127.0.0.1:${session.port}/v1/status`, { redirect: 'error', signal: AbortSignal.timeout(5000) });
       const status = await response.json();
-      if (response.ok && status.version === 1 && status.instance === session.instance) live.push(session);
+      if (response.ok && status.version === 1 && status.instance === session.instance) live.push({ ...session, profile: await fs.realpath(path.dirname(filename)) });
     } catch { /* A stale descriptor is not a running profile. */ }
   }
   if (live.length > 1) throw new Error('More than one Verenu profile is running. Specify VERENU_APP_DATA_DIR_OVERRIDE before connecting.');
@@ -90,7 +109,7 @@ async function resolveSession(env) {
 
 async function verifyInstance(port, instance) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid agent grant port');
-  const response = await fetch(`http://127.0.0.1:${port}/v1/status`, { redirect: 'error', signal: AbortSignal.timeout(1000) });
+  const response = await fetch(`http://127.0.0.1:${port}/v1/status`, { redirect: 'error', signal: AbortSignal.timeout(5000) });
   const status = await response.json();
   if (!response.ok || status.version !== 1 || status.instance !== instance) throw new Error('Verenu restarted; request a new agent grant.');
 }
@@ -98,41 +117,59 @@ async function verifyInstance(port, instance) {
 async function grant(env = process.env) {
   if (env.VERENU_AGENT_TOKEN || env.VERENU_AGENT_PORT) return { token: env.VERENU_AGENT_TOKEN, port: Number(env.VERENU_AGENT_PORT) };
   if (!env.VERENU_AGENT_GRANT_FILE) throw new Error('No agent grant. Set VERENU_AGENT_GRANT_FILE to a private session path and run connect.');
+  await verifyPrivateDirectory(path.dirname(env.VERENU_AGENT_GRANT_FILE));
   const file = await fs.open(env.VERENU_AGENT_GRANT_FILE, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const stat = await file.stat();
     if (!stat.isFile() || stat.size > 1024 || (process.platform !== 'win32' && ((stat.mode & 0o077) || stat.uid !== process.getuid()))) throw new Error('Agent grant file must be a private regular file');
     const value = JSON.parse(await file.readFile('utf8'));
     if (!/^[a-f\d-]{36}$/i.test(value.instance ?? '')) throw new Error('Invalid agent grant instance');
+    if (value.persistent === true) {
+      const session = await resolveSession(env);
+      if (typeof value.profile !== 'string' || value.profile !== session.profile) throw new Error('This long-term grant belongs to a different Verenu profile');
+      return { ...value, ...session };
+    }
     await verifyInstance(value.port, value.instance);
     return value;
   } finally { await file.close(); }
 }
 
-async function authorizationRequest(port, endpoint, token) {
+async function authorizationRequest(port, endpoint, token, persistent = false) {
   if (!/^[a-f\d]{64}$/i.test(token ?? '') || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid agent grant');
-  const response = await fetch(`http://127.0.0.1:${port}/v1/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }), redirect: 'error', signal: AbortSignal.timeout(5000) });
+  const response = await fetch(`http://127.0.0.1:${port}/v1/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(persistent ? { token, persistent } : { token }), redirect: 'error', signal: AbortSignal.timeout(5000) });
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || `Agent API HTTP ${response.status}`);
   return body;
 }
 
-export async function connect(env = process.env) {
+export async function connect(env = process.env, { persistent = false } = {}) {
+  if (persistent && process.platform === 'win32') throw new Error('Long-term grants require private file permissions and are not yet supported on Windows');
   if (env.VERENU_AGENT_TOKEN || env.VERENU_AGENT_PORT) throw new Error('Unset the environment grant before requesting an approval grant');
   if (!env.VERENU_AGENT_GRANT_FILE) throw new Error('Set VERENU_AGENT_GRANT_FILE to a private session path first');
   if (!path.isAbsolute(env.VERENU_AGENT_GRANT_FILE)) throw new Error('Agent grant file path must be absolute');
+  await verifyPrivateDirectory(path.dirname(env.VERENU_AGENT_GRANT_FILE));
   const parent = await fs.stat(path.dirname(env.VERENU_AGENT_GRANT_FILE));
   if (!parent.isDirectory() || (process.platform !== 'win32' && ((parent.mode & 0o077) || parent.uid !== process.getuid()))) throw new Error('Agent grant directory must be private and owned by this user');
-  const { port, instance } = await resolveSession(env);
+  const { port, instance, profile } = await resolveSession(env);
   const token = randomBytes(32).toString('hex');
   const file = await fs.open(env.VERENU_AGENT_GRANT_FILE, 'wx', 0o600);
+  let submitted = false;
   try {
-    await file.writeFile(JSON.stringify({ token, port, instance }));
+    const stat = await file.stat();
+    if (process.platform !== 'win32' && (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.nlink !== 1)) throw new Error('Agent grant file must be private');
+    await file.writeFile(JSON.stringify({ token, port, instance, persistent, ...(persistent ? { profile } : {}) }));
+    await file.sync();
+    if (persistent) {
+      const directory = await fs.open(path.dirname(env.VERENU_AGENT_GRANT_FILE), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+    }
     await verifyInstance(port, instance);
-    const result = await authorizationRequest(port, 'authorize', token);
+    submitted = true;
+    const result = await authorizationRequest(port, 'authorize', token, persistent);
     await verifyInstance(port, instance);
     return result;
   } catch (error) {
+    if (persistent && submitted) throw new Error('Authorization outcome is uncertain. Keep the private grant file and check status before retrying or disconnecting.', { cause: error });
     await fs.unlink(env.VERENU_AGENT_GRANT_FILE).catch(() => {});
     throw error;
   } finally { await file.close(); }
@@ -164,7 +201,7 @@ async function main(argv) {
     console.log(`Verenu agent CLI (Node 20+). The desktop app must be running.
 Usage: node verenu-agent.mjs <command> '[JSON args]'
        node verenu-agent.mjs <command> --stdin
-       node verenu-agent.mjs connect | status | disconnect
+       node verenu-agent.mjs connect [--long-term] | status | disconnect
        node verenu-agent.mjs harnesses
        node verenu-agent.mjs install-skill
        node verenu-agent.mjs install-skill --permanent --harness codex,claude [--replace]
@@ -174,6 +211,8 @@ Set VERENU_AGENT_GRANT_FILE to a new file in a private session directory, run co
 and give the user the returned code to compare with the prompt in Verenu. After
 approval, run status. Use the same grant-file path for every command. Access lasts
 one hour or until revoked; disconnect revokes and deletes the grant file.
+Use connect --long-term only when requested. It remains valid across restarts
+until revoked, and its grant file must stay in a private directory.
 Never print or share the grant-file contents.
 
 For scripted launches, a shared environment grant is also supported:
@@ -192,7 +231,10 @@ Installation writes only selected detected harnesses. It does not enable the API
 Text history requires include_text:true on each history.page request. Output may be private.`);
     return;
   }
-  if (command === 'connect') { console.log(JSON.stringify(await connect(), null, 2)); return; }
+  if (command === 'connect') {
+    if (args.some((arg) => arg !== '--long-term') || args.length > 1) throw new Error('Unknown connect option');
+    console.log(JSON.stringify(await connect(process.env, { persistent: args.includes('--long-term') }), null, 2)); return;
+  }
   if (command === 'status' || command === 'disconnect') {
     if (process.env.VERENU_AGENT_TOKEN || process.env.VERENU_AGENT_PORT) {
       throw new Error('Status and disconnect require an approval grant file. Revoke environment grants from Settings > Privacy or restart Verenu without the environment grant.');

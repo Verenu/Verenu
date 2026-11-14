@@ -3,12 +3,12 @@
   import { invoke, isTauriRuntime } from '../tauri';
   import AgentPairDialog from './AgentPairDialog.svelte';
 
-  let request = $state<{ code: string; id: string } | null>(null);
+  let request = $state<{ code: string; id: string; persistent: boolean } | null>(null);
   let busy = $state(false);
 
   async function refresh() {
     if (!isTauriRuntime() || busy) return;
-    try { request = await invoke<{ code: string; id: string } | null>('agent_pending_request'); }
+    try { request = await invoke<{ code: string; id: string; persistent: boolean } | null>('agent_pending_request'); }
     catch { request = null; }
   }
 
@@ -29,6 +29,7 @@
 {#if request}
   <AgentPairDialog
     code={request.code}
+    persistent={request.persistent}
     {busy}
     ondeny={() => void respond(false)}
     onapprove={(scopes) => void respond(true, scopes)}
