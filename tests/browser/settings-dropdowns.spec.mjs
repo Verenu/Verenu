@@ -196,6 +196,7 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
       const viewport = page.viewportSize();
       await page.setViewportSize({ width: viewport.width, height: 650 });
       await provider.evaluate((element) => element.scrollIntoView({ block: 'end', inline: 'nearest' }));
+      const extraSpace = await page.addStyleTag({ content: '.fault-provider-dropdown { transform: translateY(210px); }' });
       await provider.click();
       await waitForPanelMotion(providerMenu);
       await expectMenuInsideViewport(providerMenu, page);
@@ -203,6 +204,7 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
       const menuBounds = await providerMenu.boundingBox();
       expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(triggerBounds.y);
       await page.keyboard.press('Escape');
+      await extraSpace.evaluate((element) => element.remove());
       await page.setViewportSize(viewport);
     }
 
