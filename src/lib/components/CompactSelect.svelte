@@ -13,6 +13,7 @@
     menuId,
     width,
     menuMinWidth,
+    openAbove = false,
   }: {
     value: T;
     options: { value: T; label: string; description?: string }[];
@@ -23,6 +24,7 @@
     /** Fixed trigger width in px, so a changing label never moves its neighbors. */
     width?: number;
     menuMinWidth?: number;
+    openAbove?: boolean;
   } = $props();
 
   let open = $state(false);
@@ -54,6 +56,7 @@
       <div
         id={menuId}
         class="ui-dropdown-menu ui-dropdown-menu--padded compact-select-menu scroll-styled scroll-thumb-elev"
+        class:open-above={openAbove}
         style:min-width={menuMinWidth !== undefined ? `${menuMinWidth}px` : undefined}
         role="listbox"
         tabindex="-1"
@@ -103,6 +106,11 @@
     max-width: min(320px, 100cqw);
     min-width: 100%;
     width: max-content;
+  }
+
+  .compact-select-menu.open-above {
+    top: auto;
+    bottom: calc(100% + 4px);
   }
 
   .compact-select-menu :global(.ui-dropdown-option) {

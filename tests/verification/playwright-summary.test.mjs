@@ -115,6 +115,17 @@ test('failed dropdown cases expose only allowlisted geometry and assertion lines
   assert.equal(JSON.stringify(summary).includes('do-not-share'), false);
 });
 
+test('simulation provider geometry is included in safe diagnostics', () => {
+  const report = { suites: [{ file: 'tests/browser/settings-dropdowns.spec.mjs', specs: [{
+    title: 'menu geometry', line: 72, tests: [{ projectName: 'phone', status: 'unexpected', results: [{
+      status: 'failed', errors: [{ message: 'MENU_GEOMETRY:{"menuId":"simulation-provider-menu","check":"bottom-panel","bounds":{"x":0,"y":10,"width":100,"height":200},"content":{"x":0,"y":0,"width":390,"height":180},"viewport":{"width":390,"height":844}}' }],
+    }] }],
+  }] }] };
+  const summary = summarizePlaywrightReport(report, { projectRoot: '/repo' });
+  assert.equal(summary.tests[0].menuGeometry.menuId, 'simulation-provider-menu');
+  assert.equal(summary.tests[0].menuGeometry.check, 'bottom-panel');
+});
+
 test('successful test results do not erase a failed browser process', () => {
   const summary = summarizePlaywrightReport({ suites: [{ specs: [spec()] }] }, {
     processStatus: 'failed', exitCode: 1, processReason: 'Process ended with SIGABRT', projectRoot: '/repo',

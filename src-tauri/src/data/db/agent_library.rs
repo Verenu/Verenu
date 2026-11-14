@@ -85,7 +85,7 @@ fn basis(entries: &[Entry]) -> Result<String> {
 
 pub fn list_library_items(db: &Db) -> Result<Value> {
     let conn = lock_conn(db)?;
-    let mut stmt = conn.prepare("SELECT 'dictionary',id,uuid,term FROM dictionary UNION ALL SELECT 'snippet',id,uuid,trigger FROM snippets ORDER BY 1,4")?;
+    let mut stmt = conn.prepare("SELECT 'dictionary',d.id,d.uuid,d.term FROM dictionary d WHERE NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff) UNION ALL SELECT 'snippet',id,uuid,trigger FROM snippets ORDER BY 1,4")?;
     let items = stmt.query_map([], |r| Ok(json!({"kind":r.get::<_,String>(0)?,"id":r.get::<_,i64>(1)?,"uuid":r.get::<_,String>(2)?,"name":r.get::<_,String>(3)?})))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(json!({"items":items}))
@@ -135,7 +135,15 @@ pub fn undo_library_delete(db: &Db, request_id: &str) -> Result<Value> {
     let (snapshot, undone, log_seq): (String, bool, i64) = tx.query_row("SELECT snapshot,undone,log_seq FROM agent_library_changes WHERE request_id=?1 AND created_at >= datetime('now','-30 days')", [&request_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?.context("No recoverable change for this request")?;
     if undone { return Ok(json!({"request_id":request_id,"undone":true,"replayed":true})); }
     let entries: Vec<Entry> = serde_json::from_str(&snapshot)?;
-    for e in &entries {
+    restore_entries(&tx, &entries, log_seq)?;
+    tx.execute("UPDATE agent_library_changes SET undone=1 WHERE request_id=?1", [&request_id])?;
+    tx.commit()?;
+    invalidate_snippet_cache();
+    Ok(json!({"request_id":request_id,"restored":entries.len(),"undone":true,"replayed":false,"learning_evidence_restored":false}))
+}
+
+fn restore_entries(tx: &Connection, entries: &[Entry], log_seq: i64) -> Result<()> {
+    for e in entries {
         let table = if e.kind == "dictionary" { "dictionary" } else { "snippets" };
         let changed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_log WHERE seq > ?1 AND table_name=?2 AND row_uuid=?3)", params![log_seq,table,e.uuid], |r| r.get(0))?;
         ensure!(!changed, "Cannot restore an item that changed after deletion");
@@ -156,11 +164,89 @@ pub fn undo_library_delete(db: &Db, request_id: &str) -> Result<Value> {
         }
         for c in &e.corrections {
             let context_id: i64 = tx.query_row("SELECT id FROM contexts WHERE uuid=?1", [&c.context_uuid], |r| r.get(0)).optional()?.context("Cannot restore a correction because its Context no longer exists")?;
+            super::dictionary::check_dictionary_mistake_conflicts(tx, context_id, Some(id), Some(&c.mistake))
+                .context("Cannot restore a correction because its spelling is already assigned")?;
             tx.execute("INSERT INTO dictionary_corrections(uuid,context_id,dictionary_id,mistake,auto_learned,correction_count,confidence_tier,last_seen_at,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![c.uuid,context_id,id,c.mistake,c.auto_learned,c.correction_count,c.confidence_tier,c.last_seen_at,c.created_at]).context("Cannot restore a correction because its spelling is already assigned")?;
         }
     }
-    tx.execute("UPDATE agent_library_changes SET undone=1 WHERE request_id=?1", [&request_id])?;
+    Ok(())
+}
+
+fn expiration_sync_pending(conn: &Connection) -> Result<bool> {
+    let direct: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_peers p LEFT JOIN sync_peer_capabilities c ON c.device_uuid=p.device_uuid LEFT JOIN vocabulary_policy_peer a ON a.device_uuid=p.device_uuid LEFT JOIN sync_setting_meta s ON s.key='vocabulary_expiration_policy' WHERE COALESCE(c.vocabulary_usage,0)=0 OR p.last_sync_at IS NULL OR p.needs_snapshot != 0 OR a.ts_ms IS NULL OR a.ts_ms!=COALESCE(s.ts_ms,0) OR a.origin!=COALESCE(s.origin,''))", [], |r| r.get(0))?;
+    Ok(direct || crate::sync::engine::vocabulary_topology_pending(conn)?)
+}
+
+pub fn expire_vocabulary(db: &Db) -> Result<usize> {
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let (days, since): (Option<i64>, String) = tx.query_row(
+        "SELECT days, tracking_since FROM vocabulary_expiration_settings WHERE id=1", [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let Some(days) = days.filter(|days| (7..=60).contains(days)) else { return Ok(0); };
+    if expiration_sync_pending(&tx)? {
+        tx.execute("UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now') WHERE id=1", [])?;
+        tx.commit()?;
+        return Ok(0);
+    }
+    let uuids = tx.prepare(
+        "SELECT d.uuid FROM dictionary d LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=d.uuid
+         WHERE d.uuid IS NOT NULL AND MAX(d.created_at, ?1, COALESCE(u.last_used_at, ?1)) <= datetime('now', ?2)
+         AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)",
+    )?.query_map(params![since, format!("-{days} days")], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let policy = crate::sync::engine::vocabulary_policy(&tx)?;
+    for uuid in &uuids {
+        tx.execute("INSERT INTO vocabulary_expiration_marks(item_uuid,cutoff,deleted_at,request_id,policy_ts,policy_origin) VALUES (?1,datetime('now',?2),datetime('now'),?3,?4,?5) ON CONFLICT(item_uuid) DO UPDATE SET cutoff=excluded.cutoff, deleted_at=excluded.deleted_at, request_id=excluded.request_id,policy_ts=excluded.policy_ts,policy_origin=excluded.policy_origin", params![uuid,format!("-{days} days"),uuid::Uuid::new_v4().to_string(),policy.ts_ms,policy.origin])?;
+        crate::sync::engine::append_self_log(&tx, "vocabulary_expiration_marks", uuid, "upsert")?;
+        crate::sync::engine::reconcile_vocabulary_identities(&tx, uuid)?;
+    }
     tx.commit()?;
-    invalidate_snippet_cache();
-    Ok(json!({"request_id":request_id,"restored":entries.len(),"undone":true,"replayed":false,"learning_evidence_restored":false}))
+    Ok(uuids.len())
+}
+
+pub fn set_vocabulary_expiration(db: &Db, days: Option<i64>) -> Result<()> {
+    ensure!(days.is_none_or(|days| (7..=60).contains(&days)), "Choose between 7 and 60 days");
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let old: Option<i64> = tx.query_row("SELECT days FROM vocabulary_expiration_settings WHERE id=1", [], |r| r.get(0))?;
+    if old != days {
+        tx.execute("UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now'), days=?1 WHERE id=1", [days])?;
+        crate::sync::engine::stamp_vocabulary_policy(&tx)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn vocabulary_expiration_status(db: &Db) -> Result<Value> {
+    let conn = lock_conn(db)?;
+    let (days, since): (Option<i64>, String) = conn.query_row("SELECT days,tracking_since FROM vocabulary_expiration_settings WHERE id=1", [], |r| Ok((r.get(0)?,r.get(1)?)))?;
+    let paused = expiration_sync_pending(&conn)?;
+    let mut stmt = conn.prepare("SELECT m.request_id,d.term,m.deleted_at FROM vocabulary_expiration_marks m JOIN dictionary d ON d.uuid=m.item_uuid LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff ORDER BY m.deleted_at DESC,m.request_id")?;
+    let entries = stmt.query_map([], |r| Ok(json!({"request_id":r.get::<_,String>(0)?,"term":r.get::<_,String>(1)?,"deleted_at":r.get::<_,String>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(json!({"days":days,"tracking_since":since,"paused_for_sync":paused,"deleted":entries}))
+}
+
+pub(super) fn ensure_expired_corrections_available(conn: &Connection, item_uuid: &str) -> Result<()> {
+    let mut stmt = conn.prepare("SELECT d.id,c.context_id,c.mistake FROM dictionary d JOIN dictionary_corrections c ON c.dictionary_id=d.id WHERE d.uuid=?1")?;
+    let corrections = stmt.query_map([item_uuid], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, context_id, mistake) in corrections {
+        super::dictionary::check_dictionary_mistake_conflicts(conn, context_id, Some(id), Some(&mistake))
+            .map_err(|err| anyhow::anyhow!("Cannot restore: {err}"))?;
+    }
+    Ok(())
+}
+
+pub fn restore_expired_vocabulary(db: &Db, request_id: &str) -> Result<()> {
+    let request_id = uuid::Uuid::parse_str(request_id)?.to_string();
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let item_uuid: String = tx.query_row("SELECT m.item_uuid FROM vocabulary_expiration_marks m JOIN dictionary d ON d.uuid=m.item_uuid LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.request_id=?1 AND MAX(d.created_at,COALESCE(u.last_used_at,''))<=m.cutoff", [&request_id], |r| r.get(0)).optional()?.context("No recoverable vocabulary for this request")?;
+    ensure_expired_corrections_available(&tx, &item_uuid)?;
+    tx.execute("INSERT INTO vocabulary_expiration_usage(item_uuid,last_used_at) VALUES (?1,datetime('now')) ON CONFLICT(item_uuid) DO UPDATE SET last_used_at=MAX(last_used_at,excluded.last_used_at)", [&item_uuid])?;
+    crate::sync::engine::reconcile_vocabulary_identities(&tx, &item_uuid)?;
+    crate::sync::engine::append_self_log(&tx, "vocabulary_expiration_usage", &item_uuid, "upsert")?;
+    tx.commit()?;
+    Ok(())
 }

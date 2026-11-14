@@ -146,6 +146,7 @@ pub(super) async fn finalize_pipeline_completion(
     let dictionary_fixes_applied = applied_dict_ids.len() as i64;
     let context_for_insert = Some(ctx.context.id);
     let website_for_insert = ctx.context.website_domain.clone();
+    let vocabulary_used = dictionary::vocabulary_used_ids(ctx.dict_entries, &[ctx.raw, &private_text]);
     let entry = match tokio::task::spawn_blocking(move || -> anyhow::Result<db::RecentEntry> {
         let entry = db::insert_transcription_with_metrics(
             &db_for_insert,
@@ -159,6 +160,9 @@ pub(super) async fn finalize_pipeline_completion(
             website_for_insert.as_deref(),
             Some((vocabulary_replacements, snippet_expansions)),
         )?;
+        if db::record_vocabulary_activity(&db_for_insert, &vocabulary_used).is_err() {
+            log::warn!("pipeline: failed to record vocabulary activity");
+        }
         if dictionary_fixes_applied > 0 {
             if let Err(e) =
                 db::increment_lifetime_dictionary_fixes(&db_for_insert, dictionary_fixes_applied)

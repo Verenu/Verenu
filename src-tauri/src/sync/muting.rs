@@ -137,12 +137,12 @@ fn transport_retry_delay(consecutive_failures: u32) -> Duration {
 }
 
 async fn wait_for_busy_retry(is_active: impl Fn() -> bool, retry_delay: Duration) -> bool {
-    let deadline = Instant::now() + retry_delay;
+    let deadline = tokio::time::Instant::now() + retry_delay;
     loop {
         if !is_active() {
             return false;
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             return true;
         }
@@ -961,7 +961,7 @@ mod tests {
         assert_eq!(*attempted.lock().unwrap(), ["new LAN candidate"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn busy_retry_is_delayed_and_stops_when_recording_ends() {
         let active = Arc::new(AtomicBool::new(true));
         let active_for_task = active.clone();
@@ -973,13 +973,21 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
+        assert!(!retry.is_finished());
         active.store(false, Ordering::Relaxed);
-        assert!(!tokio::time::timeout(Duration::from_millis(150), retry)
-            .await
-            .unwrap()
-            .unwrap());
-        assert!(wait_for_busy_retry(|| true, Duration::from_millis(20)).await);
+        tokio::time::advance(Duration::from_millis(50)).await;
+        assert!(!retry.await.unwrap());
+
+        let retry = tokio::spawn(wait_for_busy_retry(|| true, Duration::from_millis(60)));
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(59)).await;
+        tokio::task::yield_now().await;
+        assert!(!retry.is_finished());
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert!(retry.await.unwrap());
     }
 
     #[test]

@@ -2600,6 +2600,7 @@ async fn messages_roundtrip_through_the_framer() {
         app_version: "0.0.0".to_string(),
         activity_receipts: true,
         cleanup_cache: true,
+        vocabulary_usage: true,
         compressed_frames: true,
     });
     let (send, read) = tokio::join!(send_message(&mut client, hello), async {

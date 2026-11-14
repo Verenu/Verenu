@@ -7,7 +7,7 @@ async function expectMenuInsideViewport(menu, page) {
   expect(bounds).not.toBeNull();
   expect(content).not.toBeNull();
   const geometry = {
-    menuId: await menu.getAttribute('id'),
+    menuId: await menu.getAttribute('id') ?? (await menu.getAttribute('aria-label') === 'Simulation provider options' ? 'simulation-provider-menu' : null),
     bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
     content: { x: content.x, y: content.y, width: content.width, height: content.height },
     viewport,
@@ -33,7 +33,9 @@ async function waitForPanelMotion(target) {
   await expect(target).toBeVisible();
   await target.evaluate(async (element) => {
     const panel = element.closest('.panel-inner') ?? element;
-    const animations = panel.getAnimations({ subtree: true });
+    const animations = panel.getAnimations({ subtree: true }).filter((animation) =>
+      animation.effect?.getComputedTiming().iterations !== Infinity,
+    );
     await Promise.all(animations.map((animation) => animation.finished.catch(() => {})));
   });
 }
@@ -188,6 +190,23 @@ test('privacy and model choice menus use compact styling and stay in the viewpor
       return hit === element || element.contains(hit);
     });
     expect(lastOptionIsUncovered).toBe(true);
+
+    if (page.viewportSize().width <= 440) {
+      await page.keyboard.press('Escape');
+      const viewport = page.viewportSize();
+      await page.setViewportSize({ width: viewport.width, height: 650 });
+      await provider.evaluate((element) => element.scrollIntoView({ block: 'end', inline: 'nearest' }));
+      const extraSpace = await page.addStyleTag({ content: '.fault-provider-dropdown { transform: translateY(210px); }' });
+      await provider.click();
+      await waitForPanelMotion(providerMenu);
+      await expectMenuInsideViewport(providerMenu, page);
+      const triggerBounds = await provider.boundingBox();
+      const menuBounds = await providerMenu.boundingBox();
+      expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(triggerBounds.y);
+      await page.keyboard.press('Escape');
+      await extraSpace.evaluate((element) => element.remove());
+      await page.setViewportSize(viewport);
+    }
 
     await page.getByRole('tab', { name: 'Logs' }).click();
     const logLevel = page.getByRole('group', { name: 'Log level' });

@@ -186,6 +186,18 @@ fn contains_term(haystack: &str, haystack_tokens: &[String], needle: &str) -> bo
     haystack.contains(&needle)
 }
 
+/// Count a canonical spelling or one of its corrections as activity. This is
+/// deliberately broader than mechanical replacement: correctly recognized
+/// words and corrections resolved by the cleanup model still count.
+pub fn vocabulary_used_ids(entries: &[db::DictionaryEntry], texts: &[&str]) -> Vec<i64> {
+    let sources: Vec<_> = texts.iter().map(|text| (text.to_lowercase(), tokenize_lower_alnum(text))).collect();
+    entries.iter().filter(|entry| sources.iter().any(|(lower, tokens)| {
+        std::iter::once(entry.term.as_str())
+            .chain(effective_correction_variants(entry).into_iter().map(|c| c.mistake))
+            .any(|candidate| contains_term(lower, tokens, candidate))
+    })).map(|entry| entry.id).collect()
+}
+
 fn entry_has_fallback_signal(entry: &db::DictionaryEntry) -> bool {
     has_distinctive_features(&entry.term)
         || looks_like_proper_or_brand_name(&entry.term)
@@ -454,6 +466,14 @@ mod tests {
             inherited_from_everywhere: false,
             assigned_to_context: false,
         }
+    }
+
+    #[test]
+    fn vocabulary_activity_matches_canonical_and_correction_without_substitution() {
+        let entries = vec![entry(1, "Kubernetes", Some("kubernetez")), entry(2, "Verenu", None)];
+        assert_eq!(super::vocabulary_used_ids(&entries, &["KUBERNETES and Verenu"]), vec![1, 2]);
+        assert_eq!(super::vocabulary_used_ids(&entries, &["kubernetez"]), vec![1]);
+        assert!(super::vocabulary_used_ids(&entries, &["notverenu"]).is_empty());
     }
 
     fn context_entry(

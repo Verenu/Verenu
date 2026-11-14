@@ -33,6 +33,41 @@ export function sessionStartupDiagnostics(manifest, launcherPid, launcher = {}) 
   return result;
 }
 
+export function startupLogDiagnostics(log, cargoLock = '') {
+  const plain = log.replace(/\u001b\[[0-9;]*m/g, '');
+  const rustErrorCodes = [...new Set([...plain.matchAll(/\berror\[(E\d{4})\]/g)].map(match => match[1]))].slice(0, 20);
+  const knownPackages = new Set([...cargoLock.matchAll(/^name = "([a-zA-Z0-9_-]+)"$/gm)].map(match => match[1]));
+  const buildPackages = [...new Set([...plain.matchAll(/failed to run custom build command for [`']([a-zA-Z0-9_-]+) v\d/g)]
+    .map(match => match[1]).filter(name => knownPackages.has(name)))].slice(0, 20);
+  const failureOutput = plain.slice(Math.max(0, plain.lastIndexOf('failed to run custom build command')))
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/\b[A-Za-z]:[\\/][^\r\n]*/g, ' ')
+    .replace(/\\\\[^\r\n]*/g, ' ')
+    .replace(/\b[\w.-]+[\\/][^\r\n]*/g, ' ')
+    .replace(/(^|[\s'"`])\/(?!\/)[^\r\n]*/gm, '$1 ')
+    .toLowerCase();
+  const unclassifiedLogTokens = ['access', 'archive', 'certificate', 'connection', 'corrupt', 'denied', 'download', 'eof', 'extract', 'file', 'hash', 'http', 'invalid', 'link', 'network', 'panic', 'proxy', 'read', 'request', 'response', 'status', 'timeout', 'tls', 'unable', 'verify', 'write']
+    .filter(word => new RegExp(`\\b${word}\\b`).test(failureOutput));
+  const patterns = [
+    ['disk-full', /no space left on device|there is not enough space on the disk/i],
+    ['permission-denied', /permission denied|access is denied/i],
+    ['linker-error', /linking with .+ failed|linker .+ not found/i],
+    ['custom-build-error', /failed to run custom build command/i],
+    ['ort-extraction-error', /extraction of prebuilt binaries downloaded from/i],
+    ['ort-hash-error', /hash of the file downloaded from .+ does not match/i],
+    ['ort-distribution-unavailable', /ort does not provide prebuilt binaries for the target/i],
+    ['ort-cache-unavailable', /could not determine cache directory/i],
+    ['ort-system-link-error', /ort-sys could not link to the ONNX Runtime build/i],
+    ['file-already-exists', /already exists|os error 183/i],
+    ['windows-path-too-long', /filename or extension is too long|os error 206/i],
+    ['missing-file', /no such file or directory|the system cannot find the file specified/i],
+    ['build-script-panic', /thread ['"]main['"] panicked/i],
+    ['dependency-download-error', /failed to download|failed to fetch/i],
+    ['cargo-compile-error', /could not compile/i],
+  ];
+  return { rustErrorCodes, buildPackages, unclassifiedLogTokens, categories: patterns.filter(([, pattern]) => pattern.test(plain)).map(([category]) => category) };
+}
+
 export function sessionIdentityMismatch(expected, actual, sourceChanges = undefined) {
   const fields = [];
   if (expected?.fingerprint !== actual?.fingerprint) fields.push('fingerprint');
@@ -56,7 +91,8 @@ export async function startOwnedSession({ id, fixtures, native = false, director
   const sourceAtStart = sourceSnapshot();
   const sessionDirectory = path.join(os.homedir(), '.local', 'state', 'verenu', 'dev-sessions', id);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const log = await fs.open(path.join(directory, `startup-${Date.now()}.log`), 'w', 0o600);
+  const logPath = path.join(directory, `startup-${Date.now()}.log`);
+  const log = await fs.open(logPath, 'w', 0o600);
   let child;
   try {
     assertRunning();
@@ -123,7 +159,15 @@ export async function startOwnedSession({ id, fixtures, native = false, director
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     throw new Error('Owned session startup timed out');
-  } catch (error) { await stop(); throw error; }
+  } catch (error) {
+    await stop();
+    if (error.startupFailure) {
+      const output = await fs.readFile(logPath, 'utf8').catch(() => '');
+      const cargoLock = await fs.readFile(path.join(root, 'src-tauri', 'Cargo.lock'), 'utf8').catch(() => '');
+      error.startupFailure.logDiagnostics = startupLogDiagnostics(output, cargoLock);
+    }
+    throw error;
+  }
 }
 export async function invokeSession(session, command, args = {}) {
   const response = await fetch(new URL('/__verenu_dev/invoke', session.access.localAccessUrl), { method: 'POST', headers: { Authorization: `Bearer ${session.access.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ command, args }), signal: AbortSignal.timeout(30_000) });
