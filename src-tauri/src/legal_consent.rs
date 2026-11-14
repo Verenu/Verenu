@@ -867,8 +867,22 @@ mod tests {
                     Err(e) => panic!("mock transport failed: {e}"),
                 }
             };
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+            let mut request = Vec::new();
             let mut buffer = [0; 4096];
-            let _ = socket.read(&mut buffer);
+            loop {
+                let size = socket.read(&mut buffer).unwrap();
+                assert!(size > 0);
+                request.extend_from_slice(&buffer[..size]);
+                if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..end]);
+                    let length = headers.lines().filter_map(|line| line.split_once(':'))
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .and_then(|(_, value)| value.trim().parse::<usize>().ok()).unwrap();
+                    if request.len() >= end + 4 + length { break; }
+                }
+                assert!(request.len() < 1024 * 1024);
+            }
             let body = r#"{"text":"fixture"}"#;
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
         });

@@ -7,6 +7,7 @@
   import { EVERYWHERE_ID } from '../../contextsStore.svelte';
   import { dictionaryEntryId, editContextDictionaryEntry } from '../../contextDictionary';
   import { modalFocusTrap } from '../../modalFocus';
+  import { portal } from '../../portal';
   import { modalBackdrop, modalCard, MOTION_PX, motionPx } from '../../motion';
   import { countCodePoints, MISTAKE_LIMIT, requireCreatedRecordMeta, TERM_LIMIT } from './helpers';
 
@@ -33,6 +34,7 @@
     ? (entry.context_corrections ?? []).map((correction) => correction.mistake).join(', ') || null
     : entry?.mistake ?? null);
   let draftMistake = $state(originalMistake ?? '');
+  let replacementConfidence = $state<NonNullable<DictionaryEntry['replacement_confidence']>>(untrack(() => entry?.replacement_confidence ?? 'default'));
   let saving = $state(false);
   let saveError = $state('');
   let conflictContexts = $state<ContextAssignment[]>([]);
@@ -103,9 +105,9 @@
         });
       } else if (mode === 'edit' && entry) {
         if (contextId != null) {
-          await editContextDictionaryEntry(entry, contextId, term, mistake, { term: entry.term, mistake: originalMistake });
+          await editContextDictionaryEntry(entry, contextId, term, mistake, { term: entry.term, mistake: originalMistake, replacement_confidence: entry.replacement_confidence ?? 'default' }, replacementConfidence);
         } else {
-          await invoke('edit_dictionary_entry', { id: dictionaryEntryId(entry), term, mistake, expected: { term: entry.term, mistake: entry.mistake } });
+          await invoke('edit_dictionary_entry', { id: dictionaryEntryId(entry), term, mistake, replacementConfidence, expected: { term: entry.term, mistake: entry.mistake, replacement_confidence: entry.replacement_confidence ?? 'default' } });
         }
         onSaved({
           ...entry,
@@ -113,6 +115,7 @@
           context_id: contextId ?? entry.context_id,
           term,
           mistake,
+          replacement_confidence: replacementConfidence,
         });
       }
       onClose();
@@ -163,16 +166,17 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<button class="modal-backdrop" aria-label="Close dialog" onclick={onClose} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 160 }}></button>
+<button class="modal-backdrop" use:portal aria-label="Close dialog" onclick={onClose} in:modalBackdrop={{ duration: 180 }} out:modalBackdrop={{ duration: 100 }}></button>
 <div
-  class="modal-card"
+  class="modal-card ui-modal-card--portalled"
+  use:portal
   use:modalFocusTrap={{ active: true, initialFocus: () => termInput }}
   role="dialog"
   aria-modal="true"
   aria-labelledby="dictionary-modal-title"
   tabindex="-1"
   in:modalCard={{ duration: 220, distance: motionPx(MOTION_PX.panel), scaleFrom: 0.97 }}
-  out:modalCard={{ duration: 160, distance: motionPx(MOTION_PX.nudge), scaleFrom: 0.985 }}
+  out:modalCard={{ duration: 100, distance: motionPx(MOTION_PX.nudge), scaleFrom: 0.985 }}
 >
   <div class="modal-header">
     <h2 id="dictionary-modal-title" class="modal-title">{mode === 'add' ? 'Add term' : 'Edit term'}</h2>
@@ -218,6 +222,17 @@
       />
     </div>
     <p class="field-hint">{contextScoped ? 'Correction patterns here take precedence over matching Everywhere patterns. Leave blank to inherit them.' : "What the transcription model typically writes instead. Separate multiple mistranscriptions with commas. Skip if the term just needs to be in the AI's awareness."}</p>
+    {#if mode === 'edit'}
+      <fieldset class="confidence-field">
+        <legend class="field-label">Confidence needed to replace</legend>
+        <div class="confidence-options">
+          {#each ['low', 'default', 'high'] as option}
+            <label class:chosen={replacementConfidence === option}><input type="radio" name="replacement-confidence" value={option} bind:group={replacementConfidence} /> {option === 'default' ? 'Default' : option === 'low' ? 'Low' : 'High'}</label>
+          {/each}
+        </div>
+        <p class="field-hint">{replacementConfidence === 'high' ? 'Replace only when context strongly supports it. Requires AI cleanup.' : replacementConfidence === 'low' ? 'Favor this term when a replacement is plausible.' : 'Use the standard replacement behavior.'} This applies wherever this term is used.</p>
+      </fieldset>
+    {/if}
   </div>
 
   <div class="modal-footer">
@@ -264,7 +279,7 @@
     padding: 0;
     appearance: none;
     background: var(--overlay);
-    z-index: 50;
+    z-index: 90;
     outline: none;
   }
 
@@ -273,14 +288,15 @@
     top: 50%;
     left: 50%;
     translate: -50% -50%;
-    z-index: 51;
+    z-index: 91;
     isolation: isolate;
     background: var(--bg-elev);
     border: 1px solid var(--line);
     border-radius: var(--r-lg);
     width: min(460px, calc(100vw - 40px));
+    max-height: calc(100dvh - 24px);
     box-shadow: var(--shadow-elev);
-    overflow: hidden;
+    overflow-y: auto;
   }
 
   .modal-header {
@@ -371,6 +387,13 @@
   .field-input:focus { border-color: var(--line-strong); }
 
   .field-hint { font-size: 11px; color: var(--ink-mute); margin: 4px 0 0; }
+
+  .confidence-field { border: 0; padding: 0; margin: 10px 0 0; min-width: 0; }
+  .confidence-options { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--paper); }
+  .confidence-options label { flex: 1; text-align: center; padding: 7px; border-radius: 5px; color: var(--ink-soft); font-size: 12px; cursor: pointer; }
+  .confidence-options label.chosen { background: var(--control-active); color: var(--ink-strong); }
+  .confidence-options label:has(input:focus-visible) { outline: 2px solid var(--line-strong); outline-offset: -2px; }
+  .confidence-options input { position: absolute; opacity: 0; }
 
   .char-count { font-size: 10.5px; color: var(--ink-mute); font-weight: 400; margin-left: auto; }
   .char-count.over { color: var(--danger); }

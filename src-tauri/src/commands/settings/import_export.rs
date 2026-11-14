@@ -19,6 +19,8 @@ pub struct ExportStats {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExportDictionaryEntry {
     pub term: String,
+    #[serde(default = "default_replacement_confidence")]
+    pub replacement_confidence: String,
     #[serde(default)]
     pub mistake: Option<String>,
     pub auto_learned: bool,
@@ -28,6 +30,8 @@ pub struct ExportDictionaryEntry {
     #[serde(default)]
     pub uuid: Option<String>,
 }
+
+fn default_replacement_confidence() -> String { "default".to_string() }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExportSnippet {
@@ -602,7 +606,7 @@ fn export_contextual_library_conn(conn: &Connection) -> AnyhowResult<(Vec<Export
     let dictionary = {
         let mut stmt = conn.prepare(
             "SELECT uuid, term, auto_learned, correction_count, confidence_tier,
-                    created_at
+                    created_at, replacement_confidence
                FROM dictionary
               ORDER BY id",
         )?;
@@ -611,6 +615,7 @@ fn export_contextual_library_conn(conn: &Connection) -> AnyhowResult<(Vec<Export
                 Ok(ExportDictionaryEntry {
                     uuid: row.get(0)?,
                     term: row.get(1)?,
+                    replacement_confidence: row.get(6)?,
                     mistake: None,
                     auto_learned: row.get::<_, i64>(2)? != 0,
                     correction_count: row.get(3)?,
@@ -969,6 +974,7 @@ fn import_contextual_library_conn(
             } else {
                 let canonical = ExportDictionaryEntry {
                     term: entry.term.clone(),
+                    replacement_confidence: default_replacement_confidence(),
                     mistake: None,
                     auto_learned: false,
                     confidence_tier: "low".to_string(),
@@ -1478,8 +1484,8 @@ fn import_canonical_dictionary_conn(
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     match conn.execute(
         "INSERT INTO dictionary
-           (uuid, term, mistake, auto_learned, correction_count, confidence_tier, created_at)
-         VALUES (?1, ?2, NULL, ?3, ?4, ?5, CASE WHEN ?6 = '' THEN datetime('now') ELSE ?6 END)",
+           (uuid, term, mistake, auto_learned, correction_count, confidence_tier, created_at, replacement_confidence)
+         VALUES (?1, ?2, NULL, ?3, ?4, ?5, CASE WHEN ?6 = '' THEN datetime('now') ELSE ?6 END, ?7)",
         params![
             uuid,
             term,
@@ -1487,6 +1493,7 @@ fn import_canonical_dictionary_conn(
             source.correction_count.max(0),
             source.confidence_tier,
             source.created_at,
+            if matches!(source.replacement_confidence.as_str(), "low" | "default" | "high") { &source.replacement_confidence } else { "default" },
         ],
     ) {
         Ok(_) => {

@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
+export async function runNativePhase(label, action) {
+  try { return await action(); }
+  catch (error) {
+    const wrapped = new Error(`${label}: ${error instanceof Error ? error.message : 'operation failed'}`, { cause: error });
+    if (error?.verificationIncomplete) wrapped.verificationIncomplete = true;
+    throw wrapped;
+  }
+}
+
 export async function waitUntil(check, label, timeout = 30000, failOnError = false, sleep = ms => new Promise(resolve => setTimeout(resolve, ms))) {
   const deadline = Date.now() + timeout;
   let lastError;

@@ -332,6 +332,7 @@ async fn vocabulary_expiration_converges_with_offline_usage_and_recovery() {
     pair(&a, &b, true).await.unwrap();
     session(&a, &b).await.unwrap();
     let entry = db::insert_dictionary_entry_returning(&a.db, "SyntheticTerm", Some("sinthetic"), None).unwrap();
+    a.db.lock().unwrap().execute("UPDATE dictionary SET replacement_confidence='high' WHERE id=?1", [entry.id]).unwrap();
     db::insert_snippet_returning(&a.db, "synthetic-shortcut", "fixture", "", None).unwrap();
     session(&a, &b).await.unwrap();
     for device in [&a, &b] {
@@ -382,6 +383,7 @@ async fn vocabulary_expiration_converges_with_offline_usage_and_recovery() {
         let entries = db::query_dictionary(&device.db).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].mistake.as_deref(), Some("sinthetic"));
+        assert_eq!(entries[0].replacement_confidence, "high");
         assert!(db::vocabulary_expiration_status(&device.db).unwrap()["deleted"].as_array().unwrap().is_empty());
     }
     assert_eq!(db::query_dictionary(&a.db).unwrap()[0].id, entry.id);

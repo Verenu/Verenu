@@ -53,8 +53,8 @@ export function safeText(value, limit = 240) {
 function safeMenuGeometry(errors = []) {
   if (!Array.isArray(errors)) return null;
   for (const error of errors) {
-    if (typeof error?.message !== 'string' || error.message.length > 2048) continue;
-    const match = error.message.match(/MENU_GEOMETRY:(\{[^\r\n]+\})/);
+    if (typeof error?.message !== 'string') continue;
+    const match = error.message.slice(0, 16384).match(/MENU_GEOMETRY:(\{[^\r\n]{1,1024}\})/);
     if (!match) continue;
     try {
       const geometry = JSON.parse(match[1]);

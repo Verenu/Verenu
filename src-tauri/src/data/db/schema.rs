@@ -362,7 +362,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // keys, so enable enforcement before schema work or application queries.
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    anyhow::ensure!(user_version <= 40, "This database was created by a newer version of Verenu");
+    anyhow::ensure!(user_version <= 41, "This database was created by a newer version of Verenu");
     if user_version < 2 && db_existed_before_open {
         let _ = std::fs::copy(db_path, db_path.with_extension("db.bak"));
     }
@@ -1068,8 +1068,9 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
-    if user_version < 40 {
+    if user_version < 41 {
         run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "dictionary", "replacement_confidence", "ALTER TABLE dictionary ADD COLUMN replacement_confidence TEXT NOT NULL DEFAULT 'default' CHECK(replacement_confidence IN ('low', 'default', 'high')); ")?;
             conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_expiration_settings (
                 id INTEGER PRIMARY KEY CHECK(id = 1), days INTEGER CHECK(days BETWEEN 7 AND 60),
                 tracking_since TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1092,7 +1093,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             CREATE TRIGGER IF NOT EXISTS vocabulary_expiration_peer_removed AFTER DELETE ON sync_peers BEGIN
               UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now') WHERE id=1;
             END;
-            PRAGMA user_version = 40;")?;
+            PRAGMA user_version = 41;")?;
             Ok(())
         })?;
     }

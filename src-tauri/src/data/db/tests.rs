@@ -143,6 +143,7 @@ fn vocabulary_expiration_preserves_active_items_snippets_and_recovery() {
     {
         let conn = db.lock().unwrap();
         conn.execute("UPDATE dictionary SET created_at=datetime('now','-20 days')", []).unwrap();
+        conn.execute("UPDATE dictionary SET replacement_confidence='high' WHERE id=?1", [stale.id]).unwrap();
         conn.execute("UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days')", []).unwrap();
     }
     record_vocabulary_activity(&db, &[active.id]).unwrap();
@@ -155,6 +156,7 @@ fn vocabulary_expiration_preserves_active_items_snippets_and_recovery() {
     let restored = query_effective_dictionary_for_context(&db, EVERYWHERE_CONTEXT_ID).unwrap();
     let entry = restored.iter().find(|entry| entry.term == "Kubernetes").unwrap();
     assert_eq!(entry.mistake.as_deref(), Some("kubernetez"));
+    assert_eq!(entry.replacement_confidence, "high");
     assert_eq!(entry.id, stale.id);
     assert_eq!(expire_vocabulary(&db).unwrap(), 0);
     assert!(vocabulary_expiration_status(&db).unwrap()["deleted"].as_array().unwrap().is_empty());
@@ -279,6 +281,36 @@ fn agent_context_patch_preserves_omitted_fields_and_rejects_stale_input() {
 }
 
 #[test]
+fn version_40_dictionary_and_expiration_variants_migrate_without_losing_data() {
+    for confidence_variant in [true, false] {
+        let path = temp_db_path(if confidence_variant { "v40_confidence" } else { "v40_expiration" });
+        {
+            let db = open(&path).unwrap();
+            let conn = db.lock().unwrap();
+            conn.execute("INSERT INTO dictionary (term, replacement_confidence) VALUES ('SyntheticTerm', 'high')", []).unwrap();
+            if confidence_variant {
+                conn.execute_batch("DROP TRIGGER vocabulary_expiration_peer_added; DROP TRIGGER vocabulary_expiration_peer_removed; DROP TABLE vocabulary_expiration_settings; DROP TABLE vocabulary_expiration_usage; DROP TABLE vocabulary_expiration_marks; DROP TABLE vocabulary_expiration_log;").unwrap();
+            } else {
+                conn.execute_batch("ALTER TABLE dictionary DROP COLUMN replacement_confidence;").unwrap();
+            }
+            conn.execute_batch("PRAGMA user_version = 40;").unwrap();
+        }
+        {
+            let db = open(&path).unwrap();
+            let entries = query_dictionary(&db).unwrap();
+            let entry = entries.iter().find(|entry| entry.term == "SyntheticTerm").unwrap();
+            assert_eq!(entry.replacement_confidence, if confidence_variant { "high" } else { "default" });
+            let conn = db.lock().unwrap();
+            let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+            assert_eq!(version, 41);
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM vocabulary_expiration_settings", [], |row| row.get(0)).unwrap();
+            assert_eq!(count, 1);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
 fn agent_tables_migrate_from_master_version_36() {
     let path = temp_db_path("agent_from_v36");
     {
@@ -293,7 +325,7 @@ fn agent_tables_migrate_from_master_version_36() {
         finish_agent_change(&db, id, true).unwrap();
         let conn = db.lock().unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 40);
+        assert_eq!(version, 41);
     }
     std::fs::remove_file(path).unwrap();
 }
@@ -1095,7 +1127,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 40);
+    assert_eq!(version, 41);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
@@ -2649,11 +2681,39 @@ fn snippet_update_normalizes_expansion_whitespace() {
 }
 
 #[test]
+fn dictionary_replacement_confidence_migrates_existing_terms() {
+    let path = temp_db_path("dictionary_confidence_migration");
+    {
+        let db = open(&path).unwrap();
+        insert_dictionary_entry_returning(&db, "SyntheticLegacy", Some("synthetic-legacy"), None).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("ALTER TABLE dictionary DROP COLUMN replacement_confidence; PRAGMA user_version = 39;").unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let term = query_dictionary(&db).unwrap().into_iter().find(|entry| entry.term == "SyntheticLegacy").unwrap();
+        assert_eq!(term.mistake.as_deref(), Some("synthetic-legacy"));
+        assert_eq!(term.replacement_confidence, "default");
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn replacement_confidence_is_persisted_and_conflicts_are_detected() {
+    let db = test_db();
+    let created = insert_dictionary_entry_returning(&db, "Verenu", Some("Verena"), None).unwrap();
+    let expected = ExpectedDictionaryEntry { term: "Verenu".into(), mistake: Some("Verena".into()), replacement_confidence: Some("default".into()) };
+    update_dictionary_entry_with_confidence(&db, None, created.id, "Verenu", Some("Verena"), &expected, Some("high")).unwrap();
+    assert_eq!(query_dictionary(&db).unwrap().into_iter().find(|entry| entry.id == created.id).unwrap().replacement_confidence, "high");
+    assert!(update_dictionary_entry_with_confidence(&db, None, created.id, "Verenu", Some("Verena"), &expected, Some("low")).is_err());
+}
+
+#[test]
 fn stale_library_edit_cannot_overwrite_agent_change() {
     let db = test_db();
     let context = insert_context_returning(&db, "Synthetic", None, None, None, None, false).unwrap();
     let entry = insert_dictionary_entry_returning(&db, "Before", Some("old"), Some(context.id)).unwrap();
-    let expected = ExpectedDictionaryEntry { term: "Before".into(), mistake: Some("old".into()) };
+    let expected = ExpectedDictionaryEntry { term: "Before".into(), mistake: Some("old".into()), replacement_confidence: None };
     update_dictionary_entry_for_context(&db, context.id, entry.id, "Before", Some("new")).unwrap();
     assert!(update_dictionary_entry_if_unchanged(&db, Some(context.id), entry.id, "Renamed", Some("old"), &expected).is_err());
     let current = query_effective_dictionary_for_context(&db, context.id).unwrap();
@@ -2669,7 +2729,7 @@ fn stale_library_edit_cannot_overwrite_agent_change() {
     assert_eq!(current[0].expansion, "new");
 
     let global = insert_dictionary_entry_returning(&db, "Global", Some("global"), None).unwrap();
-    let expected = ExpectedDictionaryEntry { term: "Global".into(), mistake: None };
+    let expected = ExpectedDictionaryEntry { term: "Global".into(), mistake: None, replacement_confidence: None };
     update_dictionary_entry_if_unchanged(&db, Some(context.id), global.id, "Global", Some("local"), &expected).unwrap();
     assert!(update_dictionary_entry_if_unchanged(&db, Some(context.id), global.id, "Global", Some("stale"), &expected).is_err());
     let current = query_effective_dictionary_for_context(&db, context.id).unwrap();

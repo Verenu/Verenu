@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nativePageIsReady, waitForNativePage, waitUntil } from '../../scripts/verification/native-page.mjs';
+import { nativePageIsReady, runNativePhase, waitForNativePage, waitUntil } from '../../scripts/verification/native-page.mjs';
+
+test('native phases identify timed-out operations and preserve incomplete status', async () => {
+  assert.equal(await runNativePhase('Refresh native WebView', async () => 42), 42);
+  const failure = Object.assign(new Error('timed out'), { verificationIncomplete: true });
+  await assert.rejects(runNativePhase('Refresh native WebView', async () => { throw failure; }), error =>
+    error.message === 'Refresh native WebView: timed out' && error.cause === failure && error.verificationIncomplete === true);
+});
 
 test('strict recovery waits propagate driver errors but poll false conditions', async () => {
   const failure = new Error('driver timed out');

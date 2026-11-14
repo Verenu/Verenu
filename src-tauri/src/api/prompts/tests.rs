@@ -25,6 +25,16 @@ use super::{
 };
 use crate::data::{db, dictionary};
 
+#[test]
+fn cautious_vocabulary_rule_is_only_added_when_needed() {
+    let mut ordinary = String::new();
+    super::append_cautious_vocabulary_rule(&mut ordinary, "- preferred: \"Verenu\"; possible STT variants: \"Verena\"");
+    assert!(ordinary.is_empty());
+    let mut cautious = String::new();
+    super::append_cautious_vocabulary_rule(&mut cautious, "- preferred: \"Verenu\"; possible STT variants: \"Verena\"; cautious");
+    assert!(cautious.contains("preserve a variant used as a person's name"));
+}
+
 fn prompt(profile: &str, intensity: &str, input: &str) -> String {
     get_cleanup_prompt_with_alternate_and_evidence(
         "groq", "test", profile, intensity, "", "", None, input, None, None,
@@ -372,6 +382,7 @@ fn selected_vocabulary_stays_bounded_after_prompt_composition() {
     let entries: Vec<db::DictionaryEntry> = (0..500)
         .map(|id| db::DictionaryEntry {
             id,
+            replacement_confidence: "default".into(),
             term: format!("TechnicalIdentifier{id}X{}", "Z".repeat(90)),
             mistake: None,
             auto_learned: false,

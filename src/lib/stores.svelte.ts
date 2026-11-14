@@ -45,6 +45,7 @@ export interface DictionaryEntry {
   inherited_from_everywhere?: boolean;
   assigned_to_context?: boolean;
   term: string;
+  replacement_confidence?: 'low' | 'default' | 'high';
   mistake: string | null;
   auto_learned: boolean;
   correction_count: number;
