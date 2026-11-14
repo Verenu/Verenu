@@ -380,6 +380,12 @@ async fn transcribe_gemini_with_prompt(
     Ok(text)
 }
 
+fn is_openrouter_provider_restriction(provider: &str, error: &super::ProviderHttpError) -> bool {
+    matches!(error, super::ProviderHttpError::NonSuccess { status, openrouter_provider_restriction: true, .. }
+        if provider == "OpenRouter" && status.as_u16() == 404
+    )
+}
+
 const ASSEMBLYAI_POLL_INTERVAL_MS: u64 = 1000;
 const ASSEMBLYAI_POLL_TIMEOUT_SECS: u64 = 120;
 
@@ -593,6 +599,9 @@ async fn ensure_transcription_response(
     super::ensure_provider_success(resp, model, Some((provider_label, model)))
         .await
         .map_err(|error| {
+            if is_openrouter_provider_restriction(provider_label, &error) {
+                return anyhow::anyhow!("OpenRouter has no allowed provider available for this transcription model. Update your allowed provider settings in your OpenRouter account, or choose another transcription model in Settings > Models.");
+            }
             error.into_error(
                 Some((module_path!(), trace)),
                 &format!("gen={gen} provider={provider_label} model={model}"),
@@ -755,6 +764,48 @@ fn build_gemini_transcription_request(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn openrouter_provider_restriction_is_specific_and_private() {
+        use std::io::{Read, Write};
+        let body = "No allowed providers are available for the selected model. Providers serving example: private-account-detail";
+        let json_body = r#"{"error":{"message":"No allowed providers are available for the selected model. private-account-detail","code":404}}"#;
+        let unrelated_json = r#"{"error":{"message":"Model not found","details":"No allowed providers are available for the selected model. private-account-detail"}}"#;
+        let long_json = format!(
+            r#"{{"padding":"{}","error":{{"message":"No allowed providers are available for the selected model. private-account-detail"}}}}"#,
+            "x".repeat(240)
+        );
+        for (provider, status, response, specific) in [
+            ("OpenRouter", 404, body, true),
+            ("OpenRouter", 404, json_body, true),
+            ("OpenRouter", 404, long_json.as_str(), true),
+            ("OpenRouter", 404, unrelated_json, false),
+            ("OpenRouter", 404, "model not found private-account-detail", false),
+            ("OpenRouter", 500, body, false),
+            ("Other", 404, body, false),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let response = response.to_owned();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buffer = [0; 4096];
+                stream.read(&mut buffer).unwrap();
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+            });
+            let resp = super::super::client::get().get(url).send().await.unwrap();
+            let error = super::ensure_transcription_response(resp, provider, "fixture", 1, "test").await.unwrap_err();
+            server.join().unwrap();
+            let message = super::super::user_facing_error(&error);
+            assert_eq!(message.contains("allowed provider settings"), specific);
+            assert!(!message.contains("private-account-detail"));
+            if specific {
+                assert!(!format!("{error:#}").contains("private-account-detail"));
+            }
+            if !specific && status == 404 {
+                assert!(message.contains("requested model or download was not found"));
+            }
+        }
+    }
     use super::{
         build_assemblyai_submit_request, build_gemini_transcription_request,
         build_whisper_form_fields,
