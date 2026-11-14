@@ -362,7 +362,7 @@
   <div class="setting-row" data-setting-target="privacy-agent-access">
     <div>
       <div class="label">Connected agents</div>
-      <div class="desc">Approved agents can read and change Verenu data for up to one hour. Revoke all access at any time. {agentAccessMessage}</div>
+      <div class="desc">Temporary access lasts up to one hour. Long-term access persists until revoked. Revoke all agent access at any time. {agentAccessMessage}</div>
     </div>
     <button class="btn-ghost" onclick={revokeAgentAccess}>Revoke access</button>
   </div>

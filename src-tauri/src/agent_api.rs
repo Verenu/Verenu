@@ -89,15 +89,15 @@ fn publish_discovery(port: u16, instance: &str) -> anyhow::Result<()> {
     }
 }
 
-#[derive(Default)]
 struct Approvals {
     pending: Option<Pending>,
     grants: HashMap<[u8; 32], Grant>,
     legacy_token: Option<String>,
+    database: rusqlite::Connection,
 }
 
 struct Grant {
-    expires: Instant,
+    expires: Option<Instant>,
     scopes: Vec<String>,
     actor_id: String,
 }
@@ -106,12 +106,14 @@ struct Pending {
     digest: [u8; 32],
     code: String,
     expires: Instant,
+    persistent: bool,
 }
 
 #[derive(Serialize)]
 pub struct ApprovalRequest {
     code: String,
     id: String,
+    persistent: bool,
 }
 
 fn request_id(hash: &[u8; 32]) -> String {
@@ -140,6 +142,7 @@ pub fn agent_pending_request(app: AppHandle) -> Option<ApprovalRequest> {
     approvals.pending.as_ref().map(|p| ApprovalRequest {
         code: p.code.clone(),
         id: request_id(&p.digest),
+        persistent: p.persistent,
     })
 }
 
@@ -159,9 +162,13 @@ pub fn agent_respond(app: AppHandle, id: String, approve: bool, scopes: Option<V
     }
     let pending = approvals.pending.take().ok_or("Request expired")?;
     if approve {
+        let actor_id = uuid::Uuid::new_v4().to_string();
+        if pending.persistent {
+            approvals.database.execute("INSERT INTO agent_persistent_grants (digest, scopes, actor_id) VALUES (?1, ?2, ?3)", rusqlite::params![pending.digest.as_slice(), serde_json::to_string(&scopes).map_err(|_| "Invalid permissions")?, actor_id]).map_err(|_| "Could not save agent access")?;
+        }
         approvals
             .grants
-            .insert(pending.digest, Grant { expires: Instant::now() + Duration::from_secs(3600), scopes, actor_id: uuid::Uuid::new_v4().to_string() });
+            .insert(pending.digest, Grant { expires: (!pending.persistent).then(|| Instant::now() + Duration::from_secs(3600)), scopes, actor_id });
     }
     Ok(())
 }
@@ -172,6 +179,7 @@ pub fn agent_revoke_all(app: AppHandle) -> Result<(), String> {
         .try_state::<Arc<Mutex<Approvals>>>()
         .ok_or("Agent access unavailable")?;
     let mut approvals = state.lock().map_err(|_| "Agent access unavailable")?;
+    approvals.database.execute("DELETE FROM agent_persistent_grants", []).map_err(|_| "Could not revoke agent access")?;
     approvals.pending = None;
     approvals.grants.clear();
     approvals.legacy_token = None;
@@ -234,7 +242,37 @@ fn required_scopes(request: &Request) -> Vec<&'static str> {
     scopes
 }
 
+fn load_persistent_grants(conn: &rusqlite::Connection) -> anyhow::Result<HashMap<[u8; 32], Grant>> {
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS agent_persistent_grants (digest BLOB PRIMARY KEY, scopes TEXT NOT NULL, actor_id TEXT NOT NULL)")?;
+        let mut stmt = conn.prepare("SELECT digest, scopes, actor_id FROM agent_persistent_grants")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?;
+        let mut grants = HashMap::new();
+        for row in rows {
+            let (hash, scopes, actor_id) = row?;
+            let hash: [u8; 32] = hash.try_into().map_err(|_| anyhow::anyhow!("Invalid agent grant"))?;
+            let scopes: Vec<String> = serde_json::from_str(&scopes)?;
+            anyhow::ensure!(scopes.iter().all(|scope| AGENT_SCOPES.contains(&scope.as_str())), "Invalid agent permissions");
+            grants.insert(hash, Grant { expires: None, scopes, actor_id });
+        }
+        Ok(grants)
+}
+
+fn open_grant_database() -> anyhow::Result<rusqlite::Connection> {
+    let path = crate::app_data_dir().join("agent-grants.db");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&path)?;
+        let metadata = file.metadata()?;
+        anyhow::ensure!(metadata.is_file() && metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o077 == 0 && metadata.nlink() == 1, "Agent grant database is not private");
+    }
+    Ok(rusqlite::Connection::open(path)?)
+}
+
 pub fn start(app: AppHandle) -> anyhow::Result<()> {
+    let conn = open_grant_database()?;
+    let grants = load_persistent_grants(&conn)?;
     let token = std::env::var("VERENU_AGENT_TOKEN").ok();
     let port: u16 = if let Some(ref token) = token {
         anyhow::ensure!(
@@ -254,7 +292,9 @@ pub fn start(app: AppHandle) -> anyhow::Result<()> {
     publish_discovery(actual_port, &instance)?;
     let approvals = Arc::new(Mutex::new(Approvals {
         legacy_token: token,
-        ..Approvals::default()
+        grants,
+        pending: None,
+        database: conn,
     }));
     app.manage(approvals.clone());
     let state = Agent {
@@ -294,6 +334,8 @@ async fn status(State(agent): State<Agent>, headers: HeaderMap) -> (StatusCode, 
 #[serde(deny_unknown_fields)]
 struct Authorization {
     token: String,
+    #[serde(default)]
+    persistent: bool,
 }
 
 fn is_browser(headers: &HeaderMap) -> bool {
@@ -325,7 +367,10 @@ async fn authorize(
         };
         approvals
             .grants
-            .retain(|_, grant| grant.expires > Instant::now());
+            .retain(|_, grant| grant.expires.is_none_or(|expiry| expiry > Instant::now()));
+        if approvals.grants.contains_key(&hash) {
+            return (StatusCode::CONFLICT, Json(json!({"error":"Token already has access"})));
+        }
         if approvals.grants.len() >= 128 {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -346,6 +391,7 @@ async fn authorize(
             digest: hash,
             code: code.clone(),
             expires: Instant::now() + Duration::from_secs(120),
+            persistent: request.persistent,
         });
     }
     crate::app_setup::show_main_window(&agent.app);
@@ -375,7 +421,7 @@ async fn authorization_status(
     };
     approvals
         .grants
-        .retain(|_, grant| grant.expires > Instant::now());
+        .retain(|_, grant| grant.expires.is_none_or(|expiry| expiry > Instant::now()));
     let status = if approvals.grants.contains_key(&hash) {
         "approved"
     } else if approvals
@@ -403,6 +449,7 @@ async fn revoke(
     }
     if let Ok(mut approvals) = agent.approvals.lock() {
         let hash = digest(&request.token);
+        if approvals.database.execute("DELETE FROM agent_persistent_grants WHERE digest = ?1", [hash.as_slice()]).is_err() { return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"Could not revoke access"}))); }
         approvals.grants.remove(&hash);
         if approvals
             .pending
@@ -411,7 +458,7 @@ async fn revoke(
         {
             approvals.pending = None;
         }
-    }
+    } else { return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"Unavailable"}))); }
     (StatusCode::OK, Json(json!({"revoked":true})))
 }
 
@@ -457,7 +504,7 @@ async fn invoke(
     let grant = (!is_browser(&headers)).then(|| agent.approvals.lock().ok()).flatten().and_then(|mut approvals| {
             approvals
                 .grants
-                .retain(|_, grant| grant.expires > Instant::now());
+                .retain(|_, grant| grant.expires.is_none_or(|expiry| expiry > Instant::now()));
             if approvals.legacy_token.as_ref().is_some_and(|token| authenticated(&headers, token)) {
                 Some((AGENT_SCOPES.iter().map(|scope| (*scope).to_string()).collect::<Vec<_>>(), "environment-grant".to_string()))
             } else {
@@ -798,7 +845,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
                 "diagnostics.top": {"start": "date", "end": "date"},
                 "diagnostics.retention": {"days": "optional 0..365; 0 disables and clears"}
             },
-            "security": "Each approved agent has selected scopes and a private token that expires after one hour or when Verenu quits. Loopback only; no credential reads, SQL, shell, audio capture, or injection operations."}),
+            "security": "Agents have selected scopes. Temporary grants expire after one hour or when Verenu quits; explicitly approved long-term grants persist until revoked. Loopback only; no credential reads, SQL, shell, audio capture, or injection operations."}),
         );
     }
     match request.command.as_str() {
@@ -1067,6 +1114,26 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn persistent_grants_survive_reopen_and_revocation() {
+        let path = std::env::temp_dir().join(format!("verenu-agent-test-{}.db", uuid::Uuid::new_v4()));
+        let hash = digest(&"a".repeat(64));
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            assert!(load_persistent_grants(&conn).unwrap().is_empty());
+            conn.execute("INSERT INTO agent_persistent_grants VALUES (?1, ?2, ?3)", rusqlite::params![hash.as_slice(), "[\"metadata\"]", "test-actor"]).unwrap();
+        }
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let grants = load_persistent_grants(&conn).unwrap();
+        assert_eq!(grants[&hash].scopes, vec!["metadata"]);
+        assert!(grants[&hash].expires.is_none());
+        conn.execute("DELETE FROM agent_persistent_grants WHERE digest = ?1", [hash.as_slice()]).unwrap();
+        drop(conn);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        assert!(load_persistent_grants(&conn).unwrap().is_empty());
+        drop(conn);
+        std::fs::remove_file(path).unwrap();
+    }
     #[tokio::test]
     async fn timed_out_request_keeps_the_gate_until_work_finishes() {
         let gate = Arc::new(tokio::sync::Semaphore::new(1));
