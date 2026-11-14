@@ -271,7 +271,7 @@ fn query_dictionary_conn(
             AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)
           ORDER BY d.created_at DESC"
     } else {
-        "SELECT d.id, d.term, d.mistake, d.auto_learned, d.correction_count, d.confidence_tier,
+        "SELECT d.id, d.term, CASE WHEN EXISTS (SELECT 1 FROM dictionary_contexts dc JOIN contexts c ON c.id=dc.context_id WHERE dc.dictionary_id=d.id AND c.is_everywhere=1) THEN d.mistake ELSE NULL END, d.auto_learned, d.correction_count, d.confidence_tier,
                 d.last_seen_at, d.created_at, d.replacement_confidence
            FROM dictionary d
           WHERE ?1 IS NULL

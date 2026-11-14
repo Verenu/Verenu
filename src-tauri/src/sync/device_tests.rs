@@ -390,6 +390,56 @@ async fn vocabulary_expiration_converges_with_offline_usage_and_recovery() {
 }
 
 #[tokio::test]
+async fn concurrent_active_correction_conflicts_have_one_convergent_projection() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "First", Some("typo"), None).unwrap();
+    db::insert_dictionary_entry_returning(&b.db, "Second", Some("typo"), None).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let projection = |device: &Device| {
+        let mut entries: Vec<_> = db::query_dictionary(&device.db).unwrap().into_iter()
+            .map(|entry| (entry.term, entry.mistake)).collect();
+        entries.sort();
+        entries
+    };
+    let left = projection(&a);
+    assert_eq!(left, projection(&b));
+    assert_eq!(left.len(), 2);
+    assert_eq!(left.iter().filter(|(_, mistake)| mistake.as_deref() == Some("typo")).count(), 1);
+}
+
+#[tokio::test]
+async fn concurrent_edits_to_distinct_terms_project_one_active_correction() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let first = db::insert_dictionary_entry_returning(&a.db, "First", None, None).unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "Second", None, None).unwrap();
+    session(&a, &b).await.unwrap();
+    let second = db::query_dictionary(&b.db).unwrap().into_iter().find(|entry| entry.term == "Second").unwrap();
+    db::update_dictionary_entry(&a.db, first.id, "First", Some("typo")).unwrap();
+    db::update_dictionary_entry(&b.db, second.id, "Second", Some("typo")).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let projection = |device: &Device| {
+        let mut entries: Vec<_> = db::query_dictionary(&device.db).unwrap().into_iter()
+            .map(|entry| (entry.term, entry.mistake)).collect();
+        entries.sort();
+        entries
+    };
+    let left = projection(&a);
+    assert_eq!(left, projection(&b));
+    assert_eq!(left.iter().filter(|(_, mistake)| mistake.as_deref() == Some("typo")).count(), 1);
+    assert!(db::insert_dictionary_entry_returning(&a.db, "Third", Some("typo"), None).is_err());
+}
+
+#[tokio::test]
 async fn expired_vocabulary_correction_conflict_survives_sync() {
     let a = Device::new();
     let b = Device::new();

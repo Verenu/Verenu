@@ -359,7 +359,7 @@ fn agent_schema_upgrades_preserve_existing_usage_and_audit() {
             let row: (Option<i64>, Option<i64>) = conn.query_row("SELECT vocabulary_replacements, snippet_expansions FROM transcriptions", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
             assert_eq!(row, (None, None));
             let current: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-            assert_eq!(current, 40);
+            assert_eq!(current, 41);
         }
         std::fs::remove_file(path).unwrap();
     }
