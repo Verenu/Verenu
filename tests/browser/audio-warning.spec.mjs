@@ -31,6 +31,92 @@ async function expectFullWidthAdvice(page) {
   expect(bounds.x + bounds.width).toBeLessThanOrEqual(page.viewportSize().width);
 }
 
+test('microphone gain waits for saved settings before accepting input', async ({ page, session }) => {
+  const initial = await session.invoke('get_setting', { key: 'mic_gain' });
+  const initialNoiseReduction = await session.invoke('get_setting', { key: 'noise_reduction' });
+  let release;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const pending = new Promise(resolve => { captured = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'mic_gain', value: 2 });
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.route('**/__verenu_dev/invoke', async route => {
+      if (route.request().postDataJSON().command !== 'get_all_settings') return route.continue();
+      captured();
+      await held;
+      await route.continue();
+    });
+    await page.locator('[data-debug-id="settings.advanced"]:visible, button.settings-tab:visible').filter({ hasText: 'Audio' }).click();
+    await pending;
+    const gain = page.locator('input.gain-slider');
+    await expect(gain).toBeDisabled();
+    const noise = page.locator('button[role="switch"][aria-label="Noise reduction"]');
+    const noiseState = await noise.getAttribute('aria-checked');
+    const bounds = await noise.boundingBox();
+    expect(bounds).not.toBeNull();
+    await expect(page.locator('[data-audio-settings]')).toHaveAttribute('inert', '');
+    await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await expect(noise).toHaveAttribute('aria-checked', noiseState);
+    expect(await session.invoke('get_setting', { key: 'noise_reduction' })).toEqual(initialNoiseReduction);
+    release();
+    await expect(gain).toBeEnabled();
+    await expect(gain).toHaveValue('2');
+    await gain.fill('3');
+    await expect.poll(() => session.invoke('get_setting', { key: 'mic_gain' })).toBe(3);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'mic_gain', value: initial ?? defaultMicGain(false) });
+  }
+});
+
+test('audio settings recover from a load failure without allowing edits during retry', async ({ page, session }) => {
+  const initialNoiseReduction = await session.invoke('get_setting', { key: 'noise_reduction' });
+  let mode = 'fail';
+  let release;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const pending = new Promise(resolve => { captured = resolve; });
+  await page.locator('[data-debug-id="nav.settings"]').click();
+  await page.route('**/__verenu_dev/invoke', async route => {
+    if (route.request().postDataJSON()?.command === 'get_all_settings') {
+      if (mode === 'fail') return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'synthetic failure' }) });
+      if (mode === 'hold') {
+        const response = await route.fetch();
+        captured();
+        await held;
+        return route.fulfill({ response });
+      }
+    }
+    return route.continue();
+  });
+  try {
+    const audio = page.locator('[data-debug-id="settings.advanced"]:visible, button.settings-tab:visible').filter({ hasText: 'Audio' });
+    await audio.click();
+    await expect(page.locator('input.gain-slider')).toBeDisabled();
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not load Audio settings' })).toBeVisible();
+    const noise = page.locator('button[role="switch"][aria-label="Noise reduction"]');
+    const noiseState = await noise.getAttribute('aria-checked');
+    const bounds = await noise.boundingBox();
+    expect(bounds).not.toBeNull();
+    mode = 'hold';
+    await page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await pending;
+    await expect(page.locator('[data-audio-settings]')).toHaveAttribute('inert', '');
+    await page.mouse.click(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await expect(noise).toHaveAttribute('aria-checked', noiseState);
+    expect(await session.invoke('get_setting', { key: 'noise_reduction' })).toEqual(initialNoiseReduction);
+    mode = 'normal';
+    release();
+    await expect(page.getByRole('slider', { name: 'Microphone gain', exact: true })).toBeEnabled();
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not load Audio settings' })).toHaveCount(0);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+});
+
 test('a delayed gain save preserves a newer agent change', async ({ page, session }) => {
   const initial = await session.invoke('get_setting', { key: 'mic_gain' });
   let release;

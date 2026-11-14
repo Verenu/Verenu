@@ -173,6 +173,8 @@ fn resolve_context_targets_in_ops(host: &dyn SyncHost, ops: Vec<SyncOp>) -> Vec<
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DictionaryRow {
     pub term: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_confidence: Option<String>,
     #[serde(default)]
     pub mistake: Option<String>,
     #[serde(default)]
@@ -506,10 +508,11 @@ macro_rules! row_payloads {
 
 row_payloads! {
     dictionary_payload, DictionaryRow, "serialize dictionary row",
-    "SELECT term, mistake, auto_learned, correction_count, confidence_tier, last_seen_at, created_at
+    "SELECT term, mistake, auto_learned, correction_count, confidence_tier, last_seen_at, created_at, replacement_confidence
      FROM dictionary WHERE uuid = ?1",
     |r| {
         term: r.get(0)?,
+        replacement_confidence: Some(r.get(7)?),
         mistake: None,
         auto_learned: r.get::<_, i64>(2)? != 0,
         correction_count: r.get(3)?,
@@ -1567,17 +1570,21 @@ fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         }
     }
     let row: DictionaryRow = op_payload(op, "dictionary", "dictionary")?;
+    if row.replacement_confidence.as_deref().is_some_and(|value| !matches!(value, "low" | "default" | "high")) {
+        anyhow::bail!("Invalid dictionary replacement confidence");
+    }
 
     let insert = |conn: &Connection| -> rusqlite::Result<usize> {
         conn.execute(
-            "INSERT INTO dictionary (uuid, term, mistake, auto_learned, correction_count, confidence_tier, last_seen_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO dictionary (uuid, term, mistake, auto_learned, correction_count, confidence_tier, last_seen_at, created_at, replacement_confidence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, COALESCE(?9, 'default'))
              ON CONFLICT(uuid) DO UPDATE SET
                term = excluded.term, mistake = NULL,
                auto_learned = excluded.auto_learned,
                correction_count = excluded.correction_count,
                confidence_tier = excluded.confidence_tier,
-               last_seen_at = excluded.last_seen_at",
+               last_seen_at = excluded.last_seen_at,
+               replacement_confidence = COALESCE(?9, dictionary.replacement_confidence)",
             params![
                 op.row_uuid,
                 row.term,
@@ -1586,7 +1593,8 @@ fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
                 row.correction_count,
                 row.confidence_tier,
                 row.last_seen_at,
-                row.created_at
+                row.created_at,
+                row.replacement_confidence
             ],
         )
     };
@@ -4120,8 +4128,8 @@ mod payload_tests {
              VALUES (2, 'context', 'Work', 'W', 'casual', 'light', '#123456', 'Keep café',
                 1, 1, '2026-01-02', '2026-01-01', '2026-01-02');
              INSERT INTO dictionary (id, uuid, term, mistake, auto_learned, correction_count,
-                confidence_tier, last_seen_at, created_at)
-             VALUES (1, 'dictionary', 'café', 'legacy mistake', 1, 7, 'high', '2026-01-02', '2026-01-01');
+                confidence_tier, replacement_confidence, last_seen_at, created_at)
+             VALUES (1, 'dictionary', 'café', 'legacy mistake', 1, 7, 'high', 'high', '2026-01-02', '2026-01-01');
              INSERT INTO dictionary_contexts (context_id, dictionary_id) VALUES (2, 1);
              INSERT INTO dictionary_corrections (uuid, dictionary_id, context_id, mistake,
                 auto_learned, correction_count, confidence_tier, last_seen_at, created_at)
@@ -4148,7 +4156,7 @@ mod payload_tests {
                 "dictionary",
                 json!({
                     "term": "café", "mistake": null, "auto_learned": true,
-                    "correction_count": 7, "confidence_tier": "high", "last_seen_at": "2026-01-02",
+                    "correction_count": 7, "confidence_tier": "high", "replacement_confidence": "high", "last_seen_at": "2026-01-02",
                     "created_at": "2026-01-01"
                 }),
             ),

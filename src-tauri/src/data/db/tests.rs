@@ -167,7 +167,7 @@ fn agent_tables_migrate_from_master_version_36() {
         finish_agent_change(&db, id, true).unwrap();
         let conn = db.lock().unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
     std::fs::remove_file(path).unwrap();
 }
@@ -201,7 +201,7 @@ fn agent_schema_upgrades_preserve_existing_usage_and_audit() {
             let row: (Option<i64>, Option<i64>) = conn.query_row("SELECT vocabulary_replacements, snippet_expansions FROM transcriptions", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
             assert_eq!(row, (None, None));
             let current: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-            assert_eq!(current, 39);
+            assert_eq!(current, 40);
         }
         std::fs::remove_file(path).unwrap();
     }
@@ -955,7 +955,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 39);
+    assert_eq!(version, 40);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);
@@ -2509,11 +2509,39 @@ fn snippet_update_normalizes_expansion_whitespace() {
 }
 
 #[test]
+fn dictionary_replacement_confidence_migrates_existing_terms() {
+    let path = temp_db_path("dictionary_confidence_migration");
+    {
+        let db = open(&path).unwrap();
+        insert_dictionary_entry_returning(&db, "SyntheticLegacy", Some("synthetic-legacy"), None).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("ALTER TABLE dictionary DROP COLUMN replacement_confidence; PRAGMA user_version = 39;").unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let term = query_dictionary(&db).unwrap().into_iter().find(|entry| entry.term == "SyntheticLegacy").unwrap();
+        assert_eq!(term.mistake.as_deref(), Some("synthetic-legacy"));
+        assert_eq!(term.replacement_confidence, "default");
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn replacement_confidence_is_persisted_and_conflicts_are_detected() {
+    let db = test_db();
+    let created = insert_dictionary_entry_returning(&db, "Verenu", Some("Verena"), None).unwrap();
+    let expected = ExpectedDictionaryEntry { term: "Verenu".into(), mistake: Some("Verena".into()), replacement_confidence: Some("default".into()) };
+    update_dictionary_entry_with_confidence(&db, None, created.id, "Verenu", Some("Verena"), &expected, Some("high")).unwrap();
+    assert_eq!(query_dictionary(&db).unwrap().into_iter().find(|entry| entry.id == created.id).unwrap().replacement_confidence, "high");
+    assert!(update_dictionary_entry_with_confidence(&db, None, created.id, "Verenu", Some("Verena"), &expected, Some("low")).is_err());
+}
+
+#[test]
 fn stale_library_edit_cannot_overwrite_agent_change() {
     let db = test_db();
     let context = insert_context_returning(&db, "Synthetic", None, None, None, None, false).unwrap();
     let entry = insert_dictionary_entry_returning(&db, "Before", Some("old"), Some(context.id)).unwrap();
-    let expected = ExpectedDictionaryEntry { term: "Before".into(), mistake: Some("old".into()) };
+    let expected = ExpectedDictionaryEntry { term: "Before".into(), mistake: Some("old".into()), replacement_confidence: None };
     update_dictionary_entry_for_context(&db, context.id, entry.id, "Before", Some("new")).unwrap();
     assert!(update_dictionary_entry_if_unchanged(&db, Some(context.id), entry.id, "Renamed", Some("old"), &expected).is_err());
     let current = query_effective_dictionary_for_context(&db, context.id).unwrap();
@@ -2529,7 +2557,7 @@ fn stale_library_edit_cannot_overwrite_agent_change() {
     assert_eq!(current[0].expansion, "new");
 
     let global = insert_dictionary_entry_returning(&db, "Global", Some("global"), None).unwrap();
-    let expected = ExpectedDictionaryEntry { term: "Global".into(), mistake: None };
+    let expected = ExpectedDictionaryEntry { term: "Global".into(), mistake: None, replacement_confidence: None };
     update_dictionary_entry_if_unchanged(&db, Some(context.id), global.id, "Global", Some("local"), &expected).unwrap();
     assert!(update_dictionary_entry_if_unchanged(&db, Some(context.id), global.id, "Global", Some("stale"), &expected).is_err());
     let current = query_effective_dictionary_for_context(&db, context.id).unwrap();

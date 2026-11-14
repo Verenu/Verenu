@@ -316,10 +316,12 @@ fn format_dictionary_entry(
         .map(|v| format!("\"{v}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "- preferred: \"{}\"; possible STT variants: {}",
-        entry.term, quoted
-    )
+    let instruction = match entry.replacement_confidence.as_str() {
+        "high" => "; cautious",
+        "low" => "; favor replacement when plausible",
+        _ => "",
+    };
+    format!("- preferred: \"{}\"; possible STT variants: {}{}", entry.term, quoted, instruction)
 }
 
 #[cfg(test)]
@@ -336,6 +338,7 @@ pub fn apply_substitutions_counted(text: &str, entries: &[db::DictionaryEntry]) 
 pub fn apply_substitutions_details(text: &str, entries: &[db::DictionaryEntry]) -> (String, Vec<i64>, Vec<i64>, i64) {
     let mut replaceable: Vec<(i64, i64, &str, &str)> = entries
         .iter()
+        .filter(|entry| entry.replacement_confidence != "high")
         .flat_map(|entry| {
             effective_correction_variants(entry)
                 .into_iter()
@@ -442,6 +445,7 @@ mod tests {
     fn entry(id: i64, term: &str, mistake: Option<&str>) -> DictionaryEntry {
         DictionaryEntry {
             id,
+            replacement_confidence: "default".into(),
             term: term.to_string(),
             mistake: mistake.map(str::to_string),
             auto_learned: false,
@@ -467,6 +471,7 @@ mod tests {
         let confidence_tier = if auto_learned { "medium" } else { "manual" };
         DictionaryEntry {
             id: dictionary_id,
+            replacement_confidence: "default".into(),
             term: term.to_string(),
             mistake: None,
             auto_learned,
@@ -497,6 +502,18 @@ mod tests {
             confidence_tier: "medium".to_string(),
             ..entry(id, term, Some(mistake))
         }
+    }
+
+    #[test]
+    fn high_confidence_keeps_ambiguous_variants_for_model_judgment() {
+        let mut term = entry(1, "PostgreSQL", Some("post-grass"));
+        let (default_text, _) = apply_substitutions_from("Please post-grass clippings.", &[term.clone()]);
+        assert_eq!(default_text, "Please PostgreSQL clippings.");
+        term.replacement_confidence = "high".into();
+        let evidence = build_relevant_dictionary_prompt_from(&[term.clone()], "Please post-grass clippings.");
+        assert!(evidence.contains("; cautious"));
+        let (text, _) = apply_substitutions_from("Please post-grass clippings.", &[term]);
+        assert_eq!(text, "Please post-grass clippings.");
     }
 
     #[test]

@@ -689,7 +689,7 @@ fn argument_schema(ty: &str) -> Value {
         return if optional { json!({"anyOf":[schema,{"type":"null"}]}) } else { schema };
     }
     if inner == "db::ExpectedDictionaryEntry" {
-        let schema = json!({"type":"object", "properties":{"term":{"type":"string"},"mistake":{"type":["string","null"]}},"required":["term"],"additionalProperties":false});
+        let schema = json!({"type":"object", "properties":{"term":{"type":"string"},"mistake":{"type":["string","null"]},"replacement_confidence":{"type":["string","null"],"enum":["low","default","high",null]}},"required":["term"],"additionalProperties":false});
         return if optional { json!({"anyOf":[schema,{"type":"null"}]}) } else { schema };
     }
     let kind = match inner {
@@ -756,7 +756,7 @@ macro_rules! registry {
             get_context_dictionary { context_id: i64 }, get_context_snippets { context_id: i64 },
             get_dictionary {},
             create_dictionary_entry { term: String, mistake: Option<String>, context_id: Option<i64> },
-            edit_dictionary_entry { id: i64, term: String, mistake: Option<String>, context_id: Option<i64>, expected: Option<db::ExpectedDictionaryEntry> },
+            edit_dictionary_entry { id: i64, term: String, mistake: Option<String>, context_id: Option<i64>, expected: Option<db::ExpectedDictionaryEntry>, replacement_confidence: Option<String> },
             remove_dictionary_entry { id: i64, context_id: Option<i64> },
             move_dictionary_entry_to_context { dictionary_id: i64, source_context_id: i64, target_context_id: i64 },
             get_dictionary_entry_contexts { term: String },

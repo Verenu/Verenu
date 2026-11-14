@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { cargoDebugDirectoryStatus, cargoPackageNames, classifyPanicLocation, classifyPanicOsError, classifyStartupLog, sessionIdentityMismatch, sessionStartupDiagnostics } from '../../scripts/verification/session.mjs';
 
 test('backend identity comparison names stale source fields without exposing worktree paths', () => {
   const runner = { commit: 'runner-commit', fingerprint: 'a'.repeat(64), worktree: 'D:\\a\\Verenu\\Verenu' };
@@ -15,6 +18,33 @@ test('backend identity comparison names stale source fields without exposing wor
     backend: { commit: 'backend-commit', fingerprint: 'b'.repeat(64) },
   });
   assert.equal(JSON.stringify(mismatch).includes('D:\\a\\'), false);
+});
+
+test('panic location includes only allowlisted sources and numeric lines', () => {
+  const packages = cargoPackageNames('[[package]]\r\nname = "tauri"\r\nversion = "2.8.0"\r\n');
+  assert.deepEqual(classifyPanicLocation("thread 'main' (1) panicked at C:\\private\\tauri-2.8.0\\src\\lib.rs:135:9:\nprivate panic", packages), { source: 'tauri', line: 135 });
+  assert.equal(classifyPanicLocation("thread 'main' panicked at C:\\private\\secret-1.0.0\\src\\lib.rs:135:9:\nprivate", packages), null);
+  assert.deepEqual(classifyPanicLocation("thread 'main' panicked at src/dev_session.rs:35:5:\nprivate"), { source: 'dev-session', line: 35 });
+  assert.deepEqual(classifyPanicLocation("thread 'main' panicked at src/data/db/schema.rs:42:5:\nprivate"), { source: 'app-source', line: 42 });
+  assert.equal(classifyPanicLocation("thread 'main' panicked at C:\\private\\secret.rs:20:5:\nprivate"), null);
+  assert.equal(classifyPanicLocation('error: source example tauri-2.8.0/src/lib.rs:135:9'), null);
+});
+
+test('panic OS error classification retains only the numeric code', () => {
+  assert.equal(classifyPanicOsError("thread 'main' panicked at private.rs:42:5:\r\ncalled `Result::unwrap()` on an `Err` value: Os { code: 5, kind: PermissionDenied, message: \"private\" }"), 5);
+  assert.equal(classifyPanicOsError('compiler output Os { code: 5, kind: PermissionDenied }'), null);
+  assert.equal(classifyPanicOsError("thread 'main' panicked at private.rs:42:5:\nOs { code: 99999, kind: Other }"), null);
+});
+
+test('cargo directory diagnostics report existence without exposing paths', async () => {
+  const target = await fs.mkdtemp(path.join(os.tmpdir(), 'verenu-startup-test-'));
+  try {
+    await fs.mkdir(path.join(target, 'debug', 'deps'), { recursive: true });
+    assert.deepEqual(await cargoDebugDirectoryStatus(target), { profile: true, examples: false, deps: true });
+    assert.deepEqual(await cargoDebugDirectoryStatus(target, async () => { throw Object.assign(new Error('private'), { code: 'EACCES' }); }), { profile: null, examples: null, deps: null });
+  } finally {
+    await fs.rm(target, { recursive: true, force: true });
+  }
 });
 
 test('backend identity mismatch can include repo-relative digests without source contents', () => {
@@ -61,4 +91,16 @@ test('startup diagnostics ignore manifests owned by another process', () => {
     status: 'stopped',
     childFailure: { component: 'tauri', kind: 'unexpected-exit', exitCode: 1 },
   }, 42), { manifestState: 'missing' });
+});
+
+test('startup log classification exposes only fixed categories, never raw text', () => {
+  const log = '\u001b[31merror[E0308]:\u001b[0m private path and value\nerror: linking with private-linker failed\nthread private-name panicked at private-file\nNo space left on device\n';
+  assert.deepEqual(classifyStartupLog(log), ['rust-compiler-error', 'linker-error', 'disk-full', 'runtime-panic']);
+  assert.deepEqual(classifyStartupLog('error: failed to run custom build command for private-package\nerror: failed to get private-dependency'), ['build-script-error', 'dependency-error']);
+  assert.deepEqual(classifyStartupLog('private transcript and token'), []);
+  assert.deepEqual(classifyStartupLog("thread 'main' panicked at private-file:\nfailed to prepare isolated dev session: private details"), ['runtime-panic', 'dev-session-prepare-panic']);
+  assert.deepEqual(classifyStartupLog("thread 'main' panicked at private-file:\nerror building Verenu: private details"), ['runtime-panic', 'app-build-panic']);
+  assert.deepEqual(classifyStartupLog('error[E0308]: compiler error\n  .expect("error building Verenu")'), ['rust-compiler-error']);
+  assert.deepEqual(classifyStartupLog("thread 'main' panicked at private-file: error building Verenu: private details"), ['runtime-panic', 'app-build-panic']);
+  assert.equal(JSON.stringify(classifyStartupLog(log)).includes('private'), false);
 });

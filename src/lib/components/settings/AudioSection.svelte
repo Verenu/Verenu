@@ -192,7 +192,9 @@
   let micGainSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let lastSavedMicGain: number | null = null;
   let micGainChangedByUser = false;
-  let micGainLoaded = false;
+  let micGainLoaded = $state(false);
+  let audioSettingsLoadError = $state(false);
+  let audioSettingsRetrying = $state(false);
   let micGainSaving: Promise<void> | null = null;
   let micGainError = $state(false);
   const gainAdvice = $derived(micGainAdvice(micGain, noiseReduction));
@@ -228,9 +230,18 @@
         lastSavedMicGain = null;
       }
       micGainLoaded = true;
+      audioSettingsLoadError = false;
     } catch (err) {
+      audioSettingsLoadError = true;
       console.error('AudioSection load failed:', err);
     }
+  }
+
+  async function retryAudioSettings() {
+    if (audioSettingsRetrying) return;
+    audioSettingsRetrying = true;
+    try { await loadSettings(); }
+    finally { audioSettingsRetrying = false; }
   }
 
   let noiseReductionError = $state(false);
@@ -325,6 +336,9 @@
     <span class="legacy-label" aria-hidden="true">Microphone</span>
   {/if}
 </h2>
+{#if (!micGainLoaded && !audioSettingsLoadError) || audioSettingsRetrying}<span class="sr-only" role="status">Loading Audio settings…</span>{/if}
+{#if audioSettingsLoadError}<div class="row-callout"><Callout severity="error" compact action={{ label: 'Retry', onclick: retryAudioSettings, disabled: audioSettingsRetrying }}>Could not load Audio settings. Retry to use these controls.</Callout></div>{/if}
+<div class="audio-settings-fields" inert={!micGainLoaded || audioSettingsRetrying} aria-busy={(!micGainLoaded && !audioSettingsLoadError) || audioSettingsRetrying} data-audio-settings>
 
 <h3 class="settings-subhead first">Microphone</h3>
 <div class="setting-row gain-row" data-setting-target="audio-gain">
@@ -340,6 +354,7 @@
       type="range"
       class="gain-slider"
       min="1" max="8" step="0.1"
+      disabled={!micGainLoaded}
       bind:value={micGain}
       oninput={scheduleMicGainSave}
       onchange={saveMicGainOnRelease}
@@ -513,8 +528,11 @@
     </div>
   </div>
 </div>
+</div>
 
 <style>
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .audio-settings-fields[inert] { opacity: var(--ui-disabled-opacity); }
   .volume-fades { margin-top: 10px; width: 100%; }
   .fade-rows {
     margin-top: 6px;
@@ -556,6 +574,7 @@
     display: block;
     margin: 0;
   }
+  .gain-slider:disabled { cursor: not-allowed; }
   .gain-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
@@ -570,6 +589,7 @@
   }
   .gain-slider::-webkit-slider-thumb:hover { box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 45%, transparent); transform: scale(1.1); }
   .gain-slider::-webkit-slider-thumb:active { box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 55%, transparent); transform: scale(1.15); }
+  .gain-slider:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   .gain-slider::-moz-range-thumb {
     width: 16px;
     height: 16px;

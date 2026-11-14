@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { root, sourceIdentity, artifact } from './verification/identity.mjs';
 import { cargoTargetDirectory, startOwnedSession } from './verification/session.mjs';
 import { createNativeSession } from './verification/native-session.mjs';
-import { markCurrentNativePage, waitForNativePage, waitUntil } from './verification/native-page.mjs';
+import { markCurrentNativePage, runNativePhase, waitForNativePage, waitUntil } from './verification/native-page.mjs';
 import { verifyNativePill } from './verification/native-pill.mjs';
 import { nativePageIdentity, waitForNativeNavigation } from './verification/native-navigation.mjs';
 
@@ -590,9 +590,9 @@ try {
   const created = await invoke('create_context', { name: 'Synthetic native', contextualFormattingDisabled: false });
   report.checks.push({ name: 'Native IPC remains reachable after pill window cycles', status: 'passed' });
   try {
-    const previousPage = await markCurrentNativePage(browser);
-    await refreshAfterNativeNavigation(browser, session);
-    await browser.waitForApp({ navigationMarker: previousPage });
+    const previousPage = await runNativePhase('Mark native document', () => markCurrentNativePage(browser));
+    await runNativePhase('Refresh native WebView', () => refreshAfterNativeNavigation(browser, session));
+    await runNativePhase('Wait for native WebView after refresh', () => browser.waitForApp({ navigationMarker: previousPage }));
     const contexts = await invoke('get_contexts');
     assert.ok(contexts.some((row) => row.id === created.id && row.name === 'Synthetic native'));
     report.checks.push({ name: 'Native WebView reload waits for a new ready document before follow-up IPC', status: 'passed' });
