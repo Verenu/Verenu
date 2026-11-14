@@ -55,10 +55,12 @@ test('Models shows the two steps in order and a setup updates them in place', as
     await cloud.getByRole('button', { name: 'Details', exact: true }).first().click();
     const details = cloud.locator('.preset-details');
     await expect(details).toBeVisible();
-    const detailsBox = await details.boundingBox();
-    expect(detailsBox.y).toBeGreaterThan(boxes[0].y + boxes[0].height - 1);
-    if (!phone) expect(detailsBox.width).toBeGreaterThan(boxes[0].width * 2);
-    else expect(detailsBox.y).toBeLessThan((await cards.nth(1).boundingBox()).y);
+    // Opening details can scroll the panel, so measure the cards again and wait for the panel to finish sliding open.
+    await expect.poll(async () => (await details.boundingBox()).height).toBeGreaterThan(60);
+    const [detailsBox, firstCard, secondCard] = await Promise.all([details.boundingBox(), cards.nth(0).boundingBox(), cards.nth(1).boundingBox()]);
+    expect(detailsBox.y).toBeGreaterThan(firstCard.y + firstCard.height - 1);
+    if (!phone) expect(detailsBox.width).toBeGreaterThan(firstCard.width * 2);
+    else expect(detailsBox.y + detailsBox.height).toBeLessThan(secondCard.y + 1);
 
     await page.getByRole('switch', { name: 'Advanced models' }).click();
     await expect(transcription.getByRole('button', { name: 'Change model' })).toBeVisible();
