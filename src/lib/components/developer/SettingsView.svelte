@@ -26,6 +26,30 @@
   let storageFull = $state(false);
   let provider = $state<ProviderId>('groq');
   let providerOpen = $state(false);
+  let providerOpensUp = $state(false);
+  let providerTrigger: HTMLButtonElement | null = $state(null);
+  let providerMenu: HTMLDivElement | null = $state(null);
+
+  $effect(() => {
+    if (!providerOpen) { providerOpensUp = false; return; }
+    const frame = requestAnimationFrame(() => {
+      if (!providerTrigger || !providerMenu) return;
+      const trigger = providerTrigger.getBoundingClientRect();
+      const height = providerMenu.getBoundingClientRect().height;
+      let top = 0;
+      let bottom = window.innerHeight;
+      for (let parent = providerTrigger.parentElement; parent; parent = parent.parentElement) {
+        if (!['auto', 'scroll', 'hidden', 'clip'].includes(getComputedStyle(parent).overflowY)) continue;
+        const bounds = parent.getBoundingClientRect();
+        top = Math.max(top, bounds.top + parent.clientTop);
+        bottom = Math.min(bottom, bounds.top + parent.clientTop + parent.clientHeight);
+      }
+      const above = trigger.top - top - 4;
+      const below = bottom - trigger.bottom - 4;
+      providerOpensUp = height > below && above > below;
+    });
+    return () => cancelAnimationFrame(frame);
+  });
   let message = $state('');
   let statusRaw = $state('');
   let privacyOpen = $state(false);
@@ -101,12 +125,12 @@
     <div class="row">
       <Dropdown bind:open={providerOpen} closeSelector=".fault-provider-dropdown">
         <div class="ui-dropdown fault-provider-dropdown">
-          <button class="ui-dropdown-trigger ui-dropdown-trigger--compact" aria-haspopup="true" aria-expanded={providerOpen} aria-label="Simulation provider" onclick={() => (providerOpen = !providerOpen)}>
+          <button bind:this={providerTrigger} class="ui-dropdown-trigger ui-dropdown-trigger--compact" aria-haspopup="true" aria-expanded={providerOpen} aria-label="Simulation provider" onclick={() => (providerOpen = !providerOpen)}>
             <span>{PROVIDERS.find((p) => p.value === provider)?.label}</span>
             <svg class:open={providerOpen} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
           </button>
           {#if providerOpen}
-            <div class="ui-dropdown-menu ui-dropdown-menu--padded" role="listbox" aria-label="Simulation provider options" in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
+            <div bind:this={providerMenu} class="ui-dropdown-menu ui-dropdown-menu--padded" class:open-up={providerOpensUp} role="listbox" aria-label="Simulation provider options" in:fly={{ y: -motionPx(MOTION_PX.nudge), duration: motionMs(MOTION_MS.panel), easing: expoOut }} out:fade={{ duration: motionMs(MOTION_MS.fast) }}>
               {#each PROVIDERS as opt (opt.value)}<button class="ui-dropdown-option" class:active={provider === opt.value} onclick={() => { provider = opt.value; providerOpen = false; }}>{opt.label}</button>{/each}
             </div>
           {/if}
@@ -148,6 +172,7 @@
   .row { display:flex; align-items:center; gap:16px; margin-bottom:14px; }
   .spacer { flex:1; }
   .storage { display:inline-flex; align-items:center; gap:10px; font-size:12px; color:var(--ink-soft); }
+  .fault-provider-dropdown :global(.ui-dropdown-menu.open-up) { top:auto; bottom:calc(100% + 4px); }
   .msg { margin:14px 0 0; font-size:12px; color:var(--ink-mute); }
   .out { max-height:160px; overflow:auto; margin:14px 0 0; padding:10px; color:var(--ink-mute); font:10.5px var(--mono); white-space:pre-wrap; background:var(--bg-elev); border:1px solid var(--line); border-radius:var(--r-sm); }
 
