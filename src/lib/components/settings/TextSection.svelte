@@ -26,69 +26,97 @@
   let expirationError = $state('');
   let expirationNotice = $state('');
   let expirationSaving = $state(false);
+  let expirationLoadState = $state<'loading' | 'ready' | 'unavailable'>('loading');
+  let expirationRequestGeneration = 0;
   const expirationOptions = [
     { value: 'off', label: 'Off' },
     ...Array.from({ length: 54 }, (_, i) => ({ value: String(i + 7), label: `${i + 7} days` })),
   ];
 
   async function loadExpiration() {
-    const status = await invoke<ExpirationStatus>('get_vocabulary_expiration');
-    expiration = { ...status, reviews: (status.reviews ?? []).map((review) => ({ ...review, candidates: review.candidates ?? [] })) };
+    const generation = ++expirationRequestGeneration;
+    try {
+      const status = await invoke<ExpirationStatus>('get_vocabulary_expiration');
+      if (generation !== expirationRequestGeneration) return;
+      expiration = { ...status, reviews: (status.reviews ?? []).map((review) => ({ ...review, candidates: review.candidates ?? [] })) };
+      if (expirationLoadState === 'unavailable') expirationError = '';
+      expirationLoadState = 'ready';
+    } catch (err) {
+      if (generation !== expirationRequestGeneration) return;
+      expirationLoadState = 'unavailable';
+      throw err;
+    }
   }
 
   async function changeExpiration(value: string) {
     if (expirationSaving) return;
+    expirationRequestGeneration++;
     expirationSaving = true;
     expirationError = '';
     expirationNotice = '';
+    let applied = false;
     try {
       await invoke('set_vocabulary_expiration', { days: value === 'off' ? null : Number(value) });
+      applied = true;
       await loadExpiration();
     } catch (err) {
-      expirationError = formatIpcError(err, 'Could not save vocabulary expiration');
+      expirationLoadState = 'unavailable';
+      expirationError = formatIpcError(err, applied ? 'Policy saved, but its status could not be refreshed' : 'Could not save vocabulary expiration');
     } finally {
       expirationSaving = false;
     }
   }
 
   async function restoreVocabulary(requestId: string) {
+    expirationRequestGeneration++;
     expirationSaving = true;
     expirationError = '';
     expirationNotice = '';
+    let applied = false;
     try {
       await invoke('restore_expired_vocabulary', { requestId });
+      applied = true;
       await loadExpiration();
     } catch (err) {
-      expirationError = formatIpcError(err, 'Could not restore vocabulary');
+      expirationLoadState = 'unavailable';
+      expirationError = formatIpcError(err, applied ? 'Vocabulary restored, but its status could not be refreshed' : 'Could not restore vocabulary');
     } finally {
       expirationSaving = false;
     }
   }
 
   async function acknowledgeReview(contextUuid: string, dictionaryUuid: string) {
+    expirationRequestGeneration++;
     expirationSaving = true;
     expirationError = '';
     expirationNotice = '';
+    let applied = false;
     try {
       await invoke('acknowledge_vocabulary_review', { contextUuid, dictionaryUuid });
+      applied = true;
       await loadExpiration();
     } catch (err) {
-      expirationError = formatIpcError(err, 'Could not mark vocabulary as reviewed');
+      expirationLoadState = 'unavailable';
+      expirationError = formatIpcError(err, applied ? 'Review saved, but its status could not be refreshed' : 'Could not mark vocabulary as reviewed');
     } finally {
       expirationSaving = false;
     }
   }
 
   async function restoreReviewCandidate(contextUuid: string, candidate: ReviewCandidate) {
+    expirationRequestGeneration++;
     expirationSaving = true;
     expirationError = '';
     expirationNotice = '';
+    let applied = false;
     try {
       await invoke('restore_vocabulary_review_payload', { contextUuid, kind: candidate.kind, rowUuid: candidate.row_uuid, origin: candidate.origin, originSeq: candidate.origin_seq });
+      applied = true;
       await loadExpiration();
       expirationNotice = 'Saved change restored. The saved copy remains available for review.';
     } catch (err) {
-      expirationError = formatIpcError(err, 'Could not restore the saved change');
+      expirationLoadState = 'unavailable';
+      expirationError = formatIpcError(err, applied ? 'Saved change restored, but its status could not be refreshed' : 'Could not restore the saved change');
     } finally {
       expirationSaving = false;
     }
@@ -96,14 +124,18 @@
 
   async function discardReviewCandidate(candidate: ReviewCandidate) {
     if (!window.confirm('Discard this saved change from all Contexts and synced devices? This cannot be undone.')) return;
+    expirationRequestGeneration++;
     expirationSaving = true;
     expirationError = '';
     expirationNotice = '';
+    let applied = false;
     try {
       await invoke('discard_vocabulary_review_payload', { kind: candidate.kind, rowUuid: candidate.row_uuid, origin: candidate.origin, originSeq: candidate.origin_seq });
+      applied = true;
       await loadExpiration();
     } catch (err) {
-      expirationError = formatIpcError(err, 'Could not discard the saved change');
+      expirationLoadState = 'unavailable';
+      expirationError = formatIpcError(err, applied ? 'Saved change discarded, but its status could not be refreshed' : 'Could not discard the saved change');
     } finally {
       expirationSaving = false;
     }
@@ -270,9 +302,11 @@
     let unlisten: (() => void) | undefined;
     let active = true;
     listenForSyncCompletion(() => {
-      void invoke<ExpirationStatus>('get_vocabulary_expiration').then(status => {
-        if (active && !expirationSaving) expiration = status;
-      }).catch(() => {});
+      if (active && !expirationSaving) {
+        void loadExpiration().catch(err => {
+          if (active) expirationError = formatIpcError(err, 'Could not load vocabulary expiration');
+        });
+      }
       const cleanupVersion = appStore.cleanupChangeVersion;
       void loadSettingsSnapshot().then(({ contextual_formatting_enabled: formatting,
         cleanup_enabled: cleanup, voice_commands_enabled: commands }) => {
@@ -360,13 +394,17 @@
   <div>
     <div class="label">Delete unused vocabulary</div>
     <div class="desc">Move vocabulary to the recovery list if its spelling or correction does not appear in dictation for this long. The waiting period starts when you turn this on. Snippets are not deleted. This setting and deletions sync to paired devices. Activity recorded while enabled is retained when you turn it off.</div>
-    {#if expiration.days !== null && expiration.paused_for_sync}
+    {#if expirationLoadState === 'ready' && expiration.days !== null && expiration.paused_for_sync}
       <div class="desc">Paused until all paired devices support vocabulary activity tracking and complete a sync.</div>
     {/if}
   </div>
-  <CompactSelect value={expiration.days === null ? 'off' : String(expiration.days)} options={expirationOptions} label="Delete unused vocabulary after" onchange={changeExpiration} openAbove />
+  {#if expirationLoadState === 'ready'}
+    <CompactSelect value={expiration.days === null ? 'off' : String(expiration.days)} options={expirationOptions} label="Delete unused vocabulary after" onchange={changeExpiration} openAbove />
+  {:else}
+    <span class="desc" role="status">{expirationLoadState === 'loading' ? 'Loading…' : 'Unavailable'}</span>
+  {/if}
 </div>
-{#if expiration.deleted.length}
+{#if expirationLoadState === 'ready' && expiration.deleted.length}
   <div class="setting-row">
     <div>
       <div class="label">Deleted vocabulary</div>
@@ -377,7 +415,7 @@
     </div>
   </div>
 {/if}
-{#if expiration.reviews.length}
+{#if expirationLoadState === 'ready' && expiration.reviews.length}
   <div class="setting-row">
     <div>
       <div class="label">Vocabulary to review</div>
