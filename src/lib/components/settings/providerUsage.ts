@@ -42,11 +42,10 @@ const onDevice = (id: string) => id === 'local' || id === 'apple-intelligence';
  * fallback when two speech models are compared, and so does the Quality setup for speech. Every other automatic
  * mode reorders cloud models by measured speed, so any of them can run first.
  */
-function running(task: 'transcription' | 'cleanup', settings: UsageSettings, cloud: number): number {
-  const mode = settings.model_selection_mode ?? 'manual';
+function running(task: 'transcription' | 'cleanup', settings: UsageSettings, savedOrder: boolean, cloud: number): number {
   const compared = task === 'transcription' && settings.dual_transcription_enabled === true ? 2 : 1;
   // Quality keeps its first two speech models in their saved order; the second runs only when two are compared.
-  if (mode === 'manual' || (task === 'transcription' && mode === 'quality')) return compared;
+  if (savedOrder || (task === 'transcription' && settings.model_selection_mode === 'quality')) return compared;
   return cloud;
 }
 
@@ -56,12 +55,13 @@ function taskUse(target: string, task: 'transcription' | 'cleanup', settings: Us
     : mainProvider(settings.cleanup_default_model, settings.cleanup_model, settings.cleanup_provider);
   const fallbacks = (task === 'transcription' ? settings.transcription_fallback_models : settings.cleanup_fallback_models) ?? [];
   const chain = [main, ...fallbacks.map(provider).filter((id): id is string => id !== null)];
-  const manual = (settings.model_selection_mode ?? 'manual') === 'manual';
-  // Automatic modes try cloud models before on-device ones; a manual chain runs in the saved order.
-  const ordered = manual ? chain : chain.filter((id) => !onDevice(id));
+  // A selected Apple Intelligence clean-up model stays first in every mode, so nothing after it is reordered ahead.
+  const savedOrder = (settings.model_selection_mode ?? 'manual') === 'manual' || (task === 'cleanup' && main === 'apple-intelligence');
+  // Automatic modes try cloud models before on-device ones; otherwise the chain runs in the saved order.
+  const ordered = savedOrder ? chain : chain.filter((id) => !onDevice(id));
   const position = ordered.indexOf(target);
   if (position === -1) return chain.includes(target) ? 'backup' : null;
-  return position < running(task, settings, ordered.length) ? 'main' : 'backup';
+  return position < running(task, settings, savedOrder, ordered.length) ? 'main' : 'backup';
 }
 
 /** Clean-up that is turned off uses no provider, whatever model is still selected for it. */

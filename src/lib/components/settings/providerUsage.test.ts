@@ -69,4 +69,12 @@ describe('providerUse', () => {
     expect(providerUse('xai', quality).transcription).toBe('backup');
     expect(providerUse('custom:12345678-1234-1234-8234-1234567890ab', quality).cleanup).toBe('main');
   });
+
+  it('keeps cloud clean-up as a backup behind a selected Apple Intelligence model in every mode', () => {
+    const apple = { ...settings, cleanup_default_model: 'apple-intelligence/system', cleanup_fallback_models: ['openai/gpt-5-mini', 'groq/qwen/qwen3.8-27b'] };
+    for (const model_selection_mode of ['manual', 'fastest', 'balanced', 'quality']) {
+      expect(providerUse('openai', { ...apple, model_selection_mode }).cleanup).toBe('backup');
+      expect(providerUse('groq', { ...apple, model_selection_mode }).cleanup).toBe('backup');
+    }
+  });
 });
