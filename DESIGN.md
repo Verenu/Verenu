@@ -22,6 +22,12 @@ Do not define `.btn-primary`, `.btn-ghost`, `.btn-danger`, `.ui-dropdown-*`, or 
 
 Home, Insights, Style, and context group pages sit in one centered column, `--page-column` in `src/theme.css`. A page starts with its title and one line of description on the left and, where it has usage figures, a number-over-label readout on the right. On Linux the header takes `--native-chrome-below-clearance` as its top margin so the title clears the window controls and stays on the same line on every page. Settings keeps its own narrower measure and the legacy two-pane pages keep `--page-max`; both take the same top clearance, so only their left edge differs.
 
+### Providers and Models
+
+Providers is two groups: a single card of connected rows, then a grid of tiles for built-in providers that have no key yet. A row states capability in words with `ProviderCaps` (pass `iconOnly` only beside a visible label) and usage with `providerUse` and `usageLabel` from `providerUsage.ts`. Do not add another button named "Add provider" to the page; a tile is named for its provider.
+
+Models leads with the dictation flow: the Transcription and Clean-up `ModelTaskTile`s in step order with a connector between them, and "Advanced models" directly below because it unlocks their buttons. Setups follow as `ModelPresetPicker layout="cards"`; setup onboarding keeps the default `rows` layout. In `cards`, a preset's details panel spans the row under its group.
+
 ## Standard controls
 
 ### Buttons
