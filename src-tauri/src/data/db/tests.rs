@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn review_archive_upgrade_retains_existing_payload_and_accepts_multiple_operations() {
+    let path = temp_db_path("review_archive_upgrade");
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute_batch("DROP TABLE vocabulary_review_payloads;
+          CREATE TABLE vocabulary_review_payloads (kind TEXT NOT NULL,row_uuid TEXT NOT NULL,dictionary_uuid TEXT NOT NULL,payload TEXT NOT NULL,ts_ms INTEGER NOT NULL,origin TEXT NOT NULL,origin_seq INTEGER NOT NULL,PRIMARY KEY(kind,row_uuid));
+          INSERT INTO vocabulary_review_payloads VALUES ('dictionary','item','item','{}',1,'device-a',1);").unwrap();
+    }
+    {
+        let db = open(&path).unwrap();
+        let conn = db.lock().unwrap();
+        conn.execute("INSERT INTO vocabulary_review_payloads VALUES ('dictionary','item','item','{}',2,'device-b',1)", []).unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM vocabulary_review_payloads WHERE row_uuid='item'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 2);
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn redundant_sub_app_index_is_removed_on_upgrade_without_losing_rows() {
     let path = temp_db_path("sub_app_index_upgrade");
     {
@@ -302,7 +322,7 @@ fn version_40_dictionary_and_expiration_variants_migrate_without_losing_data() {
             assert_eq!(entry.replacement_confidence, if confidence_variant { "high" } else { "default" });
             let conn = db.lock().unwrap();
             let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-            assert_eq!(version, 41);
+            assert_eq!(version, 42);
             let count: i64 = conn.query_row("SELECT COUNT(*) FROM vocabulary_expiration_settings", [], |row| row.get(0)).unwrap();
             assert_eq!(count, 1);
         }
@@ -325,7 +345,7 @@ fn agent_tables_migrate_from_master_version_36() {
         finish_agent_change(&db, id, true).unwrap();
         let conn = db.lock().unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-        assert_eq!(version, 41);
+        assert_eq!(version, 42);
     }
     std::fs::remove_file(path).unwrap();
 }
@@ -359,7 +379,7 @@ fn agent_schema_upgrades_preserve_existing_usage_and_audit() {
             let row: (Option<i64>, Option<i64>) = conn.query_row("SELECT vocabulary_replacements, snippet_expansions FROM transcriptions", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
             assert_eq!(row, (None, None));
             let current: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-            assert_eq!(current, 41);
+            assert_eq!(current, 42);
         }
         std::fs::remove_file(path).unwrap();
     }
@@ -394,10 +414,11 @@ fn t3_skill_opt_out_migrates_defaults_and_survives_reopen_and_duplicate() {
             .id;
         assign_context_target(&db, context_id, "t3code").unwrap();
         let conn = db.lock().unwrap();
-        conn.execute_batch("ALTER TABLE contexts DROP COLUMN t3_skill_mentions_disabled; PRAGMA user_version = 31;").unwrap();
+        conn.execute_batch("DROP TRIGGER sync_context_metadata_update; ALTER TABLE contexts DROP COLUMN t3_skill_mentions_disabled; PRAGMA user_version = 31;").unwrap();
     }
     {
         let db = open(path.to_str().unwrap()).unwrap();
+        assert_eq!(db.lock().unwrap().query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='sync_context_metadata_update'", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
         assert!(
             !query_context(&db, context_id)
                 .unwrap()
@@ -437,10 +458,11 @@ fn paste_chunks_migrates_v30_defaults_and_survives_reopen() {
     {
         let db = open(path.to_str().unwrap()).unwrap();
         let conn = db.lock().unwrap();
-        conn.execute_batch("ALTER TABLE contexts DROP COLUMN paste_in_chunks; PRAGMA user_version = 30;").unwrap();
+        conn.execute_batch("DROP TRIGGER sync_context_metadata_update; ALTER TABLE contexts DROP COLUMN paste_in_chunks; PRAGMA user_version = 30;").unwrap();
     }
     {
         let db = open(path.to_str().unwrap()).unwrap();
+        assert_eq!(db.lock().unwrap().query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='sync_context_metadata_update'", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
         assert!(!query_context(&db, EVERYWHERE_CONTEXT_ID).unwrap().paste_in_chunks);
         update_context_paste_in_chunks(&db, EVERYWHERE_CONTEXT_ID, true).unwrap();
     }
@@ -1127,7 +1149,7 @@ fn open_self_heals_database_stuck_at_v2_with_legacy_dictionary() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 41);
+    assert_eq!(version, 42);
     drop(conn);
     drop(db);
     let _ = std::fs::remove_file(&path);

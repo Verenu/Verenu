@@ -817,6 +817,7 @@ impl SyncManager {
             device_uuid: identity.uuid.clone(),
             device_name: identity.name.clone(),
             cert_der: identity.cert_der().as_ref().to_vec(),
+            app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             sync_port: Some(self.inner.listener_port.load(Ordering::Relaxed)),
             pairing_id: Some(uuid::Uuid::new_v4().to_string()),
         })
@@ -2261,7 +2262,7 @@ async fn handle_incoming_pairing(
         let _ = send_message(
             &mut tls,
             Message::PairReject {
-                reason: format!("protocol version {protocol} not supported"),
+                reason: format!("Both devices must run the same Verenu version. Update the older device and try again. (Unsupported sync protocol {protocol}.)"),
             },
         )
         .await;
@@ -2358,7 +2359,7 @@ async fn handle_sync_hello(
             &mut tls,
             Message::Error {
                 message: format!(
-                    "peer speaks sync protocol v{}, this device speaks v{PROTOCOL_VERSION}",
+                    "Both devices must run the same Verenu version. Update the older device and try again. (Peer sync protocol v{}, local v{PROTOCOL_VERSION}.)",
                     hello.protocol
                 ),
             },

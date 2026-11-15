@@ -16,6 +16,460 @@ struct Device {
     key: Vec<u8>,
 }
 
+#[test]
+fn vocabulary_membership_records_add_and_observed_remove() {
+    let device = Device::new();
+    let entry = db::insert_dictionary_entry_returning(&device.db, "DotFixture", None, None).unwrap();
+    {
+        let conn = device.db.lock().unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_dots WHERE removed=0 AND dictionary_term='DotFixture'"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_log WHERE table_name='vocabulary_membership_dots'"), 1);
+    }
+    db::set_dictionary_context_assignment(&device.db, db::EVERYWHERE_CONTEXT_ID, entry.id, false).unwrap();
+    let conn = device.db.lock().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_dots WHERE removed=1 AND dictionary_term='DotFixture'"), 1);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM sync_log WHERE table_name='vocabulary_membership_dots'"), 2);
+}
+
+#[test]
+fn correction_versions_retain_deleted_mapping_history() {
+    let device = Device::new();
+    let entry = db::insert_dictionary_entry_returning(&device.db, "VersionedFixture", Some("versioned typo"), None).unwrap();
+    {
+        let conn = device.db.lock().unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_correction_versions WHERE retired=0 AND mistake='versioned typo'"), 1);
+    }
+    db::delete_dictionary_entry(&device.db, entry.id).unwrap();
+    let conn = device.db.lock().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_correction_versions WHERE retired=1 AND mistake='versioned typo'"), 1);
+}
+
+#[test]
+fn historical_correction_decision_survives_later_dictionary_alias() {
+    let source = Device::new();
+    let first = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    let second = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+    {
+        let conn = source.db.lock().unwrap();
+        for (version, correction, dictionary, created) in [
+            ("11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", first, "2020-01-01"),
+            ("22222222-2222-4222-8222-222222222222", "44444444-4444-4444-8444-444444444444", second, "2020-01-02"),
+        ] {
+            conn.execute("INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at) VALUES (?1,?2,'everywhere-0000-0000-0000-000000000001',?3,'Alias Fixture','alias typo',0,?4)", rusqlite::params![version,correction,dictionary,created]).unwrap();
+        }
+        db::record_correction_history_decisions(&conn).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_correction_decisions"), 1);
+        conn.execute("INSERT INTO vocabulary_identity_links(link_id,left_uuid,right_uuid) VALUES (?1,?2,?3)", rusqlite::params![format!("{first}:{second}"),first,second]).unwrap();
+        conn.execute("UPDATE sync_state SET applying=1", []).unwrap();
+        conn.execute("INSERT INTO dictionary(uuid,term) VALUES (?1,'Alias Fixture')", [first]).unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute("INSERT INTO dictionary_contexts(context_id,dictionary_id) VALUES (?1,?2)", rusqlite::params![db::EVERYWHERE_CONTEXT_ID,id]).unwrap();
+        conn.execute("INSERT INTO dictionary_corrections(uuid,context_id,dictionary_id,mistake) VALUES ('33333333-3333-4333-8333-333333333333',?1,?2,'alias typo')", rusqlite::params![db::EVERYWHERE_CONTEXT_ID,id]).unwrap();
+        conn.execute("UPDATE sync_state SET applying=0", []).unwrap();
+    }
+    assert!(db::query_effective_dictionary_for_context(&source.db, db::EVERYWHERE_CONTEXT_ID).unwrap().iter().any(|entry| entry.term == "Alias Fixture" && entry.mistake.as_deref() == Some("alias typo")), "linking two identities must not hide their remaining correction");
+    let ops = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    let target = Device::new();
+    engine::apply_ops(&target.db.lock().unwrap(), &ops).expect("a later alias must not invalidate a historical decision");
+    assert_eq!(count(&target.db.lock().unwrap(), "SELECT COUNT(*) FROM vocabulary_correction_decisions"), 1);
+    let other = Device::new();
+    let before_link = ops.iter().filter(|op| op.table != "vocabulary_identity_links").cloned().collect::<Vec<_>>();
+    let links = ops.iter().filter(|op| op.table == "vocabulary_identity_links").cloned().collect::<Vec<_>>();
+    engine::apply_ops(&other.db.lock().unwrap(), &before_link).unwrap();
+    engine::apply_ops(&other.db.lock().unwrap(), &links).unwrap();
+    engine::apply_ops(&other.db.lock().unwrap(), &ops).unwrap();
+    assert_eq!(count(&other.db.lock().unwrap(), "SELECT COUNT(*) FROM vocabulary_correction_decisions"), 1);
+}
+
+#[test]
+fn correction_conflicts_recognize_everywhere_aliases() {
+    let device = Device::new();
+    let conn = device.db.lock().unwrap();
+    let alias = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
+    conn.execute("INSERT INTO sync_everywhere_aliases(uuid) VALUES (?1)", [alias]).unwrap();
+    for (version, correction, context, dictionary, created) in [
+        ("11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", "everywhere-0000-0000-0000-000000000001", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "2020-01-01"),
+        ("22222222-2222-4222-8222-222222222222", "44444444-4444-4444-8444-444444444444", alias, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1", "2020-01-02"),
+    ] {
+        conn.execute("INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at) VALUES (?1,?2,?3,?4,'Alias Fixture','alias typo',0,?5)", rusqlite::params![version,correction,context,dictionary,created]).unwrap();
+    }
+    db::record_correction_history_decisions(&conn).unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_correction_decisions"), 1);
+}
+
+#[test]
+fn correction_decision_accepts_backup_alias_retargeted_to_everywhere() {
+    let source = Device::new();
+    let target = Device::new();
+    let local_everywhere = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
+    let alias = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3";
+    for device in [&source, &target] {
+        let conn = device.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET uuid=?1 WHERE is_everywhere=1", [local_everywhere]).unwrap();
+        conn.execute("INSERT INTO backup_context_aliases(source_uuid,local_uuid) VALUES (?1,?2)", rusqlite::params![alias,local_everywhere]).unwrap();
+    }
+    {
+        let conn = source.db.lock().unwrap();
+        for (version, correction, context, dictionary, created) in [
+            ("11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333", "everywhere-0000-0000-0000-000000000001", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "2020-01-01"),
+            ("22222222-2222-4222-8222-222222222222", "44444444-4444-4444-8444-444444444444", alias, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1", "2020-01-02"),
+        ] {
+            conn.execute("INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at) VALUES (?1,?2,?3,?4,'Backup Alias Fixture','backup alias typo',0,?5)", rusqlite::params![version,correction,context,dictionary,created]).unwrap();
+        }
+        db::record_correction_history_decisions(&conn).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_correction_decisions"), 1);
+    }
+    let ops = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    engine::apply_ops(&target.db.lock().unwrap(), &ops).expect("a backup alias retargeted to Everywhere must validate");
+    assert_eq!(count(&target.db.lock().unwrap(), "SELECT COUNT(*) FROM vocabulary_correction_decisions"), 1);
+}
+
+#[test]
+fn stale_offline_dictionary_edit_is_retained_and_flagged_after_deletion() {
+    let source = Device::new();
+    let target = Device::new();
+    let entry = db::insert_dictionary_entry_returning(&source.db, "OfflineReviewFixture", Some("offline review typo"), None).unwrap();
+    let (snapshot, cursor, _) = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+    let mut offline_edit = snapshot.iter().find(|op| op.table == "dictionary").unwrap().clone();
+    offline_edit.origin = "cccccccc-cccc-4ccc-8ccc-cccccccccccc".into();
+    offline_edit.origin_seq = 1;
+    offline_edit.payload.as_mut().unwrap()["replacement_confidence"] = json!("high");
+    engine::apply_ops(&target.db.lock().unwrap(), &snapshot).unwrap();
+    db::delete_dictionary_entry(&source.db, entry.id).unwrap();
+    let changes = engine::collect_ops(&source.db.lock().unwrap(), cursor, false, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    engine::apply_ops(&target.db.lock().unwrap(), &changes).unwrap();
+    engine::apply_ops(&target.db.lock().unwrap(), &[offline_edit]).unwrap();
+    let conn = target.db.lock().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_review_payloads WHERE kind='dictionary'"), 1);
+    let payload: String = conn.query_row("SELECT payload FROM vocabulary_review_payloads WHERE kind='dictionary'", [], |row| row.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&payload).unwrap()["replacement_confidence"], "high");
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_reviews WHERE dictionary_term='OfflineReviewFixture'"), 1);
+    let (context_uuid, dictionary_uuid): (String, String) = conn.query_row("SELECT context_uuid,dictionary_uuid FROM vocabulary_membership_reviews WHERE dictionary_term='OfflineReviewFixture'", [], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+    drop(conn);
+    assert!(db::acknowledge_vocabulary_review(&target.db, &context_uuid, &dictionary_uuid).is_err(), "an archived edit must not be dismissed before it is resolved");
+}
+
+#[test]
+fn clock_skewed_offline_edit_after_deletion_is_reviewed_before_activation() {
+    let source = Device::new();
+    let target = Device::new();
+    let entry = db::insert_dictionary_entry_returning(&source.db, "SkewReviewFixture", None, None).unwrap();
+    let (snapshot, cursor, _) = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+    let mut offline = snapshot.iter().find(|op| op.table == "dictionary").unwrap().clone();
+    engine::apply_ops(&target.db.lock().unwrap(), &snapshot).unwrap();
+    db::delete_dictionary_entry(&source.db, entry.id).unwrap();
+    let changes = engine::collect_ops(&source.db.lock().unwrap(), cursor, false, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    engine::apply_ops(&target.db.lock().unwrap(), &changes).unwrap();
+    offline.origin = "dddddddd-dddd-4ddd-8ddd-dddddddddddd".into();
+    offline.origin_seq = 1;
+    offline.ts_ms = store::now_ms() + 60_000;
+    offline.payload.as_mut().unwrap()["replacement_confidence"] = json!("high");
+    engine::apply_ops(&target.db.lock().unwrap(), &[offline]).unwrap();
+    let conn = target.db.lock().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary WHERE term='SkewReviewFixture'"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_review_payloads WHERE kind='dictionary'"), 1);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_reviews WHERE dictionary_term='SkewReviewFixture'"), 1);
+}
+
+#[test]
+fn explicit_restore_survives_deletion_delivery_in_either_order() {
+    let source = Device::new();
+    let delete_first = Device::new();
+    let restore_first = Device::new();
+    let entry = db::insert_dictionary_entry_returning(&source.db, "RestoreBasisFixture", None, None).unwrap();
+    let (snapshot, cursor, _) = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+    engine::apply_ops(&delete_first.db.lock().unwrap(), &snapshot).unwrap();
+    engine::apply_ops(&restore_first.db.lock().unwrap(), &snapshot).unwrap();
+    db::delete_dictionary_entry(&source.db, entry.id).unwrap();
+    let (deletions, delete_cursor, _) = engine::collect_ops(&source.db.lock().unwrap(), cursor, false, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+    let deletion = deletions.iter().find(|op| op.table == "dictionary" && op.is_delete()).unwrap().clone();
+    {
+        let conn = source.db.lock().unwrap();
+        conn.execute("INSERT INTO dictionary(uuid,term) VALUES (?1,'RestoreBasisFixture')", [&deletion.row_uuid]).unwrap();
+    }
+    let restored = engine::collect_ops(&source.db.lock().unwrap(), delete_cursor, false, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    let restore = restored.iter().find(|op| op.table == "dictionary" && !op.is_delete()).unwrap().clone();
+    assert_eq!(restore.payload.as_ref().unwrap()["restore_basis"]["origin"], deletion.origin);
+    engine::apply_ops(&delete_first.db.lock().unwrap(), &[deletion.clone(), restore.clone()]).unwrap();
+    engine::apply_ops(&restore_first.db.lock().unwrap(), &[restore]).unwrap();
+    let mut delayed_delete = deletion;
+    delayed_delete.ts_ms = store::now_ms() + 60_000;
+    engine::apply_ops(&restore_first.db.lock().unwrap(), &[delayed_delete]).unwrap();
+    for device in [&delete_first, &restore_first] {
+        let conn = device.db.lock().unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary WHERE term='RestoreBasisFixture'"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_reviews WHERE dictionary_term='RestoreBasisFixture'"), 0);
+    }
+    let mut offline = snapshot.iter().find(|op| op.table == "dictionary").unwrap().clone();
+    offline.origin = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into();
+    offline.origin_seq = 1;
+    offline.ts_ms = store::now_ms() + 120_000;
+    offline.payload.as_mut().unwrap()["replacement_confidence"] = json!("high");
+    let conn = delete_first.db.lock().unwrap();
+    engine::apply_ops(&conn, &[offline]).unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary WHERE term='RestoreBasisFixture' AND replacement_confidence='default'"), 1, "an offline edit must not silently replace an explicit restore");
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_reviews WHERE dictionary_term='RestoreBasisFixture'"), 1);
+}
+
+#[test]
+fn deletion_preserves_preupgrade_correction_for_review() {
+    let source = Device::new();
+    let target = Device::new();
+    let entry = db::insert_dictionary_entry_returning(&source.db, "LegacyReviewFixture", Some("legacy review typo"), None).unwrap();
+    source.db.lock().unwrap().execute("UPDATE vocabulary_correction_versions SET legacy=1 WHERE dictionary_term='LegacyReviewFixture'", []).unwrap();
+    let (snapshot, cursor, _) = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+    engine::apply_ops(&target.db.lock().unwrap(), &snapshot).unwrap();
+    {
+        let conn = target.db.lock().unwrap();
+        conn.execute("UPDATE dictionary_corrections SET correction_count=7, confidence_tier='high' WHERE mistake='legacy review typo'", []).unwrap();
+    }
+    db::delete_dictionary_entry(&source.db, entry.id).unwrap();
+    let changes = engine::collect_ops(&source.db.lock().unwrap(), cursor, false, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    engine::apply_ops(&target.db.lock().unwrap(), &changes).unwrap();
+    let extra = db::insert_context_returning(&target.db, "Unrelated Review Context", None, None, None, None, false).unwrap();
+    let conn = target.db.lock().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_reviews WHERE dictionary_term='LegacyReviewFixture'"), 1);
+    let payload: String = conn.query_row("SELECT payload FROM vocabulary_review_payloads WHERE kind='correction'", [], |row| row.get(0)).unwrap();
+    let correction: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(correction["correction_count"], 7);
+    assert_eq!(correction["confidence_tier"], "high");
+    let context_uuid: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [db::EVERYWHERE_CONTEXT_ID], |r| r.get(0)).unwrap();
+    let dictionary_uuid: String = conn.query_row("SELECT dictionary_uuid FROM vocabulary_membership_reviews WHERE dictionary_term='LegacyReviewFixture' LIMIT 1", [], |r| r.get(0)).unwrap();
+    conn.execute("INSERT INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) SELECT uuid,?1,'LegacyReviewFixture','offline_deletion' FROM contexts WHERE id=?2", rusqlite::params![dictionary_uuid,extra.id]).unwrap();
+    let candidates = conn.prepare("SELECT kind,row_uuid,origin,origin_seq FROM vocabulary_review_payloads ORDER BY kind DESC").unwrap().query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    drop(conn);
+    for (kind, row_uuid, origin, origin_seq) in candidates {
+        db::restore_vocabulary_review_payload(&target.db, &context_uuid, &kind, &row_uuid, &origin, origin_seq).unwrap();
+    }
+    let conn = target.db.lock().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary WHERE term='LegacyReviewFixture'"), 1);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary_corrections WHERE mistake='legacy review typo' AND correction_count=7 AND confidence_tier='high'"), 1);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_review_payloads"), 2, "restoration must retain the saved copies until the user discards them");
+    let extra_assignments: i64 = conn.query_row("SELECT COUNT(*) FROM dictionary_contexts dc JOIN dictionary d ON d.id=dc.dictionary_id WHERE dc.context_id=?1 AND d.term='LegacyReviewFixture'", [extra.id], |r| r.get(0)).unwrap();
+    assert_eq!(extra_assignments, 0, "restoring one Context must not activate another review Context");
+    drop(conn);
+    let effective = db::query_effective_dictionary_for_context(&target.db, db::EVERYWHERE_CONTEXT_ID).unwrap();
+    assert!(effective.iter().any(|entry| entry.term == "LegacyReviewFixture" && entry.mistake.as_deref() == Some("legacy review typo")), "the restored correction must be available to the pipeline");
+}
+
+#[test]
+fn review_restores_correction_after_dictionary_identity_merge() {
+    let device = Device::new();
+    let entry = db::insert_dictionary_entry_returning(&device.db, "AliasReviewFixture", None, None).unwrap();
+    let old_uuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    let correction_uuid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+    {
+        let conn = device.db.lock().unwrap();
+        let current: String = conn.query_row("SELECT uuid FROM dictionary WHERE id=?1", [entry.id], |r| r.get(0)).unwrap();
+        let context: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [db::EVERYWHERE_CONTEXT_ID], |r| r.get(0)).unwrap();
+        conn.execute("INSERT INTO vocabulary_identity_links(link_id,left_uuid,right_uuid) VALUES ('alias-review',?1,?2)", rusqlite::params![old_uuid,current]).unwrap();
+        conn.execute("INSERT INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) VALUES (?1,?2,'AliasReviewFixture','offline_deletion')", rusqlite::params![context,old_uuid]).unwrap();
+        let payload = json!({"context_uuid":context,"dictionary_uuid":old_uuid,"dictionary_term":"AliasReviewFixture","mistake":"alias review typo","auto_learned":false,"correction_count":3,"confidence_tier":"high","created_at":"2020-01-01 00:00:00"}).to_string();
+        conn.execute("INSERT INTO vocabulary_review_payloads(kind,row_uuid,dictionary_uuid,payload,ts_ms,origin,origin_seq) VALUES ('correction',?1,?2,?3,1,'fixture',1)", rusqlite::params![correction_uuid,old_uuid,payload]).unwrap();
+    }
+    let context: String = device.db.lock().unwrap().query_row("SELECT uuid FROM contexts WHERE id=?1", [db::EVERYWHERE_CONTEXT_ID], |r| r.get(0)).unwrap();
+    db::restore_vocabulary_review_payload(&device.db, &context, "correction", correction_uuid, "fixture", 1).unwrap();
+    let entries = db::query_effective_dictionary_for_context(&device.db, db::EVERYWHERE_CONTEXT_ID).unwrap();
+    assert!(entries.iter().any(|row| row.term == "AliasReviewFixture" && row.mistake.as_deref() == Some("alias review typo")));
+}
+
+#[test]
+fn concurrent_offline_edits_are_each_retained_for_review() {
+    let source = Device::new();
+    let target = Device::new();
+    let entry = db::insert_dictionary_entry_returning(&source.db, "MultipleReviewFixture", None, None).unwrap();
+    let (snapshot, cursor, _) = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+    engine::apply_ops(&target.db.lock().unwrap(), &snapshot).unwrap();
+    db::delete_dictionary_entry(&source.db, entry.id).unwrap();
+    let changes = engine::collect_ops(&source.db.lock().unwrap(), cursor, false, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    engine::apply_ops(&target.db.lock().unwrap(), &changes).unwrap();
+    let mut first = snapshot.iter().find(|op| op.table == "dictionary").unwrap().clone();
+    first.origin = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into();
+    first.origin_seq = 1;
+    first.payload.as_mut().unwrap()["replacement_confidence"] = json!("low");
+    let mut second = first.clone();
+    second.origin = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
+    second.payload.as_mut().unwrap()["replacement_confidence"] = json!("high");
+    engine::apply_ops(&target.db.lock().unwrap(), &[first, second]).unwrap();
+    let conn = target.db.lock().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_review_payloads WHERE kind='dictionary'"), 2);
+    let (row_uuid, origin, origin_seq): (String,String,i64) = conn.query_row("SELECT row_uuid,origin,origin_seq FROM vocabulary_review_payloads WHERE kind='dictionary' ORDER BY origin LIMIT 1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    let (relayed, cursor, _) = engine::collect_ops(&conn, 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+    drop(conn);
+    let third = Device::new();
+    engine::apply_ops(&third.db.lock().unwrap(), &relayed).unwrap();
+    assert_eq!(count(&third.db.lock().unwrap(), "SELECT COUNT(*) FROM vocabulary_review_payloads WHERE kind='dictionary'"), 2, "a snapshot must retain all ambiguous edits for another device");
+    db::discard_vocabulary_review_payload(&target.db, "dictionary", &row_uuid, &origin, origin_seq).unwrap();
+    let conn = target.db.lock().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_review_payloads WHERE kind='dictionary'"), 1);
+    store::compact_log(&conn).unwrap();
+    let changes = engine::collect_ops(&conn, cursor, false, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    let compacted = engine::collect_ops(&conn, 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    drop(conn);
+    let third_conn = third.db.lock().unwrap();
+    engine::apply_ops(&third_conn, &changes).unwrap();
+    engine::apply_ops(&third_conn, &relayed).unwrap();
+    assert_eq!(count(&third_conn, "SELECT COUNT(*) FROM vocabulary_review_payloads WHERE kind='dictionary'"), 1, "discard must survive delayed snapshot replay");
+    let fourth = Device::new();
+    let fourth_conn = fourth.db.lock().unwrap();
+    engine::apply_ops(&fourth_conn, &compacted).unwrap();
+    engine::apply_ops(&fourth_conn, &relayed).unwrap();
+    assert_eq!(count(&fourth_conn, "SELECT COUNT(*) FROM vocabulary_review_payloads WHERE kind='dictionary'"), 1, "a compacted snapshot must retain the discard");
+}
+
+#[test]
+fn moving_a_correction_creates_a_new_context_version() {
+    let device = Device::new();
+    let context = db::insert_context_returning(&device.db, "Version Move Fixture", None, None, None, None, false).unwrap();
+    let entry = db::insert_dictionary_entry_returning(&device.db, "MoveVersionFixture", Some("move version typo"), None).unwrap();
+    db::move_dictionary_entry_to_context(&device.db, entry.id, db::EVERYWHERE_CONTEXT_ID, context.id).unwrap();
+    let conn = device.db.lock().unwrap();
+    let context_uuid: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [context.id], |row| row.get(0)).unwrap();
+    let active: i64 = conn.query_row("SELECT COUNT(*) FROM vocabulary_correction_versions WHERE context_uuid=?1 AND retired=0 AND mistake='move version typo'", [context_uuid], |row| row.get(0)).unwrap();
+    assert_eq!(active, 1);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_correction_versions WHERE retired=1 AND mistake='move version typo'"), 1);
+}
+
+#[test]
+fn correction_version_snapshot_and_retirement_survive_replay() {
+    let source = Device::new();
+    let target = Device::new();
+    let entry = db::insert_dictionary_entry_returning(&source.db, "VersionReplayFixture", Some("replay typo"), None).unwrap();
+    let (snapshot, cursor, _) = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+    assert!(snapshot.iter().any(|op| op.table == "vocabulary_correction_versions"));
+    engine::apply_ops(&target.db.lock().unwrap(), &snapshot).unwrap();
+    db::delete_dictionary_entry(&source.db, entry.id).unwrap();
+    let changes = engine::collect_ops(&source.db.lock().unwrap(), cursor, false, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    engine::apply_ops(&target.db.lock().unwrap(), &changes).unwrap();
+    engine::apply_ops(&target.db.lock().unwrap(), &snapshot).unwrap();
+    let conn = target.db.lock().unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_correction_versions WHERE mistake='replay typo' AND retired=1"), 1);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_correction_versions WHERE mistake='replay typo' AND retired=0"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_reviews"), 0, "a replay of an already observed edit must not create an ambiguous review");
+}
+
+#[test]
+fn defeated_offline_correction_does_not_block_post_expiration_replacement() {
+    let device = Device::new();
+    let first = db::insert_dictionary_entry_returning(&device.db, "FirstHistoryFixture", None, None).unwrap();
+    let second = db::insert_dictionary_entry_returning(&device.db, "SecondHistoryFixture", None, None).unwrap();
+    let third = db::insert_dictionary_entry_returning(&device.db, "ThirdHistoryFixture", None, None).unwrap();
+    let conn = device.db.lock().unwrap();
+    let first_uuid: String = conn.query_row("SELECT uuid FROM dictionary WHERE id=?1", [first.id], |row| row.get(0)).unwrap();
+    let request = "11111111-1111-4111-8111-111111111111";
+    conn.execute("UPDATE dictionary SET created_at='2020-01-01' WHERE id=?1", [first.id]).unwrap();
+    conn.execute("INSERT INTO vocabulary_expiration_marks(item_uuid,cutoff,deleted_at,request_id,policy_ts,policy_origin) VALUES (?1,'2021-01-01','2021-01-02',?2,0,'')", rusqlite::params![first_uuid,request]).unwrap();
+    conn.execute("UPDATE sync_state SET applying=1", []).unwrap();
+    for (id, correction, version, created, seen) in [
+        (first.id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1", "2020-03-01", "[]".to_string()),
+        (second.id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2", "2020-01-01", serde_json::json!([format!("{first_uuid}:{request}")]).to_string()),
+        (third.id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3", "2020-02-01", "[]".to_string()),
+    ] {
+        conn.execute("INSERT INTO dictionary_corrections(uuid,context_id,dictionary_id,mistake,created_at) VALUES (?1,1,?2,'history typo',?3)", rusqlite::params![correction,id,created]).unwrap();
+        conn.execute("INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at,seen_expired) SELECT ?1,?2,'everywhere-0000-0000-0000-000000000001',uuid,term,'history typo',0,?3,?4 FROM dictionary WHERE id=?5", rusqlite::params![version,correction,created,seen,id]).unwrap();
+    }
+    conn.execute("UPDATE sync_state SET applying=0", []).unwrap();
+    drop(conn);
+    let entries = db::query_effective_dictionary_for_context(&device.db, db::EVERYWHERE_CONTEXT_ID).unwrap();
+    assert!(entries.iter().any(|entry| entry.term == "SecondHistoryFixture" && entry.mistake.as_deref() == Some("history typo")), "a defeated concurrent correction must not block the valid replacement");
+}
+
+#[test]
+fn replacement_waits_for_observed_expiration_versions() {
+    let device = Device::new();
+    db::insert_dictionary_entry_returning(&device.db, "ReplacementFixture", Some("replacement typo"), None).unwrap();
+    let item = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    let request = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+    let prior_version = "cccccccc-cccc-4ccc-8ccc-ccccccccccc1";
+    {
+        let conn = device.db.lock().unwrap();
+        let seen = serde_json::json!([format!("{item}:{request}")]).to_string();
+        conn.execute("UPDATE vocabulary_correction_versions SET seen_expired=?1 WHERE dictionary_term='ReplacementFixture'", [&seen]).unwrap();
+        conn.execute("INSERT INTO vocabulary_expiration_events(request_id,item_uuid,cutoff,deleted_at,policy_ts,policy_origin,version_ids) VALUES (?1,?2,'2020-01-01 00:00:00','2020-01-02 00:00:00',0,'',?3)", rusqlite::params![request,item,serde_json::json!([prior_version]).to_string()]).unwrap();
+    }
+    let before = db::query_dictionary(&device.db).unwrap();
+    assert_eq!(before[0].mistake, None, "a missing observed version must not be projected");
+    {
+        let conn = device.db.lock().unwrap();
+        conn.execute("INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at) VALUES (?1,'dddddddd-dddd-4ddd-8ddd-ddddddddddd1','everywhere-0000-0000-0000-000000000001',?2,'PriorFixture','replacement typo',0,'2020-01-01')", rusqlite::params![prior_version,item]).unwrap();
+    }
+    let after = db::query_dictionary(&device.db).unwrap();
+    assert_eq!(after[0].mistake.as_deref(), Some("replacement typo"));
+}
+
+#[test]
+fn vocabulary_membership_removal_before_addition_does_not_resurrect() {
+    let source = Device::new();
+    let target = Device::new();
+    db::insert_dictionary_entry_returning(&source.db, "DotOrderFixture", None, None).unwrap();
+    let ops = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    let parents = ops.iter().filter(|op| op.table == "dictionary" || op.table == "contexts").cloned().collect::<Vec<_>>();
+    let add = ops.iter().find(|op| op.table == "vocabulary_membership_dots").unwrap().clone();
+    let mut removal = add.clone();
+    removal.payload.as_mut().unwrap()["removed"] = serde_json::json!(true);
+    let conn = target.db.lock().unwrap();
+    engine::apply_ops(&conn, &parents).unwrap();
+    engine::apply_ops(&conn, &[removal]).unwrap();
+    engine::apply_ops(&conn, &[add.clone(), add]).unwrap();
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary_contexts"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_dots WHERE removed=1"), 1);
+}
+
+#[tokio::test]
+async fn removing_a_merged_vocabulary_identity_removes_all_observed_dots() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "IdentityDotFixture", None, None).unwrap();
+    db::insert_dictionary_entry_returning(&b.db, "IdentityDotFixture", None, None).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let entries = db::query_effective_dictionary_for_context(&a.db, db::EVERYWHERE_CONTEXT_ID).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(count(&a.db.lock().unwrap(), "SELECT COUNT(DISTINCT dictionary_uuid) FROM vocabulary_membership_dots WHERE removed=0 AND dictionary_term='IdentityDotFixture'"), 2);
+    db::set_dictionary_context_assignment(&a.db, db::EVERYWHERE_CONTEXT_ID, entries[0].id, false).unwrap();
+    assert_eq!(count(&a.db.lock().unwrap(), "SELECT COUNT(*) FROM vocabulary_membership_dots WHERE removed=0 AND dictionary_term='IdentityDotFixture'"), 0);
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        assert!(db::query_effective_dictionary_for_context(&device.db, db::EVERYWHERE_CONTEXT_ID).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn active_membership_for_deleted_parent_is_recorded_without_deferring_forever() {
+    let source = Device::new();
+    let target = Device::new();
+    let source_entry = db::insert_dictionary_entry_returning(&source.db, "DeletedDotFixture", None, None).unwrap();
+    let ops = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    engine::apply_ops(&target.db.lock().unwrap(), &ops).unwrap();
+    let target_entry = db::query_dictionary(&target.db).unwrap().into_iter().find(|entry| entry.term == "DeletedDotFixture").unwrap();
+    db::delete_dictionary_entry(&target.db, target_entry.id).unwrap();
+    db::set_dictionary_context_assignment(&source.db, db::EVERYWHERE_CONTEXT_ID, source_entry.id, false).unwrap();
+    db::set_dictionary_context_assignment(&source.db, db::EVERYWHERE_CONTEXT_ID, source_entry.id, true).unwrap();
+    let later = engine::collect_ops(&source.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    let active = later.into_iter().find(|op| op.table == "vocabulary_membership_dots" && op.payload.as_ref().is_some_and(|payload| payload["removed"] == false)).unwrap();
+    let conn = target.db.lock().unwrap();
+    assert!(!engine::apply_ops(&conn, &[active.clone()]).unwrap().deferred);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary WHERE term='DeletedDotFixture'"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM vocabulary_membership_reviews WHERE dictionary_term='DeletedDotFixture'"), 1);
+    let mut restored_parent = ops.iter().find(|op| op.table == "dictionary").unwrap().clone();
+    let (delete_origin, delete_seq): (String,i64) = conn.query_row("SELECT origin,origin_seq FROM sync_log WHERE table_name='dictionary' AND row_uuid=?1 AND op='delete' ORDER BY seq DESC LIMIT 1", [&restored_parent.row_uuid], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+    restored_parent.payload.as_mut().unwrap()["restore_basis"] = json!({"origin":delete_origin,"origin_seq":delete_seq});
+    restored_parent.ts_ms += 1_000_000;
+    assert!(!engine::apply_ops(&conn, &[restored_parent]).unwrap().deferred);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary_contexts"), 1, "a retained active dot must materialize when its parent returns");
+    drop(conn);
+    let status = db::vocabulary_expiration_status(&target.db).unwrap();
+    let review = &status["reviews"][0];
+    assert_eq!(review["term"], "DeletedDotFixture");
+    db::acknowledge_vocabulary_review(&target.db, review["context_uuid"].as_str().unwrap(), review["dictionary_uuid"].as_str().unwrap()).unwrap();
+    engine::apply_ops(&target.db.lock().unwrap(), &[active]).unwrap();
+    assert!(db::vocabulary_expiration_status(&target.db).unwrap()["reviews"].as_array().unwrap().is_empty());
+}
+
 impl Device {
     fn new() -> Self {
         crate::legal_consent::enable_test_consent();
@@ -39,6 +493,7 @@ impl Device {
             device_uuid: self.host.uuid.clone(),
             device_name: "Fixture device".into(),
             cert_der: self.cert.to_vec(),
+            app_version: Some(self.host.version.clone()),
             sync_port: None,
             pairing_id: None,
         }
@@ -222,6 +677,241 @@ async fn session(a: &Device, b: &Device) -> Result<()> {
     left?;
     right?;
     Ok(())
+}
+
+#[tokio::test]
+async fn pairing_and_sync_require_matching_app_versions() {
+    let a = Device::new();
+    let mut b = Device::new();
+    b.host.version = "other".into();
+    let error = pair(&a, &b, true).await.unwrap_err();
+    assert!(error.to_string().contains("same Verenu version"));
+    assert!(store::get_peer(&a.db.lock().unwrap(), &b.host.uuid).unwrap().is_none());
+    assert!(store::get_peer(&b.db.lock().unwrap(), &a.host.uuid).unwrap().is_none());
+
+    b.host.version = "test".into();
+    pair(&a, &b, true).await.unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "VersionFixture", None, None).unwrap();
+    b.host.version = "other".into();
+    let error = session(&a, &b).await.unwrap_err();
+    assert!(error.to_string().contains("same Verenu version"));
+    let error = session(&b, &a).await.unwrap_err();
+    assert!(error.to_string().contains("same Verenu version"));
+    assert!(store::get_peer(&a.db.lock().unwrap(), &b.host.uuid).unwrap().is_some());
+    assert!(store::get_peer(&b.db.lock().unwrap(), &a.host.uuid).unwrap().is_some());
+    assert!(db::query_effective_dictionary_for_context(&b.db, db::EVERYWHERE_CONTEXT_ID).unwrap().is_empty());
+
+    b.host.version = "test".into();
+    session(&a, &b).await.unwrap();
+    assert_eq!(db::query_effective_dictionary_for_context(&b.db, db::EVERYWHERE_CONTEXT_ID).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn pristine_peer_snapshot_does_not_remove_existing_context_membership() {
+    for distinct_alias in [false, true] {
+    let source = Device::new();
+    let new_peer = Device::new();
+    if distinct_alias {
+        let conn = new_peer.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' WHERE is_everywhere=1", []).unwrap();
+        conn.execute("DELETE FROM sync_log WHERE table_name='contexts'", []).unwrap();
+    }
+    db::insert_dictionary_entry_returning(&source.db, "SnapshotFixture", Some("snapshot typo"), None).unwrap();
+    source.db.lock().unwrap().execute("UPDATE contexts SET custom_instructions='synthetic instruction' WHERE is_everywhere=1", []).unwrap();
+    pair(&source, &new_peer, true).await.unwrap();
+    session(&source, &new_peer).await.unwrap();
+    session(&new_peer, &source).await.unwrap();
+    for device in [&source, &new_peer] {
+        let entries = db::query_effective_dictionary_for_context(&device.db, db::EVERYWHERE_CONTEXT_ID).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mistake.as_deref(), Some("snapshot typo"));
+        let instructions: Option<String> = device.db.lock().unwrap().query_row("SELECT custom_instructions FROM contexts WHERE is_everywhere=1", [], |row| row.get(0)).unwrap();
+        assert_eq!(instructions.as_deref(), Some("synthetic instruction"));
+    }
+    }
+}
+
+#[test]
+fn pristine_everywhere_alias_does_not_overwrite_context_settings() {
+    let source = Device::new();
+    let new_peer = Device::new();
+    source.db.lock().unwrap().execute("UPDATE contexts SET custom_instructions='synthetic instruction' WHERE is_everywhere=1", []).unwrap();
+    let ops = {
+        let conn = new_peer.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' WHERE is_everywhere=1", []).unwrap();
+        conn.execute("DELETE FROM sync_log WHERE table_name='contexts'", []).unwrap();
+        let (ops, _, _) = engine::collect_ops(&conn, 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+        ops.into_iter().filter(|op| op.table == "contexts").collect::<Vec<_>>()
+    };
+    let conn = source.db.lock().unwrap();
+    engine::apply_ops(&conn, &ops).unwrap();
+    let instructions: Option<String> = conn.query_row("SELECT custom_instructions FROM contexts WHERE is_everywhere=1", [], |row| row.get(0)).unwrap();
+    assert_eq!(instructions.as_deref(), Some("synthetic instruction"));
+}
+
+#[test]
+fn pristine_alias_does_not_create_a_newer_context_change() {
+    let empty_peer = Device::new();
+    let receiver = Device::new();
+    let customized_peer = Device::new();
+    customized_peer.db.lock().unwrap().execute("UPDATE contexts SET custom_instructions='earlier customization' WHERE is_everywhere=1", []).unwrap();
+    customized_peer.db.lock().unwrap().execute("UPDATE sync_log SET ts_ms=1 WHERE table_name='contexts'", []).unwrap();
+    let context_ops = |device: &Device| {
+        let conn = device.db.lock().unwrap();
+        let (ops, _, _) = engine::collect_ops(&conn, 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+        ops.into_iter().filter(|op| op.table == "contexts").collect::<Vec<_>>()
+    };
+    {
+        let conn = empty_peer.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' WHERE is_everywhere=1", []).unwrap();
+        conn.execute("DELETE FROM sync_log WHERE table_name='contexts'", []).unwrap();
+    }
+    let empty_ops = context_ops(&empty_peer);
+    let customized_ops = context_ops(&customized_peer);
+    let conn = receiver.db.lock().unwrap();
+    engine::apply_ops(&conn, &empty_ops).unwrap();
+    engine::apply_ops(&conn, &customized_ops).unwrap();
+    let instructions: Option<String> = conn.query_row("SELECT custom_instructions FROM contexts WHERE is_everywhere=1", [], |row| row.get(0)).unwrap();
+    assert_eq!(instructions.as_deref(), Some("earlier customization"));
+}
+
+#[test]
+fn unstamped_vocabulary_does_not_erase_customized_everywhere_settings() {
+    let source = Device::new();
+    let receiver = Device::new();
+    db::insert_dictionary_entry_returning(&source.db, "PreSyncFixture", Some("fixture typo"), None).unwrap();
+    {
+        let conn = source.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' WHERE is_everywhere=1", []).unwrap();
+        conn.execute("DELETE FROM sync_log WHERE table_name='contexts'", []).unwrap();
+    }
+    {
+        let conn = receiver.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET custom_instructions='preserve instructions' WHERE is_everywhere=1", []).unwrap();
+        conn.execute("UPDATE sync_log SET ts_ms=1 WHERE table_name='contexts'", []).unwrap();
+    }
+    let ops = {
+        let conn = source.db.lock().unwrap();
+        engine::collect_ops(&conn, 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0
+    };
+    let conn = receiver.db.lock().unwrap();
+    engine::apply_ops(&conn, &ops).unwrap();
+    let instructions: Option<String> = conn.query_row("SELECT custom_instructions FROM contexts WHERE is_everywhere=1", [], |row| row.get(0)).unwrap();
+    assert_eq!(instructions.as_deref(), Some("preserve instructions"));
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"), 1);
+}
+
+#[test]
+fn older_membership_operation_can_relay_newer_context_metadata() {
+    let origin = Device::new();
+    let relay = Device::new();
+    let recipient = Device::new();
+    {
+        let conn = origin.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET custom_instructions='relay fixture' WHERE is_everywhere=1", []).unwrap();
+        conn.execute("UPDATE sync_log SET ts_ms=10 WHERE table_name='contexts'", []).unwrap();
+        conn.execute("UPDATE sync_setting_meta SET ts_ms=10 WHERE key LIKE 'context_metadata:%'", []).unwrap();
+    }
+    db::insert_dictionary_entry_returning(&relay.db, "RelayFixture", None, None).unwrap();
+    relay.db.lock().unwrap().execute("UPDATE sync_log SET ts_ms=20 WHERE table_name='contexts'", []).unwrap();
+    let snapshot = |device: &Device| {
+        let conn = device.db.lock().unwrap();
+        engine::collect_ops(&conn, 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0
+    };
+    engine::apply_ops(&recipient.db.lock().unwrap(), &snapshot(&relay)).unwrap();
+    let cursor = store::max_log_seq(&relay.db.lock().unwrap()).unwrap();
+    engine::apply_ops(&relay.db.lock().unwrap(), &snapshot(&origin)).unwrap();
+    let changes = {
+        let conn = relay.db.lock().unwrap();
+        engine::collect_ops(&conn, cursor, false, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0
+    };
+    engine::apply_ops(&recipient.db.lock().unwrap(), &changes).unwrap();
+    let instructions: Option<String> = recipient.db.lock().unwrap().query_row("SELECT custom_instructions FROM contexts WHERE is_everywhere=1", [], |row| row.get(0)).unwrap();
+    assert_eq!(instructions.as_deref(), Some("relay fixture"));
+}
+
+#[tokio::test]
+async fn distinct_everywhere_alias_relay_keeps_incremental_metadata() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    {
+        let conn = a.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' WHERE is_everywhere=1", []).unwrap();
+        conn.execute("DELETE FROM sync_log WHERE table_name='contexts'", []).unwrap();
+    }
+    pair(&a, &b, true).await.unwrap();
+    pair(&b, &c, true).await.unwrap();
+    db::insert_dictionary_entry_returning(&b.db, "IncrementalFixture", None, None).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    assert!(store::peer_recv_cursor(&c.db.lock().unwrap(), &b.host.uuid).unwrap() > 0);
+    a.db.lock().unwrap().execute("UPDATE contexts SET custom_instructions='relay instructions' WHERE is_everywhere=1", []).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &c).await.unwrap();
+    for device in [&a, &b, &c] {
+        let instructions: Option<String> = device.db.lock().unwrap().query_row("SELECT custom_instructions FROM contexts WHERE is_everywhere=1", [], |row| row.get(0)).unwrap();
+        assert_eq!(instructions.as_deref(), Some("relay instructions"));
+    }
+}
+
+#[test]
+fn older_everywhere_alias_cannot_prune_newer_local_membership() {
+    let a = Device::new();
+    let b = Device::new();
+    {
+        let conn = a.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' WHERE is_everywhere=1", []).unwrap();
+        conn.execute("DELETE FROM sync_log WHERE table_name='contexts'", []).unwrap();
+        let baseline = engine::collect_ops(&conn, 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+        engine::apply_ops(&b.db.lock().unwrap(), &baseline).unwrap();
+    }
+    db::insert_dictionary_entry_returning(&a.db, "OlderFixture", None, None).unwrap();
+    db::insert_dictionary_entry_returning(&b.db, "NewerFixture", Some("newer typo"), None).unwrap();
+    a.db.lock().unwrap().execute("UPDATE sync_log SET ts_ms=10 WHERE table_name='contexts'", []).unwrap();
+    b.db.lock().unwrap().execute("UPDATE sync_log SET ts_ms=20 WHERE table_name='contexts'", []).unwrap();
+    let ops = engine::collect_ops(&a.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    engine::apply_ops(&b.db.lock().unwrap(), &ops).unwrap();
+    let entries = db::query_effective_dictionary_for_context(&b.db, db::EVERYWHERE_CONTEXT_ID).unwrap();
+    assert!(entries.iter().any(|entry| entry.term == "NewerFixture" && entry.mistake.as_deref() == Some("newer typo")));
+    assert!(entries.iter().any(|entry| entry.term == "OlderFixture"), "concurrent vocabulary additions from both devices must be retained");
+}
+
+#[test]
+fn deferred_everywhere_alias_merges_members_on_first_application() {
+    let a = Device::new();
+    let b = Device::new();
+    {
+        let conn = a.db.lock().unwrap();
+        conn.execute("UPDATE contexts SET uuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' WHERE is_everywhere=1", []).unwrap();
+        conn.execute("DELETE FROM sync_log WHERE table_name='contexts'", []).unwrap();
+    }
+    db::insert_dictionary_entry_returning(&a.db, "RemoteFixture", None, None).unwrap();
+    db::insert_dictionary_entry_returning(&b.db, "LocalFixture", Some("local typo"), None).unwrap();
+    let ops = engine::collect_ops(&a.db.lock().unwrap(), 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap().0;
+    let context = ops.iter().filter(|op| op.table == "contexts").cloned().collect::<Vec<_>>();
+    assert!(engine::apply_ops(&b.db.lock().unwrap(), &context).unwrap().deferred);
+    assert!(!engine::apply_ops(&b.db.lock().unwrap(), &ops).unwrap().deferred);
+    let entries = db::query_effective_dictionary_for_context(&b.db, db::EVERYWHERE_CONTEXT_ID).unwrap();
+    assert!(entries.iter().any(|entry| entry.term == "LocalFixture" && entry.mistake.as_deref() == Some("local typo")));
+    assert!(entries.iter().any(|entry| entry.term == "RemoteFixture"));
+}
+
+#[test]
+fn only_pristine_unstamped_everywhere_uses_the_baseline_snapshot_stamp() {
+    let device = Device::new();
+    let conn = device.db.lock().unwrap();
+    let snapshot_stamp = |conn: &rusqlite::Connection| {
+        let (ops, _, _) = engine::collect_ops(conn, 0, true, 10_000, &mut engine::SnapshotProgress::default()).unwrap();
+        let op = ops.into_iter().find(|op| op.table == "contexts").unwrap();
+        (op.ts_ms, op.origin, op.origin_seq)
+    };
+    assert_eq!(snapshot_stamp(&conn), (0, String::new(), 0));
+    conn.execute("UPDATE contexts SET custom_instructions='fixture' WHERE is_everywhere=1", []).unwrap();
+    conn.execute("DELETE FROM sync_log WHERE table_name='contexts'", []).unwrap();
+    assert!(snapshot_stamp(&conn).0 > 0, "existing unstamped Context customization is not a pristine baseline");
 }
 
 #[tokio::test]
@@ -437,6 +1127,157 @@ async fn concurrent_edits_to_distinct_terms_project_one_active_correction() {
     assert_eq!(left, projection(&b));
     assert_eq!(left.iter().filter(|(_, mistake)| mistake.as_deref() == Some("typo")).count(), 1);
     assert!(db::insert_dictionary_entry_returning(&a.db, "Third", Some("typo"), None).is_err());
+    let winner = left.iter().find(|(_, mistake)| mistake.as_deref() == Some("typo")).unwrap().0.clone();
+    let winner_id = db::query_dictionary(&a.db).unwrap().into_iter().find(|entry| entry.term == winner).unwrap().id;
+    db::delete_dictionary_entry(&a.db, winner_id).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        assert!(projection(device).iter().all(|(_, mistake)| mistake.as_deref() != Some("typo")), "a suppressed mapping must not activate after deleting the winner");
+    }
+    let survivor = db::query_dictionary(&a.db).unwrap().into_iter().find(|entry| entry.term != winner).unwrap();
+    db::update_dictionary_entry(&a.db, survivor.id, &survivor.term, Some("typo")).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        assert!(projection(device).iter().any(|(term,mistake)| term == &survivor.term && mistake.as_deref() == Some("typo")), "an explicit re-edit after deletion must be usable");
+    }
+}
+
+#[tokio::test]
+async fn expiring_conflict_winner_does_not_activate_suppressed_correction() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let first = db::insert_dictionary_entry_returning(&a.db, "First", None, None).unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "Second", None, None).unwrap();
+    session(&a, &b).await.unwrap();
+    let second = db::query_dictionary(&b.db).unwrap().into_iter().find(|entry| entry.term == "Second").unwrap();
+    db::update_dictionary_entry(&a.db, first.id, "First", Some("typo")).unwrap();
+    db::update_dictionary_entry(&b.db, second.id, "Second", Some("typo")).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let winner = db::query_dictionary(&a.db).unwrap().into_iter().find(|entry| entry.mistake.as_deref() == Some("typo")).unwrap();
+    db::set_vocabulary_expiration(&a.db, Some(7)).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &b).await.unwrap();
+    store::mark_peer_synced(&a.db.lock().unwrap(), &b.host.uuid, 0).unwrap();
+    {
+        let conn = a.db.lock().unwrap();
+        conn.execute("UPDATE dictionary SET created_at=datetime('now','-20 days') WHERE id=?1", [winner.id]).unwrap();
+        conn.execute("UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now','-20 days')", []).unwrap();
+    }
+    assert_eq!(db::expire_vocabulary(&a.db).unwrap(), 1);
+    assert!(db::query_dictionary(&a.db).unwrap().iter().all(|entry| entry.mistake.as_deref() != Some("typo")), "a suppressed mapping must not activate after the winner expires");
+    let status = db::vocabulary_expiration_status(&a.db).unwrap();
+    let request = status["deleted"][0]["request_id"].as_str().unwrap();
+    db::restore_expired_vocabulary(&a.db, request).unwrap();
+    let restored = db::query_dictionary(&a.db).unwrap();
+    assert!(restored.iter().any(|entry| entry.term == winner.term && entry.mistake.as_deref() == Some("typo")), "restoring the winner must recover its correction");
+}
+
+#[tokio::test]
+async fn late_third_device_does_not_activate_conflict_loser_after_winner_deletion() {
+    let a = Device::new();
+    let b = Device::new();
+    let c = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    pair(&a, &c, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &c).await.unwrap();
+    let first = db::insert_dictionary_entry_returning(&a.db, "First", None, None).unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "Second", None, None).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&a, &c).await.unwrap();
+    let second = db::query_dictionary(&b.db).unwrap().into_iter().find(|entry| entry.term == "Second").unwrap();
+    db::update_dictionary_entry(&a.db, first.id, "First", Some("typo")).unwrap();
+    db::update_dictionary_entry(&b.db, second.id, "Second", Some("typo")).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let winner = db::query_dictionary(&a.db).unwrap().into_iter().find(|entry| entry.mistake.as_deref() == Some("typo")).unwrap();
+    db::delete_dictionary_entry(&a.db, winner.id).unwrap();
+    session(&a, &c).await.unwrap();
+    session(&c, &a).await.unwrap();
+    assert!(db::query_dictionary(&c.db).unwrap().iter().all(|entry| entry.mistake.as_deref() != Some("typo")), "a late device must not activate a suppressed correction");
+}
+
+#[tokio::test]
+async fn conflict_loser_stays_suppressed_in_snapshot_after_compaction() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let first = db::insert_dictionary_entry_returning(&a.db, "First", None, None).unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "Second", None, None).unwrap();
+    session(&a, &b).await.unwrap();
+    let second = db::query_dictionary(&b.db).unwrap().into_iter().find(|entry| entry.term == "Second").unwrap();
+    db::update_dictionary_entry(&a.db, first.id, "First", Some("typo")).unwrap();
+    db::update_dictionary_entry(&b.db, second.id, "Second", Some("typo")).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let winner = db::query_dictionary(&a.db).unwrap().into_iter().find(|entry| entry.mistake.as_deref() == Some("typo")).unwrap();
+    let loser = if winner.term == "First" { "Second" } else { "First" };
+    {
+        let conn = a.db.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM dictionary_corrections c JOIN dictionary d ON d.id=c.dictionary_id WHERE d.term=?1 AND c.mistake='typo'", [loser], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1, "the suppressed correction must survive the initial sync");
+    }
+    db::delete_dictionary_entry(&a.db, winner.id).unwrap();
+    {
+        let conn = a.db.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM dictionary_corrections c JOIN dictionary d ON d.id=c.dictionary_id WHERE d.term=?1 AND c.mistake='typo'", [loser], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1, "deleting the winner must retain the suppressed correction");
+    }
+    store::compact_log(&a.db.lock().unwrap()).unwrap();
+    let retained = || -> i64 {
+        let conn = a.db.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM dictionary_corrections c JOIN dictionary d ON d.id=c.dictionary_id WHERE d.term=?1 AND c.mistake='typo'", [loser], |row| row.get(0)).unwrap()
+    };
+    assert_eq!(retained(), 1, "compaction must retain the suppressed correction");
+    let c = Device::new();
+    pair(&a, &c, true).await.unwrap();
+    assert_eq!(retained(), 1, "pairing must retain the suppressed correction");
+    session(&a, &c).await.unwrap();
+    assert_eq!(retained(), 1, "the first snapshot exchange must retain the suppressed correction");
+    session(&c, &a).await.unwrap();
+    let entries = db::query_dictionary(&c.db).unwrap();
+    assert!(entries.iter().any(|entry| entry.term == loser), "the surviving term must reach the new device");
+    assert!(entries.iter().all(|entry| entry.mistake.as_deref() != Some("typo")), "a compacted snapshot must retain the conflict decision");
+    for (label, device) in [("source", &a), ("snapshot recipient", &c)] {
+        let conn = device.db.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM dictionary_corrections c JOIN dictionary d ON d.id=c.dictionary_id WHERE d.term=?1 AND c.mistake='typo'", [loser], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1, "the suppressed correction must remain recoverable on the {label}");
+    }
+}
+
+#[tokio::test]
+async fn concurrent_unicode_corrections_do_not_reappear_after_winner_deletion() {
+    let a = Device::new();
+    let b = Device::new();
+    pair(&a, &b, true).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let first = db::insert_dictionary_entry_returning(&a.db, "First", None, None).unwrap();
+    db::insert_dictionary_entry_returning(&a.db, "Second", None, None).unwrap();
+    session(&a, &b).await.unwrap();
+    let second = db::query_dictionary(&b.db).unwrap().into_iter().find(|entry| entry.term == "Second").unwrap();
+    db::update_dictionary_entry(&a.db, first.id, "First", Some("École")).unwrap();
+    db::update_dictionary_entry(&b.db, second.id, "Second", Some("école")).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    session(&a, &b).await.unwrap();
+    let entries = db::query_dictionary(&a.db).unwrap();
+    let active: Vec<_> = entries.iter().filter(|entry| entry.mistake.as_deref().is_some_and(|mistake| mistake.to_lowercase() == "école")).collect();
+    assert_eq!(active.len(), 1);
+    db::delete_dictionary_entry(&a.db, active[0].id).unwrap();
+    session(&a, &b).await.unwrap();
+    session(&b, &a).await.unwrap();
+    for device in [&a, &b] {
+        assert!(db::query_dictionary(&device.db).unwrap().iter().all(|entry| entry.mistake.as_deref().is_none_or(|mistake| mistake.to_lowercase() != "école")), "a case-folded suppressed correction must not activate");
+    }
 }
 
 #[tokio::test]

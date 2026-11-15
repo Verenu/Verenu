@@ -227,7 +227,87 @@ pub fn vocabulary_expiration_status(db: &Db) -> Result<Value> {
     let paused = expiration_sync_pending(&conn)?;
     let mut stmt = conn.prepare("SELECT m.request_id,d.term,m.deleted_at FROM vocabulary_expiration_marks m JOIN dictionary d ON d.uuid=m.item_uuid LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff ORDER BY m.deleted_at DESC,m.request_id")?;
     let entries = stmt.query_map([], |r| Ok(json!({"request_id":r.get::<_,String>(0)?,"term":r.get::<_,String>(1)?,"deleted_at":r.get::<_,String>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(json!({"days":days,"tracking_since":since,"paused_for_sync":paused,"deleted":entries}))
+    let mut reviews_stmt = conn.prepare("SELECT r.context_uuid,r.dictionary_uuid,r.dictionary_term,r.reason,
+        (SELECT c.name FROM contexts c WHERE c.uuid=r.context_uuid OR (c.is_everywhere=1 AND r.context_uuid='everywhere-0000-0000-0000-000000000001') LIMIT 1)
+        FROM vocabulary_membership_reviews r ORDER BY r.dictionary_term,r.context_uuid")?;
+    let mut reviews = reviews_stmt.query_map([], |r| Ok(json!({"context_uuid":r.get::<_,String>(0)?,"dictionary_uuid":r.get::<_,String>(1)?,"term":r.get::<_,String>(2)?,"reason":r.get::<_,String>(3)?,"context_name":r.get::<_,Option<String>>(4)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for review in &mut reviews {
+        let dictionary_uuid = review["dictionary_uuid"].as_str().context("Missing review identity")?;
+        let review_context = review["context_uuid"].as_str().context("Missing review Context")?;
+        let mut stmt = conn.prepare("SELECT kind,row_uuid,origin,origin_seq,payload FROM vocabulary_review_payloads WHERE dictionary_uuid=?1 ORDER BY kind DESC,ts_ms,origin,origin_seq")?;
+        let rows = stmt.query_map([dictionary_uuid], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut candidates = Vec::new();
+        for (kind, row_uuid, origin, origin_seq, payload) in rows {
+            let value: Value = serde_json::from_str(&payload)?;
+            if kind == "correction" {
+                let correction_context = value["context_uuid"].as_str().context("Missing correction Context")?;
+                let resolve = |uuid: &str| -> rusqlite::Result<Option<i64>> { conn.query_row("SELECT id FROM contexts WHERE uuid=?1 OR (is_everywhere=1 AND ?1='everywhere-0000-0000-0000-000000000001') OR uuid=(SELECT local_uuid FROM backup_context_aliases WHERE source_uuid=?1) ORDER BY (uuid=?1) DESC LIMIT 1", [uuid], |r| r.get(0)).optional() };
+                let context_id = resolve(review_context)?;
+                if context_id.is_none() || context_id != resolve(correction_context)? { continue; }
+            }
+            candidates.push(json!({"kind":kind,"row_uuid":row_uuid,"origin":origin,"origin_seq":origin_seq,"value":value}));
+        }
+        review["candidates"] = json!(candidates);
+    }
+    Ok(json!({"days":days,"tracking_since":since,"paused_for_sync":paused,"deleted":entries,"reviews":reviews}))
+}
+
+pub fn acknowledge_vocabulary_review(db: &Db, context_uuid: &str, dictionary_uuid: &str) -> Result<()> {
+    let conn = lock_conn(db)?;
+    let has_archived_edit: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM vocabulary_review_payloads WHERE dictionary_uuid=?1)", [dictionary_uuid], |r| r.get(0))?;
+    ensure!(!has_archived_edit, "An archived vocabulary edit must be resolved before dismissing this review");
+    let changed = conn.execute("DELETE FROM vocabulary_membership_reviews WHERE context_uuid=?1 AND dictionary_uuid=?2", params![context_uuid,dictionary_uuid])?;
+    anyhow::ensure!(changed == 1, "This vocabulary review is no longer pending");
+    Ok(())
+}
+
+pub fn restore_vocabulary_review_payload(db: &Db, context_uuid: &str, kind: &str, row_uuid: &str, origin: &str, origin_seq: i64) -> Result<()> {
+    ensure!(matches!(kind, "dictionary" | "correction"), "Unknown vocabulary review item");
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let (dictionary_uuid, payload): (String, String) = tx.query_row(
+        "SELECT dictionary_uuid,payload FROM vocabulary_review_payloads WHERE kind=?1 AND row_uuid=?2 AND origin=?3 AND origin_seq=?4",
+        params![kind,row_uuid,origin,origin_seq], |r| Ok((r.get(0)?,r.get(1)?)),
+    ).optional()?.context("This vocabulary review item is no longer available")?;
+    let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM vocabulary_membership_reviews WHERE context_uuid=?1 AND dictionary_uuid=?2)", params![context_uuid,dictionary_uuid], |r| r.get(0))?;
+    ensure!(pending, "This vocabulary item is no longer awaiting review");
+    let review_context_id: i64 = tx.query_row("SELECT id FROM contexts WHERE uuid=?1 OR (is_everywhere=1 AND ?1='everywhere-0000-0000-0000-000000000001') OR uuid=(SELECT local_uuid FROM backup_context_aliases WHERE source_uuid=?1) ORDER BY (uuid=?1) DESC LIMIT 1", [context_uuid], |r| r.get(0)).optional()?.context("Cannot restore an assignment because its Context no longer exists")?;
+    if kind == "dictionary" {
+        let row: crate::sync::engine::DictionaryRow = serde_json::from_str(&payload)?;
+        let existing: Option<(i64,bool)> = tx.query_row("SELECT id,term=?2 AND auto_learned=?3 AND correction_count=?4 AND confidence_tier=?5 AND last_seen_at IS ?6 AND created_at=?7 AND replacement_confidence=?8 FROM dictionary WHERE uuid=?1", params![row_uuid,row.term,row.auto_learned,row.correction_count,row.confidence_tier,row.last_seen_at,row.created_at,row.replacement_confidence.as_deref().unwrap_or("default")], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let dictionary_id = if let Some((id,matches)) = existing {
+            ensure!(matches, "The current vocabulary differs from this saved change");
+            id
+        } else {
+        tx.execute("INSERT INTO dictionary(uuid,term,mistake,auto_learned,correction_count,confidence_tier,last_seen_at,created_at,replacement_confidence) VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8)",
+            params![row_uuid,row.term,row.auto_learned,row.correction_count,row.confidence_tier,row.last_seen_at,row.created_at,row.replacement_confidence.as_deref().unwrap_or("default")])
+            .context("Cannot restore this item because its name or identity is already in use")?;
+        tx.last_insert_rowid() };
+        tx.execute("INSERT OR IGNORE INTO dictionary_contexts(context_id,dictionary_id) VALUES (?1,?2)", params![review_context_id,dictionary_id])?;
+    } else {
+        let row: crate::sync::protocol::DictionaryCorrectionRow = serde_json::from_str(&payload)?;
+        let dictionary_id: i64 = tx.query_row("WITH RECURSIVE ids(uuid) AS (SELECT ?1 UNION SELECT CASE WHEN l.left_uuid=ids.uuid THEN l.right_uuid ELSE l.left_uuid END FROM vocabulary_identity_links l JOIN ids ON l.left_uuid=ids.uuid OR l.right_uuid=ids.uuid) SELECT id FROM dictionary WHERE uuid IN (SELECT uuid FROM ids) ORDER BY (uuid=?1) DESC LIMIT 1", [&dictionary_uuid], |r| r.get(0)).optional()?.context("Restore the vocabulary item before its correction")?;
+        let context_id: i64 = tx.query_row("SELECT id FROM contexts WHERE uuid=?1 OR (is_everywhere=1 AND ?1='everywhere-0000-0000-0000-000000000001') OR uuid=(SELECT local_uuid FROM backup_context_aliases WHERE source_uuid=?1) ORDER BY (uuid=?1) DESC LIMIT 1", [&row.context_uuid], |r| r.get(0)).optional()?.context("Cannot restore a correction because its Context no longer exists")?;
+        ensure!(context_id == review_context_id, "This correction belongs to another Context");
+        super::dictionary::check_dictionary_mistake_conflicts(&tx, context_id, Some(dictionary_id), Some(&row.mistake))?;
+        tx.execute("INSERT OR IGNORE INTO dictionary_contexts(context_id,dictionary_id) VALUES (?1,?2)", params![context_id,dictionary_id])?;
+        tx.execute("UPDATE vocabulary_correction_versions SET retired=1 WHERE correction_uuid=?1 AND retired=0", [row_uuid])?;
+        tx.execute("INSERT INTO dictionary_corrections(uuid,context_id,dictionary_id,mistake,auto_learned,correction_count,confidence_tier,last_seen_at,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![row_uuid,context_id,dictionary_id,row.mistake,row.auto_learned,row.correction_count,row.confidence_tier,row.last_seen_at,row.created_at]).context("Cannot restore this correction because it already exists")?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn discard_vocabulary_review_payload(db: &Db, kind: &str, row_uuid: &str, origin: &str, origin_seq: i64) -> Result<()> {
+    ensure!(matches!(kind, "dictionary" | "correction"), "Unknown vocabulary review item");
+    let mut conn = lock_conn(db)?;
+    let tx = conn.transaction()?;
+    let changed = tx.execute("DELETE FROM vocabulary_review_payloads WHERE kind=?1 AND row_uuid=?2 AND origin=?3 AND origin_seq=?4", params![kind,row_uuid,origin,origin_seq])?;
+    ensure!(changed == 1, "This vocabulary review item is no longer available");
+    let key = crate::sync::engine::vocabulary_review_key(kind,row_uuid,origin,origin_seq)?;
+    crate::sync::engine::append_self_log(&tx,"vocabulary_review_payloads",&key,"delete")?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub(super) fn ensure_expired_corrections_available(conn: &Connection, item_uuid: &str) -> Result<()> {
@@ -246,9 +326,21 @@ pub fn restore_expired_vocabulary(db: &Db, request_id: &str) -> Result<()> {
     let tx = conn.transaction()?;
     let item_uuid: String = tx.query_row("SELECT m.item_uuid FROM vocabulary_expiration_marks m JOIN dictionary d ON d.uuid=m.item_uuid LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.request_id=?1 AND MAX(d.created_at,COALESCE(u.last_used_at,''))<=m.cutoff", [&request_id], |r| r.get(0)).optional()?.context("No recoverable vocabulary for this request")?;
     ensure_expired_corrections_available(&tx, &item_uuid)?;
+    tx.execute("UPDATE vocabulary_correction_versions SET retired=1 WHERE retired=0 AND correction_uuid IN (SELECT c.uuid FROM dictionary_corrections c JOIN dictionary d ON d.id=c.dictionary_id WHERE d.uuid=?1)", [&item_uuid])?;
+    tx.execute("INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at,seen_retired,seen_expired)
+      SELECT lower(hex(randomblob(16))),dc.uuid,CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END,
+        d.uuid,d.term,dc.mistake,dc.auto_learned,datetime('now'),
+        COALESCE((SELECT json_group_array(v.version_id) FROM vocabulary_correction_versions v
+          WHERE v.context_uuid=CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END
+            AND (v.retired=1 OR EXISTS(SELECT 1 FROM vocabulary_correction_decisions x JOIN vocabulary_correction_versions w ON w.version_id=x.winner_version
+              WHERE x.loser_version=v.version_id AND w.retired=1))),'[]'),
+        COALESCE((SELECT json_group_array(m.item_uuid || ':' || m.request_id) FROM vocabulary_expiration_marks m JOIN dictionary x ON x.uuid=m.item_uuid
+          LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=x.uuid WHERE MAX(x.created_at,COALESCE(u.last_used_at,''))<=m.cutoff),'[]')
+      FROM dictionary_corrections dc JOIN dictionary d ON d.id=dc.dictionary_id JOIN contexts c ON c.id=dc.context_id WHERE d.uuid=?1", [&item_uuid])?;
     tx.execute("INSERT INTO vocabulary_expiration_usage(item_uuid,last_used_at) VALUES (?1,datetime('now')) ON CONFLICT(item_uuid) DO UPDATE SET last_used_at=MAX(last_used_at,excluded.last_used_at)", [&item_uuid])?;
     crate::sync::engine::reconcile_vocabulary_identities(&tx, &item_uuid)?;
     crate::sync::engine::append_self_log(&tx, "vocabulary_expiration_usage", &item_uuid, "upsert")?;
+    super::dictionary::record_correction_history_decisions(&tx)?;
     tx.commit()?;
     Ok(())
 }

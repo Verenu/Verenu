@@ -362,7 +362,7 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
     // keys, so enable enforcement before schema work or application queries.
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    anyhow::ensure!(user_version <= 41, "This database was created by a newer version of Verenu");
+    anyhow::ensure!(user_version <= 42, "This database was created by a newer version of Verenu");
     if user_version < 2 && db_existed_before_open {
         let _ = std::fs::copy(db_path, db_path.with_extension("db.bak"));
     }
@@ -1097,6 +1097,87 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
             Ok(())
         })?;
     }
+    if user_version < 42 {
+        run_migration(&mut conn, |conn| {
+            ensure_table_column(conn, "sync_peers", "recv_cursor", "ALTER TABLE sync_peers ADD COLUMN recv_cursor INTEGER NOT NULL DEFAULT 0;")?;
+            ensure_table_column(conn, "vocabulary_expiration_marks", "policy_ts", "ALTER TABLE vocabulary_expiration_marks ADD COLUMN policy_ts INTEGER NOT NULL DEFAULT 0;")?;
+            ensure_table_column(conn, "vocabulary_expiration_marks", "policy_origin", "ALTER TABLE vocabulary_expiration_marks ADD COLUMN policy_origin TEXT NOT NULL DEFAULT '';")?;
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_expiration_events (request_id TEXT PRIMARY KEY, item_uuid TEXT NOT NULL, cutoff TEXT NOT NULL, deleted_at TEXT NOT NULL, policy_ts INTEGER NOT NULL, policy_origin TEXT NOT NULL, version_ids TEXT NOT NULL DEFAULT '[]');")?;
+            ensure_table_column(conn, "vocabulary_expiration_events", "version_ids", "ALTER TABLE vocabulary_expiration_events ADD COLUMN version_ids TEXT NOT NULL DEFAULT '[]';")?;
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_membership_dots (
+                dot TEXT PRIMARY KEY,
+                context_uuid TEXT NOT NULL,
+                dictionary_uuid TEXT NOT NULL,
+                dictionary_term TEXT NOT NULL,
+                removed INTEGER NOT NULL DEFAULT 0 CHECK(removed IN (0, 1)),
+                legacy INTEGER NOT NULL DEFAULT 0 CHECK(legacy IN (0, 1))
+            );
+            CREATE INDEX IF NOT EXISTS idx_vocabulary_membership_key
+              ON vocabulary_membership_dots(context_uuid,dictionary_uuid,removed);
+            CREATE TABLE IF NOT EXISTS vocabulary_membership_reviews (
+                context_uuid TEXT NOT NULL,
+                dictionary_uuid TEXT NOT NULL,
+                dictionary_term TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                PRIMARY KEY(context_uuid,dictionary_uuid)
+            );
+            CREATE TABLE IF NOT EXISTS vocabulary_review_payloads (
+                kind TEXT NOT NULL, row_uuid TEXT NOT NULL, dictionary_uuid TEXT NOT NULL,
+                payload TEXT NOT NULL, ts_ms INTEGER NOT NULL, origin TEXT NOT NULL, origin_seq INTEGER NOT NULL,
+                PRIMARY KEY(kind,row_uuid,origin,origin_seq)
+            );
+            CREATE TABLE IF NOT EXISTS vocabulary_correction_versions (
+                version_id TEXT PRIMARY KEY,
+                correction_uuid TEXT NOT NULL,
+                context_uuid TEXT NOT NULL,
+                dictionary_uuid TEXT NOT NULL,
+                dictionary_term TEXT NOT NULL,
+                mistake TEXT NOT NULL,
+                auto_learned INTEGER NOT NULL CHECK(auto_learned IN (0,1)),
+                created_at TEXT NOT NULL,
+                seen_retired TEXT NOT NULL DEFAULT '[]',
+                seen_expired TEXT NOT NULL DEFAULT '[]',
+                retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0,1)),
+                legacy INTEGER NOT NULL DEFAULT 0 CHECK(legacy IN (0,1))
+            );
+            CREATE INDEX IF NOT EXISTS idx_vocabulary_correction_version_key
+              ON vocabulary_correction_versions(context_uuid,dictionary_uuid,correction_uuid);
+            CREATE TABLE IF NOT EXISTS vocabulary_correction_decisions (
+                decision_id TEXT PRIMARY KEY, winner_version TEXT NOT NULL, loser_version TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS vocabulary_expiration_events (
+                request_id TEXT PRIMARY KEY, item_uuid TEXT NOT NULL, cutoff TEXT NOT NULL,
+                deleted_at TEXT NOT NULL, policy_ts INTEGER NOT NULL, policy_origin TEXT NOT NULL,
+                version_ids TEXT NOT NULL DEFAULT '[]'
+            );
+            INSERT OR IGNORE INTO vocabulary_expiration_events(request_id,item_uuid,cutoff,deleted_at,policy_ts,policy_origin)
+              SELECT request_id,item_uuid,cutoff,deleted_at,policy_ts,policy_origin FROM vocabulary_expiration_marks;
+            INSERT OR IGNORE INTO sync_setting_meta(key,ts_ms,origin)
+              SELECT 'vocabulary_preupgrade_peers',
+                     EXISTS(SELECT 1 FROM sync_peers), '';
+            INSERT INTO vocabulary_membership_dots(dot,context_uuid,dictionary_uuid,dictionary_term,legacy)
+              SELECT lower(hex(randomblob(16))),
+                     CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END,
+                     d.uuid,d.term,1
+                FROM dictionary_contexts dc JOIN contexts c ON c.id=dc.context_id
+                JOIN dictionary d ON d.id=dc.dictionary_id
+               WHERE c.uuid IS NOT NULL AND d.uuid IS NOT NULL
+                 AND NOT EXISTS(SELECT 1 FROM vocabulary_membership_dots x
+                   WHERE x.context_uuid=CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END
+                     AND x.dictionary_uuid=d.uuid AND x.removed=0);
+            INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at,legacy)
+              SELECT lower(hex(randomblob(16))),dc.uuid,
+                     CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END,
+                     d.uuid,d.term,dc.mistake,dc.auto_learned,dc.created_at,1
+                FROM dictionary_corrections dc JOIN contexts c ON c.id=dc.context_id JOIN dictionary d ON d.id=dc.dictionary_id
+               WHERE dc.uuid IS NOT NULL AND c.uuid IS NOT NULL AND d.uuid IS NOT NULL
+                 AND NOT EXISTS(SELECT 1 FROM vocabulary_correction_versions v WHERE v.correction_uuid=dc.uuid AND v.retired=0);
+            UPDATE vocabulary_expiration_events SET version_ids=COALESCE((SELECT json_group_array(v.version_id) FROM vocabulary_correction_versions v WHERE v.dictionary_uuid=vocabulary_expiration_events.item_uuid),'[]');
+            UPDATE sync_peers SET recv_cursor=0, send_cursor=0, needs_snapshot=1;
+            PRAGMA user_version = 42;")?;
+            Ok(())
+        })?;
+    }
     if user_version <= 40 {
         conn.execute("DELETE FROM agent_library_changes WHERE created_at < datetime('now','-30 days')", [])?;
     }
@@ -1147,6 +1228,194 @@ pub fn open(path: impl AsRef<std::path::Path>) -> Result<Db> {
         "ALTER TABLE sync_peers ADD COLUMN recv_cursor INTEGER NOT NULL DEFAULT 0;",
     )?;
     ensure_sync_identity_placeholder(&conn)?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_membership_reviews (
+      context_uuid TEXT NOT NULL, dictionary_uuid TEXT NOT NULL, dictionary_term TEXT NOT NULL,
+      reason TEXT NOT NULL, PRIMARY KEY(context_uuid,dictionary_uuid));")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_dictionary_restore_basis (
+      dictionary_uuid TEXT PRIMARY KEY, delete_origin TEXT NOT NULL, delete_seq INTEGER NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS vocabulary_dictionary_restore_basis_insert BEFORE INSERT ON dictionary
+      WHEN NEW.uuid IS NOT NULL AND (SELECT COALESCE(applying,0) FROM sync_state)=0 AND NOT EXISTS(SELECT 1 FROM dictionary WHERE uuid=NEW.uuid)
+      BEGIN
+        DELETE FROM vocabulary_dictionary_restore_basis WHERE dictionary_uuid=NEW.uuid;
+        INSERT INTO vocabulary_dictionary_restore_basis(dictionary_uuid,delete_origin,delete_seq)
+          SELECT NEW.uuid,origin,origin_seq FROM sync_log WHERE seq=(SELECT MAX(seq) FROM sync_log WHERE table_name='dictionary' AND row_uuid=NEW.uuid) AND op='delete';
+      END;")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_review_payloads (kind TEXT NOT NULL,row_uuid TEXT NOT NULL,dictionary_uuid TEXT NOT NULL,payload TEXT NOT NULL,ts_ms INTEGER NOT NULL,origin TEXT NOT NULL,origin_seq INTEGER NOT NULL,PRIMARY KEY(kind,row_uuid,origin,origin_seq));")?;
+    let review_has_operation_key: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('vocabulary_review_payloads') WHERE name='origin' AND pk>0)", [], |r| r.get(0))?;
+    if !review_has_operation_key {
+        conn.execute_batch("SAVEPOINT vocabulary_review_upgrade;
+          ALTER TABLE vocabulary_review_payloads RENAME TO vocabulary_review_payloads_old;
+          CREATE TABLE vocabulary_review_payloads (kind TEXT NOT NULL,row_uuid TEXT NOT NULL,dictionary_uuid TEXT NOT NULL,payload TEXT NOT NULL,ts_ms INTEGER NOT NULL,origin TEXT NOT NULL,origin_seq INTEGER NOT NULL,PRIMARY KEY(kind,row_uuid,origin,origin_seq));
+          INSERT INTO vocabulary_review_payloads SELECT kind,row_uuid,dictionary_uuid,payload,ts_ms,origin,origin_seq FROM vocabulary_review_payloads_old;
+          DROP TABLE vocabulary_review_payloads_old;
+          RELEASE vocabulary_review_upgrade;")?;
+    }
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_correction_versions (
+      version_id TEXT PRIMARY KEY, correction_uuid TEXT NOT NULL, context_uuid TEXT NOT NULL,
+      dictionary_uuid TEXT NOT NULL, dictionary_term TEXT NOT NULL, mistake TEXT NOT NULL,
+      auto_learned INTEGER NOT NULL CHECK(auto_learned IN (0,1)), created_at TEXT NOT NULL,
+      seen_retired TEXT NOT NULL DEFAULT '[]', seen_expired TEXT NOT NULL DEFAULT '[]',
+      retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0,1)),
+      legacy INTEGER NOT NULL DEFAULT 0 CHECK(legacy IN (0,1)));
+      CREATE INDEX IF NOT EXISTS idx_vocabulary_correction_version_key ON vocabulary_correction_versions(context_uuid,dictionary_uuid,correction_uuid);")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_correction_decisions (decision_id TEXT PRIMARY KEY, winner_version TEXT NOT NULL, loser_version TEXT NOT NULL);")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_expiration_events (request_id TEXT PRIMARY KEY, item_uuid TEXT NOT NULL, cutoff TEXT NOT NULL, deleted_at TEXT NOT NULL, policy_ts INTEGER NOT NULL, policy_origin TEXT NOT NULL, version_ids TEXT NOT NULL DEFAULT '[]');")?;
+    ensure_table_column(&conn, "vocabulary_expiration_events", "version_ids", "ALTER TABLE vocabulary_expiration_events ADD COLUMN version_ids TEXT NOT NULL DEFAULT '[]';")?;
+    conn.execute_batch("DROP TRIGGER IF EXISTS vocabulary_expiration_event_insert; DROP TRIGGER IF EXISTS vocabulary_expiration_event_update;")?;
+    conn.execute_batch("CREATE TRIGGER IF NOT EXISTS vocabulary_expiration_event_insert
+      AFTER INSERT ON vocabulary_expiration_marks WHEN (SELECT COALESCE(applying,0) FROM sync_state)=0
+      BEGIN INSERT OR IGNORE INTO vocabulary_expiration_events(request_id,item_uuid,cutoff,deleted_at,policy_ts,policy_origin,version_ids)
+        VALUES (NEW.request_id,NEW.item_uuid,NEW.cutoff,NEW.deleted_at,NEW.policy_ts,NEW.policy_origin,COALESCE((SELECT json_group_array(version_id) FROM vocabulary_correction_versions WHERE dictionary_uuid=NEW.item_uuid),'[]')); END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_expiration_event_update
+      AFTER UPDATE OF request_id ON vocabulary_expiration_marks
+      WHEN NEW.request_id!=OLD.request_id AND (SELECT COALESCE(applying,0) FROM sync_state)=0
+      BEGIN INSERT OR IGNORE INTO vocabulary_expiration_events(request_id,item_uuid,cutoff,deleted_at,policy_ts,policy_origin,version_ids)
+        VALUES (NEW.request_id,NEW.item_uuid,NEW.cutoff,NEW.deleted_at,NEW.policy_ts,NEW.policy_origin,COALESCE((SELECT json_group_array(version_id) FROM vocabulary_correction_versions WHERE dictionary_uuid=NEW.item_uuid),'[]')); END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_expiration_event_log
+      AFTER INSERT ON vocabulary_expiration_events WHEN (SELECT COALESCE(applying,0) FROM sync_state)=0
+      BEGIN INSERT INTO sync_log(table_name,row_uuid,op,ts_ms,origin,origin_seq)
+        SELECT 'vocabulary_expiration_events',NEW.request_id,'upsert',CAST((julianday('now')-2440587.5)*86400000 AS INTEGER),uuid,
+          COALESCE((SELECT MAX(origin_seq) FROM sync_log WHERE origin=sync_identity.uuid),0)+1 FROM sync_identity; END;")?;
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS vocabulary_identity_links (link_id TEXT PRIMARY KEY, left_uuid TEXT NOT NULL, right_uuid TEXT NOT NULL);
+      DROP TRIGGER IF EXISTS vocabulary_membership_removed;
+      DROP TRIGGER IF EXISTS vocabulary_membership_dictionary_deleted;
+      DROP TRIGGER IF EXISTS vocabulary_membership_context_deleted;")?;
+    conn.execute_batch("CREATE TRIGGER IF NOT EXISTS vocabulary_membership_added
+      AFTER INSERT ON dictionary_contexts
+      WHEN (SELECT COALESCE(applying, 0) FROM sync_state) = 0
+      BEGIN
+        INSERT INTO vocabulary_membership_dots(dot,context_uuid,dictionary_uuid,dictionary_term)
+          SELECT lower(hex(randomblob(16))),
+                 CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END,
+                 d.uuid,d.term FROM contexts c JOIN dictionary d ON d.id=NEW.dictionary_id
+           WHERE c.id=NEW.context_id AND c.uuid IS NOT NULL AND d.uuid IS NOT NULL;
+      END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_membership_removed
+      BEFORE DELETE ON dictionary_contexts
+      WHEN (SELECT COALESCE(applying, 0) FROM sync_state) = 0
+      BEGIN
+        UPDATE vocabulary_membership_dots SET removed=1
+         WHERE context_uuid IN (
+           SELECT CASE WHEN is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE uuid END FROM contexts WHERE id=OLD.context_id
+           UNION SELECT a.source_uuid FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE c.id=OLD.context_id
+         ) AND dictionary_uuid IN (
+           WITH RECURSIVE ids(uuid) AS (
+             SELECT uuid FROM dictionary WHERE id=OLD.dictionary_id
+             UNION SELECT CASE WHEN l.left_uuid=ids.uuid THEN l.right_uuid ELSE l.left_uuid END
+               FROM vocabulary_identity_links l JOIN ids ON l.left_uuid=ids.uuid OR l.right_uuid=ids.uuid
+           ) SELECT uuid FROM ids
+         ) AND removed=0;
+      END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_membership_dictionary_deleted
+      BEFORE DELETE ON dictionary
+      WHEN (SELECT COALESCE(applying, 0) FROM sync_state) = 0
+      BEGIN UPDATE vocabulary_membership_dots SET removed=1 WHERE dictionary_uuid IN (
+        WITH RECURSIVE ids(uuid) AS (SELECT OLD.uuid UNION SELECT CASE WHEN l.left_uuid=ids.uuid THEN l.right_uuid ELSE l.left_uuid END
+          FROM vocabulary_identity_links l JOIN ids ON l.left_uuid=ids.uuid OR l.right_uuid=ids.uuid) SELECT uuid FROM ids
+      ) AND removed=0; END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_membership_context_deleted
+      BEFORE DELETE ON contexts
+      WHEN (SELECT COALESCE(applying, 0) FROM sync_state) = 0
+      BEGIN UPDATE vocabulary_membership_dots SET removed=1 WHERE context_uuid IN (
+        SELECT OLD.uuid UNION SELECT source_uuid FROM backup_context_aliases WHERE local_uuid=OLD.uuid
+      ) AND removed=0; END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_membership_dot_insert
+      AFTER INSERT ON vocabulary_membership_dots
+      WHEN (SELECT COALESCE(applying, 0) FROM sync_state) = 0
+      BEGIN
+        INSERT INTO sync_log(table_name,row_uuid,op,ts_ms,origin,origin_seq)
+        SELECT 'vocabulary_membership_dots',NEW.dot,'upsert',
+          CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),uuid,
+          COALESCE((SELECT MAX(origin_seq) FROM sync_log WHERE origin=sync_identity.uuid),0)+1
+        FROM sync_identity;
+      END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_membership_dot_remove
+      AFTER UPDATE OF removed ON vocabulary_membership_dots
+      WHEN NEW.removed != OLD.removed AND (SELECT COALESCE(applying, 0) FROM sync_state) = 0
+      BEGIN
+        INSERT INTO sync_log(table_name,row_uuid,op,ts_ms,origin,origin_seq)
+        SELECT 'vocabulary_membership_dots',NEW.dot,'upsert',
+          CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),uuid,
+          COALESCE((SELECT MAX(origin_seq) FROM sync_log WHERE origin=sync_identity.uuid),0)+1
+        FROM sync_identity;
+      END;")?;
+    conn.execute_batch("CREATE TRIGGER IF NOT EXISTS sync_context_metadata_update
+      AFTER UPDATE OF name, icon, tone, cleanup_intensity, color, custom_instructions,
+        contextual_formatting_disabled, contextual_formatting_override, pinned_at,
+        paste_in_chunks, t3_skill_mentions_disabled ON contexts
+      WHEN (SELECT COALESCE(applying, 0) FROM sync_state) = 0 AND (
+        NEW.name IS NOT OLD.name OR NEW.icon IS NOT OLD.icon OR NEW.tone IS NOT OLD.tone OR
+        NEW.cleanup_intensity IS NOT OLD.cleanup_intensity OR NEW.color IS NOT OLD.color OR
+        NEW.custom_instructions IS NOT OLD.custom_instructions OR
+        NEW.contextual_formatting_disabled IS NOT OLD.contextual_formatting_disabled OR
+        NEW.contextual_formatting_override IS NOT OLD.contextual_formatting_override OR
+        NEW.pinned_at IS NOT OLD.pinned_at OR NEW.paste_in_chunks IS NOT OLD.paste_in_chunks OR
+        NEW.t3_skill_mentions_disabled IS NOT OLD.t3_skill_mentions_disabled)
+      BEGIN
+        INSERT INTO sync_setting_meta(key, ts_ms, origin)
+        VALUES ('context_metadata:' || NEW.uuid,
+          CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER),
+          COALESCE((SELECT uuid FROM sync_identity), ''))
+        ON CONFLICT(key) DO UPDATE SET ts_ms=MAX(excluded.ts_ms, sync_setting_meta.ts_ms + 1), origin=excluded.origin;
+      END;")?;
+    conn.execute_batch("CREATE TRIGGER IF NOT EXISTS vocabulary_correction_version_insert
+      AFTER INSERT ON dictionary_corrections
+      WHEN (SELECT COALESCE(applying,0) FROM sync_state)=0
+      BEGIN
+        UPDATE dictionary_corrections SET uuid=lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(6))) WHERE id=NEW.id AND uuid IS NULL;
+        INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at,seen_retired,seen_expired)
+          SELECT lower(hex(randomblob(16))),dc.uuid,
+                 CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END,
+                 d.uuid,d.term,dc.mistake,dc.auto_learned,dc.created_at,
+                 COALESCE((SELECT json_group_array(v.version_id) FROM vocabulary_correction_versions v
+                   WHERE v.context_uuid=CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END
+                     AND (v.retired=1 OR EXISTS(SELECT 1 FROM vocabulary_correction_decisions x JOIN vocabulary_correction_versions w ON w.version_id=x.winner_version
+                       WHERE x.loser_version=v.version_id AND (w.retired=1 OR EXISTS(SELECT 1 FROM vocabulary_expiration_marks em JOIN dictionary ed ON ed.uuid=em.item_uuid LEFT JOIN vocabulary_expiration_usage eu ON eu.item_uuid=ed.uuid WHERE em.item_uuid=w.dictionary_uuid AND MAX(ed.created_at,COALESCE(eu.last_used_at,''))<=em.cutoff))))),'[]'),
+                 COALESCE((SELECT json_group_array(m.item_uuid || ':' || m.request_id) FROM vocabulary_expiration_marks m JOIN dictionary x ON x.uuid=m.item_uuid
+                   LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=x.uuid
+                   WHERE MAX(x.created_at,COALESCE(u.last_used_at,''))<=m.cutoff),'[]')
+            FROM dictionary_corrections dc JOIN contexts c ON c.id=dc.context_id JOIN dictionary d ON d.id=dc.dictionary_id
+           WHERE dc.id=NEW.id AND dc.uuid IS NOT NULL AND c.uuid IS NOT NULL AND d.uuid IS NOT NULL;
+      END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_correction_version_delete
+      BEFORE DELETE ON dictionary_corrections
+      WHEN (SELECT COALESCE(applying,0) FROM sync_state)=0
+      BEGIN UPDATE vocabulary_correction_versions SET retired=1 WHERE correction_uuid=OLD.uuid AND retired=0; END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_correction_version_change
+      AFTER UPDATE OF context_id,dictionary_id,mistake,auto_learned ON dictionary_corrections
+      WHEN (SELECT COALESCE(applying,0) FROM sync_state)=0 AND
+        (NEW.context_id!=OLD.context_id OR NEW.dictionary_id!=OLD.dictionary_id OR NEW.mistake!=OLD.mistake OR NEW.auto_learned!=OLD.auto_learned)
+      BEGIN
+        UPDATE vocabulary_correction_versions SET retired=1 WHERE correction_uuid=OLD.uuid AND retired=0;
+        INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at,seen_retired,seen_expired)
+          SELECT lower(hex(randomblob(16))),dc.uuid,
+                 CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END,
+                 d.uuid,d.term,dc.mistake,dc.auto_learned,dc.created_at,
+                 COALESCE((SELECT json_group_array(v.version_id) FROM vocabulary_correction_versions v
+                   WHERE v.context_uuid=CASE WHEN c.is_everywhere=1 THEN 'everywhere-0000-0000-0000-000000000001' ELSE c.uuid END
+                     AND (v.retired=1 OR EXISTS(SELECT 1 FROM vocabulary_correction_decisions x JOIN vocabulary_correction_versions w ON w.version_id=x.winner_version
+                       WHERE x.loser_version=v.version_id AND (w.retired=1 OR EXISTS(SELECT 1 FROM vocabulary_expiration_marks em JOIN dictionary ed ON ed.uuid=em.item_uuid LEFT JOIN vocabulary_expiration_usage eu ON eu.item_uuid=ed.uuid WHERE em.item_uuid=w.dictionary_uuid AND MAX(ed.created_at,COALESCE(eu.last_used_at,''))<=em.cutoff))))),'[]'),
+                 COALESCE((SELECT json_group_array(m.item_uuid || ':' || m.request_id) FROM vocabulary_expiration_marks m JOIN dictionary x ON x.uuid=m.item_uuid
+                   LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=x.uuid WHERE MAX(x.created_at,COALESCE(u.last_used_at,''))<=m.cutoff),'[]')
+            FROM dictionary_corrections dc JOIN contexts c ON c.id=dc.context_id JOIN dictionary d ON d.id=dc.dictionary_id
+           WHERE dc.id=NEW.id AND dc.uuid IS NOT NULL AND c.uuid IS NOT NULL AND d.uuid IS NOT NULL;
+      END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_correction_version_log_insert
+      AFTER INSERT ON vocabulary_correction_versions
+      WHEN (SELECT COALESCE(applying,0) FROM sync_state)=0
+      BEGIN
+        INSERT INTO sync_log(table_name,row_uuid,op,ts_ms,origin,origin_seq)
+        SELECT 'vocabulary_correction_versions',NEW.version_id,'upsert',CAST((julianday('now')-2440587.5)*86400000 AS INTEGER),uuid,
+          COALESCE((SELECT MAX(origin_seq) FROM sync_log WHERE origin=sync_identity.uuid),0)+1 FROM sync_identity;
+      END;
+      CREATE TRIGGER IF NOT EXISTS vocabulary_correction_version_log_retire
+      AFTER UPDATE OF retired ON vocabulary_correction_versions
+      WHEN NEW.retired!=OLD.retired AND (SELECT COALESCE(applying,0) FROM sync_state)=0
+      BEGIN
+        INSERT INTO sync_log(table_name,row_uuid,op,ts_ms,origin,origin_seq)
+        SELECT 'vocabulary_correction_versions',NEW.version_id,'upsert',CAST((julianday('now')-2440587.5)*86400000 AS INTEGER),uuid,
+          COALESCE((SELECT MAX(origin_seq) FROM sync_log WHERE origin=sync_identity.uuid),0)+1 FROM sync_identity;
+      END;")?;
     backfill_canonical_uuids(&conn, "dictionary_corrections")?;
     conn.execute_batch("DROP TRIGGER IF EXISTS trg_sync_transcriptions_upd; DROP TRIGGER IF EXISTS trg_sync_api_calls_upd;")?;
     conn.execute_batch(SYNC_TRIGGER_SQL)?;

@@ -563,6 +563,7 @@ fn exchange(a: &DbHandle, b: &DbHandle) {
 
 struct TestHost {
     uuid: String,
+    version: String,
     db_probe: Option<DbHandle>,
     settings: std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
     stamps: std::sync::Mutex<std::collections::HashMap<String, (i64, String)>>,
@@ -574,6 +575,7 @@ impl TestHost {
     fn new(uuid: &str) -> Self {
         Self {
             uuid: uuid.to_string(),
+            version: "test".to_string(),
             db_probe: None,
             settings: Default::default(),
             stamps: Default::default(),
@@ -603,7 +605,7 @@ impl SyncHost for TestHost {
     }
 
     fn app_version(&self) -> String {
-        "test".to_string()
+        self.version.clone()
     }
 
     fn settings_payload(&self) -> Result<Vec<super::protocol::SettingRecord>> {
@@ -1081,6 +1083,10 @@ fn stale_correction_cannot_restore_removed_context_membership() {
     let payload = context_op.payload.as_mut().expect("context payload");
     payload["dictionary_uuids"] = json!([]);
     payload["dictionary_entries"] = json!([]);
+    let mut membership_remove = context_ops.iter().find(|op| op.table == "vocabulary_membership_dots"
+        && op.payload.as_ref().is_some_and(|row| row["dictionary_uuid"] == dictionary_uuid)).expect("membership dot").clone();
+    membership_remove.payload.as_mut().unwrap()["removed"] = json!(true);
+    membership_remove.ts_ms = context_op.ts_ms;
 
     let stale = dictionary_correction_op(
         &correction_uuid,
@@ -1090,7 +1096,7 @@ fn stale_correction_cannot_restore_removed_context_membership() {
         "MembershipMistake",
         1,
     );
-    let summary = engine::apply_ops(&conn, &[stale, context_op]).expect("remove membership");
+    let summary = engine::apply_ops(&conn, &[stale, context_op, membership_remove]).expect("remove membership");
     assert!(summary.contexts);
     assert_eq!(
         count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"),
@@ -1104,6 +1110,14 @@ fn stale_correction_cannot_restore_removed_context_membership() {
         )
         .expect("membership count");
     assert_eq!(assigned, 0);
+
+    let mut skewed_stale = dictionary_correction_op(
+        &correction_uuid, &context_uuid, &dictionary_uuid, "MembershipTerm", "MembershipMistake", 1,
+    );
+    skewed_stale.ts_ms = sync_store::now_ms() + 60_000;
+    engine::apply_ops(&conn, &[skewed_stale]).expect("replay stale correction with skewed clock");
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary_corrections"), 0);
+    assert_eq!(count(&conn, "SELECT COUNT(*) FROM dictionary_contexts"), 0);
 }
 
 #[test]
@@ -2689,6 +2703,7 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
         device_uuid: uuid("aaaa"),
         device_name: "A".to_string(),
         cert_der: vec![1, 2, 3],
+        app_version: Some("test".into()),
         sync_port: Some(50001),
         pairing_id: Some(uuid::Uuid::new_v4().to_string()),
     };
@@ -2696,6 +2711,7 @@ async fn pairing_succeeds_with_matching_code_and_fails_with_wrong_code() {
         device_uuid: uuid("bbbb"),
         device_name: "B".to_string(),
         cert_der: vec![4, 5, 6],
+        app_version: Some("test".into()),
         sync_port: Some(50002),
         pairing_id: None,
     };

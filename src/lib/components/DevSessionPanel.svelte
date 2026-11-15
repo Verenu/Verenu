@@ -165,6 +165,12 @@
   @media (max-width: 500px) {
     .dev-session-launcher { bottom: calc(80px + env(safe-area-inset-bottom)); }
     .dev-session-panel { padding: 16px; bottom: calc(128px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 164px); }
+    :global(body:has(.settings-page)) .dev-session-launcher { bottom: calc(16px + env(safe-area-inset-bottom)); }
+    :global(body:has(.settings-page)) .dev-session-panel { bottom: calc(64px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 100px); }
+    :global(body:has(.dev-session-launcher) .settings-page .panel) { padding-bottom: calc(100px + env(safe-area-inset-bottom)); scroll-padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
+    :global(body:has(.settings-page):has(.app[data-android='true'][data-compact-nav='true'])) .dev-session-launcher { bottom: calc(80px + env(safe-area-inset-bottom)); }
+    :global(body:has(.settings-page):has(.app[data-android='true'][data-compact-nav='true'])) .dev-session-panel { bottom: calc(128px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 164px); }
+    :global(body:has(.dev-session-launcher) .app[data-android='true'][data-compact-nav='true'] .settings-page .panel) { padding-bottom: calc(164px + env(safe-area-inset-bottom)); scroll-padding-bottom: calc(164px + env(safe-area-inset-bottom)); }
     .dev-fields { grid-template-columns: 1fr; }
     .dev-actions > button { flex: 1 1 100%; }
   }

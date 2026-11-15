@@ -20,9 +20,11 @@
   import { MOTION_PX, modalBackdrop, modalCard, motionPx } from '../../motion';
 
   let settingsBaseline: SettingsSnapshot | null = null;
-  type ExpirationStatus = { days: number | null; paused_for_sync: boolean; deleted: Array<{ request_id: string; term: string; deleted_at: string }> };
-  let expiration = $state<ExpirationStatus>({ days: null, paused_for_sync: false, deleted: [] });
+  type ReviewCandidate = { kind: 'dictionary' | 'correction'; row_uuid: string; origin: string; origin_seq: number; value: { term?: string; mistake?: string; replacement_confidence?: string; correction_count?: number; confidence_tier?: string } };
+  type ExpirationStatus = { days: number | null; paused_for_sync: boolean; deleted: Array<{ request_id: string; term: string; deleted_at: string }>; reviews: Array<{ context_uuid: string; dictionary_uuid: string; term: string; reason: string; context_name: string | null; candidates: ReviewCandidate[] }> };
+  let expiration = $state<ExpirationStatus>({ days: null, paused_for_sync: false, deleted: [], reviews: [] });
   let expirationError = $state('');
+  let expirationNotice = $state('');
   let expirationSaving = $state(false);
   const expirationOptions = [
     { value: 'off', label: 'Off' },
@@ -30,13 +32,15 @@
   ];
 
   async function loadExpiration() {
-    expiration = await invoke<ExpirationStatus>('get_vocabulary_expiration');
+    const status = await invoke<ExpirationStatus>('get_vocabulary_expiration');
+    expiration = { ...status, reviews: (status.reviews ?? []).map((review) => ({ ...review, candidates: review.candidates ?? [] })) };
   }
 
   async function changeExpiration(value: string) {
     if (expirationSaving) return;
     expirationSaving = true;
     expirationError = '';
+    expirationNotice = '';
     try {
       await invoke('set_vocabulary_expiration', { days: value === 'off' ? null : Number(value) });
       await loadExpiration();
@@ -50,11 +54,56 @@
   async function restoreVocabulary(requestId: string) {
     expirationSaving = true;
     expirationError = '';
+    expirationNotice = '';
     try {
       await invoke('restore_expired_vocabulary', { requestId });
       await loadExpiration();
     } catch (err) {
       expirationError = formatIpcError(err, 'Could not restore vocabulary');
+    } finally {
+      expirationSaving = false;
+    }
+  }
+
+  async function acknowledgeReview(contextUuid: string, dictionaryUuid: string) {
+    expirationSaving = true;
+    expirationError = '';
+    expirationNotice = '';
+    try {
+      await invoke('acknowledge_vocabulary_review', { contextUuid, dictionaryUuid });
+      await loadExpiration();
+    } catch (err) {
+      expirationError = formatIpcError(err, 'Could not mark vocabulary as reviewed');
+    } finally {
+      expirationSaving = false;
+    }
+  }
+
+  async function restoreReviewCandidate(contextUuid: string, candidate: ReviewCandidate) {
+    expirationSaving = true;
+    expirationError = '';
+    expirationNotice = '';
+    try {
+      await invoke('restore_vocabulary_review_payload', { contextUuid, kind: candidate.kind, rowUuid: candidate.row_uuid, origin: candidate.origin, originSeq: candidate.origin_seq });
+      await loadExpiration();
+      expirationNotice = 'Saved change restored. The saved copy remains available for review.';
+    } catch (err) {
+      expirationError = formatIpcError(err, 'Could not restore the saved change');
+    } finally {
+      expirationSaving = false;
+    }
+  }
+
+  async function discardReviewCandidate(candidate: ReviewCandidate) {
+    if (!window.confirm('Discard this saved change from all Contexts and synced devices? This cannot be undone.')) return;
+    expirationSaving = true;
+    expirationError = '';
+    expirationNotice = '';
+    try {
+      await invoke('discard_vocabulary_review_payload', { kind: candidate.kind, rowUuid: candidate.row_uuid, origin: candidate.origin, originSeq: candidate.origin_seq });
+      await loadExpiration();
+    } catch (err) {
+      expirationError = formatIpcError(err, 'Could not discard the saved change');
     } finally {
       expirationSaving = false;
     }
@@ -324,6 +373,21 @@
       <div class="desc">Restore an item with its Context assignments and corrections.</div>
       {#each expiration.deleted as item (item.request_id)}
         <div class="expiration-item"><span>{item.term} <span class="desc">· {item.deleted_at.slice(0, 10)}</span></span><button class="btn-ghost btn-compact" disabled={expirationSaving} onclick={() => restoreVocabulary(item.request_id)}>Restore</button></div>
+      {/each}
+    </div>
+  </div>
+{/if}
+{#if expiration.reviews.length}
+  <div class="setting-row">
+    <div>
+      <div class="label">Vocabulary to review</div>
+      <div class="desc">These items have changes from another device that need review. Restoring keeps the saved copy until you choose to discard it.</div>
+      {#if expirationNotice}<p role="status">{expirationNotice}</p>{/if}
+      {#each expiration.reviews as item (`${item.context_uuid}:${item.dictionary_uuid}`)}
+        <div class="expiration-item"><span>{item.term} <span class="desc">· {item.context_name ?? 'Context unavailable'} · {item.reason === 'offline_deletion' ? 'Changed after deletion' : item.reason === 'correction_conflict' ? 'Conflicting correction' : 'Changes from before the update'}</span></span><button class="btn-ghost btn-compact" disabled={expirationSaving || item.candidates.length > 0} onclick={() => acknowledgeReview(item.context_uuid, item.dictionary_uuid)}>Mark reviewed</button></div>
+        {#each item.candidates as candidate (`${candidate.kind}:${candidate.row_uuid}:${candidate.origin}:${candidate.origin_seq}`)}
+          <div class="expiration-item"><span class="desc">{candidate.kind === 'dictionary' ? `Saved vocabulary: ${candidate.value.term ?? item.term} · confidence ${candidate.value.replacement_confidence ?? 'default'}` : `Saved correction: ${candidate.value.mistake ?? ''} · ${candidate.value.correction_count ?? 0} corrections · confidence ${candidate.value.confidence_tier ?? 'low'}`}</span><span><button class="btn-ghost btn-compact" disabled={expirationSaving} onclick={() => restoreReviewCandidate(item.context_uuid, candidate)}>Restore</button><button class="btn-ghost btn-compact" disabled={expirationSaving} onclick={() => discardReviewCandidate(candidate)}>Discard</button></span></div>
+        {/each}
       {/each}
     </div>
   </div>
