@@ -10,6 +10,17 @@ const provider = {
 const keys = ['custom_providers', 'transcription_default_model', 'cleanup_default_model', 'transcription_fallback_models', 'cleanup_fallback_models', 'dual_transcription_enabled', 'cleanup_enabled', 'transcription_provider', 'cleanup_provider', 'transcription_model', 'cleanup_model', 'transcription_models_by_provider', 'cleanup_models_by_provider', 'model_selection_mode', 'advanced_model_ui'];
 const defaults = { custom_providers: [], transcription_fallback_models: [], cleanup_fallback_models: [], dual_transcription_enabled: false, cleanup_enabled: true, transcription_provider: 'groq', cleanup_provider: 'groq', transcription_models_by_provider: {}, cleanup_models_by_provider: {}, model_selection_mode: 'manual', advanced_model_ui: false };
 
+// The section slides in and each setup group rises into place, so positions read mid-animation disagree by a pixel or two.
+async function settled(locator) {
+  let previous = null;
+  await expect.poll(async () => {
+    const box = await locator.boundingBox();
+    const same = !!box && !!previous && box.x === previous.x && box.y === previous.y && box.height === previous.height;
+    previous = box;
+    return same;
+  }, { intervals: [120] }).toBe(true);
+}
+
 test('Models shows the two steps in order and a setup updates them in place', async ({ page, session }, testInfo) => {
   const before = await session.invoke('get_all_settings');
   try {
@@ -23,6 +34,8 @@ test('Models shows the two steps in order and a setup updates them in place', as
     const cleanup = page.locator('[data-setting-target="models-cleanup"]');
     await expect(transcription.locator('.head-title')).toHaveText('Transcription');
     await expect(cleanup.locator('.head-title')).toHaveText('Clean-up');
+    const cloud = page.getByRole('region', { name: 'Cloud models' });
+    await settled(cloud);
     const [first, second] = [await transcription.boundingBox(), await cleanup.boundingBox()];
     const phone = testInfo.project.name === 'phone';
     // Side by side on desktop, stacked on a phone; transcription always comes first.
@@ -31,7 +44,6 @@ test('Models shows the two steps in order and a setup updates them in place', as
 
     // The switch that unlocks model choice sits with the tiles it changes, above the setups.
     const advanced = page.locator('[data-setting-target="advanced-models"]');
-    const cloud = page.getByRole('region', { name: 'Cloud models' });
     expect((await advanced.boundingBox()).y).toBeGreaterThan(second.y);
     expect((await cloud.boundingBox()).y).toBeGreaterThan((await advanced.boundingBox()).y);
     await expect(transcription.getByRole('button', { name: 'Change model' })).toHaveCount(0);
@@ -55,8 +67,8 @@ test('Models shows the two steps in order and a setup updates them in place', as
     await cloud.getByRole('button', { name: 'Details', exact: true }).first().click();
     const details = cloud.locator('.preset-details');
     await expect(details).toBeVisible();
-    // Opening details can scroll the panel, so measure the cards again and wait for the panel to finish sliding open.
-    await expect.poll(async () => (await details.boundingBox()).height).toBeGreaterThan(60);
+    // Opening details can scroll the panel, so wait for the panel to finish sliding open and measure the cards again.
+    await settled(details);
     const [detailsBox, firstCard, secondCard] = await Promise.all([details.boundingBox(), cards.nth(0).boundingBox(), cards.nth(1).boundingBox()]);
     expect(detailsBox.y).toBeGreaterThan(firstCard.y + firstCard.height - 1);
     if (!phone) expect(detailsBox.width).toBeGreaterThan(firstCard.width * 2);
