@@ -1,5 +1,29 @@
 import { test, expect } from './fixtures.mjs';
 
+const setupModelKeys = [
+  'transcription_provider', 'transcription_model', 'transcription_default_model',
+  'transcription_models_by_provider', 'transcription_fallback_models', 'dual_transcription_enabled',
+  'cleanup_provider', 'cleanup_model', 'cleanup_default_model', 'cleanup_models_by_provider',
+  'cleanup_fallback_models',
+];
+
+async function cleanupAll(...steps) {
+  const errors = [];
+  for (const step of steps) {
+    try { await step(); } catch (error) { errors.push(error); }
+  }
+  if (errors.length) throw new AggregateError(errors, 'Setup fixture cleanup failed');
+}
+
+async function useFreshSetupModels(session) {
+  const empty = Object.fromEntries(setupModelKeys.map(key => [key, [false, null]]));
+  const original = await session.invoke('test_restore_setup_model_settings', { values: empty });
+  return async () => {
+    const replaced = await session.invoke('test_restore_setup_model_settings', { values: original });
+    expect(replaced).toEqual(empty);
+  };
+}
+
 for (const reducedMotion of ['no-preference', 'reduce']) {
   for (const mode of ['pointer', 'keyboard Enter', 'keyboard Space']) {
     test(`Setup honors an early progress step click (${mode}, ${reducedMotion})`, async ({ page, session }) => {
@@ -8,7 +32,9 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
         setup_progress: await session.invoke('get_setting', { key: 'setup_progress' }),
       };
       const label = (n) => page.getByText(new RegExp(`^Step ${n} of \\d+`));
+      let restoreModels;
       try {
+        restoreModels = await useFreshSetupModels(session);
         await page.emulateMedia({ reducedMotion });
         await session.invoke('save_setting', { key: 'setup_complete', value: false });
         await session.invoke('save_setting', { key: 'setup_progress', value: { step: 6, provider: 'local' } });
@@ -71,11 +97,14 @@ for (const reducedMotion of ['no-preference', 'reduce']) {
         await page.getByRole('button', { name: 'Next', exact: true }).click();
         await expect(label(6)).toBeVisible();
       } finally {
-        await page.clock.resume();
-        await session.invoke('save_setting', { key: 'setup_progress', value: previous.setup_progress ?? null });
-        await session.invoke('save_setting', { key: 'setup_complete', value: previous.setup_complete ?? true });
-        await page.emulateMedia({ reducedMotion: null });
-        await page.reload();
+        await cleanupAll(
+          () => page.clock.resume(),
+          () => restoreModels?.(),
+          () => session.invoke('save_setting', { key: 'setup_progress', value: previous.setup_progress ?? null }),
+          () => session.invoke('save_setting', { key: 'setup_complete', value: previous.setup_complete ?? true }),
+          () => page.emulateMedia({ reducedMotion: null }),
+          () => page.reload(),
+        );
       }
     });
   }
@@ -88,15 +117,17 @@ test('setup resumes local progress while credential status is delayed', async ({
   };
   let release;
   const blocked = new Promise(resolve => { release = resolve; });
-  const context = await browser.newContext({ viewport: testInfo.project.use.viewport });
-  const isolated = await context.newPage();
-  await isolated.route('**/__verenu_dev/invoke', async route => {
-    if (route.request().postDataJSON()?.command === 'get_api_key_status') {
-      await blocked;
-    }
-    await route.continue().catch(() => {});
-  });
+  let restoreModels;
+  let context;
+  let isolated;
   try {
+    restoreModels = await useFreshSetupModels(session);
+    context = await browser.newContext({ viewport: testInfo.project.use.viewport });
+    isolated = await context.newPage();
+    await isolated.route('**/__verenu_dev/invoke', async route => {
+      if (route.request().postDataJSON()?.command === 'get_api_key_status') await blocked;
+      await route.continue().catch(() => {});
+    });
     await session.invoke('save_setting', { key: 'setup_complete', value: false });
     await session.invoke('save_setting', { key: 'setup_progress', value: { step: 6, provider: 'local' } });
     await isolated.goto(session.access.localAccessUrl);
@@ -104,10 +135,13 @@ test('setup resumes local progress while credential status is delayed', async ({
     await expect(isolated.getByText(/^Step 6 of \d+/)).toBeVisible({ timeout: 5000 });
   } finally {
     release();
-    await isolated.unrouteAll({ behavior: 'wait' });
-    await context.close();
-    await session.invoke('save_setting', { key: 'setup_progress', value: previous.setup_progress ?? null });
-    await session.invoke('save_setting', { key: 'setup_complete', value: previous.setup_complete ?? true });
+    await cleanupAll(
+      () => isolated?.unrouteAll({ behavior: 'wait' }),
+      () => context?.close(),
+      () => restoreModels?.(),
+      () => session.invoke('save_setting', { key: 'setup_progress', value: previous.setup_progress ?? null }),
+      () => session.invoke('save_setting', { key: 'setup_complete', value: previous.setup_complete ?? true }),
+    );
   }
 });
 
