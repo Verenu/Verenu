@@ -1,6 +1,40 @@
 use super::*;
 
 #[tauri::command]
+pub async fn get_vocabulary_expiration(app: AppHandle) -> Result<serde_json::Value, String> {
+    run_db(&app, "get_vocabulary_expiration", db::vocabulary_expiration_status).await
+}
+
+#[tauri::command]
+pub async fn set_vocabulary_expiration(app: AppHandle, days: Option<i64>) -> Result<(), String> {
+    run_db(&app, "set_vocabulary_expiration", move |db| db::set_vocabulary_expiration(db, days)).await
+}
+
+#[tauri::command]
+pub async fn restore_expired_vocabulary(app: AppHandle, request_id: String) -> Result<(), String> {
+    run_db(&app, "restore_expired_vocabulary", move |db| db::restore_expired_vocabulary(db, &request_id)).await?;
+    let _ = app.emit("verenu:dictionary-updated", serde_json::json!({"context_id":null,"dictionary_id":null}));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn acknowledge_vocabulary_review(app: AppHandle, context_uuid: String, dictionary_uuid: String) -> Result<(), String> {
+    run_db(&app, "acknowledge_vocabulary_review", move |db| db::acknowledge_vocabulary_review(db, &context_uuid, &dictionary_uuid)).await
+}
+
+#[tauri::command]
+pub async fn restore_vocabulary_review_payload(app: AppHandle, context_uuid: String, kind: String, row_uuid: String, origin: String, origin_seq: i64) -> Result<(), String> {
+    run_db(&app, "restore_vocabulary_review_payload", move |db| db::restore_vocabulary_review_payload(db, &context_uuid, &kind, &row_uuid, &origin, origin_seq)).await?;
+    let _ = app.emit("verenu:dictionary-updated", serde_json::json!({"context_id":null,"dictionary_id":null}));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn discard_vocabulary_review_payload(app: AppHandle, kind: String, row_uuid: String, origin: String, origin_seq: i64) -> Result<(), String> {
+    run_db(&app, "discard_vocabulary_review_payload", move |db| db::discard_vocabulary_review_payload(db, &kind, &row_uuid, &origin, origin_seq)).await
+}
+
+#[tauri::command]
 pub async fn get_installed_apps(app: AppHandle) -> Vec<InstalledApp> {
     #[cfg(target_os = "android")]
     {

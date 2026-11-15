@@ -6,7 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 pub const MAX_MESSAGE_BYTES: u32 = 64 * 1024 * 1024;
 // Negotiated frames set the length's high bit and prefix gzip data with the
@@ -70,6 +70,8 @@ pub struct Hello {
     pub activity_receipts: bool,
     #[serde(default)]
     pub cleanup_cache: bool,
+    #[serde(default)]
+    pub vocabulary_usage: bool,
     #[serde(default, rename = "z", skip_serializing_if = "is_false")]
     pub compressed_frames: bool,
 }

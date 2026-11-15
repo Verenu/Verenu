@@ -268,13 +268,15 @@ fn query_dictionary_conn(
            FROM dictionary d
            INNER JOIN dictionary_contexts dc ON dc.dictionary_id = d.id
           WHERE dc.context_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)
           ORDER BY d.created_at DESC"
     } else {
-        "SELECT id, term, mistake, auto_learned, correction_count, confidence_tier,
-                last_seen_at, created_at, replacement_confidence
-           FROM dictionary
+        "SELECT d.id, d.term, CASE WHEN EXISTS (SELECT 1 FROM dictionary_contexts dc JOIN contexts c ON c.id=dc.context_id WHERE dc.dictionary_id=d.id AND c.is_everywhere=1) THEN d.mistake ELSE NULL END, d.auto_learned, d.correction_count, d.confidence_tier,
+                d.last_seen_at, d.created_at, d.replacement_confidence
+           FROM dictionary d
           WHERE ?1 IS NULL
-          ORDER BY created_at DESC"
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)
+          ORDER BY d.created_at DESC"
     };
     let canonical_rows: Vec<(i64, LegacyDictionaryFields)> = conn
         .prepare_cached(canonical_sql)?
@@ -296,21 +298,23 @@ fn query_dictionary_conn(
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let correction_sql = if context_id.is_some() {
-        "SELECT id, dictionary_id, context_id, mistake, auto_learned,
-                correction_count, confidence_tier, last_seen_at, created_at
-           FROM dictionary_corrections
-          WHERE context_id = ?1
-          ORDER BY dictionary_id, id"
+        "SELECT c.id, c.dictionary_id, c.context_id, c.mistake, c.auto_learned,
+                c.correction_count, c.confidence_tier, c.last_seen_at, c.created_at, c.uuid
+           FROM dictionary_corrections c JOIN dictionary d ON d.id=c.dictionary_id
+          WHERE c.context_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,''))<=m.cutoff)
+          ORDER BY c.auto_learned, c.created_at DESC, COALESCE(c.uuid,'') DESC"
     } else {
-        "SELECT id, dictionary_id, context_id, mistake, auto_learned,
-                correction_count, confidence_tier, last_seen_at, created_at
-           FROM dictionary_corrections
+        "SELECT c.id, c.dictionary_id, c.context_id, c.mistake, c.auto_learned,
+                c.correction_count, c.confidence_tier, c.last_seen_at, c.created_at, c.uuid
+           FROM dictionary_corrections c JOIN dictionary d ON d.id=c.dictionary_id
           WHERE ?1 IS NULL
-          ORDER BY dictionary_id, context_id, id"
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,''))<=m.cutoff)
+          ORDER BY c.auto_learned, c.created_at DESC, COALESCE(c.uuid,'') DESC"
     };
     let mut correction_stmt = conn.prepare_cached(correction_sql)?;
     let correction_rows = correction_stmt.query_map(params![context_id], |row| {
-        Ok(DictionaryCorrection {
+        Ok((DictionaryCorrection {
             id: row.get(0)?,
             dictionary_id: row.get(1)?,
             context_id: row.get(2)?,
@@ -320,11 +324,26 @@ fn query_dictionary_conn(
             confidence_tier: row.get(6)?,
             last_seen_at: row.get(7)?,
             created_at: row.get(8)?,
-        })
+        }, row.get::<_, Option<String>>(9)?))
     })?;
+    let history_suppressed = suppressed_correction_history(conn)?;
     let mut corrections_by_dictionary: HashMap<i64, Vec<DictionaryCorrection>> = HashMap::new();
+    let mut owners: HashMap<(i64, String), i64> = HashMap::new();
+    let mut suppressed = HashSet::new();
     for correction in correction_rows {
-        let correction = correction?;
+        let (correction, uuid) = correction?;
+        if uuid.as_ref().is_some_and(|id| history_suppressed.contains(id)) {
+            suppressed.insert(correction.dictionary_id);
+            continue;
+        }
+        let variants = normalized_mistake_variants(Some(&correction.mistake));
+        if variants.iter().any(|variant| owners.get(&(correction.context_id, variant.clone())).is_some_and(|owner| *owner != correction.dictionary_id)) {
+            suppressed.insert(correction.dictionary_id);
+            continue;
+        }
+        for variant in variants {
+            owners.insert((correction.context_id, variant), correction.dictionary_id);
+        }
         corrections_by_dictionary
             .entry(correction.dictionary_id)
             .or_default()
@@ -334,8 +353,9 @@ fn query_dictionary_conn(
     Ok(canonical_rows
         .into_iter()
         .map(|(id, mut legacy)| {
-            let corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
-            if context_id.is_some() {
+            let mut corrections = corrections_by_dictionary.remove(&id).unwrap_or_default();
+            corrections.sort_by_key(|correction| (correction.context_id, correction.id));
+            if context_id.is_some() || (corrections.is_empty() && suppressed.contains(&id)) {
                 legacy.mistake = None;
                 legacy.auto_learned = false;
                 legacy.correction_count = 0;
@@ -656,6 +676,142 @@ fn normalized_mistake_variants(mistake: Option<&str>) -> HashSet<String> {
         .collect()
 }
 
+struct HistoricalCorrection {
+    version: String,
+    correction: String,
+    context: String,
+    dictionary: String,
+    mistake: HashSet<String>,
+    manual: bool,
+    created: String,
+    seen_retired: HashSet<String>,
+    seen_expired: HashSet<String>,
+    seen_expired_roots: HashSet<String>,
+    retired: bool,
+}
+
+fn identity_root(roots: &mut HashMap<String, String>, id: &str) -> String {
+    let parent = roots.get(id).cloned().unwrap_or_else(|| id.to_owned());
+    if parent == id { return parent; }
+    let root = identity_root(roots, &parent);
+    roots.insert(id.to_owned(), root.clone());
+    root
+}
+
+type CorrectionHistoryOutcome = (HashSet<String>, Vec<(String, String)>);
+
+fn correction_history_outcome(conn: &rusqlite::Connection) -> Result<CorrectionHistoryOutcome> {
+    let mut roots = HashMap::new();
+    let links = conn.prepare("SELECT left_uuid,right_uuid FROM vocabulary_identity_links")?
+        .query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (left, right) in links {
+        let a = identity_root(&mut roots, &left);
+        let b = identity_root(&mut roots, &right);
+        if a != b { roots.insert(a, b); }
+    }
+    let aliases = conn.prepare("SELECT source_uuid,local_uuid FROM backup_context_aliases")?
+        .query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?
+        .collect::<rusqlite::Result<HashMap<_,_>>>()?;
+    let everywhere_aliases: HashSet<String> = conn.prepare("SELECT uuid FROM sync_everywhere_aliases")?
+        .query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let expiration_events: HashMap<String,(String,Vec<String>)> = conn.prepare("SELECT request_id,item_uuid,version_ids FROM vocabulary_expiration_events")?
+        .query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))?
+        .map(|row| -> Result<_> { let (request,item,versions)=row?; Ok((request,(item,serde_json::from_str(&versions)?))) })
+        .collect::<Result<_>>()?;
+    let mut history = conn.prepare("SELECT version_id,correction_uuid,context_uuid,dictionary_uuid,mistake,auto_learned,created_at,seen_retired,seen_expired,retired FROM vocabulary_correction_versions")?
+        .query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,bool>(5)?,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,String>(8)?,row.get::<_,bool>(9)?)))?
+        .map(|row| -> Result<HistoricalCorrection> {
+            let (version,correction,context,dictionary,mistake,auto,created,seen_retired,seen_expired,retired) = row?;
+            let context = if context == "everywhere-0000-0000-0000-000000000001" || everywhere_aliases.contains(&context) { "everywhere-0000-0000-0000-000000000001".to_string() } else { aliases.get(&context).cloned().unwrap_or(context) };
+            Ok(HistoricalCorrection { version, correction, context,
+                dictionary: identity_root(&mut roots, &dictionary), mistake: normalized_mistake_variants(Some(&mistake)),
+                manual: !auto, created, seen_retired: serde_json::from_str(&seen_retired)?,
+                seen_expired: serde_json::from_str(&seen_expired)?, seen_expired_roots: HashSet::new(), retired })
+        }).collect::<Result<Vec<_>>>()?;
+    let everywhere: Option<String> = conn.query_row("SELECT uuid FROM contexts WHERE is_everywhere=1", [], |row| row.get(0)).optional()?;
+    for version in &mut history {
+        if version.context == "everywhere-0000-0000-0000-000000000001" || everywhere_aliases.contains(&version.context) {
+            if let Some(uuid) = &everywhere { version.context.clone_from(uuid); }
+        }
+    }
+    let all_versions: HashSet<_> = history.iter().map(|version| version.version.clone()).collect();
+    let mut expiration_dependencies = HashSet::new();
+    for version in &mut history {
+        for token in &version.seen_expired {
+            if let Some((item,request)) = token.split_once(':') {
+                if let Some((event_item,event_versions)) = expiration_events.get(request) {
+                    let item_root = identity_root(&mut roots,item);
+                    if item_root == identity_root(&mut roots,event_item) && event_versions.iter().all(|id| all_versions.contains(id)) {
+                        expiration_dependencies.insert(token.clone());
+                        version.seen_expired_roots.insert(item_root);
+                    }
+                }
+            }
+        }
+    }
+    history.sort_by(|a,b| (b.manual,b.created.as_str(),b.correction.as_str(),b.version.as_str())
+        .cmp(&(a.manual,a.created.as_str(),a.correction.as_str(),a.version.as_str())));
+    let known: HashSet<_> = history.iter().map(|version| version.version.as_str()).collect();
+    let ready = |version: &HistoricalCorrection| version.seen_retired.iter().all(|id| known.contains(id.as_str()))
+        && version.seen_expired.iter().all(|token| expiration_dependencies.contains(token));
+    let version_dictionaries: HashMap<_,_> = history.iter().map(|version| (version.version.as_str(),version.dictionary.as_str())).collect();
+    let mut rejected: HashSet<String> = conn.prepare("SELECT winner_version,loser_version FROM vocabulary_correction_decisions")?
+        .query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?
+        .filter_map(|row| match row {
+            Ok((winner,loser)) if version_dictionaries.get(winner.as_str()).zip(version_dictionaries.get(loser.as_str())).is_some_and(|(a,b)| a == b) => None,
+            Ok((_,loser)) => Some(Ok(loser)),
+            Err(err) => Some(Err(err)),
+        }).collect::<rusqlite::Result<_>>()?;
+    let mut decisions = Vec::new();
+    let mut by_variant: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    for (index, version) in history.iter().enumerate() {
+        for variant in &version.mistake {
+            by_variant.entry((&version.context,variant)).or_default().push(index);
+        }
+    }
+    for (index, winner) in history.iter().enumerate() {
+        if rejected.contains(&winner.version) || !ready(winner) { continue; }
+        let mut competitors = std::collections::BTreeSet::new();
+        for variant in &winner.mistake {
+            if let Some(indices) = by_variant.get(&(winner.context.as_str(),variant.as_str())) {
+                competitors.extend(indices.iter().copied().filter(|other| *other > index));
+            }
+        }
+        for other in competitors {
+            let loser = &history[other];
+            if rejected.contains(&loser.version) || !ready(loser) || winner.context != loser.context
+                || winner.dictionary == loser.dictionary || winner.mistake.is_disjoint(&loser.mistake) { continue; }
+            let observed_inactive = |newer: &HistoricalCorrection, older: &HistoricalCorrection| {
+                newer.seen_retired.contains(&older.version) || newer.seen_expired_roots.contains(&older.dictionary)
+            };
+            if observed_inactive(loser,winner) || observed_inactive(winner,loser) { continue; }
+            rejected.insert(loser.version.clone());
+            decisions.push((winner.version.clone(),loser.version.clone()));
+        }
+    }
+    let known_corrections: HashSet<_> = history.iter().map(|version| version.correction.clone()).collect();
+    let visible: HashSet<_> = history.iter().filter(|version| !version.retired && ready(version) && !rejected.contains(&version.version))
+        .map(|version| version.correction.clone()).collect();
+    Ok((known_corrections.difference(&visible).cloned().collect(), decisions))
+}
+
+fn suppressed_correction_history(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
+    Ok(correction_history_outcome(conn)?.0)
+}
+
+pub(crate) fn record_correction_history_decisions(conn: &rusqlite::Connection) -> Result<()> {
+    for (winner,loser) in correction_history_outcome(conn)?.1 {
+        let id = format!("{winner}:{loser}");
+        if conn.execute("INSERT OR IGNORE INTO vocabulary_correction_decisions(decision_id,winner_version,loser_version) VALUES (?1,?2,?3)", params![id,winner,loser])? > 0 {
+            crate::sync::engine::append_self_log(conn,"vocabulary_correction_decisions",&id,"upsert")?;
+            conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason)
+              SELECT context_uuid,dictionary_uuid,dictionary_term,'correction_conflict' FROM vocabulary_correction_versions WHERE version_id=?1", [&loser])?;
+        }
+    }
+    Ok(())
+}
+
 pub fn check_dictionary_mistake_conflicts(
     conn: &rusqlite::Connection,
     context_id: i64,
@@ -684,22 +840,26 @@ fn find_dictionary_mistake_conflict(
     }
 
     let mut stmt = conn.prepare(
-        "SELECT d.id, d.term, c.mistake
+        "SELECT d.id, d.term, c.mistake, c.uuid
            FROM dictionary_corrections c
            INNER JOIN dictionary d ON d.id = c.dictionary_id
           WHERE c.context_id = ?1
-            AND (?2 IS NULL OR d.id != ?2)",
+            AND (?2 IS NULL OR d.id != ?2)
+            AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)",
     )?;
     let rows = stmt.query_map(params![context_id, dictionary_id], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
         ))
     })?;
 
+    let history_suppressed = suppressed_correction_history(conn)?;
     for row in rows {
-        let (_id, term, existing_mistake) = row?;
+        let (_id, term, existing_mistake, correction_uuid) = row?;
+        if correction_uuid.as_ref().is_some_and(|uuid| history_suppressed.contains(uuid)) { continue; }
         for variant in dictionary_mistake_variants(existing_mistake.as_deref().unwrap_or("")) {
             if candidate_variants.contains(&variant.to_lowercase()) {
                 return Ok(Some((variant.to_string(), term)));
@@ -800,6 +960,25 @@ pub(crate) fn insert_dictionary_entry_returning_conn(
         )
         .optional()?;
     if let Some(id) = existing {
+        let expired: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM dictionary d JOIN vocabulary_expiration_marks m ON m.item_uuid=d.uuid LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE d.id=?1 AND MAX(d.created_at,COALESCE(u.last_used_at,''))<=m.cutoff)", [id], |row| row.get(0))?;
+        if expired {
+            let uuid: String = tx.query_row("SELECT uuid FROM dictionary WHERE id=?1", [id], |row| row.get(0))?;
+            super::agent_library::ensure_expired_corrections_available(tx, &uuid)?;
+            tx.execute("INSERT INTO vocabulary_expiration_usage(item_uuid,last_used_at) VALUES (?1,datetime('now')) ON CONFLICT(item_uuid) DO UPDATE SET last_used_at=MAX(last_used_at,excluded.last_used_at)", [&uuid])?;
+            crate::sync::engine::append_self_log(tx, "vocabulary_expiration_usage", &uuid, "upsert")?;
+            crate::sync::engine::reconcile_vocabulary_identities(tx, &uuid)?;
+            let assigned: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM dictionary_contexts WHERE context_id=?1 AND dictionary_id=?2)", params![target_context,id], |row| row.get(0))?;
+            if context_id.is_none() || assigned {
+                if !assigned {
+                    tx.execute("INSERT OR IGNORE INTO dictionary_contexts(context_id,dictionary_id) VALUES (?1,?2)", params![target_context,id])?;
+                }
+                if normalized_mistake.is_some() {
+                    update_dictionary_entry_for_context_conn(tx, target_context, id, &normalized_term, normalized_mistake.as_deref())?;
+                }
+                let created_at = tx.query_row("SELECT created_at FROM dictionary WHERE id=?1", [id], |row| row.get(0))?;
+                return Ok(CreatedRecordMeta { id, created_at });
+            }
+        }
         if context_id.is_none() {
             anyhow::bail!("\"{normalized_term}\" is already in the dictionary");
         }

@@ -97,6 +97,17 @@ describe('actionable errors', () => {
     expect(formatSyncError('TLS handshake failed: certificate rejected')).toContain('pair the device again');
   });
 
+  it('explains a version mismatch even when wrapped in a pairing error', () => {
+    expect(formatSyncError('pairing handshake failed: Both devices must run the same Verenu version. Update the older device and try again.'))
+      .toContain('Both devices must run the same Verenu version');
+    expect(formatSyncError('pairing rejected: protocol version 4 not supported'))
+      .toContain('Both devices must run the same Verenu version');
+    expect(formatSyncError('peer error: peer speaks sync protocol v4, this device speaks v3'))
+      .toContain('Both devices must run the same Verenu version');
+    expect(formatSyncError('peer runs sync protocol v3 but this device speaks v4'))
+      .toContain('Both devices must run the same Verenu version');
+  });
+
   it('keeps the sync port and firewall recovery guidance instead of a generic timeout', () => {
     const raw = 'Could not connect to Sync test book at 100.88.83.103:49522: connection timed out. A firewall or network rule may be blocking TCP port 49522. Open Verenu and allow this connection through both firewalls.';
     expect(formatSyncError(raw)).toContain('TCP port 49522');

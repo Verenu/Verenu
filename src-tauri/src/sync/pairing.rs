@@ -19,6 +19,8 @@ pub struct IdentityExchange {
     pub device_name: String,
     pub cert_der: Vec<u8>,
     #[serde(default)]
+    pub app_version: Option<String>,
+    #[serde(default)]
     pub sync_port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pairing_id: Option<String>,
@@ -76,6 +78,28 @@ fn decrypt_identity(
 
 pub type PairingOutcome = IdentityExchange;
 
+pub(super) fn require_matching_version(local: &str, remote: Option<&str>) -> Result<()> {
+    if local.is_empty() || remote.is_none_or(|version| version.is_empty() || version != local) {
+        anyhow::bail!("Both devices must run the same Verenu version. Update the older device and try again.");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::require_matching_version;
+
+    #[test]
+    fn version_check_rejects_missing_empty_and_different_versions() {
+        assert!(require_matching_version("1.2.3", Some("1.2.3")).is_ok());
+        assert!(require_matching_version("1.2.3", None).is_err());
+        assert!(require_matching_version("1.2.3", Some("")).is_err());
+        assert!(require_matching_version("", Some("")).is_err());
+        assert!(require_matching_version("1.2.3", Some("1.2.4")).is_err());
+        assert!(require_matching_version("1.2.3", Some("1.2.3-beta.1")).is_err());
+    }
+}
+
 pub fn initiator_start(code: &str) -> (Spake2<Ed25519Group>, Vec<u8>) {
     Spake2::<Ed25519Group>::start_a(
         &Password::new(code.as_bytes()),
@@ -132,6 +156,7 @@ where
     if outcome.pairing_id.is_some() && outcome.pairing_id != self_identity.pairing_id {
         return Err(anyhow!("pairing identifier did not match"));
     }
+    require_matching_version(self_identity.app_version.as_deref().unwrap_or(""), outcome.app_version.as_deref())?;
     match read_message(stream).await? {
         Message::PairComplete => {}
         Message::Error { message } => return Err(anyhow!("pairing failed: {message}")),
@@ -166,6 +191,11 @@ where
     let peer = decrypt_identity(cipher, &ciphertext, &nonce)?;
     if peer.device_uuid != expected_peer_uuid {
         return Err(anyhow!("pairing peer identity changed mid-handshake"));
+    }
+
+    if let Err(error) = require_matching_version(self_identity.app_version.as_deref().unwrap_or(""), peer.app_version.as_deref()) {
+        let _ = send_message(stream, Message::PairReject { reason: error.to_string() }).await;
+        return Err(error);
     }
 
     if peer.pairing_id.as_deref().is_some_and(|id| uuid::Uuid::parse_str(id).is_err()) {

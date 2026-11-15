@@ -289,6 +289,7 @@ pub fn query_dictionary_entry_contexts(db: &Db, term: &str) -> Result<Vec<Contex
          INNER JOIN dictionary_contexts dc ON dc.context_id = c.id
          INNER JOIN dictionary d ON d.id = dc.dictionary_id
          WHERE d.term = ?1
+           AND NOT EXISTS (SELECT 1 FROM vocabulary_expiration_marks m LEFT JOIN vocabulary_expiration_usage u ON u.item_uuid=m.item_uuid WHERE m.item_uuid=d.uuid AND MAX(d.created_at,COALESCE(u.last_used_at,'')) <= m.cutoff)
          ORDER BY c.is_everywhere DESC, c.name COLLATE NOCASE ASC",
         params![normalized_term],
         |row| {
@@ -1470,7 +1471,8 @@ mod tests {
             // Recreate the v32 state: the nullable column did not exist, and
             // the legacy boolean carried only an explicit disable.
             conn.execute_batch(
-                "ALTER TABLE contexts DROP COLUMN contextual_formatting_override;
+                "DROP TRIGGER sync_context_metadata_update;
+                 ALTER TABLE contexts DROP COLUMN contextual_formatting_override;
                  PRAGMA user_version = 32;",
             )
             .expect("prepare v32 state");
@@ -1480,6 +1482,7 @@ mod tests {
         };
 
         let migrated = open(&path).expect("run v33 migration");
+        assert_eq!(lock_conn(&migrated).unwrap().query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='sync_context_metadata_update'", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
         let follows_global = query_context(&migrated, enabled_id).expect("follow context");
         let disabled = query_context(&migrated, disabled_id).expect("disabled context");
         assert_eq!(follows_global.contextual_formatting_override, None);
