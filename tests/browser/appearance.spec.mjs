@@ -3,6 +3,12 @@ import { test, expect } from './fixtures.mjs';
 test('theme editor previews, stays open during navigation, cancels and saves', async ({ page, session }, testInfo) => {
   const keys = ['appearance_mode', 'custom_theme', 'accent_color', 'custom_themes'];
   const previous = Object.fromEntries(await Promise.all(keys.map(async key => [key, await session.invoke('get_setting', { key })])));
+  const expectLauncherClearOfDock = async () => {
+    const launcher = await page.getByRole('button', { name: 'Dev tests', exact: true }).boundingBox();
+    const dock = await page.locator('.theme-dock').boundingBox();
+    expect(launcher && dock).toBeTruthy();
+    expect(launcher.x + launcher.width <= dock.x || dock.x + dock.width <= launcher.x || launcher.y + launcher.height <= dock.y || dock.y + dock.height <= launcher.y).toBe(true);
+  };
   try {
     await page.locator('[data-debug-id="nav.settings"]').click();
     await page.getByRole('radio', { name: 'Dark', exact: true }).click();
@@ -13,7 +19,14 @@ test('theme editor previews, stays open during navigation, cancels and saves', a
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--paper').trim().toLowerCase())).toBe('#182633');
     expect(await session.invoke('get_setting', { key: 'custom_theme' })).toEqual(previous.custom_theme);
     await page.locator('[data-debug-id="nav.back"]').click();
+    await expect(page.locator('.settings-page')).toHaveCount(0);
     await expect(editor).toBeVisible();
+    await expectLauncherClearOfDock();
+    if (testInfo.project.name === 'phone') {
+      await page.setViewportSize({ width: 390, height: 600 });
+      await expectLauncherClearOfDock();
+      await page.setViewportSize({ width: 390, height: 844 });
+    }
     await editor.getByRole('button', { name: 'Close theme editor' }).click();
     await editor.getByRole('button', { name: 'Keep editing', exact: true }).click();
     await expect(editor).toBeVisible();
@@ -32,7 +45,14 @@ test('theme editor previews, stays open during navigation, cancels and saves', a
     expect(rect.x + rect.width).toBeLessThanOrEqual(viewport.width);
     expect(rect.y + rect.height).toBeLessThanOrEqual(viewport.height);
     await page.screenshot({ path: testInfo.outputPath('theme-editor.png') });
-    await editor.getByRole('button', { name: 'Save theme', exact: true }).click();
+    const saveTheme = editor.getByRole('button', { name: 'Save theme', exact: true });
+    await saveTheme.scrollIntoViewIfNeeded();
+    await expectLauncherClearOfDock();
+    expect(await saveTheme.evaluate((button) => {
+      const rect = button.getBoundingClientRect();
+      return button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+    })).toBe(true);
+    await saveTheme.click();
     await expect(editor).toHaveCount(0);
     const saved = await session.invoke('get_setting', { key: 'custom_themes' });
     const theme = saved.find(t => t.name === `Synthetic ${testInfo.project.name}`);
