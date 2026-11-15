@@ -23,7 +23,9 @@
     pendingPresetId = null,
     transformPreset,
     activeLabel = $bindable(null),
+    layout = 'rows',
   }: {
+    layout?: 'rows' | 'cards';
     showCustomNote?: boolean;
     options?: PresetOptions;
     transformPreset?: (preset: Preset) => Preset;
@@ -105,13 +107,13 @@
 
 <svelte:window onclick={handleWindowClick} onkeydown={handleWindowKeydown} />
 
-<div class="preset-grid">
+<div class="preset-grid" class:cards={layout === 'cards'}>
 {#each [{ title: 'Cloud', presets: cloudPresets }, { title: 'Local AI', presets: localPresets }] as group}
 {#if group.presets.length}
 {@const recommendedId = recommendedIdFor(group.presets)}
 <section class="preset-group" aria-label={`${group.title} models`}>
   <div class="group-head">
-    <h3 class="settings-subhead">{group.title}</h3>
+    <h3 class="settings-subhead">{layout === 'cards' ? `${group.title} setups` : group.title}</h3>
     {#if group.title === 'Local AI' && cloudActive}
       <span class="group-status" role="status">{offlineSpeech.length ? 'Offline fallback ready' : 'Offline fallback not prepared'}</span>
     {:else if group.title === 'Local AI'}
@@ -119,9 +121,11 @@
     {/if}
   </div>
   <div class="preset-list">
-  {#each group.presets as preset (preset.id)}
+  {#each group.presets as preset, index (preset.id)}
     <PresetCard
       {preset}
+      {layout}
+      {index}
       active={preset.id === activeId}
       downloadMb={downloadMbFor(preset)}
       downloading={isDownloading(preset)}
@@ -164,6 +168,18 @@
     border-radius: var(--r-lg);
     background: var(--settings-card-bg, var(--bg-elev));
     overflow: hidden;
+  }
+  .cards .preset-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    overflow: visible;
+  }
+  @container settings-panel (max-width: 560px) {
+    .cards .preset-list { grid-template-columns: minmax(0, 1fr); }
   }
   .empty-note { margin: 10px 0 0; font-family: var(--sans); font-size: 12px; color: var(--ink-mute); }
   @keyframes group-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
