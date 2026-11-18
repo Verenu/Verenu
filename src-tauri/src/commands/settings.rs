@@ -77,6 +77,7 @@ enum SettingKind {
     HistoryRetention,
     GithubUsername,
     LocalModelMemoryPolicy,
+    InterfaceFont,
     ModelSelectionMode,
     ModelMap,
     StringArray,
@@ -173,6 +174,7 @@ setting_specs! {
     ACCENT_COLOR: AccentColor = true,
     CUSTOM_THEME: CustomTheme = true,
     CUSTOM_THEMES: CustomThemes = true,
+    INTERFACE_FONT: InterfaceFont = true,
     ANDROID_PILL_POSITION: AndroidPillPosition = true,
     ANDROID_PILL_DOCK_POSITION: AndroidPillDockPosition = true,
     ANDROID_PILL_COVER_KEYBOARD_MIC: Bool = true,
@@ -223,6 +225,7 @@ pub(crate) fn agent_setting_schema(key: &str) -> Option<serde_json::Value> {
         SettingKind::DuckFadeMs => json!({"type":"integer", "minimum":0, "maximum":5000}),
         SettingKind::DuckCurve => json!({"enum":["linear", "smooth"]}),
         SettingKind::ModelSelectionMode => json!({"enum":["manual", "fastest", "balanced", "quality"]}),
+        SettingKind::InterfaceFont => json!({"type":"string", "enum": store::INTERFACE_FONT_OPTIONS, "description": "The typeface used across the main window."}),
         SettingKind::StringArray => json!({"type":"array", "items":{"type":"string", "minLength":1}}),
         SettingKind::ModelMap | SettingKind::StylePromptInstructions => json!({"type":"object", "description":"Validated by the native settings handler."}),
         _ => json!({"description":"Validated by the native settings handler; inspect the current value before editing."}),
@@ -388,6 +391,7 @@ pub fn validate_setting(key: &str, value: &serde_json::Value) -> Result<(), Stri
         SettingKind::LocalModelMemoryPolicy => value
             .as_str()
             .is_some_and(store::is_supported_local_model_memory_policy),
+        SettingKind::InterfaceFont => value.as_str().is_some_and(store::is_supported_interface_font),
         SettingKind::ModelMap => is_model_map(value),
         SettingKind::ModelSelectionMode => value.as_str().is_some_and(|mode| matches!(mode, "manual" | "fastest" | "balanced" | "quality")),
         SettingKind::SubAppChord => value
@@ -641,6 +645,16 @@ mod setting_key_tests {
             validate_setting(store::ANDROID_PILL_POSITION, &serde_json::json!("floating")).is_err()
         );
         assert!(validate_setting(store::ANDROID_PILL_POSITION, &serde_json::Value::Null).is_err());
+    }
+
+    #[test]
+    fn interface_font_accepts_only_known_typefaces() {
+        for font in store::INTERFACE_FONT_OPTIONS {
+            assert!(validate_setting(store::INTERFACE_FONT, &serde_json::json!(font)).is_ok(), "{font}");
+        }
+        assert!(validate_setting(store::INTERFACE_FONT, &serde_json::json!("comic")).is_err());
+        assert!(validate_setting(store::INTERFACE_FONT, &serde_json::Value::Null).is_err());
+        assert!(is_exportable_setting_key(store::INTERFACE_FONT));
     }
 
     #[test]
@@ -1430,6 +1444,7 @@ pub struct AllSettings {
     pub accent_color: Option<String>,
     pub custom_theme: Option<serde_json::Value>,
     pub custom_themes: Option<serde_json::Value>,
+    pub interface_font: Option<String>,
     pub android_pill_position: Option<String>,
     pub android_pill_dock_position: Option<String>,
     pub android_pill_cover_keyboard_mic: Option<bool>,
@@ -1536,6 +1551,7 @@ all_settings! {
     accent_color = str_val(store::ACCENT_COLOR),
     custom_theme = json_val(store::CUSTOM_THEME),
     custom_themes = json_val(store::CUSTOM_THEMES),
+    interface_font = str_val(store::INTERFACE_FONT),
     android_pill_position = str_val(store::ANDROID_PILL_POSITION),
     android_pill_dock_position = str_val(store::ANDROID_PILL_DOCK_POSITION),
     android_pill_cover_keyboard_mic = bool_val(store::ANDROID_PILL_COVER_KEYBOARD_MIC),

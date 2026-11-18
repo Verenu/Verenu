@@ -20,6 +20,7 @@ export type ToneId = 'casual' | 'formal' | 'very_casual';
 export type CleanupIntensity = 'none' | 'rules' | 'light' | 'medium' | 'high';
 export type HistoryRetention = '7 days' | '30 days' | '90 days' | 'Forever';
 export type AppearanceMode = 'system' | 'light' | 'dark' | 'omarchy' | 'custom';
+export type InterfaceFont = 'default' | 'system' | 'mono';
 
 export type AndroidPillScreenPosition =
   | 'screen-top-left'
@@ -145,6 +146,7 @@ export type SettingsValueMap = {
   accent_color: string | null;
   custom_theme: CustomTheme | null;
   custom_themes: SavedTheme[] | null;
+  interface_font: InterfaceFont;
   android_pill_position: AndroidPillPosition;
   android_pill_dock_position: AndroidPillScreenPosition;
   android_pill_cover_keyboard_mic: boolean;

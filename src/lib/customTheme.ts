@@ -26,6 +26,15 @@ export const CUSTOM_THEME_PRESETS: { label: string; theme: CustomTheme }[] = [
   { label: 'Gruvbox Dark', theme: { background: '#282828', foreground: '#EBDBB2', sidebar: '#1D2021', surface: '#3C3836' } },
   { label: 'Catppuccin Latte', theme: { background: '#EFF1F5', foreground: '#4C4F69', sidebar: '#E6E9EF', surface: '#FFFFFF' } },
   { label: 'Solarized Light', theme: { background: '#FDF6E3', foreground: '#586E75', sidebar: '#EEE8D5', surface: '#FFFBF0' } },
+  { label: 'Dracula', theme: { background: '#282A36', foreground: '#F8F8F2', sidebar: '#21222C', surface: '#343746' } },
+  { label: 'Rosé Pine', theme: { background: '#191724', foreground: '#E0DEF4', sidebar: '#16141F', surface: '#1F1D2E' } },
+  { label: 'Everforest', theme: { background: '#2D353B', foreground: '#D3C6AA', sidebar: '#272E33', surface: '#343F44' } },
+  { label: 'Kanagawa', theme: { background: '#1F1F28', foreground: '#DCD7BA', sidebar: '#16161D', surface: '#2A2A37' } },
+  { label: 'Rosé Pine Dawn', theme: { background: '#FAF4ED', foreground: '#575279', sidebar: '#F2E9E1', surface: '#FFFAF3' } },
+  { label: 'One Dark', theme: { background: '#282C34', foreground: '#ABB2BF', sidebar: '#21252B', surface: '#2C313A' } },
+  { label: 'Gruvbox Light', theme: { background: '#FBF1C7', foreground: '#3C3836', sidebar: '#F2E5BC', surface: '#FFF8DA' } },
+  { label: 'GitHub Light', theme: { background: '#FFFFFF', foreground: '#1F2328', sidebar: '#F6F8FA', surface: '#FFFFFF' } },
+  { label: 'Paper', theme: { background: '#F6F5F1', foreground: '#2B2A27', sidebar: '#EFEDE7', surface: '#FFFFFF' } },
 ];
 
 export function normalizeCustomTheme(value: unknown): CustomTheme | null {
