@@ -116,6 +116,15 @@
   --mobile-nav-h: 0px;
 }
 
+/* Interface font, set from Settings > Appearance. Only the UI face changes; code and display faces stay. */
+:root[data-font="system"] {
+  --sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+}
+
+:root[data-font="mono"] {
+  --sans: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+}
+
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation-duration: 220ms;

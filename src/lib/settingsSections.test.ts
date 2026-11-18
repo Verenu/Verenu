@@ -19,6 +19,11 @@ describe('settings navigation', () => {
     expect(order.indexOf('models')).toBe(order.indexOf('keys') + 1);
   });
 
+  it('gives Appearance its own section beside About', () => {
+    const verenu = visibleSettingsSections({ isMac: false, devMode: false }).find((group) => group.group === 'Verenu');
+    expect(verenu?.items.map((item) => item.id)).toEqual(['appearance', 'about']);
+  });
+
   it('gives every section a unique id and label', () => {
     const sections = visibleSettingsSections({ isMac: true, devMode: true, legacyMode: true }).flatMap((group) => group.items);
     expect(new Set(sections.map((item) => item.id)).size).toBe(sections.length);
