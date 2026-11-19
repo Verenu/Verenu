@@ -53,6 +53,11 @@ describe('settings search', () => {
     });
   });
 
+  it('keeps the theme gallery out of Android search, where it is not shown', () => {
+    platform.android = true;
+    expect(searchSettings('create theme', visibleSections).map((entry) => entry.target)).not.toContain('appearance-themes');
+  });
+
   it('routes theme and font searches to the Appearance section', () => {
     expect(searchSettings('create theme', visibleSections)[0]).toMatchObject({ section: 'appearance', target: 'appearance-themes' });
     expect(searchSettings('monospace', visibleSections)[0]).toMatchObject({ section: 'appearance', target: 'appearance-font' });

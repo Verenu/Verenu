@@ -11,6 +11,7 @@ export type SettingsSearchEntry = {
   fallbackTarget?: string;
   keywords?: string[];
   androidOnly?: boolean;
+  desktopOnly?: boolean;
 };
 
 export type SettingsSearchRequest = Pick<
@@ -52,7 +53,7 @@ const BASE_ENTRIES: SettingsSearchEntry[] = [
   { id: 'general-appearance', section: 'general', label: 'Appearance mode', description: 'Switch between the system, light, and dark look', target: 'general-appearance', keywords: ['light mode', 'dark mode', 'system theme'] },
   { id: 'appearance-mode', section: 'appearance', label: 'Appearance', description: 'Choose the light, dark, or system look', target: 'appearance-mode', keywords: ['theme', 'light mode', 'dark mode', 'system', 'omarchy', 'look'] },
   { id: 'appearance-accent', section: 'appearance', label: 'Accent color', description: 'Change the color used for actions, highlights, and focus rings', target: 'appearance-accent-card', keywords: ['colour', 'orange', 'brand', 'palette', 'custom color', 'hex', 'highlight'] },
-  { id: 'appearance-themes', section: 'appearance', label: 'Themes', description: 'Pick, create, and edit full color themes', target: 'appearance-themes', keywords: ['custom colors', 'hex', 'background color', 'palette', 'create theme', 'theme gallery', 'theme editor', 'saved themes', 'catppuccin', 'nord', 'dracula', 'gruvbox', 'tokyo night'] },
+  { id: 'appearance-themes', section: 'appearance', label: 'Themes', description: 'Pick, create, and edit full color themes', target: 'appearance-themes', keywords: ['custom colors', 'hex', 'background color', 'palette', 'create theme', 'theme gallery', 'theme editor', 'saved themes', 'catppuccin', 'nord', 'dracula', 'gruvbox', 'tokyo night'], desktopOnly: true },
   { id: 'appearance-font', section: 'appearance', label: 'Interface font', description: 'Choose the typeface used across Verenu', target: 'appearance-font', keywords: ['typeface', 'font', 'monospace', 'mono', 'system font', 'text style'] },
   { id: 'general-startup', section: 'general', label: 'Start on boot', description: 'Launch Verenu when the computer starts', target: 'general-startup', keywords: ['autostart', 'startup', 'launch'] },
   { id: 'text-cleanup', section: 'text', label: 'Cleanup', description: 'Clean up transcripts after transcription', target: 'text-cleanup', keywords: ['formatting', 'rewrite', 'llm', 'ai'] },
@@ -178,7 +179,7 @@ export function searchSettings(
   const visible = new Set(visibleSections);
 
   return SETTINGS_SEARCH_ENTRIES
-    .filter((entry) => android || !entry.androidOnly)
+    .filter((entry) => (android ? !entry.desktopOnly : !entry.androidOnly))
     .map((entry) => ({ entry, score: visible.has(entry.section) ? scoreEntry(entry, query, tokens) : -1 }))
     .filter((result) => result.score >= 0)
     .sort((a, b) => b.score - a.score || a.entry.label.localeCompare(b.entry.label))
