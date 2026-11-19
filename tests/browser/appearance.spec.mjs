@@ -102,3 +102,40 @@ test('appearance tab saves accent and font, filters themes, and General keeps a 
     }
   }
 });
+
+test('Reset waits for an in-flight font save instead of half resetting', async ({ page, session }) => {
+  const keys = ['appearance_mode', 'accent_color', 'interface_font'];
+  const previous = Object.fromEntries(await Promise.all(keys.map(async key => [key, await session.invoke('get_setting', { key })])));
+  let release;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const saving = new Promise(resolve => { captured = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'interface_font', value: 'default' });
+    await openAppearance(page);
+    await page.getByRole('radio', { name: 'Violet', exact: true }).click();
+    await expect.poll(() => session.invoke('get_setting', { key: 'accent_color' })).toBe('#8B6FD6');
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (request.command !== 'save_setting' || request.args?.key !== 'interface_font') return route.continue();
+      captured();
+      await held;
+      await route.continue();
+    });
+    await page.getByRole('radio', { name: 'Mono', exact: true }).click();
+    await saving;
+    await expect(page.getByRole('button', { name: 'Reset', exact: true })).toHaveAttribute('aria-disabled', 'true');
+    // aria-disabled keeps it focusable, so dispatch the click to prove the handler itself refuses.
+    await page.getByRole('button', { name: 'Reset', exact: true }).dispatchEvent('click');
+    release();
+    await expect.poll(() => session.invoke('get_setting', { key: 'interface_font' })).toBe('mono');
+    expect(await session.invoke('get_setting', { key: 'accent_color' })).toBe('#8B6FD6');
+    await expect(page.getByRole('button', { name: 'Reset', exact: true })).toHaveAttribute('aria-disabled', 'false');
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    for (const key of keys) {
+      await session.invoke('save_setting', { key, value: previous[key] ?? (key === 'appearance_mode' ? 'system' : key === 'interface_font' ? 'default' : null) });
+    }
+  }
+});

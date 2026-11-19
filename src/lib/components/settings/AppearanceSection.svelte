@@ -198,7 +198,7 @@
   }
 
   async function resetLook() {
-    if (busy || isDefaultLook) return;
+    if (busy || fontSaving || isDefaultLook) return;
     guardThemeEditor(async () => {
       error = '';
       if (appStore.appearanceMode !== 'system') {
@@ -276,7 +276,7 @@
           {themeActive && !activeSaved ? 'Save as theme' : 'New theme'}
         </button>
       {/if}
-      <button class="btn-ghost btn-compact" disabled={isDefaultLook} aria-disabled={busy} onclick={resetLook}>Reset</button>
+      <button class="btn-ghost btn-compact" disabled={isDefaultLook} aria-disabled={busy || fontSaving} onclick={resetLook}>Reset</button>
     </div>
   </div>
 </section>
