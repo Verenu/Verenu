@@ -331,6 +331,24 @@ test('native and live workflows publish only safe reports and fail on missing li
   }
 });
 
+test('every Windows Rust build pins the toolchain that ort-sys rc.12 supports', () => {
+  // Rust 1.100's build-dir layout breaks ort-sys copy-dylibs on Windows.
+  const pinned = (steps, windowsIf) => steps.some(step => step.uses === 'dtolnay/rust-toolchain@1.99.1' && step.if === windowsIf);
+  const partitions = workflow('pr-checks.yml').jobs['rust-partitions'];
+  assert.ok(pinned(partitions.steps, "runner.os == 'Windows'"));
+  assert.equal(partitions.steps.find(step => step.uses === 'dtolnay/rust-toolchain@1.99.1').with.components, 'clippy');
+  const release = workflow('release-quality.yml').jobs.rust;
+  assert.ok(pinned(release.steps, "runner.os == 'Windows'"));
+  assert.ok(release.steps.some(step => step.uses === 'dtolnay/rust-toolchain@stable' && step.if === "runner.os != 'Windows'"));
+  for (const name of ['morning-release.yml', 'build-installers.yml']) {
+    const steps = Object.values(workflow(name).jobs).flatMap(job => job.steps ?? []);
+    assert.ok(pinned(steps, "matrix.os-name == 'windows'"), name);
+    assert.ok(!steps.some(step => step.uses === 'dtolnay/rust-toolchain@stable' && !step.if), name);
+  }
+  const extended = Object.values(workflow('extended-test-profiles.yml').jobs).flatMap(job => job.steps ?? []);
+  assert.ok(pinned(extended, "runner.os == 'Windows'"));
+});
+
 test('PR checks compile and run Android native regressions and native WebViews', () => {
   const jobs = workflow('pr-checks.yml').jobs;
   assert.ok(jobs.android.steps.some(step => step.run === 'npm run test:android'));
