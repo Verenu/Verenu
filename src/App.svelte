@@ -332,8 +332,9 @@
     }
     window.addEventListener('verenu:refresh-agent-appearance', refreshAgentAppearance);
     function refreshInterfaceFont() {
+      const version = ++appStore.interfaceFontChangeVersion;
       void invoke<unknown>('get_setting', { key: 'interface_font' })
-        .then(value => { if (mounted) appStore.interfaceFont = normalizeInterfaceFont(value); })
+        .then(value => { if (mounted && version === appStore.interfaceFontChangeVersion) appStore.interfaceFont = normalizeInterfaceFont(value); })
         .catch(error => console.error('read interface font failed', error));
     }
     void listen('verenu:agent-contexts-changed', () => { void loadContexts(true); })

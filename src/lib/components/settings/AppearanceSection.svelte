@@ -182,6 +182,7 @@
     const previous = appStore.interfaceFont;
     fontSaving = true;
     error = '';
+    appStore.interfaceFontChangeVersion++;
     appStore.interfaceFont = font;
     applyInterfaceFont(document.documentElement, font);
     try {

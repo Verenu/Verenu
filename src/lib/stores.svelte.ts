@@ -143,6 +143,7 @@ export const appStore = $state({
   appearanceMode: 'system' as AppearanceMode,
   accentColor: null as string | null,
   interfaceFont: 'default' as InterfaceFont,
+  interfaceFontChangeVersion: 0,
   subAppCaptureHotkey: null as string | null,
   omarchyTheme: null as OmarchyTheme | null,
   customTheme: null as CustomTheme | null,
