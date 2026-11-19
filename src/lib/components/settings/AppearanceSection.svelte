@@ -64,6 +64,7 @@
   let error = $state('');
   let filter = $state<Filter>('all');
   let fontSaving = $state(false);
+  let resetting = $state(false);
   let modeGroup: HTMLElement | null = $state(null);
   let fontGroup: HTMLElement | null = $state(null);
   let filterGroup: HTMLElement | null = $state(null);
@@ -177,8 +178,8 @@
     });
   }
 
-  async function chooseFont(font: InterfaceFont) {
-    if (fontSaving || font === appStore.interfaceFont) return;
+  async function chooseFont(font: InterfaceFont, fromReset = false) {
+    if (fontSaving || (resetting && !fromReset) || font === appStore.interfaceFont) return;
     const previous = appStore.interfaceFont;
     fontSaving = true;
     error = '';
@@ -198,20 +199,25 @@
   }
 
   async function resetLook() {
-    if (busy || fontSaving || isDefaultLook) return;
+    if (busy || fontSaving || resetting || isDefaultLook) return;
     guardThemeEditor(async () => {
       error = '';
-      if (appStore.appearanceMode !== 'system') {
-        const ok = await withAppearanceLock(async () => {
-          try { await setAppearanceMode('system'); return true; } catch { return false; }
-        });
-        if (ok === false) { error = 'Could not reset the appearance. Try again.'; return; }
+      resetting = true;
+      try {
+        if (appStore.appearanceMode !== 'system') {
+          const ok = await withAppearanceLock(async () => {
+            try { await setAppearanceMode('system'); return true; } catch { return false; }
+          });
+          if (ok === false) { error = 'Could not reset the appearance. Try again.'; return; }
+        }
+        if (appStore.accentColor !== null) {
+          const ok = await withAppearanceLock(() => persistAccentColor(null));
+          if (ok === false) { error = 'Could not reset the accent color. Try again.'; return; }
+        }
+        if (appStore.interfaceFont !== DEFAULT_INTERFACE_FONT) await chooseFont(DEFAULT_INTERFACE_FONT, true);
+      } finally {
+        resetting = false;
       }
-      if (appStore.accentColor !== null) {
-        const ok = await withAppearanceLock(() => persistAccentColor(null));
-        if (ok === false) { error = 'Could not reset the accent color. Try again.'; return; }
-      }
-      if (appStore.interfaceFont !== DEFAULT_INTERFACE_FONT) await chooseFont(DEFAULT_INTERFACE_FONT);
     });
   }
 
@@ -276,7 +282,7 @@
           {themeActive && !activeSaved ? 'Save as theme' : 'New theme'}
         </button>
       {/if}
-      <button class="btn-ghost btn-compact" disabled={isDefaultLook} aria-disabled={busy || fontSaving} onclick={resetLook}>Reset</button>
+      <button class="btn-ghost btn-compact" disabled={isDefaultLook} aria-disabled={busy || fontSaving || resetting} onclick={resetLook}>Reset</button>
     </div>
   </div>
 </section>
@@ -421,7 +427,7 @@
       aria-checked={checked}
       aria-label={option.label}
       aria-describedby={`font-${option.id}-desc`}
-      aria-disabled={fontSaving}
+      aria-disabled={fontSaving || resetting}
       tabindex={checked ? 0 : -1}
       onclick={() => chooseFont(option.id)}
       onkeydown={(event) => radioKeydown(event, fontGroup, INTERFACE_FONT_OPTIONS, index, (f) => void chooseFont(f.id))}
