@@ -139,3 +139,51 @@ test('Reset waits for an in-flight font save instead of half resetting', async (
     }
   }
 });
+
+test('font choices wait while Reset is saving', async ({ page, session }) => {
+  const keys = ['appearance_mode', 'accent_color', 'interface_font'];
+  const previous = Object.fromEntries(await Promise.all(keys.map(async key => [key, await session.invoke('get_setting', { key })])));
+  let release;
+  let releaseFont;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const fontHeld = new Promise(resolve => { releaseFont = resolve; });
+  const saving = new Promise(resolve => { captured = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'interface_font', value: 'default' });
+    await openAppearance(page);
+    await page.getByRole('radio', { name: 'Violet', exact: true }).click();
+    await expect.poll(() => session.invoke('get_setting', { key: 'accent_color' })).toBe('#8B6FD6');
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      // Hold a font save too, so an unguarded Mono choice would still be pending when Reset reaches the font.
+      if (request?.command === 'save_setting' && request.args?.key === 'interface_font' && request.args?.value === 'mono') {
+        await fontHeld;
+        return route.continue();
+      }
+      if (request?.command !== 'save_model_settings_if_unchanged') return route.continue();
+      captured();
+      await held;
+      await route.continue();
+    });
+    await page.getByRole('button', { name: 'Reset', exact: true }).click();
+    await saving;
+    const mono = page.getByRole('radio', { name: 'Mono', exact: true });
+    await expect(mono).toHaveAttribute('aria-disabled', 'true');
+    // aria-disabled keeps it focusable, so dispatch the click to prove the handler itself refuses.
+    await mono.dispatchEvent('click');
+    release();
+    await expect.poll(() => session.invoke('get_setting', { key: 'accent_color' })).toBeNull();
+    releaseFont();
+    await expect(mono).toHaveAttribute('aria-disabled', 'false');
+    expect(await session.invoke('get_setting', { key: 'interface_font' })).toBe('default');
+    await expect(page.locator('html')).not.toHaveAttribute('data-font', /./);
+  } finally {
+    release();
+    releaseFont();
+    await page.unrouteAll({ behavior: 'wait' });
+    for (const key of keys) {
+      await session.invoke('save_setting', { key, value: previous[key] ?? (key === 'appearance_mode' ? 'system' : key === 'interface_font' ? 'default' : null) });
+    }
+  }
+});
