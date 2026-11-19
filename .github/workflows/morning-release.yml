@@ -409,7 +409,14 @@ jobs:
           cache: npm
 
       - name: Set up Rust
+        if: matrix.os-name != 'windows'
         uses: dtolnay/rust-toolchain@stable
+
+      # ort-sys rc.12 assumes Cargo's pre-1.100 build layout when copying DLLs.
+      # transcribe-rs pins rc.12; remove this pin when it supports a fixed ort.
+      - name: Set up Windows Rust
+        if: matrix.os-name == 'windows'
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Install Linux AppImage build dependencies
         if: matrix.os-name == 'linux'
