@@ -402,7 +402,8 @@
   </div>
 {/if}
 
-<h3 class="settings-subhead">Interface font</h3>
+<h3 class="settings-subhead font-title">Interface font</h3>
+<p class="font-desc">Applies to the main window. The dictation pill keeps its own compact type.</p>
 <div
   class="font-grid"
   role="radiogroup"
@@ -732,6 +733,8 @@
   .gallery-empty { color: var(--ink-mute); font-size: 12px; margin: 10px 2px 0; }
 
   /* ---------- Font ---------- */
+  h3.font-title { margin-bottom: 2px; }
+  .font-desc { color: var(--ink-mute); font-size: 12px; line-height: 1.45; margin: 0 0 10px; padding-left: 2px; }
   .font-grid { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .font-card { align-items: center; display: flex; gap: 12px; padding: 12px 14px; }
   .font-sample {
