@@ -28,6 +28,10 @@ Providers is two groups: a single card of connected rows, then a grid of tiles f
 
 Models leads with the dictation flow: the Transcription and Clean-up `ModelTaskTile`s in step order with a connector between them, and "Advanced models" directly below because it unlocks their buttons. Setups follow as `ModelPresetPicker layout="cards"`; setup onboarding keeps the default `rows` layout. In `cards`, a preset's details panel spans the row under its group.
 
+### Appearance
+
+Appearance is its own Settings section. It opens with a live preview drawn from the active theme tokens, then shows mode, accent, themes, and interface font. Mode, theme, and font choices are `look-card` picture cards: the selection ring and check badge fade and scale on separate layers so selection never animates layout. Keep `appearance-option` on the mode radios; the smoke tests select them by that class. General keeps a compact System, Light, and Dark switch that links to the full page.
+
 ## Standard controls
 
 ### Buttons
@@ -163,7 +167,7 @@ Audit performed 2026-08-05. The app contains 172 `<button>` elements, two visual
 | Cards and accordions | `pick-card`, `env-card`, `provider-card`, `style-card`, `fork-card`, `tile-head`, `preset-select`, `state-pill`, `muted`, `card-btn`, `accent`, `ghost`, `flip-face`, `front`, `back` | Intentional feature-specific choices. They communicate a selected surface or disclosure state, not a generic action. |
 | Inspector actions | `btn-insp-edit`, `btn-insp-delete`, `mapping-delete-btn`, `remove-dot` | Destructive or contextual row actions. Keep feature-local confirmation state. |
 | Modal controls | `modal-backdrop`, `icon-btn`, `prompt-modal-close`, `prompt-btn`, `prompt-btn-ghost`, `snippet-nudge` | Modal mechanics and layout vary. Reuse standard action variants for modal footer actions. |
-| Form and settings utilities | `appearance-option`, `accent-trigger`, `accent-swatch`, `badge key-badge keybind-btn`, `cleanup-off-link`, `language-btn`, `mic-btn`, `models-dropdown-btn`, `notification-test-dropdown-button`, `simulation-provider-button`, `profile-drop-btn`, `cleanup-drop-btn` | Dropdown triggers use the global anatomy. The accent picker is a semantic color control. Other controls remain semantic. |
+| Form and settings utilities | `appearance-option`, `look-card`, `accent-swatch`, `quick-btn`, `badge key-badge keybind-btn`, `cleanup-off-link`, `language-btn`, `mic-btn`, `models-dropdown-btn`, `notification-test-dropdown-button`, `simulation-provider-button`, `profile-drop-btn`, `cleanup-drop-btn` | Dropdown triggers use the global anatomy. The accent swatches and Appearance picture cards are semantic selection controls. Other controls remain semantic. |
 | Setup flow | `btn-skip`, `btn-open`, `btn-got-key`, `show-btn`, `help-btn`, `tryit-reset`, `lang-clear` | Setup flow has deliberate pacing and spatial constraints. Do not swap in a primary button without checking the flow. |
 | Downloads and providers | `card-btn`, `accent`, `ghost`, `show-more-btn`, `custom-add-btn`, `custom-toggle-btn`, `simple-name`, `model-name`, `add-fallback-btn`, `preset-action-btn`, `prompt-edit-btn` | Feature-specific actions. Reassess only after three matching uses emerge. |
 | Permissions and system actions | `perm-action`, `permission-details-toggle`, `permission-refresh-btn`, `btn-repair`, `version-tap`, `desc` | System and permission states need their own semantics and feedback. |

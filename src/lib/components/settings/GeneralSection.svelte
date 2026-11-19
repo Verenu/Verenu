@@ -32,10 +32,8 @@
   import { getLanguageSupport } from '../../transcriptionLanguageSupport';
   import { transcriptionModelStore } from '../../transcriptionModelStore.svelte';
   import { modelDisplayLabel, splitModelId } from './models';
-  import AccentColorPicker from './AccentColorPicker.svelte';
-  import AppearanceSettings from './AppearanceSettings.svelte';
-  import { persistAccentColor, withAppearanceLock } from '../../appearanceActions';
-  import { guardThemeEditor, themeEditor } from '../../themeEditor.svelte';
+  import QuickAppearance from './QuickAppearance.svelte';
+  import { themeEditor } from '../../themeEditor.svelte';
   import { desktopShortcut } from '../../shortcutStatus.svelte';
   import DesktopShortcutStatus from './DesktopShortcutStatus.svelte';
   import { HotkeyCapture } from '../../hotkeyCapture';
@@ -400,10 +398,6 @@
 
   function handleLegacyModalKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape' && confirmLegacyOn) confirmLegacyOn = false;
-  }
-
-  async function handleAccentColor(color: string | null) {
-    guardThemeEditor(() => void withAppearanceLock(() => persistAccentColor(color)));
   }
 
   async function startRecordingHotkey(e: MouseEvent | KeyboardEvent, target: CaptureTarget = 'dictation') {
@@ -807,14 +801,8 @@
   </div>
 </div>
 
-<h3 class="settings-subhead">Appearance</h3>
-<AppearanceSettings />
-<div class="setting-row" data-setting-target="general-accent">
-  <div><div class="label">Accent color</div><div class="desc">Used for actions, highlights, and focus rings</div></div>
-  <AccentColorPicker value={appStore.accentColor} onchange={handleAccentColor} />
-</div>
-
 <h3 class="settings-subhead">App</h3>
+<QuickAppearance />
 {#if !isAndroid}
   <div class="setting-row" data-setting-target="general-startup">
     <div><div class="label">Start on boot</div><div class="desc">{isMac ? 'Launch Verenu when macOS starts' : isLinux ? 'Launch Verenu when you log in' : 'Launch Verenu when Windows starts'}</div></div>

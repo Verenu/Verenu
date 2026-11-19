@@ -550,6 +550,7 @@ pub const APPEARANCE_MODE: &str = "appearance_mode";
 pub const ACCENT_COLOR: &str = "accent_color";
 pub const CUSTOM_THEME: &str = "custom_theme";
 pub const CUSTOM_THEMES: &str = "custom_themes";
+pub const INTERFACE_FONT: &str = "interface_font";
 pub const ANDROID_PILL_POSITION: &str = "android_pill_position";
 pub const ANDROID_PILL_DOCK_POSITION: &str = "android_pill_dock_position";
 pub const ANDROID_PILL_COVER_KEYBOARD_MIC: &str = "android_pill_cover_keyboard_mic";
@@ -613,6 +614,12 @@ pub fn is_supported_history_retention(value: &str) -> bool {
 
 pub fn is_supported_local_model_memory_policy(value: &str) -> bool {
     LOCAL_MODEL_MEMORY_POLICY_OPTIONS.contains(&value)
+}
+
+pub const INTERFACE_FONT_OPTIONS: &[&str] = &["default", "system", "mono"];
+
+pub fn is_supported_interface_font(value: &str) -> bool {
+    INTERFACE_FONT_OPTIONS.contains(&value)
 }
 
 pub fn history_retention_days(value: &str) -> Option<i64> {

@@ -1,6 +1,6 @@
 import { invoke } from './tauri';
 import { formatIpcError as formatError } from './errors';
-import type { ProviderId } from './settings';
+import type { InterfaceFont, ProviderId } from './settings';
 import type { SettingsSectionId } from './settingsSections';
 import type { OmarchyTheme } from './omarchyTheme';
 import type { CustomTheme, SavedTheme } from './customTheme';
@@ -142,6 +142,8 @@ export const appStore = $state({
   ruinAccessibility: false,
   appearanceMode: 'system' as AppearanceMode,
   accentColor: null as string | null,
+  interfaceFont: 'default' as InterfaceFont,
+  interfaceFontChangeVersion: 0,
   subAppCaptureHotkey: null as string | null,
   omarchyTheme: null as OmarchyTheme | null,
   customTheme: null as CustomTheme | null,

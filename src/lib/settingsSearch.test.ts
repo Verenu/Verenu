@@ -9,7 +9,7 @@ vi.mock('./platform', async (importOriginal) => ({
 }));
 beforeEach(() => { platform.android = false; });
 
-const visibleSections = ['general', 'text', 'keys', 'models', 'privacy', 'advanced', 'about'] as const;
+const visibleSections = ['general', 'text', 'keys', 'models', 'privacy', 'advanced', 'appearance', 'about'] as const;
 
 describe('settings search', () => {
   it('keeps the offline pill setting out of desktop search', () => {
@@ -48,9 +48,20 @@ describe('settings search', () => {
 
   it('routes color searches to the accent picker', () => {
     expect(searchSettings('orange', visibleSections)[0]).toMatchObject({
-      section: 'general',
-      target: 'general-accent',
+      section: 'appearance',
+      target: 'appearance-accent-card',
     });
+  });
+
+  it('keeps the theme gallery out of Android search, where it is not shown', () => {
+    platform.android = true;
+    expect(searchSettings('create theme', visibleSections).map((entry) => entry.target)).not.toContain('appearance-themes');
+  });
+
+  it('routes theme and font searches to the Appearance section', () => {
+    expect(searchSettings('create theme', visibleSections)[0]).toMatchObject({ section: 'appearance', target: 'appearance-themes' });
+    expect(searchSettings('monospace', visibleSections)[0]).toMatchObject({ section: 'appearance', target: 'appearance-font' });
+    expect(searchSettings('dark mode', visibleSections).map((entry) => entry.section)).toContain('appearance');
   });
 
   it('does not return results from hidden settings sections', () => {
