@@ -188,6 +188,9 @@
     applyInterfaceFont(document.documentElement, font);
     try {
       await saveSetting('interface_font', font);
+      // A refresh that started before the save committed may have read the old value; the saved choice wins.
+      appStore.interfaceFontChangeVersion++;
+      appStore.interfaceFont = font;
     } catch (err) {
       console.error('save interface_font failed:', err);
       appStore.interfaceFont = previous;
