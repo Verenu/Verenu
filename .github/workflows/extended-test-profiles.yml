@@ -98,7 +98,14 @@ jobs:
         run: npm ci
 
       - name: Set up Rust
+        if: runner.os != 'Windows'
         uses: dtolnay/rust-toolchain@stable
+
+      # ort-sys rc.12 assumes Cargo's pre-1.100 build layout when copying DLLs.
+      # transcribe-rs pins rc.12; remove this pin when it supports a fixed ort.
+      - name: Set up Windows Rust
+        if: runner.os == 'Windows'
+        uses: dtolnay/rust-toolchain@1.99.1
 
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
