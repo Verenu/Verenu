@@ -220,3 +220,141 @@ test('the pill keeps a newer appearance event while its startup read is delayed'
     await session.invoke('save_setting', { key: 'appearance_mode', value: previous ?? 'system' });
   }
 });
+
+test('a late interface font read cannot replace a newer font choice', async ({ page, session }) => {
+  const previous = await session.invoke('get_setting', { key: 'interface_font' });
+  let release;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const read = new Promise(resolve => { captured = resolve; });
+  let first = true;
+  try {
+    await session.invoke('save_setting', { key: 'interface_font', value: 'default' });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (!first || request.command !== 'get_setting' || request.args?.key !== 'interface_font') return route.continue();
+      first = false;
+      const response = await route.fetch();
+      captured();
+      await held;
+      await route.fulfill({ response });
+    });
+    await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['interface_font']));
+    await read;
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.appearance"]').click();
+    await page.getByRole('radio', { name: 'Mono', exact: true }).click();
+    await expect.poll(() => session.invoke('get_setting', { key: 'interface_font' })).toBe('mono');
+    const completed = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_setting' && response.request().postDataJSON()?.args?.key === 'interface_font');
+    release();
+    await completed;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.locator('html')).toHaveAttribute('data-font', 'mono');
+    await expect(page.getByRole('radio', { name: 'Mono', exact: true })).toHaveAttribute('aria-checked', 'true');
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'interface_font', value: previous ?? 'default' });
+  }
+});
+
+test('a font refresh during a pending font save cannot undo the choice', async ({ page, session }) => {
+  const previous = await session.invoke('get_setting', { key: 'interface_font' });
+  let release;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const saving = new Promise(resolve => { captured = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'interface_font', value: 'default' });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (request.command !== 'save_setting' || request.args?.key !== 'interface_font') return route.continue();
+      captured();
+      await held;
+      await route.continue();
+    });
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.appearance"]').click();
+    await page.getByRole('radio', { name: 'Mono', exact: true }).click();
+    await saving;
+    const refreshed = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_setting' && response.request().postDataJSON()?.args?.key === 'interface_font');
+    await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['interface_font']));
+    await refreshed;
+    release();
+    await expect.poll(() => session.invoke('get_setting', { key: 'interface_font' })).toBe('mono');
+    await expect(page.locator('html')).toHaveAttribute('data-font', 'mono');
+    await expect(page.getByRole('radio', { name: 'Mono', exact: true })).toHaveAttribute('aria-checked', 'true');
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'interface_font', value: previous ?? 'default' });
+  }
+});
+
+test('an agent font change right after a font save commits is kept', async ({ page, session }) => {
+  const previous = await session.invoke('get_setting', { key: 'interface_font' });
+  let release;
+  let committed;
+  const held = new Promise(resolve => { release = resolve; });
+  const saved = new Promise(resolve => { committed = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'interface_font', value: 'default' });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (request.command !== 'save_setting' || request.args?.key !== 'interface_font') return route.continue();
+      const response = await route.fetch();
+      committed();
+      await held;
+      await route.fulfill({ response });
+    });
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.appearance"]').click();
+    await page.getByRole('radio', { name: 'Mono', exact: true }).click();
+    await saved;
+    await session.invoke('save_setting', { key: 'interface_font', value: 'system' });
+    const refreshed = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_setting' && response.request().postDataJSON()?.args?.key === 'interface_font');
+    await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['interface_font']));
+    await refreshed;
+    release();
+    await expect(page.getByRole('radio', { name: 'System font', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('html')).toHaveAttribute('data-font', 'system');
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'interface_font', value: previous ?? 'default' });
+  }
+});
+
+test('a failed font save keeps an agent font change that landed meanwhile', async ({ page, session }) => {
+  const previous = await session.invoke('get_setting', { key: 'interface_font' });
+  let release;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const saving = new Promise(resolve => { captured = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'interface_font', value: 'default' });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (request.command !== 'save_setting' || request.args?.key !== 'interface_font') return route.continue();
+      captured();
+      await held;
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'synthetic save failure' }) });
+    });
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.appearance"]').click();
+    await page.getByRole('radio', { name: 'Mono', exact: true }).click();
+    await saving;
+    await session.invoke('save_setting', { key: 'interface_font', value: 'system' });
+    const refreshed = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_setting' && response.request().postDataJSON()?.args?.key === 'interface_font');
+    await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['interface_font']));
+    await refreshed;
+    release();
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not save the font' })).toBeVisible();
+    await expect(page.getByRole('radio', { name: 'System font', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('html')).toHaveAttribute('data-font', 'system');
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'interface_font', value: previous ?? 'default' });
+  }
+});

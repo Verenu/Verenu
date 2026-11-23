@@ -544,7 +544,10 @@ try {
       button?.click(); return !!button;
     `), true);
     const deadline = Date.now() + 15_000;
-    while (!await browser.execute('return !!document.querySelector(".appearance-option");')) {
+    while (!await browser.execute(`
+      const section = document.querySelector('[data-debug-id="settings.appearance"]');
+      section?.click(); return !!document.querySelector(".mode-card.appearance-option");
+    `)) {
       assert.ok(Date.now() < deadline, 'Appearance settings did not render');
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -552,7 +555,7 @@ try {
       for (const label of ['System', 'Tokyo Night', 'Light', 'Dark']) {
         assert.equal(await browser.execute(`
           const label = ${JSON.stringify(label)};
-          const button = [...document.querySelectorAll('.appearance-option, .theme-select')].find(b => (b.getAttribute('aria-label') || b.textContent).trim() === label);
+          const button = [...document.querySelectorAll('.mode-card.appearance-option, .theme-card .card-hit')].find(b => (b.getAttribute('aria-label') || b.textContent).trim() === label);
           button?.click(); return !!button;
         `), true, `Theme selection missing: ${label}`);
         const expected = label === 'Tokyo Night' ? 'custom' : label.toLowerCase();

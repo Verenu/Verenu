@@ -18,6 +18,7 @@
 
   const sections = {
     general: lazyComponent(() => import('../components/settings/GeneralSection.svelte')),
+    appearance: lazyComponent(() => import('../components/settings/AppearanceSection.svelte')),
     text: lazyComponent(() => import('../components/settings/TextSection.svelte')),
     apps: lazyComponent(() => import('../components/settings/AppMappingsSection.svelte')),
     keys: lazyComponent(() => import('../components/settings/ApiKeysSection.svelte')),

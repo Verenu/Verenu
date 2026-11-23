@@ -634,6 +634,7 @@ const WRITABLE_SETTINGS: &[&str] = &[
     store::ACCENT_COLOR,
     store::CUSTOM_THEME,
     store::CUSTOM_THEMES,
+    store::INTERFACE_FONT,
     store::ANDROID_PILL_POSITION,
     store::ANDROID_PILL_DOCK_POSITION,
     store::ANDROID_PILL_COVER_KEYBOARD_MIC,

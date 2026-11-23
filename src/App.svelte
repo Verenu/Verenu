@@ -45,6 +45,7 @@
   import { normalizeCustomTheme, normalizeSavedThemes } from './lib/customTheme';
   import { themeEditor } from './lib/themeEditor.svelte';
   import { broadcastAppearance } from './lib/appearanceActions';
+  import { applyInterfaceFont, normalizeInterfaceFont } from './lib/interfaceFont';
   import ThemeEditorDock from './lib/components/settings/ThemeEditorDock.svelte';
   import { isAndroid } from './lib/platform';
   import MobileNav from './lib/components/layout/MobileNav.svelte';
@@ -133,6 +134,11 @@
   $effect(() => {
     const accentColor = effectiveAccent(appStore.accentColor, activePalette());
     if (typeof document !== 'undefined') applyAccentTheme(document.documentElement, accentColor);
+  });
+
+  $effect(() => {
+    const font = appStore.interfaceFont;
+    if (typeof document !== 'undefined') applyInterfaceFont(document.documentElement, font);
   });
 
   let viewport = $state<ViewportSnapshot>(
@@ -325,11 +331,18 @@
       }).catch(error => console.error('refresh appearance settings failed', error));
     }
     window.addEventListener('verenu:refresh-agent-appearance', refreshAgentAppearance);
+    function refreshInterfaceFont() {
+      const version = ++appStore.interfaceFontChangeVersion;
+      void invoke<unknown>('get_setting', { key: 'interface_font' })
+        .then(value => { if (mounted && version === appStore.interfaceFontChangeVersion) appStore.interfaceFont = normalizeInterfaceFont(value); })
+        .catch(error => console.error('read interface font failed', error));
+    }
     void listen('verenu:agent-contexts-changed', () => { void loadContexts(true); })
       .then(unlisten => { if (!mounted) unlisten(); else stopAgentContextsListener = unlisten; });
     void listen<string[] | null>('verenu:agent-settings-changed', (event) => {
       if (!event.payload || event.payload.includes('cleanup_enabled')) appStore.cleanupChangeVersion++;
       if (!event.payload || event.payload.some(key => ['appearance_mode', 'accent_color', 'custom_theme', 'custom_themes'].includes(key))) refreshAgentAppearance();
+      if (!event.payload || event.payload.includes('interface_font')) refreshInterfaceFont();
       if (!event.payload || event.payload.includes('legacy_features_enabled')) {
         const version = ++appStore.legacyFeaturesChangeVersion;
         void invoke<boolean | null>('get_setting', { key: 'legacy_features_enabled' }).then(value => {
@@ -410,6 +423,7 @@
           invoke<string | null>('get_setting', { key: 'sub_app_capture_hotkey' }),
         ]));
         appStore.setupComplete = forceSetupOnLaunch ? false : done === true;
+        refreshInterfaceFont();
         const savedThemes = await savedThemesRead;
         if (appearanceVersion === appStore.appearanceChangeVersion && !themeEditor.open) {
           appStore.savedThemes = normalizeSavedThemes(savedThemes);

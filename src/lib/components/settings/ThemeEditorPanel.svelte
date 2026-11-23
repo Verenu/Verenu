@@ -163,8 +163,8 @@
   </label>
   {#if nameError}<div id="theme-name-error" class="error">{nameError}</div>{/if}
 
-  <div class="mode" role="radiogroup" aria-label="Appearance">
-    <span class="field-label" aria-hidden="true">Appearance</span>
+  <div class="mode" role="radiogroup" aria-label="Theme base">
+    <span class="field-label" aria-hidden="true">Base</span>
     <div class="mode-seg">
       <button type="button" class="mode-btn" class:on={!dark} role="radio" aria-checked={!dark} onclick={() => chooseMode(false)}>Light</button>
       <button type="button" class="mode-btn" class:on={dark} role="radio" aria-checked={dark} onclick={() => chooseMode(true)}>Dark</button>

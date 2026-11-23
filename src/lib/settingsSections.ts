@@ -14,6 +14,7 @@ export type SettingsSectionId =
   | 'integrations'
   | 'permissions'
   | 'developer'
+  | 'appearance'
   | 'about';
 
 interface SettingsSection {
@@ -40,6 +41,7 @@ const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { id: 'integrations', label: 'Integrations', icon: 'layers',  group: 'Data' },
   { id: 'permissions',  label: 'Permissions',  icon: 'shield',  group: 'System', macOnly: true },
   { id: 'developer',    label: 'Developer',    icon: 'code',    group: 'System', devOnly: true },
+  { id: 'appearance',   label: 'Appearance',   icon: 'palette', group: 'Verenu' },
   { id: 'about',        label: 'About',        icon: 'help',    group: 'Verenu' },
 ];
 
