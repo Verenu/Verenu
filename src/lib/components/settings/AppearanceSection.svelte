@@ -184,16 +184,21 @@
     const previous = appStore.interfaceFont;
     fontSaving = true;
     error = '';
-    appStore.interfaceFontChangeVersion++;
+    const choiceVersion = ++appStore.interfaceFontChangeVersion;
     appStore.interfaceFont = font;
     applyInterfaceFont(document.documentElement, font);
     try {
       await saveSetting('interface_font', font);
     } catch (err) {
       console.error('save interface_font failed:', err);
-      appStore.interfaceFont = previous;
-      applyInterfaceFont(document.documentElement, previous);
-      error = 'Could not save the font. Your previous font was restored.';
+      // An agent refresh that landed meanwhile holds the newer stored value; keep it.
+      if (choiceVersion === appStore.interfaceFontChangeVersion) {
+        appStore.interfaceFont = previous;
+        applyInterfaceFont(document.documentElement, previous);
+        error = 'Could not save the font. Your previous font was restored.';
+      } else {
+        error = 'Could not save the font.';
+      }
       fontSaving = false;
       return;
     }

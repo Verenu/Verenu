@@ -324,3 +324,37 @@ test('an agent font change right after a font save commits is kept', async ({ pa
     await session.invoke('save_setting', { key: 'interface_font', value: previous ?? 'default' });
   }
 });
+
+test('a failed font save keeps an agent font change that landed meanwhile', async ({ page, session }) => {
+  const previous = await session.invoke('get_setting', { key: 'interface_font' });
+  let release;
+  let captured;
+  const held = new Promise(resolve => { release = resolve; });
+  const saving = new Promise(resolve => { captured = resolve; });
+  try {
+    await session.invoke('save_setting', { key: 'interface_font', value: 'default' });
+    await page.route('**/__verenu_dev/invoke', async route => {
+      const request = route.request().postDataJSON();
+      if (request.command !== 'save_setting' || request.args?.key !== 'interface_font') return route.continue();
+      captured();
+      await held;
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'synthetic save failure' }) });
+    });
+    await page.locator('[data-debug-id="nav.settings"]').click();
+    await page.locator('[data-debug-id="settings.appearance"]').click();
+    await page.getByRole('radio', { name: 'Mono', exact: true }).click();
+    await saving;
+    await session.invoke('save_setting', { key: 'interface_font', value: 'system' });
+    const refreshed = page.waitForResponse(response => response.url().includes('/__verenu_dev/invoke') && response.request().postDataJSON()?.command === 'get_setting' && response.request().postDataJSON()?.args?.key === 'interface_font');
+    await page.evaluate(async () => (await import('/src/lib/tauri.ts')).emit('verenu:agent-settings-changed', ['interface_font']));
+    await refreshed;
+    release();
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not save the font' })).toBeVisible();
+    await expect(page.getByRole('radio', { name: 'System font', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('html')).toHaveAttribute('data-font', 'system');
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await session.invoke('save_setting', { key: 'interface_font', value: previous ?? 'default' });
+  }
+});
