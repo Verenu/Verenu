@@ -42,6 +42,41 @@ export function sessionStartupDiagnostics(manifest, launcherPid, launcher = {}) 
   return result;
 }
 
+export function startupLogDiagnostics(log, cargoLock = '') {
+  const plain = log.replace(/\u001b\[[0-9;]*m/g, '');
+  const rustErrorCodes = [...new Set([...plain.matchAll(/\berror\[(E\d{4})\]/g)].map(match => match[1]))].slice(0, 20);
+  const knownPackages = new Set([...cargoLock.matchAll(/^name = "([a-zA-Z0-9_-]+)"$/gm)].map(match => match[1]));
+  const buildPackages = [...new Set([...plain.matchAll(/failed to run custom build command for [`']([a-zA-Z0-9_-]+) v\d/g)]
+    .map(match => match[1]).filter(name => knownPackages.has(name)))].slice(0, 20);
+  const failureOutput = plain.slice(Math.max(0, plain.lastIndexOf('failed to run custom build command')))
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/\b[A-Za-z]:[\\/][^\r\n]*/g, ' ')
+    .replace(/\\\\[^\r\n]*/g, ' ')
+    .replace(/\b[\w.-]+[\\/][^\r\n]*/g, ' ')
+    .replace(/(^|[\s'"`])\/(?!\/)[^\r\n]*/gm, '$1 ')
+    .toLowerCase();
+  const unclassifiedLogTokens = ['access', 'archive', 'certificate', 'connection', 'corrupt', 'denied', 'download', 'eof', 'extract', 'file', 'hash', 'http', 'invalid', 'link', 'network', 'panic', 'proxy', 'read', 'request', 'response', 'status', 'timeout', 'tls', 'unable', 'verify', 'write']
+    .filter(word => new RegExp(`\\b${word}\\b`).test(failureOutput));
+  const patterns = [
+    ['disk-full', /no space left on device|there is not enough space on the disk/i],
+    ['permission-denied', /permission denied|access is denied/i],
+    ['linker-error', /linking with .+ failed|linker .+ not found/i],
+    ['custom-build-error', /failed to run custom build command/i],
+    ['ort-extraction-error', /extraction of prebuilt binaries downloaded from/i],
+    ['ort-hash-error', /hash of the file downloaded from .+ does not match/i],
+    ['ort-distribution-unavailable', /ort does not provide prebuilt binaries for the target/i],
+    ['ort-cache-unavailable', /could not determine cache directory/i],
+    ['ort-system-link-error', /ort-sys could not link to the ONNX Runtime build/i],
+    ['file-already-exists', /already exists|os error 183/i],
+    ['windows-path-too-long', /filename or extension is too long|os error 206/i],
+    ['missing-file', /no such file or directory|the system cannot find the file specified/i],
+    ['build-script-panic', /thread ['"]main['"] panicked/i],
+    ['dependency-download-error', /failed to download|failed to fetch/i],
+    ['cargo-compile-error', /could not compile/i],
+  ];
+  return { rustErrorCodes, buildPackages, unclassifiedLogTokens, categories: patterns.filter(([, pattern]) => pattern.test(plain)).map(([category]) => category) };
+}
+
 export function classifyStartupLog(log) {
   if (typeof log !== 'string') return [];
   const text = log.replace(/\u001b\[[0-9;]*m/g, '');
@@ -192,6 +227,7 @@ export async function startOwnedSession({ id, fixtures, native = false, director
           const categories = classifyStartupLog(text);
           if (categories.length) error.startupFailure.logCategories = categories;
           const lockfile = await fs.readFile(path.join(root, 'src-tauri', 'Cargo.lock'), 'utf8').catch(() => '');
+          error.startupFailure.logDiagnostics = startupLogDiagnostics(text, lockfile);
           const panicLocation = classifyPanicLocation(text, cargoPackageNames(lockfile));
           if (panicLocation) error.startupFailure.panicLocation = panicLocation;
           const osErrorCode = classifyPanicOsError(text);

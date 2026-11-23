@@ -52,8 +52,10 @@ fn normalize_key(key: &str) -> &str {
 #[ignore = "Writes and removes an isolated synthetic Secret Service credential"]
 fn custom_provider_credential_roundtrip() {
     let id = crate::api::custom::new_custom_id();
+    let missing = crate::api::custom::new_custom_id();
     let result = set(&id, "synthetic-credential-fixture");
     let saved = result.is_ok() && get(&id) == "synthetic-credential-fixture";
+    let statuses = has_many(&[id.clone(), missing.clone(), "unknown".into()]);
     let removed = delete(&id);
     result.unwrap();
     removed.unwrap();
@@ -61,6 +63,9 @@ fn custom_provider_credential_roundtrip() {
         saved,
         "Custom credential did not round-trip through Secret Service"
     );
+    assert_eq!(statuses.get(&id), Some(&true));
+    assert_eq!(statuses.get(&missing), Some(&false));
+    assert_eq!(statuses.get("unknown"), Some(&false));
     assert!(!has(&id));
 }
 
@@ -97,6 +102,7 @@ fn locked_provider_credential_is_reported_as_saved_without_unlocking_on_config_r
         has(provider),
         "A saved locked credential must not be reported as missing"
     );
+    assert_eq!(has_many(&[provider.to_owned()]).get(provider), Some(&true));
     let settings = crate::data::store::SettingsSnapshot::from_pairs([]);
     let _config = crate::data::store::load_pipeline_config(&settings);
     let still_locked = linux_secret_service(async {
@@ -832,6 +838,49 @@ pub fn has(provider: &str) -> bool {
             false
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+pub fn has_many(providers: &[String]) -> std::collections::HashMap<String, bool> {
+    let accounts: Vec<_> = providers
+        .iter()
+        .map(|provider| (provider.clone(), linux_account(provider).ok()))
+        .collect();
+    let defaults = || providers.iter().map(|provider| (provider.clone(), false)).collect();
+    match linux_secret_service(async move {
+        use secret_service::{EncryptionType, SecretService};
+
+        let service = SecretService::connect(EncryptionType::Dh)
+            .await
+            .map_err(|err| err.to_string())?;
+        let mut statuses = std::collections::HashMap::new();
+        for (provider, account) in accounts {
+            let present = if let Some(account) = account {
+                match service.search_items(linux_attributes(&account)).await {
+                    Ok(items) => !items.unlocked.is_empty() || !items.locked.is_empty(),
+                    Err(err) => {
+                        log::warn!("credentials: Secret Service status unavailable for {provider}: {err}");
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            statuses.insert(provider, present);
+        }
+        Ok(statuses)
+    }) {
+        Ok(statuses) => statuses,
+        Err(err) => {
+            log::warn!("credentials: Secret Service status unavailable: {err}");
+            defaults()
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn has_many(providers: &[String]) -> std::collections::HashMap<String, bool> {
+    providers.iter().map(|provider| (provider.clone(), has(provider))).collect()
 }
 
 #[cfg(target_os = "linux")]

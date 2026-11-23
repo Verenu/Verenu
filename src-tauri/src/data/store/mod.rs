@@ -157,6 +157,30 @@ impl SettingsHandle {
         Ok(())
     }
 
+    #[cfg(all(feature = "dev-session", debug_assertions, desktop))]
+    pub(crate) fn swap_test_settings(&self, values: &Map<String, Value>) -> Result<Map<String, Value>, String> {
+        let mut settings = self.values.write().map_err(|_| "Settings lock was poisoned".to_string())?;
+        self.ensure_writable()?;
+        let mut next = (**settings).clone();
+        let mut previous = Map::new();
+        for (key, state) in values {
+            previous.insert(key.clone(), match next.get(key) {
+                Some(value) => serde_json::json!([true, value]),
+                None => serde_json::json!([false, null]),
+            });
+            let pair = state.as_array().filter(|pair| pair.len() == 2)
+                .ok_or_else(|| "Invalid test setting state".to_string())?;
+            match pair[0].as_bool() {
+                Some(true) => { next.insert(key.clone(), pair[1].clone()); }
+                Some(false) if pair[1].is_null() => { next.remove(key); }
+                _ => return Err("Invalid test setting state".into()),
+            }
+        }
+        write_settings_file(&self.path, &next)?;
+        *settings = Arc::new(next);
+        Ok(previous)
+    }
+
     pub fn delete(&self, key: &str) -> Result<Option<Value>, String> {
         let mut settings = self
             .values

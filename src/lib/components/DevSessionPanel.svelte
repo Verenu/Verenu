@@ -146,6 +146,7 @@
 <style>
   .dev-session-launcher { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 10000; background: var(--paper); border-radius: var(--radius-md, 8px); box-shadow: 0 2px 12px #0002; }
   .dev-session-panel { position: fixed; right: 16px; bottom: calc(64px + env(safe-area-inset-bottom)); z-index: 10001; width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 100px); overflow: auto; padding: 24px; box-sizing: border-box; border: 1px solid var(--line); border-radius: var(--radius-lg, 12px); background: var(--paper); color: var(--ink); box-shadow: 0 8px 32px #0003; display: grid; gap: 16px; }
+  :global(body:has(.dev-session-launcher) .theme-dock) { bottom: calc(64px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 80px - env(safe-area-inset-bottom)); }
   .dev-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
   h2, p { margin: 0; }
   h2 { font-family: var(--font-display); font-size: 24px; }
@@ -165,6 +166,14 @@
   @media (max-width: 500px) {
     .dev-session-launcher { bottom: calc(80px + env(safe-area-inset-bottom)); }
     .dev-session-panel { padding: 16px; bottom: calc(128px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 164px); }
+    :global(body:has(.dev-session-launcher) .theme-dock) { bottom: calc(128px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 144px - env(safe-area-inset-bottom)); }
+    :global(body:has(.settings-page)) .dev-session-launcher { bottom: calc(16px + env(safe-area-inset-bottom)); }
+    :global(body:has(.settings-page)) .dev-session-panel { bottom: calc(64px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 100px); }
+    :global(body:has(.dev-session-launcher):has(.settings-page) .theme-dock) { bottom: calc(64px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 80px - env(safe-area-inset-bottom)); }
+    :global(body:has(.dev-session-launcher) .settings-page .panel) { padding-bottom: calc(100px + env(safe-area-inset-bottom)); scroll-padding-bottom: calc(100px + env(safe-area-inset-bottom)); }
+    :global(body:has(.settings-page):has(.app[data-android='true'][data-compact-nav='true'])) .dev-session-launcher { bottom: calc(80px + env(safe-area-inset-bottom)); }
+    :global(body:has(.settings-page):has(.app[data-android='true'][data-compact-nav='true'])) .dev-session-panel { bottom: calc(128px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 164px); }
+    :global(body:has(.dev-session-launcher) .app[data-android='true'][data-compact-nav='true'] .settings-page .panel) { padding-bottom: calc(164px + env(safe-area-inset-bottom)); scroll-padding-bottom: calc(164px + env(safe-area-inset-bottom)); }
     .dev-fields { grid-template-columns: 1fr; }
     .dev-actions > button { flex: 1 1 100%; }
   }

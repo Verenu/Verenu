@@ -63,19 +63,25 @@ pub async fn get_api_key_status(app: AppHandle) -> Result<serde_json::Value, Str
         store::settings_snapshot(&app)?.get(store::CUSTOM_PROVIDERS),
     );
     run_blocking("get_api_key_status", move || {
+        let mut providers: Vec<String> = [
+            store::GROQ, store::OPENAI, store::GOOGLE, store::ASSEMBLYAI,
+            store::OPENROUTER, store::XAI,
+        ].into_iter().map(str::to_owned).collect();
+        if crate::api::custom::native_credentials_available() {
+            providers.extend(customs.iter().map(|provider| provider.id.clone()));
+        }
+        let statuses = credentials::has_many(&providers);
+        let has = |provider: &str| statuses.get(provider).copied().unwrap_or(false);
         let mut status = serde_json::json!({
-            "groq":       credentials::has(store::GROQ),
-            "openai":     credentials::has(store::OPENAI),
-            "google":     credentials::has(store::GOOGLE),
-            "assemblyai": credentials::has(store::ASSEMBLYAI),
-            "openrouter": credentials::has(store::OPENROUTER),
-            "xai":        credentials::has(store::XAI),
+            "groq":       has(store::GROQ),
+            "openai":     has(store::OPENAI),
+            "google":     has(store::GOOGLE),
+            "assemblyai": has(store::ASSEMBLYAI),
+            "openrouter": has(store::OPENROUTER),
+            "xai":        has(store::XAI),
         });
         for provider in customs {
-            status[&provider.id] = serde_json::json!(
-                crate::api::custom::native_credentials_available()
-                    && credentials::has(&provider.id)
-            );
+            status[&provider.id] = serde_json::json!(has(&provider.id));
         }
         Ok(status)
     })

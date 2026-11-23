@@ -289,7 +289,10 @@ export function formatSyncError(err: unknown, action?: string): string {
     message = KIND_MESSAGES['sync-protocol']!;
   }
   const lower = raw.toLowerCase();
-  if (lower.includes('a firewall or network rule may be blocking tcp port')) {
+  if (lower.includes('both devices must run the same verenu version')
+    || /protocol version \d+ not supported|peer (?:speaks|runs) sync protocol/i.test(raw)) {
+    message = 'Both devices must run the same Verenu version. Update the older device and try again.';
+  } else if (lower.includes('a firewall or network rule may be blocking tcp port')) {
     message = raw;
   } else if (lower.includes('already running') || lower.includes('pairing is already in progress')) {
     message = 'A sync or pairing session is already running. Wait for it to finish, or cancel pairing before starting again.';

@@ -411,6 +411,7 @@ fn allowed(command: &str) -> bool {
             | "nvidia_reuse_realtime_install"
             | "get_effective_transcription_model"
             | "get_setting"
+            | "test_restore_setup_model_settings"
             | "get_consent_state"
             | "accept_legal"
             | "skip_legal"
@@ -505,6 +506,12 @@ fn allowed(command: &str) -> bool {
             | "set_snippet_context_assignment"
             | "move_snippet_context_assignment"
             | "get_auto_learn_status_summary"
+            | "get_vocabulary_expiration"
+            | "set_vocabulary_expiration"
+            | "restore_expired_vocabulary"
+            | "acknowledge_vocabulary_review"
+            | "restore_vocabulary_review_payload"
+            | "discard_vocabulary_review_payload"
             | "get_recent_auto_learn_activity"
             | "check_domain_exists"
             | "check_provider_status"
@@ -544,6 +551,24 @@ async fn invoke(State(bridge): State<Bridge>, Json(mut command): Json<Command>) 
                 command.command
             ),
         ));
+    }
+    if command.command == "test_restore_setup_model_settings" {
+        const KEYS: &[&str] = &[
+            "transcription_provider", "transcription_model", "transcription_default_model",
+            "transcription_models_by_provider", "transcription_fallback_models", "dual_transcription_enabled",
+            "cleanup_provider", "cleanup_model", "cleanup_default_model", "cleanup_models_by_provider",
+            "cleanup_fallback_models",
+        ];
+        let values = command.args.get("values").and_then(Value::as_object)
+            .ok_or_else(|| error(StatusCode::BAD_REQUEST, "Expected setup model settings"))?;
+        if values.len() != KEYS.len() || KEYS.iter().any(|key| !values.contains_key(*key)) {
+            return Err(error(StatusCode::BAD_REQUEST, "Invalid setup model settings"));
+        }
+        let settings = crate::data::store::settings_handle(&bridge.app)
+            .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        let previous = settings.swap_test_settings(values)
+            .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        return Ok(Json(Value::Object(previous)));
     }
     if command.command == "get_microphones" && !bridge.host_mic {
         return Ok(Json(json!([])));

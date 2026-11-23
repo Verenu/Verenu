@@ -38,6 +38,144 @@ pub const SYNCABLE_SETTINGS: &[&str] = &[
 const UNRESOLVED_APP_PREFIX: &str = "?::";
 const NATURAL_KEY_TOMBSTONE_TABLE: &str = "dictionary_natural_key";
 const USER_DELETED_TRANSCRIPTION: &str = "user_deleted_transcription";
+const VOCABULARY_POLICY: &str = "vocabulary_expiration_policy";
+const VOCABULARY_TOPOLOGY: &str = "vocabulary_expiration_topology";
+
+#[derive(Serialize, Deserialize)]
+struct VocabularyTopology {
+    device: String,
+    version: i64,
+    policy_ts: i64,
+    policy_origin: String,
+    peers: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VocabularyMembershipDot {
+    context_uuid: String,
+    dictionary_uuid: String,
+    dictionary_term: String,
+    removed: bool,
+    legacy: bool,
+}
+
+pub(crate) fn vocabulary_review_key(kind: &str, row_uuid: &str, origin: &str, origin_seq: i64) -> Result<String> {
+    Ok(serde_json::to_string(&(kind, row_uuid, origin, origin_seq))?)
+}
+
+fn vocabulary_review_parts(key: &str) -> Result<(String,String,String,i64)> {
+    anyhow::ensure!(key.len() <= 1024, "invalid vocabulary review identity");
+    let parts: (String,String,String,i64) = serde_json::from_str(key)?;
+    anyhow::ensure!(matches!(parts.0.as_str(), "dictionary" | "correction") && !parts.1.is_empty() && parts.1.len() <= 128 && parts.2.len() <= 128 && parts.3 >= 0, "invalid vocabulary review identity");
+    Ok(parts)
+}
+
+#[derive(Serialize, Deserialize)]
+struct VocabularyCorrectionVersion {
+    correction_uuid: String,
+    context_uuid: String,
+    dictionary_uuid: String,
+    dictionary_term: String,
+    mistake: String,
+    auto_learned: bool,
+    created_at: String,
+    seen_retired: String,
+    seen_expired: String,
+    retired: bool,
+    legacy: bool,
+}
+
+fn vocabulary_topology(conn: &Connection) -> Result<SettingRecord> {
+    let device = sync_store::self_uuid(conn)?.unwrap_or_default();
+    let policy = vocabulary_policy(conn)?;
+    let peers = conn.prepare("SELECT device_uuid FROM sync_peers ORDER BY device_uuid")?
+        .query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let previous: Option<i64> = conn.query_row("SELECT version FROM vocabulary_policy_topology WHERE device_uuid=?1", [&device], |r| r.get(0)).optional()?;
+    let version = sync_store::now_ms().max(previous.unwrap_or(0) + 1);
+    conn.execute("INSERT INTO vocabulary_policy_topology(device_uuid,version,policy_ts,policy_origin,peers) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(device_uuid) DO UPDATE SET version=excluded.version,policy_ts=excluded.policy_ts,policy_origin=excluded.policy_origin,peers=excluded.peers", params![device,version,policy.ts_ms,policy.origin,serde_json::to_string(&peers)?])?;
+    let rows = conn.prepare("SELECT device_uuid,version,policy_ts,policy_origin,peers FROM vocabulary_policy_topology")?
+        .query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let records = rows.into_iter().map(|(device,version,policy_ts,policy_origin,peers)| Ok(VocabularyTopology { device,version,policy_ts,policy_origin,peers: serde_json::from_str(&peers)? })).collect::<Result<Vec<_>>>()?;
+    Ok(SettingRecord { key: VOCABULARY_TOPOLOGY.into(), value: serde_json::to_value(records)?, ts_ms: 0, origin: String::new() })
+}
+
+fn apply_vocabulary_topology(conn: &Connection, settings: &[SettingRecord]) -> Result<()> {
+    let Some(record) = settings.iter().find(|r| r.key == VOCABULARY_TOPOLOGY) else { return Ok(()); };
+    let records: Vec<VocabularyTopology> = serde_json::from_value(record.value.clone())?;
+    let own = sync_store::self_uuid(conn)?.unwrap_or_default();
+    for entry in records {
+        if entry.device == own { continue; }
+        let peers = serde_json::to_string(&entry.peers)?;
+        let prior: Option<(i64,i64,String,String)> = conn.query_row("SELECT version,policy_ts,policy_origin,peers FROM vocabulary_policy_topology WHERE device_uuid=?1", [&entry.device], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        if prior.as_ref().is_some_and(|p| p.0 >= entry.version) { continue; }
+        if prior.as_ref().is_none_or(|p| p.1 != entry.policy_ts || p.2 != entry.policy_origin || p.3 != peers) {
+            conn.execute("UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now') WHERE id=1", [])?;
+        }
+        conn.execute("INSERT INTO vocabulary_policy_topology(device_uuid,version,policy_ts,policy_origin,peers) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(device_uuid) DO UPDATE SET version=excluded.version,policy_ts=excluded.policy_ts,policy_origin=excluded.policy_origin,peers=excluded.peers", params![entry.device,entry.version,entry.policy_ts,entry.policy_origin,peers])?;
+    }
+    Ok(())
+}
+
+pub(crate) fn vocabulary_topology_pending(conn: &Connection) -> Result<bool> {
+    let policy = vocabulary_policy(conn)?;
+    let own = sync_store::self_uuid(conn)?.unwrap_or_default();
+    let mut pending = conn.prepare("SELECT device_uuid FROM sync_peers")?.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(own);
+    while let Some(device) = pending.pop() {
+        if !visited.insert(device.clone()) { continue; }
+        let report: Option<(i64,String,String)> = conn.query_row("SELECT policy_ts,policy_origin,peers FROM vocabulary_policy_topology WHERE device_uuid=?1", [&device], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let Some((ts,origin,peers)) = report else { return Ok(true); };
+        if (ts,origin.as_str()) != (policy.ts_ms,policy.origin.as_str()) { return Ok(true); }
+        pending.extend(serde_json::from_str::<Vec<String>>(&peers)?);
+    }
+    Ok(false)
+}
+
+pub(crate) fn stamp_vocabulary_policy(conn: &Connection) -> Result<()> {
+    let previous = sync_store::get_setting_stamp(conn, VOCABULARY_POLICY)?.map(|s| s.ts_ms).unwrap_or(0);
+    let origin = sync_store::self_uuid(conn)?.unwrap_or_default();
+    sync_store::set_setting_stamp(conn, VOCABULARY_POLICY, sync_store::now_ms().max(previous + 1), &origin)?;
+    conn.execute("INSERT OR IGNORE INTO vocabulary_policy_retained SELECT DISTINCT request_id FROM vocabulary_expiration_marks", [])?;
+    Ok(())
+}
+
+pub(crate) fn vocabulary_policy(conn: &Connection) -> Result<SettingRecord> {
+    let days: Option<i64> = conn.query_row("SELECT days FROM vocabulary_expiration_settings WHERE id=1", [], |r| r.get(0))?;
+    let stamp = sync_store::get_setting_stamp(conn, VOCABULARY_POLICY)?;
+    let retained = conn.prepare("SELECT request_id FROM vocabulary_policy_retained ORDER BY request_id")?.query_map([], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(SettingRecord { key: VOCABULARY_POLICY.into(), value: serde_json::json!({"days":days,"retained":retained}), ts_ms: stamp.as_ref().map(|s| s.ts_ms).unwrap_or(0), origin: stamp.map(|s| s.origin).unwrap_or_default() })
+}
+
+fn apply_vocabulary_policy(conn: &Connection, peer: &str, settings: &[SettingRecord]) -> Result<bool> {
+    let Some(remote) = settings.iter().find(|record| record.key == VOCABULARY_POLICY) else { return Ok(false); };
+    let days_value = remote.value.get("days").unwrap_or(&remote.value);
+    let days = if days_value.is_null() { None } else {
+        let value = days_value.as_i64().ok_or_else(|| anyhow!("invalid vocabulary expiration policy"))?;
+        if !(7..=60).contains(&value) { return Err(anyhow!("invalid vocabulary expiration policy")); }
+        Some(value)
+    };
+    let local = vocabulary_policy(conn)?;
+    let mut changed = false;
+    if (remote.ts_ms, remote.origin.as_str()) > (local.ts_ms, local.origin.as_str()) {
+        let retained: Vec<String> = match remote.value.get("retained") { Some(value) => serde_json::from_value(value.clone())?, None => Vec::new() };
+        if retained.iter().any(|id| Uuid::parse_str(id).is_err()) { return Err(anyhow!("invalid retained vocabulary expiration")); }
+        conn.execute("DELETE FROM vocabulary_policy_retained", [])?;
+        for id in retained { conn.execute("INSERT OR IGNORE INTO vocabulary_policy_retained(request_id) VALUES (?1)", [id])?; }
+        conn.execute("DELETE FROM vocabulary_expiration_marks WHERE (policy_ts < ?1 OR (policy_ts = ?1 AND policy_origin < ?2)) AND request_id NOT IN (SELECT request_id FROM vocabulary_policy_retained)", params![remote.ts_ms,remote.origin])?;
+        conn.execute("UPDATE vocabulary_expiration_settings SET days=?1, tracking_since=datetime('now') WHERE id=1", [days])?;
+        sync_store::set_setting_stamp(conn, VOCABULARY_POLICY, remote.ts_ms, &remote.origin)?;
+        changed = true;
+    }
+    let current = vocabulary_policy(conn)?;
+    let previous: Option<(i64, String)> = conn.query_row("SELECT ts_ms,origin FROM vocabulary_policy_peer WHERE device_uuid=?1", [peer], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    if (remote.ts_ms, remote.origin.as_str()) == (current.ts_ms, current.origin.as_str()) && previous.as_ref().is_none_or(|p| (p.0,p.1.as_str()) != (remote.ts_ms,remote.origin.as_str())) {
+        conn.execute("UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now') WHERE id=1", [])?;
+    }
+    conn.execute("INSERT INTO vocabulary_policy_peer(device_uuid,ts_ms,origin) VALUES (?1,?2,?3) ON CONFLICT(device_uuid) DO UPDATE SET ts_ms=excluded.ts_ms,origin=excluded.origin", params![peer,remote.ts_ms,remote.origin])?;
+    Ok(changed)
+}
 
 pub(crate) fn cleanup_cache_send_gate() -> &'static tokio::sync::RwLock<()> {
     static GATE: std::sync::OnceLock<tokio::sync::RwLock<()>> = std::sync::OnceLock::new();
@@ -186,7 +324,12 @@ pub struct DictionaryRow {
     #[serde(default)]
     pub last_seen_at: Option<String>,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_basis: Option<DictionaryRestoreBasis>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DictionaryRestoreBasis { pub origin: String, pub origin_seq: i64 }
 
 fn default_confidence_tier() -> String {
     "low".to_string()
@@ -284,7 +427,19 @@ pub struct ContextAggregate {
     pub dictionary_entries: Vec<DictionaryReference>,
     #[serde(default)]
     pub snippet_uuids: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub vocabulary_membership_dots: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_stamp: Option<ContextMetadataStamp>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextMetadataStamp {
+    pub ts_ms: i64,
+    pub origin: String,
+}
+
+fn is_false(value: &bool) -> bool { !value }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SubAppRow {
@@ -519,6 +674,7 @@ row_payloads! {
         confidence_tier: r.get(4)?,
         last_seen_at: r.get(5)?,
         created_at: r.get(6)?,
+        restore_basis: None,
     };
     dictionary_correction_payload, DictionaryCorrectionRow, "serialize dictionary correction row",
     "SELECT COALESCE(ctx.uuid, ''), COALESCE(d.uuid, ''), d.term, c.mistake, c.auto_learned,
@@ -633,6 +789,8 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
                         dictionary_uuids: Vec::new(),
                         dictionary_entries: Vec::new(),
                         snippet_uuids: Vec::new(),
+                        vocabulary_membership_dots: true,
+                        metadata_stamp: None,
                     },
                 ))
             },
@@ -642,6 +800,21 @@ fn context_aggregate(conn: &Connection, uuid: &str) -> Result<Option<serde_json:
         Some(row) => row,
         None => return Ok(None),
     };
+    let key = format!("context_metadata:{uuid}");
+    let default_everywhere = aggregate.is_everywhere && aggregate.name == "Everywhere"
+        && aggregate.icon.is_none() && aggregate.tone.is_none() && aggregate.cleanup_intensity.is_none()
+        && aggregate.color.is_none() && aggregate.custom_instructions.is_none()
+        && !aggregate.contextual_formatting_disabled && aggregate.contextual_formatting_override.is_none()
+        && aggregate.pinned_at.is_none() && !aggregate.paste_in_chunks
+        && !aggregate.t3_skill_mentions_disabled.unwrap_or(false);
+    if aggregate.is_everywhere { aggregate.metadata_stamp = Some(match sync_store::get_setting_stamp(conn, &key)? {
+        Some(stamp) => ContextMetadataStamp { ts_ms: stamp.ts_ms, origin: stamp.origin },
+        None if default_everywhere => ContextMetadataStamp { ts_ms: 0, origin: String::new() },
+        None => ContextMetadataStamp {
+            ts_ms: conn.query_row("SELECT COALESCE(CAST(strftime('%s', updated_at || 'Z') AS INTEGER), 0) * 1000 FROM contexts WHERE id=?1", [context_id], |row| row.get(0))?,
+            origin: sync_store::self_uuid(conn)?.unwrap_or_default(),
+        },
+    }); }
     let mut stmt = conn.prepare_cached(
         "SELECT executable, platform, app_name, developer
          FROM context_targets WHERE context_id = ?1 ORDER BY executable",
@@ -698,6 +871,17 @@ fn row_payload(conn: &Connection, table: &str, uuid: &str) -> Result<Option<serd
     let mut payload = match table {
         "cleanup_cache" => conn.query_row("SELECT clean_text, COALESCE(created_at_epoch, CAST(strftime('%s', created_at || 'Z') AS INTEGER)), COALESCE(expires_at_epoch, CAST(strftime('%s', expires_at || 'Z') AS INTEGER)), is_snippet FROM cleanup_cache WHERE key=?1 AND COALESCE(expires_at_epoch, CAST(strftime('%s', expires_at || 'Z') AS INTEGER)) > CAST(strftime('%s','now') AS INTEGER) AND COALESCE(created_at_epoch, CAST(strftime('%s', created_at || 'Z') AS INTEGER)) > CAST(strftime('%s','now','-7 days') AS INTEGER) AND COALESCE(last_hit_at_epoch, CAST(strftime('%s', last_hit_at || 'Z') AS INTEGER)) > CAST(strftime('%s','now','-2 days') AS INTEGER)", [uuid], |r| Ok(serde_json::json!({"clean_text":r.get::<_,String>(0)?, "created":r.get::<_,i64>(1)?, "expires":r.get::<_,i64>(2)?, "snippet":r.get::<_,bool>(3)?}))).optional().map_err(Into::into),
         "dictionary" => dictionary_payload(conn, uuid),
+        "vocabulary_expiration_usage" => conn.query_row("SELECT last_used_at FROM vocabulary_expiration_usage WHERE item_uuid=?1", [uuid], |r| Ok(serde_json::json!({"last_used_at":r.get::<_,String>(0)?}))).optional().map_err(Into::into),
+        "vocabulary_expiration_marks" => conn.query_row("SELECT cutoff,deleted_at,request_id,policy_ts,policy_origin FROM vocabulary_expiration_marks WHERE item_uuid=?1", [uuid], |r| Ok(serde_json::json!({"cutoff":r.get::<_,String>(0)?,"deleted_at":r.get::<_,String>(1)?,"request_id":r.get::<_,String>(2)?,"policy_ts":r.get::<_,i64>(3)?,"policy_origin":r.get::<_,String>(4)?}))).optional().map_err(Into::into),
+        "vocabulary_expiration_events" => conn.query_row("SELECT item_uuid,cutoff,deleted_at,policy_ts,policy_origin,version_ids FROM vocabulary_expiration_events WHERE request_id=?1", [uuid], |r| Ok(serde_json::json!({"item_uuid":r.get::<_,String>(0)?,"cutoff":r.get::<_,String>(1)?,"deleted_at":r.get::<_,String>(2)?,"policy_ts":r.get::<_,i64>(3)?,"policy_origin":r.get::<_,String>(4)?,"version_ids":r.get::<_,String>(5)?}))).optional().map_err(Into::into),
+        "vocabulary_identity_links" => conn.query_row("SELECT left_uuid,right_uuid FROM vocabulary_identity_links WHERE link_id=?1", [uuid], |r| Ok(serde_json::json!({"left_uuid":r.get::<_,String>(0)?,"right_uuid":r.get::<_,String>(1)?}))).optional().map_err(Into::into),
+        "vocabulary_membership_dots" => conn.query_row("SELECT context_uuid,dictionary_uuid,dictionary_term,removed,legacy FROM vocabulary_membership_dots WHERE dot=?1", [uuid], |r| Ok(serde_json::json!({"context_uuid":r.get::<_,String>(0)?,"dictionary_uuid":r.get::<_,String>(1)?,"dictionary_term":r.get::<_,String>(2)?,"removed":r.get::<_,bool>(3)?,"legacy":r.get::<_,bool>(4)?}))).optional().map_err(Into::into),
+        "vocabulary_correction_versions" => conn.query_row("SELECT correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at,seen_retired,seen_expired,retired,legacy FROM vocabulary_correction_versions WHERE version_id=?1", [uuid], |r| Ok(serde_json::json!({"correction_uuid":r.get::<_,String>(0)?,"context_uuid":r.get::<_,String>(1)?,"dictionary_uuid":r.get::<_,String>(2)?,"dictionary_term":r.get::<_,String>(3)?,"mistake":r.get::<_,String>(4)?,"auto_learned":r.get::<_,bool>(5)?,"created_at":r.get::<_,String>(6)?,"seen_retired":r.get::<_,String>(7)?,"seen_expired":r.get::<_,String>(8)?,"retired":r.get::<_,bool>(9)?,"legacy":r.get::<_,bool>(10)?}))).optional().map_err(Into::into),
+        "vocabulary_correction_decisions" => conn.query_row("SELECT winner_version,loser_version FROM vocabulary_correction_decisions WHERE decision_id=?1", [uuid], |r| Ok(serde_json::json!({"winner_version":r.get::<_,String>(0)?,"loser_version":r.get::<_,String>(1)?}))).optional().map_err(Into::into),
+        "vocabulary_review_payloads" => {
+            let (kind,row_uuid,origin,origin_seq) = vocabulary_review_parts(uuid)?;
+            conn.query_row("SELECT dictionary_uuid,payload,ts_ms FROM vocabulary_review_payloads WHERE kind=?1 AND row_uuid=?2 AND origin=?3 AND origin_seq=?4", params![kind,row_uuid,origin,origin_seq], |r| Ok(serde_json::json!({"dictionary_uuid":r.get::<_,String>(0)?,"payload":r.get::<_,String>(1)?,"ts_ms":r.get::<_,i64>(2)?}))).optional().map_err(Into::into)
+        },
         "dictionary_corrections" => dictionary_correction_payload(conn, uuid),
         "snippets" => snippet_payload(conn, uuid),
         "contexts" => context_aggregate(conn, uuid),
@@ -708,6 +892,12 @@ fn row_payload(conn: &Connection, table: &str, uuid: &str) -> Result<Option<serd
         "call_receipts" => conn.query_row("SELECT transcription_uuid, day, context_uuid, model, provider, task, audio_ms, input_chars, output_chars, counted FROM call_receipts WHERE uuid=?1 AND counted=1", [uuid], |r| Ok(serde_json::json!({"uuid":uuid, "transcription_uuid":r.get::<_, Option<String>>(0)?, "day":r.get::<_, String>(1)?, "context_uuid":r.get::<_, Option<String>>(2)?, "model":r.get::<_, String>(3)?, "provider":r.get::<_, String>(4)?, "task":r.get::<_, String>(5)?, "audio_ms":r.get::<_, i64>(6)?, "input_chars":r.get::<_, i64>(7)?, "output_chars":r.get::<_, i64>(8)?, "counted":r.get::<_, bool>(9)?}))).optional().map_err(Into::into),
         _ => Ok(None),
     }?;
+    if table == "dictionary" {
+        if let Some(value) = payload.as_mut() {
+            let basis: Option<(String,i64)> = conn.query_row("SELECT delete_origin,delete_seq FROM vocabulary_dictionary_restore_basis WHERE dictionary_uuid=?1", [uuid], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            if let Some((origin,origin_seq)) = basis { value["restore_basis"] = serde_json::json!({"origin":origin,"origin_seq":origin_seq}); }
+        }
+    }
     if matches!(table, "transcriptions" | "held_transcriptions" | "held_hourly_transcriptions" | "transcription_receipts" | "call_receipts") {
         if let Some(value) = payload.as_mut() {
             let parent = if table == "call_receipts" { value.get("transcription_uuid").and_then(|v| v.as_str()) } else { Some(uuid) };
@@ -744,6 +934,14 @@ fn sync_history_table<'a>(conn: &Connection, table: &'a str, uuid: &str) -> Resu
 fn resolve_entry(conn: &Connection, entry: sync_store::LogEntry) -> Result<Option<SyncOp>> {
     if entry.table_name == "transcriptions" && entry.op == "delete" {
         return Ok(None);
+    }
+    if entry.table_name == "contexts" && entry.op == "upsert" {
+        let alias_without_row: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_everywhere_aliases WHERE uuid=?1)
+                AND NOT EXISTS(SELECT 1 FROM contexts WHERE uuid=?1)",
+            [&entry.row_uuid], |row| row.get(0),
+        )?;
+        if alias_without_row { return Ok(None); }
     }
     if entry.table_name == "cleanup_cache"
         && latest_stamp(conn, &entry.table_name, &entry.row_uuid)?
@@ -840,7 +1038,7 @@ pub fn collect_ops(
             });
         };
 
-        while (ops.len() as i64) < limit && progress.stage <= 10 {
+        while (ops.len() as i64) < limit && progress.stage <= 18 {
             let capacity = limit - ops.len() as i64;
             let chunk = capacity.min(SNAPSHOT_ROW_CHUNK);
             let stage = progress.stage;
@@ -849,16 +1047,24 @@ pub fn collect_ops(
                 1 => "snippets",
                 2 => "contexts",
                 3 => "context_sub_apps",
-                4 => "dictionary_corrections",
-                5 => "transcriptions",
-                6 => "transcription_receipts",
-                7 => "api_calls",
-                8 => "call_receipts",
-                9 => "cleanup_cache",
-                10 => "tombstones",
+                4 => "vocabulary_identity_links",
+                5 => "vocabulary_membership_dots",
+                6 => "vocabulary_expiration_events",
+                7 => "vocabulary_correction_versions",
+                8 => "vocabulary_correction_decisions",
+                9 => "dictionary_corrections",
+                10 => "transcriptions",
+                11 => "transcription_receipts",
+                12 => "api_calls",
+                13 => "call_receipts",
+                14 => "cleanup_cache",
+                15 => "vocabulary_expiration_usage",
+                16 => "vocabulary_expiration_marks",
+                17 => "vocabulary_review_payloads",
+                18 => "tombstones",
                 _ => unreachable!("snapshot stage is complete"),
             };
-            if stage == 10 {
+            if stage == 18 {
                 let mut stmt = conn.prepare_cached(
                     "SELECT seq, table_name, row_uuid, ts_ms, origin, origin_seq, op
                      FROM sync_log AS current
@@ -893,14 +1099,40 @@ pub fn collect_ops(
                 }
                 ops.extend(rows.into_iter().map(|(_, op)| op));
                 if fetched < chunk {
-                    progress.stage = 11;
+                    progress.stage = 19;
                     progress.origin_seq = Some(origin_seq);
                     return Ok((ops, start_cursor, true));
                 }
                 progress.origin_seq = Some(origin_seq);
                 return Ok((ops, 0, false));
             }
-            if stage == 9 {
+            if stage == 17 {
+                let mut stmt = conn.prepare("SELECT rowid,kind,row_uuid,origin,origin_seq FROM vocabulary_review_payloads WHERE rowid>?1 ORDER BY rowid LIMIT ?2")?;
+                let rows = stmt.query_map(params![progress.last_id,chunk], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let fetched = rows.len() as i64;
+                for (id,kind,row_uuid,op_origin,op_seq) in rows {
+                    progress.last_id = id;
+                    let key = vocabulary_review_key(&kind,&row_uuid,&op_origin,op_seq)?;
+                    push(table,key.clone(),row_payload(conn,table,&key)?,latest_stamp(conn,table,&key)?,&mut ops);
+                }
+                if fetched < chunk { progress.stage += 1; progress.last_id = 0; }
+                else { progress.origin_seq = Some(origin_seq); return Ok((ops,0,false)); }
+                continue;
+            }
+            if stage == 4 || stage == 5 || stage == 6 || stage == 7 || stage == 8 || stage == 15 || stage == 16 {
+                let key = if stage == 4 { "link_id" } else if stage == 5 { "dot" } else if stage == 6 { "request_id" } else if stage == 7 { "version_id" } else if stage == 8 { "decision_id" } else { "item_uuid" };
+                let mut stmt = conn.prepare(&format!("SELECT rowid,{key} FROM {table} WHERE rowid>?1 ORDER BY rowid LIMIT ?2"))?;
+                let rows = stmt.query_map(params![progress.last_id,chunk], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let fetched = rows.len() as i64;
+                for (id, uuid) in rows {
+                    progress.last_id = id;
+                    push(table, uuid.clone(), row_payload(conn,table,&uuid)?, latest_stamp(conn,table,&uuid)?, &mut ops);
+                }
+                if fetched < chunk { progress.stage += 1; progress.last_id = 0; }
+                else { progress.origin_seq = Some(origin_seq); return Ok((ops, 0, false)); }
+                continue;
+            }
+            if stage == 14 {
                 let mut stmt = conn.prepare("SELECT rowid, key FROM cleanup_cache WHERE rowid > ?1 AND key LIKE 'cleanup-v3:%' ORDER BY rowid LIMIT ?2")?;
                 let rows = stmt.query_map(params![progress.last_id, chunk], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 let fetched = rows.len() as i64;
@@ -940,13 +1172,30 @@ pub fn collect_ops(
                 let wire_table = sync_history_table(conn, table, &uuid)?;
                 let payload = row_payload(conn, wire_table, &uuid)?;
                 if payload.is_none() { continue; }
-                let stamp = latest_stamp(conn, table, &uuid)?;
+                let mut stamp = latest_stamp(conn, table, &uuid)?;
+                if stamp.is_none() && table == "contexts" {
+                    let pristine: bool = conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM contexts c WHERE c.uuid=?1 AND c.is_everywhere=1
+                           AND c.name='Everywhere' AND c.icon IS NULL AND c.tone IS NULL
+                           AND c.cleanup_intensity IS NULL AND c.color IS NULL AND c.custom_instructions IS NULL
+                           AND c.contextual_formatting_disabled=0 AND c.contextual_formatting_override IS NULL
+                           AND c.pinned_at IS NULL AND c.paste_in_chunks=0 AND c.t3_skill_mentions_disabled=0
+                           AND NOT EXISTS(SELECT 1 FROM dictionary_contexts WHERE context_id=c.id)
+                           AND NOT EXISTS(SELECT 1 FROM snippet_contexts WHERE context_id=c.id)
+                           AND NOT EXISTS(SELECT 1 FROM context_targets WHERE context_id=c.id)
+                           AND NOT EXISTS(SELECT 1 FROM context_website_targets WHERE context_id=c.id))",
+                        [&uuid], |row| row.get(0),
+                    )?;
+                    if pristine {
+                        stamp = Some((0, String::new(), 0));
+                    }
+                }
                 push(wire_table, uuid, payload, stamp, &mut ops);
             }
             if fetched < chunk {
                 progress.stage += 1;
                 progress.last_id = 0;
-                if progress.stage > 10 {
+                if progress.stage > 17 {
                     progress.origin_seq = Some(origin_seq);
                     return Ok((ops, start_cursor, true));
                 }
@@ -955,7 +1204,7 @@ pub fn collect_ops(
                 return Ok((ops, 0, false));
             }
         }
-        if progress.stage <= 10 {
+        if progress.stage <= 18 {
             progress.origin_seq = Some(origin_seq);
             return Ok((ops, 0, false));
         }
@@ -998,7 +1247,13 @@ fn apply_rank(op: &SyncOp) -> u8 {
         ("snippets", false) => 11,
         ("contexts", false) => 20,
         ("context_sub_apps", false) => 25,
+        ("vocabulary_membership_dots", _) => 26,
+        ("vocabulary_correction_versions", _) => 27,
+        ("vocabulary_correction_decisions", _) => 28,
         ("dictionary_corrections", _) => 30,
+        ("vocabulary_expiration_usage", _) => 55,
+        ("vocabulary_identity_links", _) => 24,
+        ("vocabulary_expiration_events", _) => 25,
         ("transcriptions", false) => 40,
         ("held_transcriptions", false) => 40,
         ("held_hourly_transcriptions", false) => 40,
@@ -1028,6 +1283,7 @@ fn apply_ops_with_retention(conn: &Connection, ops: &[SyncOp], days: Option<i64>
 fn apply_ops_inner(conn: &Connection, ops: &[SyncOp], cutoff: Option<&str>) -> Result<ApplySummary> {
     let _guard = ApplyingGuard::new(conn)?;
     let mut summary = ApplySummary::default();
+    let mut refresh_memberships = false;
     let mut ordered: Vec<&SyncOp> = ops.iter().collect();
     ordered.sort_by_key(|op| apply_rank(op));
     for original in ordered {
@@ -1076,6 +1332,14 @@ fn apply_ops_inner(conn: &Connection, ops: &[SyncOp], cutoff: Option<&str>) -> R
             }
             "cleanup_cache" => (apply_cleanup_cache_op(conn, op)?, &mut summary.stats),
             "cleanup_cache_rejection" => (apply_cleanup_cache_rejection(conn, op)?, &mut summary.stats),
+            "vocabulary_expiration_usage" => (apply_vocabulary_usage(conn, op)?, &mut summary.dictionary),
+            "vocabulary_expiration_marks" => (apply_vocabulary_mark(conn, op)?, &mut summary.dictionary),
+            "vocabulary_expiration_events" => (apply_vocabulary_expiration_event(conn, op)?, &mut summary.dictionary),
+            "vocabulary_identity_links" => (apply_vocabulary_link(conn, op)?, &mut summary.dictionary),
+            "vocabulary_membership_dots" => (apply_vocabulary_membership_dot(conn, op)?, &mut summary.dictionary),
+            "vocabulary_correction_versions" => (apply_vocabulary_correction_version(conn, op)?, &mut summary.dictionary),
+            "vocabulary_correction_decisions" => (apply_vocabulary_correction_decision(conn, op)?, &mut summary.dictionary),
+            "vocabulary_review_payloads" => (apply_vocabulary_review_payload(conn, op)?, &mut summary.dictionary),
             "dictionary" | NATURAL_KEY_TOMBSTONE_TABLE => {
                 (apply_dictionary_op(conn, op)?, &mut summary.dictionary)
             }
@@ -1103,6 +1367,9 @@ fn apply_ops_inner(conn: &Connection, ops: &[SyncOp], cutoff: Option<&str>) -> R
         };
         match applied {
             Applied::Yes => {
+                if matches!(original.table.as_str(), "dictionary" | "contexts" | "vocabulary_identity_links") {
+                    refresh_memberships = true;
+                }
                 if matches!(original.table.as_str(), "transcriptions" | "held_transcriptions" | "held_hourly_transcriptions" | "transcription_receipts") && !original.is_delete() {
                     if let Some(source) = original.payload.as_ref().and_then(|p| p.get("context_uuid")).and_then(|v| v.as_str()) {
                         conn.execute("INSERT OR IGNORE INTO backup_context_event_sources(transcription_uuid,source_uuid,local_uuid,source_name) SELECT ?1,a.source_uuid,a.local_uuid,a.source_name FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE a.source_uuid=?2 AND (EXISTS(SELECT 1 FROM transcriptions WHERE uuid=?1 AND context_id=c.id) OR EXISTS(SELECT 1 FROM transcription_receipts WHERE uuid=?1 AND context_uuid=c.uuid))", params![original.row_uuid,source])?;
@@ -1123,11 +1390,124 @@ fn apply_ops_inner(conn: &Connection, ops: &[SyncOp], cutoff: Option<&str>) -> R
             }
         }
     }
+    if refresh_memberships { refresh_vocabulary_memberships(conn)?; }
+    if summary.dictionary || summary.contexts || summary.dictionary_corrections {
+        db::record_correction_history_decisions(conn)?;
+    }
     Ok(summary)
 }
 
 fn log_applied(conn: &Connection, op: &SyncOp) -> Result<()> {
     sync_store::append_op(conn, op, op.ts_ms, &op.origin, op.origin_seq)
+}
+
+// Identity links are undirected and grow only: concurrent natural-key resolutions
+// can choose different winners, but activity must follow every equivalent UUID.
+pub(crate) fn reconcile_vocabulary_identities(conn: &Connection, uuid: &str) -> Result<()> {
+    let linked: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM vocabulary_identity_links WHERE left_uuid=?1 OR right_uuid=?1)", [uuid], |r| r.get(0))?;
+    if !linked { return Ok(()); }
+    let mut stmt = conn.prepare("WITH RECURSIVE members(uuid) AS (SELECT ?1 UNION SELECT CASE WHEN l.left_uuid=m.uuid THEN l.right_uuid ELSE l.left_uuid END FROM vocabulary_identity_links l JOIN members m ON l.left_uuid=m.uuid OR l.right_uuid=m.uuid) SELECT uuid FROM members")?;
+    let members = stmt.query_map([uuid], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let mut usage: Option<String> = None;
+    let mut mark: Option<(String, String, String, i64, String)> = None;
+    for member in &members {
+        let value: Option<String> = conn.query_row("SELECT MAX(value) FROM (SELECT last_used_at AS value FROM vocabulary_expiration_usage WHERE item_uuid=?1 UNION ALL SELECT created_at FROM dictionary WHERE uuid=?1)", [member], |r| r.get(0))?;
+        if value > usage { usage = value; }
+        let candidate: Option<(String, String, String, i64, String)> = conn.query_row("SELECT cutoff,request_id,deleted_at,policy_ts,policy_origin FROM vocabulary_expiration_marks WHERE item_uuid=?1", [member], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+        if candidate > mark { mark = candidate; }
+    }
+    for member in &members {
+        if let Some(value) = &usage {
+            let changed = conn.execute("INSERT INTO vocabulary_expiration_usage(item_uuid,last_used_at) VALUES (?1,?2) ON CONFLICT(item_uuid) DO UPDATE SET last_used_at=excluded.last_used_at WHERE excluded.last_used_at>last_used_at", params![member,value])?;
+            if changed > 0 { append_self_log(conn, "vocabulary_expiration_usage", member, "upsert")?; }
+        }
+        if let Some((cutoff, request_id, deleted_at, policy_ts, policy_origin)) = &mark {
+            let changed = conn.execute("INSERT INTO vocabulary_expiration_marks(item_uuid,cutoff,deleted_at,request_id,policy_ts,policy_origin) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(item_uuid) DO UPDATE SET cutoff=excluded.cutoff,deleted_at=excluded.deleted_at,request_id=excluded.request_id,policy_ts=excluded.policy_ts,policy_origin=excluded.policy_origin WHERE excluded.cutoff>cutoff OR (excluded.cutoff=cutoff AND excluded.request_id>request_id)", params![member,cutoff,deleted_at,request_id,policy_ts,policy_origin])?;
+            if changed > 0 { append_self_log(conn, "vocabulary_expiration_marks", member, "upsert")?; }
+        }
+    }
+    Ok(())
+}
+
+fn link_vocabulary_identities(conn: &Connection, a: &str, b: &str) -> Result<bool> {
+    let (left, right) = if a < b { (a,b) } else { (b,a) };
+    let id = format!("{left}:{right}");
+    let changed = conn.execute("INSERT OR IGNORE INTO vocabulary_identity_links(link_id,left_uuid,right_uuid) VALUES (?1,?2,?3)", params![id,left,right])? > 0;
+    reconcile_vocabulary_identities(conn, left)?;
+    Ok(changed)
+}
+
+fn apply_vocabulary_link(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if op.is_delete() { return Ok(Applied::Skipped); }
+    let payload = op.payload.as_ref().ok_or_else(|| anyhow!("invalid vocabulary identity link"))?;
+    let left = payload.get("left_uuid").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary identity link"))?;
+    let right = payload.get("right_uuid").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary identity link"))?;
+    if Uuid::parse_str(left).is_err() || Uuid::parse_str(right).is_err() || left >= right || op.row_uuid != format!("{left}:{right}") { return Err(anyhow!("invalid vocabulary identity link")); }
+    if !link_vocabulary_identities(conn, left, right)? { return Ok(Applied::Skipped); }
+    log_applied(conn, op)?;
+    Ok(Applied::Yes)
+}
+
+fn apply_vocabulary_usage(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if op.is_delete() { return Ok(Applied::Skipped); }
+    let value = op.payload.as_ref().and_then(|p| p.get("last_used_at")).and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary activity"))?;
+    let valid: bool = conn.query_row("SELECT datetime(?1) IS NOT NULL AND datetime(?1)=?1", [value], |r| r.get(0))?;
+    if !valid || Uuid::parse_str(&op.row_uuid).is_err() { return Err(anyhow!("invalid vocabulary activity")); }
+    let changed = conn.execute("INSERT INTO vocabulary_expiration_usage(item_uuid,last_used_at) VALUES (?1,?2) ON CONFLICT(item_uuid) DO UPDATE SET last_used_at=excluded.last_used_at WHERE excluded.last_used_at>last_used_at", params![op.row_uuid,value])?;
+    if changed == 0 { return Ok(Applied::Skipped); }
+    log_applied(conn,op)?;
+    reconcile_vocabulary_identities(conn, &op.row_uuid)?;
+    Ok(Applied::Yes)
+}
+
+fn apply_vocabulary_expiration_event(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    anyhow::ensure!(!op.is_delete(), "expiration events must retain their history");
+    let payload = op.payload.as_ref().ok_or_else(|| anyhow!("invalid vocabulary expiration event"))?;
+    let item = payload.get("item_uuid").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary expiration event"))?;
+    let cutoff = payload.get("cutoff").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary expiration event"))?;
+    let deleted = payload.get("deleted_at").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary expiration event"))?;
+    let policy_ts = payload.get("policy_ts").and_then(|v| v.as_i64()).ok_or_else(|| anyhow!("invalid vocabulary expiration event"))?;
+    let policy_origin = payload.get("policy_origin").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary expiration event"))?;
+    let version_ids = payload.get("version_ids").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary expiration event"))?;
+    let versions: Vec<String> = serde_json::from_str(version_ids)?;
+    let valid: bool = conn.query_row("SELECT datetime(?1)=?1 AND datetime(?2)=?2", params![cutoff,deleted], |r| r.get::<_,Option<bool>>(0))?.unwrap_or(false);
+    anyhow::ensure!(valid && Uuid::parse_str(&op.row_uuid).is_ok() && Uuid::parse_str(item).is_ok() && policy_origin.len() <= 128
+        && version_ids.len() <= 1_000_000 && versions.len() <= 10_000 && versions.iter().all(|id| Uuid::parse_str(id).is_ok()), "invalid vocabulary expiration event");
+    let previous = row_payload(conn, "vocabulary_expiration_events", &op.row_uuid)?;
+    if let Some(existing) = previous {
+        let existing_item = existing["item_uuid"].as_str().unwrap_or("");
+        let linked: bool = conn.query_row("WITH RECURSIVE ids(uuid) AS (SELECT ?1 UNION SELECT CASE WHEN l.left_uuid=ids.uuid THEN l.right_uuid ELSE l.left_uuid END FROM vocabulary_identity_links l JOIN ids ON l.left_uuid=ids.uuid OR l.right_uuid=ids.uuid) SELECT EXISTS(SELECT 1 FROM ids WHERE uuid=?2)", params![existing_item,item], |r| r.get(0))?;
+        anyhow::ensure!(linked && existing["cutoff"] == cutoff && existing["deleted_at"] == deleted
+            && existing["policy_ts"] == policy_ts && existing["policy_origin"] == policy_origin && existing["version_ids"] == version_ids, "expiration event identity changed");
+        return Ok(Applied::Skipped);
+    }
+    conn.execute("INSERT INTO vocabulary_expiration_events(request_id,item_uuid,cutoff,deleted_at,policy_ts,policy_origin,version_ids) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![op.row_uuid,item,cutoff,deleted,policy_ts,policy_origin,version_ids])?;
+    log_applied(conn, op)?;
+    Ok(Applied::Yes)
+}
+
+fn apply_vocabulary_mark(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    if op.is_delete() { return Ok(Applied::Skipped); }
+    let payload = op.payload.as_ref().ok_or_else(|| anyhow!("invalid vocabulary expiration"))?;
+    let cutoff = payload.get("cutoff").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary expiration"))?;
+    let deleted_at = payload.get("deleted_at").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary expiration"))?;
+    let request_id = payload.get("request_id").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid vocabulary expiration"))?;
+    let policy_ts = payload.get("policy_ts").and_then(|v| v.as_i64()).unwrap_or(0);
+    let policy_origin = payload.get("policy_origin").and_then(|v| v.as_str()).unwrap_or("");
+    let valid: bool = conn.query_row("SELECT datetime(?1)=?1 AND datetime(?2)=?2", params![cutoff,deleted_at], |r| r.get::<_,Option<bool>>(0))?.unwrap_or(false);
+    if !valid || Uuid::parse_str(&op.row_uuid).is_err() || Uuid::parse_str(request_id).is_err() { return Err(anyhow!("invalid vocabulary expiration")); }
+    let policy = vocabulary_policy(conn)?;
+    if (policy_ts,policy_origin) > (policy.ts_ms,policy.origin.as_str()) { return Ok(Applied::Deferred); }
+    if (policy_ts,policy_origin) < (policy.ts_ms,policy.origin.as_str()) {
+        let retained: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM vocabulary_policy_retained WHERE request_id=?1)", [request_id], |r| r.get(0))?;
+        if !retained { return Ok(Applied::Skipped); }
+    }
+    let changed = conn.execute("INSERT INTO vocabulary_expiration_marks(item_uuid,cutoff,deleted_at,request_id,policy_ts,policy_origin) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(item_uuid) DO UPDATE SET cutoff=excluded.cutoff,deleted_at=excluded.deleted_at,request_id=excluded.request_id,policy_ts=excluded.policy_ts,policy_origin=excluded.policy_origin WHERE excluded.cutoff>cutoff OR (excluded.cutoff=cutoff AND excluded.request_id>request_id)", params![op.row_uuid,cutoff,deleted_at,request_id,policy_ts,policy_origin])?;
+    if changed == 0 { return Ok(Applied::Skipped); }
+    log_applied(conn, op)?;
+    reconcile_vocabulary_identities(conn, &op.row_uuid)?;
+    Ok(Applied::Yes)
 }
 
 fn log_anti_entropy_delete(conn: &Connection, table: &str, row_uuid: &str) -> Result<()> {
@@ -1304,23 +1684,6 @@ fn restore_dictionary_children(
             |r| r.get(0),
         )?;
         if !context_exists {
-            if let Some(uuid) = source.uuid.as_deref() {
-                log_anti_entropy_delete(conn, "dictionary_corrections", uuid)?;
-            }
-            continue;
-        }
-
-        let other_mapping: Option<(i64, Option<String>)> = conn
-            .query_row(
-                "SELECT dictionary_id, uuid FROM dictionary_corrections
-                  WHERE context_id = ?1 AND mistake = ?2
-                    AND dictionary_id != ?3
-                  ORDER BY id LIMIT 1",
-                params![source.context_id, source.mistake, winner_dictionary_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        if other_mapping.is_some() {
             if let Some(uuid) = source.uuid.as_deref() {
                 log_anti_entropy_delete(conn, "dictionary_corrections", uuid)?;
             }
@@ -1564,12 +1927,34 @@ fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     if op.is_delete() {
         return apply_simple_delete(conn, op, "dictionary", "dictionary");
     }
-    if let Some(stamp) = latest_dictionary_stamp(conn, &op.row_uuid)? {
-        if !op.newer_than(&stamp) {
+    let row: DictionaryRow = op_payload(op, "dictionary", "dictionary")?;
+    if let Some(basis) = &row.restore_basis {
+        anyhow::ensure!(!basis.origin.is_empty() && basis.origin.len() <= 128 && basis.origin_seq > 0, "Invalid dictionary restore basis");
+    }
+    let deleted = latest_is_delete(conn, "dictionary", &op.row_uuid)?;
+    let observed_delete = if deleted {
+        let stamp = latest_stamp(conn, "dictionary", &op.row_uuid)?.context("Missing dictionary deletion stamp")?;
+        row.restore_basis.as_ref().is_some_and(|basis| basis.origin == stamp.1 && basis.origin_seq == stamp.2)
+    } else { false };
+    if deleted && !observed_delete {
+            if !has_seen_sync_op(conn, op)? {
+                archive_dictionary_review(conn, op, &row.term)?;
+            }
             return Ok(Applied::Skipped);
+    }
+    if !deleted {
+        let current_basis: Option<(String,i64)> = conn.query_row("SELECT b.delete_origin,b.delete_seq FROM vocabulary_dictionary_restore_basis b JOIN dictionary d ON d.uuid=b.dictionary_uuid WHERE b.dictionary_uuid=?1", [&op.row_uuid], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if let Some((origin,origin_seq)) = current_basis {
+            let observed = row.restore_basis.as_ref().is_some_and(|basis| basis.origin == origin && basis.origin_seq == origin_seq);
+            if !observed {
+                if !has_seen_sync_op(conn, op)? { archive_dictionary_review(conn, op, &row.term)?; }
+                return Ok(Applied::Skipped);
+            }
         }
     }
-    let row: DictionaryRow = op_payload(op, "dictionary", "dictionary")?;
+    if !observed_delete && latest_dictionary_stamp(conn, &op.row_uuid)?.is_some_and(|stamp| !op.newer_than(&stamp)) {
+        return Ok(Applied::Skipped);
+    }
     if row.replacement_confidence.as_deref().is_some_and(|value| !matches!(value, "low" | "default" | "high")) {
         anyhow::bail!("Invalid dictionary replacement confidence");
     }
@@ -1598,9 +1983,84 @@ fn apply_dictionary_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
             ],
         )
     };
-    apply_with_natural_key_resolution(conn, op, "dictionary", insert, &|conn| {
+    let applied = apply_with_natural_key_resolution(conn, op, "dictionary", insert, &|conn| {
         conflicting_uuid(conn, "dictionary", "term", &row.term, &op.row_uuid)
-    })
+    })?;
+    if applied == Applied::Yes {
+        if let Some(basis) = &row.restore_basis {
+            conn.execute("INSERT INTO vocabulary_dictionary_restore_basis(dictionary_uuid,delete_origin,delete_seq) VALUES (?1,?2,?3) ON CONFLICT(dictionary_uuid) DO UPDATE SET delete_origin=excluded.delete_origin,delete_seq=excluded.delete_seq", params![op.row_uuid,basis.origin,basis.origin_seq])?;
+        } else {
+            conn.execute("DELETE FROM vocabulary_dictionary_restore_basis WHERE dictionary_uuid=?1", [&op.row_uuid])?;
+        }
+    }
+    Ok(applied)
+}
+
+fn archive_dictionary_review(conn: &Connection, op: &SyncOp, term: &str) -> Result<()> {
+    archive_vocabulary_review_payload(conn, "dictionary", &op.row_uuid, op)?;
+    conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason)
+        SELECT DISTINCT context_uuid,?1,?2,'offline_deletion' FROM vocabulary_membership_dots WHERE dictionary_uuid=?1", params![op.row_uuid,term])?;
+    conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason)
+        SELECT uuid,?1,?2,'offline_deletion' FROM contexts WHERE is_everywhere=1 AND NOT EXISTS
+        (SELECT 1 FROM vocabulary_membership_reviews WHERE dictionary_uuid=?1)", params![op.row_uuid,term])?;
+    Ok(())
+}
+
+fn has_seen_sync_op(conn: &Connection, op: &SyncOp) -> Result<bool> {
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_log WHERE table_name=?1 AND row_uuid=?2 AND op=?3 AND ts_ms=?4 AND origin=?5 AND origin_seq=?6)", params![op.table,op.row_uuid,op.op,op.ts_ms,op.origin,op.origin_seq], |r| r.get(0))?)
+}
+
+fn archive_vocabulary_review_payload(conn: &Connection, kind: &str, dictionary_uuid: &str, op: &SyncOp) -> Result<()> {
+    let payload = op.payload.as_ref().ok_or_else(|| anyhow!("missing vocabulary review payload"))?;
+    let key = vocabulary_review_key(kind, &op.row_uuid, &op.origin, op.origin_seq)?;
+    if latest_is_delete(conn, "vocabulary_review_payloads", &key)? { return Ok(()); }
+    let encoded = serde_json::to_string(payload)?;
+    let existing: Option<(String,String)> = conn.query_row("SELECT dictionary_uuid,payload FROM vocabulary_review_payloads WHERE kind=?1 AND row_uuid=?2 AND origin=?3 AND origin_seq=?4", params![kind,op.row_uuid,op.origin,op.origin_seq], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    if let Some((dictionary, previous)) = existing {
+        anyhow::ensure!(dictionary == dictionary_uuid && previous == encoded, "vocabulary review operation changed");
+        return Ok(());
+    }
+    conn.execute("INSERT INTO vocabulary_review_payloads(kind,row_uuid,dictionary_uuid,payload,ts_ms,origin,origin_seq)
+      VALUES (?1,?2,?3,?4,?5,?6,?7)",
+      params![kind,op.row_uuid,dictionary_uuid,encoded,op.ts_ms,op.origin,op.origin_seq])?;
+    append_self_log(conn, "vocabulary_review_payloads", &key, "upsert")?;
+    Ok(())
+}
+
+fn apply_vocabulary_review_payload(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    let (kind,row_uuid,origin,origin_seq) = vocabulary_review_parts(&op.row_uuid)?;
+    if latest_is_delete(conn, "vocabulary_review_payloads", &op.row_uuid)? { return Ok(Applied::Skipped); }
+    if op.is_delete() {
+        conn.execute("DELETE FROM vocabulary_review_payloads WHERE kind=?1 AND row_uuid=?2 AND origin=?3 AND origin_seq=?4", params![kind,row_uuid,origin,origin_seq])?;
+        log_applied(conn, op)?;
+        return Ok(Applied::Yes);
+    }
+    let payload = op.payload.as_ref().context("Missing vocabulary review payload")?;
+    let dictionary_uuid = payload.get("dictionary_uuid").and_then(|v| v.as_str()).context("Missing review dictionary identity")?;
+    let encoded = payload.get("payload").and_then(|v| v.as_str()).context("Missing saved review value")?;
+    let ts_ms = payload.get("ts_ms").and_then(|v| v.as_i64()).context("Missing review timestamp")?;
+    anyhow::ensure!(!dictionary_uuid.is_empty() && dictionary_uuid.len() <= 128 && encoded.len() <= 65536, "Invalid saved review value");
+    let (term, context_uuid) = if kind == "dictionary" {
+        let row: DictionaryRow = serde_json::from_str(encoded)?;
+        (row.term, None)
+    } else {
+        let row: DictionaryCorrectionRow = serde_json::from_str(encoded)?;
+        anyhow::ensure!(row.dictionary_uuid == dictionary_uuid, "Review dictionary identity changed");
+        (row.dictionary_term, Some(row.context_uuid))
+    };
+    let existing: Option<(String,String)> = conn.query_row("SELECT dictionary_uuid,payload FROM vocabulary_review_payloads WHERE kind=?1 AND row_uuid=?2 AND origin=?3 AND origin_seq=?4", params![kind,row_uuid,origin,origin_seq], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    if let Some((old_dictionary, old_payload)) = existing {
+        anyhow::ensure!(old_dictionary == dictionary_uuid && old_payload == encoded, "vocabulary review operation changed");
+        return Ok(Applied::Skipped);
+    }
+    conn.execute("INSERT INTO vocabulary_review_payloads(kind,row_uuid,dictionary_uuid,payload,ts_ms,origin,origin_seq) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![kind,row_uuid,dictionary_uuid,encoded,ts_ms,origin,origin_seq])?;
+    if let Some(context) = context_uuid {
+        conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) VALUES (?1,?2,?3,'offline_deletion')", params![context,dictionary_uuid,term])?;
+    } else {
+        conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) SELECT uuid,?1,?2,'offline_deletion' FROM contexts WHERE is_everywhere=1", params![dictionary_uuid,term])?;
+    }
+    log_applied(conn, op)?;
+    Ok(Applied::Yes)
 }
 
 fn resolve_correction_dictionary_id(
@@ -1677,6 +2137,7 @@ fn correction_target_for_natural_key(
     .map_err(Into::into)
 }
 
+
 fn correction_uuid_exists(conn: &Connection, uuid: &str) -> Result<Option<CorrectionIdentity>> {
     conn.query_row(
         "SELECT id, context_id, dictionary_id, mistake, auto_learned
@@ -1724,6 +2185,164 @@ fn delete_local_correction_for_remote_winner(
     Ok(())
 }
 
+type CorrectionDecisionVersion = (String, String, String, bool, String, String);
+
+fn apply_vocabulary_correction_decision(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    anyhow::ensure!(!op.is_delete(), "correction decisions must retain their history");
+    let payload = op.payload.as_ref().ok_or_else(|| anyhow!("invalid correction decision"))?;
+    let winner = payload.get("winner_version").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid correction decision"))?;
+    let loser = payload.get("loser_version").and_then(|v| v.as_str()).ok_or_else(|| anyhow!("invalid correction decision"))?;
+    anyhow::ensure!(Uuid::parse_str(winner).is_ok() && Uuid::parse_str(loser).is_ok()
+        && winner != loser && op.row_uuid == format!("{winner}:{loser}"), "invalid correction decision");
+    let load = |id: &str| -> Result<Option<CorrectionDecisionVersion>> {
+        Ok(conn.query_row("SELECT context_uuid,dictionary_uuid,mistake,auto_learned,created_at,correction_uuid FROM vocabulary_correction_versions WHERE version_id=?1", [id],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?)
+    };
+    let (Some(a),Some(b)) = (load(winner)?,load(loser)?) else { return Ok(Applied::Deferred); };
+    let context = |id: &str| -> Result<String> {
+        let resolved: String = conn.query_row("SELECT COALESCE((SELECT local_uuid FROM backup_context_aliases WHERE source_uuid=?1),?1)", [id], |r| r.get(0))?;
+        let everywhere: bool = conn.query_row("SELECT ?1='everywhere-0000-0000-0000-000000000001' OR ?2='everywhere-0000-0000-0000-000000000001' OR EXISTS(SELECT 1 FROM sync_everywhere_aliases WHERE uuid IN (?1,?2)) OR EXISTS(SELECT 1 FROM contexts WHERE uuid IN (?1,?2) AND is_everywhere=1)", params![id,resolved], |r| r.get(0))?;
+        if everywhere { return Ok("everywhere-0000-0000-0000-000000000001".to_string()); }
+        Ok(resolved)
+    };
+    let variants = |value: &str| value.split(',').map(str::trim).filter(|part| !part.is_empty()).map(str::to_lowercase).collect::<std::collections::HashSet<_>>();
+    anyhow::ensure!(context(&a.0)? == context(&b.0)? && a.1 != b.1
+        && !variants(&a.2).is_disjoint(&variants(&b.2))
+        && (!a.3,a.4.as_str(),a.5.as_str(),winner) > (!b.3,b.4.as_str(),b.5.as_str(),loser),
+        "invalid correction decision");
+    let changed = conn.execute("INSERT OR IGNORE INTO vocabulary_correction_decisions(decision_id,winner_version,loser_version) VALUES (?1,?2,?3)", params![op.row_uuid,winner,loser])?;
+    if changed == 0 { return Ok(Applied::Skipped); }
+    conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) SELECT context_uuid,dictionary_uuid,dictionary_term,'correction_conflict' FROM vocabulary_correction_versions WHERE version_id=?1", [loser])?;
+    log_applied(conn, op)?;
+    Ok(Applied::Yes)
+}
+
+fn apply_vocabulary_correction_version(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    anyhow::ensure!(!op.is_delete(), "correction versions must retain retirement history");
+    Uuid::parse_str(&op.row_uuid).map_err(|_| anyhow!("invalid correction version"))?;
+    let row: VocabularyCorrectionVersion = op_payload(op, "correction version", "correction version")?;
+    anyhow::ensure!(!row.correction_uuid.is_empty() && row.correction_uuid.len() <= 128
+        && !row.context_uuid.is_empty() && row.context_uuid.len() <= 128
+        && !row.dictionary_uuid.is_empty() && row.dictionary_uuid.len() <= 128
+        && !row.dictionary_term.is_empty() && row.dictionary_term.len() <= 4096
+        && !row.mistake.is_empty() && row.mistake.len() <= 4096
+        && row.created_at.len() <= 128 && row.seen_retired.len() <= 1_000_000 && row.seen_expired.len() <= 1_000_000,
+        "invalid correction version");
+    let seen_retired: Vec<String> = serde_json::from_str(&row.seen_retired)?;
+    let seen_expired: Vec<String> = serde_json::from_str(&row.seen_expired)?;
+    anyhow::ensure!(seen_retired.len() <= 10_000 && seen_expired.len() <= 10_000
+        && seen_retired.iter().all(|id| Uuid::parse_str(id).is_ok())
+        && seen_expired.iter().all(|value| value.split_once(':').is_some_and(|(item, request)| Uuid::parse_str(item).is_ok() && Uuid::parse_str(request).is_ok())),
+        "invalid correction version dependencies");
+    let prior = row_payload(conn, "vocabulary_correction_versions", &op.row_uuid)?;
+    if let Some(mut existing) = prior {
+        let old_retired = existing["retired"].as_bool().unwrap_or(false);
+        existing["retired"] = serde_json::Value::Bool(row.retired);
+        anyhow::ensure!(existing == serde_json::to_value(&row)?, "correction version identity changed");
+        if old_retired || !row.retired { return Ok(Applied::Skipped); }
+        conn.execute("UPDATE vocabulary_correction_versions SET retired=1 WHERE version_id=?1", [&op.row_uuid])?;
+    } else {
+        conn.execute("INSERT INTO vocabulary_correction_versions(version_id,correction_uuid,context_uuid,dictionary_uuid,dictionary_term,mistake,auto_learned,created_at,seen_retired,seen_expired,retired,legacy)
+          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", params![op.row_uuid,row.correction_uuid,row.context_uuid,row.dictionary_uuid,row.dictionary_term,row.mistake,row.auto_learned,row.created_at,row.seen_retired,row.seen_expired,row.retired,row.legacy])?;
+    }
+    log_applied(conn, op)?;
+    Ok(Applied::Yes)
+}
+
+fn apply_vocabulary_membership_dot(conn: &Connection, op: &SyncOp) -> Result<Applied> {
+    anyhow::ensure!(!op.is_delete(), "membership dots must retain removal history");
+    Uuid::parse_str(&op.row_uuid).map_err(|_| anyhow!("invalid membership dot"))?;
+    let row: VocabularyMembershipDot = op_payload(op, "vocabulary membership", "vocabulary membership")?;
+    anyhow::ensure!(!row.context_uuid.is_empty() && row.context_uuid.len() <= 128
+        && !row.dictionary_uuid.is_empty() && row.dictionary_uuid.len() <= 128
+        && !row.dictionary_term.is_empty() && row.dictionary_term.len() <= 4096,
+        "invalid vocabulary membership");
+    let previous: Option<(String, String, String, bool, bool)> = conn.query_row(
+        "SELECT context_uuid,dictionary_uuid,dictionary_term,removed,legacy FROM vocabulary_membership_dots WHERE dot=?1",
+        [&op.row_uuid], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+    ).optional()?;
+    if let Some((context, dictionary, term, _, legacy)) = previous.as_ref() {
+        anyhow::ensure!(context == &row.context_uuid && dictionary == &row.dictionary_uuid
+            && term == &row.dictionary_term && *legacy == row.legacy, "membership dot identity changed");
+    }
+    let prior_membership: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM dictionary_contexts dc JOIN contexts c ON c.id=dc.context_id
+           JOIN dictionary d ON d.id=dc.dictionary_id
+          WHERE (c.uuid=?1 OR (c.is_everywhere=1 AND ?1='everywhere-0000-0000-0000-000000000001')
+             OR c.uuid=(SELECT local_uuid FROM backup_context_aliases WHERE source_uuid=?1))
+            AND (d.uuid=?2 OR d.term=?3))",
+        params![row.context_uuid,row.dictionary_uuid,row.dictionary_term], |r| r.get(0),
+    )?;
+    let needs_legacy_review = row.legacy && !row.removed && previous.is_none() && !prior_membership
+        && sync_store::get_setting_stamp(conn, "vocabulary_preupgrade_peers")?.is_some_and(|stamp| stamp.ts_ms != 0);
+    if needs_legacy_review {
+        conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) VALUES (?1,?2,?3,'preupgrade')",
+            params![row.context_uuid,row.dictionary_uuid,row.dictionary_term])?;
+    }
+    let changed = previous.as_ref().is_none_or(|old| !old.3 && row.removed);
+    if changed {
+        conn.execute("INSERT INTO vocabulary_membership_dots(dot,context_uuid,dictionary_uuid,dictionary_term,removed,legacy)
+          VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(dot) DO UPDATE SET removed=MAX(removed,excluded.removed)",
+          params![op.row_uuid,row.context_uuid,row.dictionary_uuid,row.dictionary_term,row.removed,row.legacy])?;
+        log_applied(conn, op)?;
+    }
+    if !materialize_vocabulary_membership(conn, &row)? {
+        if row.removed || previous.as_ref().is_some_and(|old| old.3) {
+            return Ok(if changed { Applied::Yes } else { Applied::Skipped });
+        }
+        if latest_is_delete(conn, "dictionary", &row.dictionary_uuid)?
+            || latest_is_delete(conn, "contexts", &row.context_uuid)? {
+            if changed {
+                conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) VALUES (?1,?2,?3,'offline_deletion')",
+                    params![row.context_uuid,row.dictionary_uuid,row.dictionary_term])?;
+            }
+            return Ok(if changed { Applied::Yes } else { Applied::Skipped });
+        }
+        return Ok(Applied::Deferred);
+    }
+    Ok(if changed { Applied::Yes } else { Applied::Skipped })
+}
+
+fn materialize_vocabulary_membership(conn: &Connection, row: &VocabularyMembershipDot) -> Result<bool> {
+    let context_id: Option<i64> = conn.query_row(
+        "SELECT id FROM contexts WHERE uuid=?1 OR (is_everywhere=1 AND ?1='everywhere-0000-0000-0000-000000000001')
+           OR uuid=(SELECT local_uuid FROM backup_context_aliases WHERE source_uuid=?1 AND NOT EXISTS(SELECT 1 FROM contexts WHERE uuid=?1))
+         ORDER BY (uuid=?1) DESC LIMIT 1", [&row.context_uuid], |r| r.get(0),
+    ).optional()?;
+    let dictionary_id: Option<i64> = conn.query_row(
+        "WITH RECURSIVE ids(uuid) AS (SELECT ?1 UNION SELECT CASE WHEN l.left_uuid=ids.uuid THEN l.right_uuid ELSE l.left_uuid END
+           FROM vocabulary_identity_links l JOIN ids ON l.left_uuid=ids.uuid OR l.right_uuid=ids.uuid)
+         SELECT id FROM dictionary WHERE uuid IN (SELECT uuid FROM ids) OR term=?2 ORDER BY (uuid=?1) DESC LIMIT 1",
+        params![row.dictionary_uuid,row.dictionary_term], |r| r.get(0),
+    ).optional()?;
+    let (Some(context_id), Some(dictionary_id)) = (context_id, dictionary_id) else { return Ok(false); };
+    let active: bool = conn.query_row(
+        "WITH RECURSIVE ids(uuid) AS (
+           SELECT ?2 UNION SELECT uuid FROM dictionary WHERE id=?3
+           UNION SELECT CASE WHEN l.left_uuid=ids.uuid THEN l.right_uuid ELSE l.left_uuid END
+             FROM vocabulary_identity_links l JOIN ids ON l.left_uuid=ids.uuid OR l.right_uuid=ids.uuid
+         ) SELECT EXISTS(SELECT 1 FROM vocabulary_membership_dots m WHERE m.removed=0
+           AND m.dictionary_uuid IN (SELECT uuid FROM ids)
+           AND (m.context_uuid=?1 OR m.context_uuid=(SELECT uuid FROM contexts WHERE id=?4)
+             OR m.context_uuid IN (SELECT source_uuid FROM backup_context_aliases WHERE local_uuid=(SELECT uuid FROM contexts WHERE id=?4))))",
+        params![row.context_uuid,row.dictionary_uuid,dictionary_id,context_id], |r| r.get(0),
+    )?;
+    if active {
+        conn.execute("INSERT OR IGNORE INTO dictionary_contexts(context_id,dictionary_id) VALUES (?1,?2)", params![context_id,dictionary_id])?;
+    } else {
+        conn.execute("DELETE FROM dictionary_contexts WHERE context_id=?1 AND dictionary_id=?2", params![context_id,dictionary_id])?;
+    }
+    Ok(true)
+}
+
+fn refresh_vocabulary_memberships(conn: &Connection) -> Result<()> {
+    let rows = conn.prepare("SELECT DISTINCT context_uuid,dictionary_uuid,dictionary_term FROM vocabulary_membership_dots")?
+        .query_map([], |r| Ok(VocabularyMembershipDot { context_uuid:r.get(0)?, dictionary_uuid:r.get(1)?, dictionary_term:r.get(2)?, removed:false, legacy:false }))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for row in rows { materialize_vocabulary_membership(conn, &row)?; }
+    Ok(())
+}
+
 fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     if op.is_delete() {
         if let Some(stamp) = latest_stamp(conn, "dictionary_corrections", &op.row_uuid)? {
@@ -1753,6 +2372,11 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
 
     if let Some(stamp) = latest_stamp(conn, "dictionary_corrections", &op.row_uuid)? {
         if !op.newer_than(&stamp) {
+            let row: DictionaryCorrectionRow = op_payload(op, "dictionary correction", "dictionary correction")?;
+            if latest_is_delete(conn, "dictionary", &row.dictionary_uuid)? && !has_seen_sync_op(conn, op)? {
+                archive_vocabulary_review_payload(conn, "correction", &row.dictionary_uuid, op)?;
+                conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) VALUES (?1,?2,?3,'offline_deletion')", params![row.context_uuid,row.dictionary_uuid,row.dictionary_term])?;
+            }
             return Ok(Applied::Skipped);
         }
     }
@@ -1761,7 +2385,9 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
 
     let Some(context_id) = conn
         .query_row(
-            "SELECT id FROM contexts WHERE uuid = ?1",
+            "SELECT id FROM contexts WHERE uuid = ?1
+               OR (is_everywhere = 1 AND EXISTS(SELECT 1 FROM sync_everywhere_aliases WHERE uuid = ?1))
+             ORDER BY (uuid = ?1) DESC LIMIT 1",
             params![row.context_uuid],
             |r| r.get::<_, i64>(0),
         )
@@ -1783,7 +2409,8 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
     )?;
     let newer_than_delete = latest_stamp(conn, "dictionary", &row.dictionary_uuid)?.is_some_and(|stamp| op.newer_than(&stamp));
     if dictionary_is_deleted && !(restored_parent_conflicted && newer_than_delete) {
-        log_anti_entropy_delete(conn, "dictionary_corrections", &op.row_uuid)?;
+        archive_vocabulary_review_payload(conn, "correction", &row.dictionary_uuid, op)?;
+        conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) VALUES (?1,?2,?3,'offline_deletion')", params![row.context_uuid,row.dictionary_uuid,row.dictionary_term])?;
         return Ok(Applied::Skipped);
     }
     let Some(dictionary_id) = resolve_correction_dictionary_id(conn, &row)? else {
@@ -1793,6 +2420,23 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
         }
         return Ok(Applied::Deferred);
     };
+
+    let membership_removed: bool = conn.query_row(
+        "WITH RECURSIVE ids(uuid) AS (
+            SELECT ?1 UNION SELECT uuid FROM dictionary WHERE id=?2
+            UNION SELECT CASE WHEN l.left_uuid=ids.uuid THEN l.right_uuid ELSE l.left_uuid END
+              FROM vocabulary_identity_links l JOIN ids ON l.left_uuid=ids.uuid OR l.right_uuid=ids.uuid
+         ) SELECT NOT EXISTS(SELECT 1 FROM dictionary_contexts WHERE context_id=?3 AND dictionary_id=?2)
+           AND EXISTS(SELECT 1 FROM vocabulary_membership_dots m WHERE m.dictionary_uuid IN (SELECT uuid FROM ids)
+             AND (m.context_uuid=?4 OR m.context_uuid=(SELECT uuid FROM contexts WHERE id=?3)
+               OR m.context_uuid IN (SELECT source_uuid FROM backup_context_aliases WHERE local_uuid=(SELECT uuid FROM contexts WHERE id=?3))))",
+        params![row.dictionary_uuid,dictionary_id,context_id,row.context_uuid], |r| r.get(0),
+    )?;
+    if membership_removed {
+        archive_vocabulary_review_payload(conn, "correction", &row.dictionary_uuid, op)?;
+        conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason) VALUES (?1,?2,?3,'offline_deletion')", params![row.context_uuid,row.dictionary_uuid,row.dictionary_term])?;
+        return Ok(Applied::Skipped);
+    }
 
     let existing_by_uuid = correction_uuid_exists(conn, &op.row_uuid)?;
     if let Some((
@@ -1810,6 +2454,7 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
         if let Some(conflict) =
             correction_target_for_natural_key(conn, context_id, &row.mistake, Some(*existing_id))?
         {
+            if conflict.2 == dictionary_id {
             let conflict_stamp = latest_stamp(
                 conn,
                 "dictionary_corrections",
@@ -1821,6 +2466,7 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
                 return Ok(Applied::Skipped);
             }
             delete_local_correction_for_remote_winner(conn, conflict.0, conflict.1.as_deref())?;
+            }
         }
         conn.execute(
             "UPDATE dictionary_corrections
@@ -1856,6 +2502,7 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
 
     if let Some(conflict) = correction_target_for_natural_key(conn, context_id, &row.mistake, None)?
     {
+        if conflict.2 == dictionary_id {
         let conflict_stamp = conflict
             .1
             .as_deref()
@@ -1868,6 +2515,7 @@ fn apply_dictionary_correction_op(conn: &Connection, op: &SyncOp) -> Result<Appl
             return Ok(Applied::Skipped);
         }
         delete_local_correction_for_remote_winner(conn, conflict.0, conflict.1.as_deref())?;
+        }
     }
 
     conn.execute(
@@ -2026,6 +2674,10 @@ fn apply_with_natural_key_resolution(
                 if table == "dictionary" {
                     let dictionary_children = capture_dictionary_children(conn, &conflict_uuid)?;
                     return with_sync_savepoint(conn, |conn| {
+                        if link_vocabulary_identities(conn, &conflict_uuid, &op.row_uuid)? {
+                            let (left, right) = if conflict_uuid < op.row_uuid { (&conflict_uuid, &op.row_uuid) } else { (&op.row_uuid, &conflict_uuid) };
+                            append_self_log(conn, "vocabulary_identity_links", &format!("{left}:{right}"), "upsert")?;
+                        }
                         log_contexts_referencing_dictionary(conn, &conflict_uuid)?;
                         conn.execute(
                             "DELETE FROM dictionary WHERE uuid = ?1",
@@ -2056,6 +2708,10 @@ fn apply_with_natural_key_resolution(
                 Ok(Applied::Yes)
             } else {
                 if table == "dictionary" {
+                    if link_vocabulary_identities(conn, &conflict_uuid, &op.row_uuid)? {
+                        let (left, right) = if conflict_uuid < op.row_uuid { (&conflict_uuid, &op.row_uuid) } else { (&op.row_uuid, &conflict_uuid) };
+                        append_self_log(conn, "vocabulary_identity_links", &format!("{left}:{right}"), "upsert")?;
+                    }
                     log_natural_key_delete(conn, &op.row_uuid)?;
                 } else {
                     log_anti_entropy_delete(conn, table, &op.row_uuid)?;
@@ -2102,12 +2758,40 @@ fn apply_simple_delete(
     table: &str,
     log_table: &str,
 ) -> Result<Applied> {
+    if table == "dictionary" {
+        let observed: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM vocabulary_dictionary_restore_basis b JOIN dictionary d ON d.uuid=b.dictionary_uuid WHERE b.dictionary_uuid=?1 AND b.delete_origin=?2 AND b.delete_seq=?3)", params![op.row_uuid,op.origin,op.origin_seq], |r| r.get(0))?;
+        if observed { return Ok(Applied::Skipped); }
+    }
     if let Some(stamp) = latest_stamp(conn, log_table, &op.row_uuid)? {
         if !op.newer_than(&stamp) {
             return Ok(Applied::Skipped);
         }
     }
     if table == "dictionary" {
+        // A pre-upgrade row has no causal evidence proving that this delete
+        // observed its local edits. Preserve the complete local values before
+        // the cascading delete so the user can review that ambiguity.
+        let legacy: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM vocabulary_correction_versions WHERE dictionary_uuid=?1 AND legacy=1 UNION ALL SELECT 1 FROM vocabulary_membership_dots WHERE dictionary_uuid=?1 AND legacy=1)", [&op.row_uuid], |r| r.get(0))?;
+        if legacy {
+            if let Some(payload) = row_payload(conn, "dictionary", &op.row_uuid)? {
+                let mut saved = op.clone();
+                saved.payload = Some(payload);
+                archive_vocabulary_review_payload(conn, "dictionary", &op.row_uuid, &saved)?;
+                let mut stmt = conn.prepare("SELECT dc.uuid FROM dictionary_corrections dc JOIN dictionary d ON d.id=dc.dictionary_id WHERE d.uuid=?1")?;
+                let corrections = stmt.query_map([&op.row_uuid], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                for uuid in corrections {
+                    if let Some(payload) = row_payload(conn, "dictionary_corrections", &uuid)? {
+                        saved.row_uuid = uuid;
+                        saved.payload = Some(payload);
+                        archive_vocabulary_review_payload(conn, "correction", &op.row_uuid, &saved)?;
+                    }
+                }
+                conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason)
+                    SELECT c.uuid,d.uuid,d.term,'offline_deletion' FROM dictionary d JOIN dictionary_contexts dc ON dc.dictionary_id=d.id JOIN contexts c ON c.id=dc.context_id WHERE d.uuid=?1", [&op.row_uuid])?;
+                conn.execute("INSERT OR IGNORE INTO vocabulary_membership_reviews(context_uuid,dictionary_uuid,dictionary_term,reason)
+                    SELECT c.uuid,d.uuid,d.term,'offline_deletion' FROM dictionary d JOIN contexts c ON c.is_everywhere=1 WHERE d.uuid=?1 AND NOT EXISTS(SELECT 1 FROM vocabulary_membership_reviews r WHERE r.dictionary_uuid=d.uuid)", [&op.row_uuid])?;
+            }
+        }
         log_contexts_referencing_dictionary(conn, &op.row_uuid)?;
     } else if table == "snippets" {
         log_contexts_referencing_snippet(conn, &op.row_uuid)?;
@@ -2155,20 +2839,54 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
         return apply_context_delete(conn, op);
     }
     let aggregate: ContextAggregate = op_payload(op, "context", "context")?;
-    let resolved_alias = if aggregate.is_everywhere { learn_everywhere_alias(conn, &op.row_uuid)? } else { false };
+    if aggregate.is_everywhere {
+        let everywhere_id = db::ensure_everywhere_context_conn(conn)?;
+        let local_uuid: String = conn.query_row("SELECT uuid FROM contexts WHERE id=?1", [everywhere_id], |row| row.get(0))?;
+        let known_alias: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_everywhere_aliases WHERE uuid=?1)", [&op.row_uuid], |row| row.get(0))?;
+        let local_payload = context_aggregate(conn, &local_uuid)?.ok_or_else(|| anyhow!("Everywhere Context is missing"))?;
+        let local: ContextAggregate = serde_json::from_value(local_payload)?;
+        let local_stamp = local.metadata_stamp.unwrap_or(ContextMetadataStamp { ts_ms: 0, origin: String::new() });
+        let remote_stamp = aggregate.metadata_stamp.clone().unwrap_or(ContextMetadataStamp { ts_ms: op.ts_ms, origin: op.origin.clone() });
+        let metadata_newer = (remote_stamp.ts_ms, remote_stamp.origin.as_str()) > (local_stamp.ts_ms, local_stamp.origin.as_str());
+        let pristine_baseline = op.ts_ms == 0 && op.origin.is_empty() && op.origin_seq == 0;
+        let alias_stamp = latest_stamp(conn, "contexts", &op.row_uuid)?;
+        let local_membership_stamp = latest_stamp(conn, "contexts", &local_uuid)?;
+        let membership_newer = !pristine_baseline && if local_uuid != op.row_uuid && !known_alias {
+            true
+        } else {
+            alias_stamp.into_iter().chain(local_membership_stamp).all(|stamp| op.newer_than(&stamp))
+        };
+        if membership_newer && context_has_missing_members(conn, &aggregate)? {
+            return Ok(Applied::Deferred);
+        }
+        let resolved_alias = learn_everywhere_alias(conn, &op.row_uuid)?;
+        if metadata_newer || membership_newer {
+            apply_everywhere_aggregate(conn, &aggregate, membership_newer && !resolved_alias, metadata_newer, membership_newer)?;
+            if metadata_newer {
+                sync_store::set_setting_stamp(conn, &format!("context_metadata:{local_uuid}"), remote_stamp.ts_ms, &remote_stamp.origin)?;
+            }
+            if membership_newer { log_applied(conn, op)?; }
+            if (metadata_newer && !membership_newer) || (local_uuid != op.row_uuid && !resolved_alias) {
+                let local_membership = latest_stamp(conn, "contexts", &local_uuid)?
+                    .unwrap_or((0, String::new(), 0));
+                let incoming_membership = (op.ts_ms, op.origin.clone(), op.origin_seq);
+                let (ts_ms, origin, origin_seq) = if membership_newer { local_membership.max(incoming_membership) } else { local_membership };
+                let relay = SyncOp { table: "contexts".into(), row_uuid: local_uuid.clone(),
+                    op: "upsert".into(), ts_ms, origin: origin.clone(), origin_seq, payload: None };
+                sync_store::append_op(conn, &relay, ts_ms, &origin, origin_seq)?;
+            }
+        }
+        if resolved_alias && !pristine_baseline { log_context_upserts(conn, &[everywhere_id])?; }
+        return Ok(if resolved_alias || metadata_newer || membership_newer { Applied::Yes } else { Applied::Skipped });
+    }
     if let Some(stamp) = latest_stamp(conn, "contexts", &op.row_uuid)? {
         if !op.newer_than(&stamp) {
+            let resolved_alias = if aggregate.is_everywhere { learn_everywhere_alias(conn, &op.row_uuid)? } else { false };
             return Ok(if resolved_alias { Applied::Yes } else { Applied::Skipped });
         }
     }
     if context_has_missing_members(conn, &aggregate)? {
         return Ok(Applied::Deferred);
-    }
-
-    if aggregate.is_everywhere {
-        apply_everywhere_aggregate(conn, &aggregate)?;
-        log_applied(conn, op)?;
-        return Ok(Applied::Yes);
     }
 
     let alias: Option<(i64, String, Option<String>)> = conn.query_row("SELECT c.id,c.uuid,a.source_name FROM backup_context_aliases a JOIN contexts c ON c.uuid=a.local_uuid WHERE a.source_uuid=?1 AND NOT EXISTS(SELECT 1 FROM contexts WHERE uuid=?1)", [&op.row_uuid], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -2267,13 +2985,14 @@ fn apply_context_op(conn: &Connection, op: &SyncOp) -> Result<Applied> {
     Ok(Applied::Yes)
 }
 
-fn apply_everywhere_aggregate(conn: &Connection, aggregate: &ContextAggregate) -> Result<()> {
+fn apply_everywhere_aggregate(conn: &Connection, aggregate: &ContextAggregate, prune: bool, apply_metadata: bool, apply_members: bool) -> Result<()> {
     let everywhere_id = db::ensure_everywhere_context_conn(conn)?;
     let formatting_override = aggregate
         .contextual_formatting_override
         .or_else(|| aggregate.contextual_formatting_disabled.then_some(true));
     // A rename can still collide with a user context's name; keep the local
     // name on collision rather than deleting a user context over it.
+    if apply_metadata {
     let rename = conn.execute(
         "UPDATE contexts SET name = ?1, updated_at = ?2 WHERE id = ?3",
         params![aggregate.name, aggregate.updated_at, everywhere_id],
@@ -2299,7 +3018,8 @@ fn apply_everywhere_aggregate(conn: &Connection, aggregate: &ContextAggregate) -
             aggregate.t3_skill_mentions_disabled
         ],
     )?;
-    reconcile_context_members(conn, everywhere_id, aggregate)?;
+    }
+    if apply_members { reconcile_context_members(conn, everywhere_id, aggregate, prune)?; }
     Ok(())
 }
 
@@ -2443,7 +3163,7 @@ fn reconcile_context_children(
         context_id,
         &normalized_websites,
     )?;
-    reconcile_context_members(conn, context_id, aggregate)?;
+    reconcile_context_members(conn, context_id, aggregate, true)?;
     Ok(())
 }
 
@@ -2493,7 +3213,9 @@ fn reconcile_context_members(
     conn: &Connection,
     context_id: i64,
     aggregate: &ContextAggregate,
+    prune: bool,
 ) -> Result<()> {
+    if !aggregate.vocabulary_membership_dots {
     let entry_count = if aggregate.dictionary_entries.is_empty() {
         aggregate.dictionary_uuids.len()
     } else {
@@ -2529,7 +3251,7 @@ fn reconcile_context_members(
             params![context_id, dictionary_id],
         )?;
     }
-    if !unresolved_dictionary {
+    if prune && !unresolved_dictionary {
         let correction_uuids =
             correction_uuids_for_pruned_dictionary_members(conn, context_id, &resolved_dictionary)?;
         delete_members_not_in(
@@ -2542,6 +3264,7 @@ fn reconcile_context_members(
         for correction_uuid in correction_uuids {
             append_self_log(conn, "dictionary_corrections", &correction_uuid, "delete")?;
         }
+    }
     }
 
     let mut resolved_snippets: Vec<i64> = Vec::with_capacity(aggregate.snippet_uuids.len());
@@ -2562,13 +3285,13 @@ fn reconcile_context_members(
             params![context_id, snippet_id],
         )?;
     }
-    delete_members_not_in(
+    if prune { delete_members_not_in(
         conn,
         "snippet_contexts",
         "snippet_id",
         context_id,
         &resolved_snippets,
-    )?;
+    )?; }
     Ok(())
 }
 
@@ -3072,8 +3795,19 @@ fn hello(uuid: &str, name: &str, app_version: &str) -> Hello {
         app_version: app_version.to_string(),
         activity_receipts: true,
         cleanup_cache: true,
+        vocabulary_usage: true,
         compressed_frames: true,
     }
+}
+
+fn note_vocabulary_usage_capability(conn: &Connection, peer: &str, supported: bool) -> Result<()> {
+    let previous: Option<bool> = conn.query_row("SELECT vocabulary_usage FROM sync_peer_capabilities WHERE device_uuid=?1", [peer], |r| r.get(0)).optional()?;
+    if supported && previous != Some(true) {
+        conn.execute("UPDATE sync_peers SET needs_snapshot=1, recv_cursor=0 WHERE device_uuid=?1", [peer])?;
+        conn.execute("UPDATE vocabulary_expiration_settings SET tracking_since=datetime('now') WHERE id=1", [])?;
+    }
+    conn.execute("INSERT INTO sync_peer_capabilities(device_uuid,activity_receipts,vocabulary_usage) VALUES (?1,0,?2) ON CONFLICT(device_uuid) DO UPDATE SET vocabulary_usage=excluded.vocabulary_usage", params![peer,supported])?;
+    Ok(())
 }
 
 fn note_receipt_capability(conn: &Connection, peer: &str, supported: bool) -> Result<()> {
@@ -3131,21 +3865,24 @@ where
         )
         .await?;
         match read_message(stream).await? {
-            Message::HelloAck(remote) => { check_hello(&remote, &peer.device_uuid)?; remote },
+            Message::HelloAck(remote) => { check_hello(&remote, &peer.device_uuid, &host.app_version())?; remote },
             Message::Error { message } => return Err(anyhow!("peer error: {message}")),
             _ => return Err(anyhow!("expected HelloAck")),
         }
     } else {
         let remote = if let Some(remote) = remote_hello {
-            check_hello(&remote, &peer.device_uuid)?;
             remote
         } else {
             match read_message(stream).await? {
-                Message::Hello(remote) => { check_hello(&remote, &peer.device_uuid)?; remote },
+                Message::Hello(remote) => remote,
                 Message::Error { message } => return Err(anyhow!("peer error: {message}")),
                 _ => return Err(anyhow!("expected Hello")),
             }
         };
+        if let Err(error) = check_hello(&remote, &peer.device_uuid, &host.app_version()) {
+            let _ = send_message(stream, Message::Error { message: error.to_string() }).await;
+            return Err(error);
+        }
         send_message(
             stream,
             Message::HelloAck(hello(
@@ -3161,6 +3898,7 @@ where
         let conn = lock(db)?;
         note_receipt_capability(&conn, &peer.device_uuid, remote.activity_receipts)?;
         note_cleanup_cache_capability(&conn, &peer.device_uuid, remote.cleanup_cache)?;
+        note_vocabulary_usage_capability(&conn, &peer.device_uuid, remote.vocabulary_usage)?;
     }
 
     let mut summary = SessionSummary::default();
@@ -3169,10 +3907,13 @@ where
         let conn = lock(db)?;
         build_stats_exchange(&conn, &host.device_uuid())?
     };
-    let mut meta = Some(Message::Meta {
-        stats,
-        settings: host.settings_payload()?,
-    });
+    let mut settings = host.settings_payload()?;
+    if remote.vocabulary_usage {
+        let conn = lock(db)?;
+        settings.push(vocabulary_policy(&conn)?);
+        settings.push(vocabulary_topology(&conn)?);
+    }
+    let mut meta = Some(Message::Meta { stats, settings });
     if initiator {
         super::protocol::send_message_with_compression(stream, meta.take().unwrap(), remote.compressed_frames).await?;
     }
@@ -3188,6 +3929,8 @@ where
         let conn = lock(db)?;
         apply_stats_exchange(&conn, &remote_meta.0, peer.device_uuid.as_str())?;
         summary.settings_applied = apply_settings_exchange(&conn, host, &remote_meta.1)?;
+        if apply_vocabulary_policy(&conn, &peer.device_uuid, &remote_meta.1)? { summary.settings_applied += 1; }
+        apply_vocabulary_topology(&conn, &remote_meta.1)?;
     }
     if summary.settings_applied > 0 {
         summary.applied.settings = true;
@@ -3197,6 +3940,7 @@ where
     let mut pulled = ApplySummary::default();
     let capabilities = TransferCapabilities {
         cache: remote.cleanup_cache,
+        vocabulary_usage: remote.vocabulary_usage,
         compression: remote.compressed_frames,
     };
     if initiator {
@@ -3222,7 +3966,7 @@ where
     Ok(summary)
 }
 
-fn check_hello(remote: &Hello, expected_uuid: &str) -> Result<()> {
+fn check_hello(remote: &Hello, expected_uuid: &str, local_version: &str) -> Result<()> {
     if remote.device_uuid != expected_uuid {
         return Err(anyhow!(
             "sync peer identity does not match the paired device"
@@ -3235,6 +3979,7 @@ fn check_hello(remote: &Hello, expected_uuid: &str) -> Result<()> {
             PROTOCOL_VERSION
         ));
     }
+    super::pairing::require_matching_version(local_version, Some(&remote.app_version))?;
     Ok(())
 }
 
@@ -3303,6 +4048,7 @@ where
 #[derive(Clone, Copy)]
 struct TransferCapabilities {
     cache: bool,
+    vocabulary_usage: bool,
     compression: bool,
 }
 
@@ -3356,6 +4102,7 @@ where
             (ops, cursor, done)
         };
         if !capabilities.cache { ops.retain(|op| !matches!(op.table.as_str(), "cleanup_cache" | "cleanup_cache_rejection")); }
+        if !capabilities.vocabulary_usage { ops.retain(|op| !matches!(op.table.as_str(), "vocabulary_expiration_usage" | "vocabulary_expiration_marks" | "vocabulary_identity_links")); }
         let final_cursor = cursor;
         tokio::time::timeout(std::time::Duration::from_secs(30), super::protocol::send_message_with_compression(
             stream,
@@ -3413,6 +4160,53 @@ impl ApplySummary {
 mod payload_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn policy_change_preserves_retained_ids_before_their_marks_arrive() {
+        let source = db::open(":memory:").unwrap();
+        let dest = db::open(":memory:").unwrap();
+        let request = "11111111-1111-4111-8111-111111111111";
+        let source_conn = source.lock().unwrap();
+        let dest_conn = dest.lock().unwrap();
+        sync_store::ensure_self_identity(&dest_conn, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "dest").unwrap();
+        source_conn.execute("INSERT INTO vocabulary_expiration_marks(item_uuid,cutoff,deleted_at,request_id,policy_ts,policy_origin) VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','2020-01-01 00:00:00','2020-02-01 00:00:00',?1,1,'a')", [request]).unwrap();
+        let incoming = SettingRecord { key: VOCABULARY_POLICY.into(), value: json!({"days":7,"retained":[request]}), ts_ms: 2, origin:"a".into() };
+        apply_vocabulary_policy(&dest_conn, "peer", &[incoming]).unwrap();
+        stamp_vocabulary_policy(&dest_conn).unwrap();
+        let changed = vocabulary_policy(&dest_conn).unwrap();
+        assert_eq!(changed.value["retained"], json!([request]));
+        apply_vocabulary_policy(&source_conn, "peer", &[changed]).unwrap();
+        assert_eq!(source_conn.query_row("SELECT COUNT(*) FROM vocabulary_expiration_marks", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn future_policy_mark_defers_until_metadata_arrives() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        let op = SyncOp { table:"vocabulary_expiration_marks".into(), row_uuid:"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(), op:"upsert".into(), ts_ms:1, origin:"peer".into(), origin_seq:1, payload:Some(json!({"cutoff":"2020-01-01 00:00:00","deleted_at":"2020-02-01 00:00:00","request_id":"11111111-1111-4111-8111-111111111111","policy_ts":2,"policy_origin":"peer"})) };
+        assert!(apply_ops(&conn, &[op.clone()]).unwrap().deferred);
+        let policy = SettingRecord { key:VOCABULARY_POLICY.into(), value:json!({"days":7,"retained":[]}), ts_ms:2, origin:"peer".into() };
+        apply_vocabulary_policy(&conn, "peer", &[policy]).unwrap();
+        assert!(!apply_ops(&conn, &[op]).unwrap().deferred);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM vocabulary_expiration_marks", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn vocabulary_activity_merges_monotonically_when_replayed_out_of_order() {
+        let db = db::open(":memory:").unwrap();
+        let conn = db.lock().unwrap();
+        let make = |time: &str, seq| SyncOp {
+            table: "vocabulary_expiration_usage".into(),
+            row_uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+            op: "upsert".into(), ts_ms: seq, origin: "peer".into(), origin_seq: seq,
+            payload: Some(json!({"last_used_at": time})),
+        };
+        apply_ops(&conn, &[make("2025-03-01 00:00:00", 1)]).unwrap();
+        apply_ops(&conn, &[make("2025-02-01 00:00:00", 2)]).unwrap();
+        apply_ops(&conn, &[make("2025-03-01 00:00:00", 1)]).unwrap();
+        let actual: String = conn.query_row("SELECT last_used_at FROM vocabulary_expiration_usage WHERE item_uuid=?1", ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"], |r| r.get(0)).unwrap();
+        assert_eq!(actual, "2025-03-01 00:00:00");
+    }
 
     #[test]
     fn agent_deleted_and_restored_library_syncs_to_peer() {
@@ -4110,11 +4904,12 @@ mod payload_tests {
             app_version: "0.0.0".into(),
             activity_receipts: false,
             cleanup_cache: false,
+            vocabulary_usage: false,
             compressed_frames: false,
         };
-        assert!(check_hello(&hello, "peer").is_err());
+        assert!(check_hello(&hello, "peer", "0.0.0").is_err());
         hello.protocol = PROTOCOL_VERSION;
-        assert!(check_hello(&hello, "peer").is_ok());
+        assert!(check_hello(&hello, "peer", "0.0.0").is_ok());
     }
 
     #[test]
@@ -4188,7 +4983,8 @@ mod payload_tests {
                     "pinned_at": "2026-01-02", "created_at": "2026-01-01", "updated_at": "2026-01-02",
                     "targets": [{"executable": "editor", "platform": "linux", "app_name": "Editor", "developer": "Example"}],
                     "websites": ["example.com"], "dictionary_uuids": ["dictionary"],
-                    "dictionary_entries": [{"uuid": "dictionary", "term": "café"}], "snippet_uuids": ["snippet"]
+                    "dictionary_entries": [{"uuid": "dictionary", "term": "café"}], "snippet_uuids": ["snippet"],
+                    "vocabulary_membership_dots": true
                 }),
             ),
             (
