@@ -19,7 +19,8 @@
   } from '../../customTheme';
   import { applyPalette, persistAccentColor, setAppearanceMode, withAppearanceLock } from '../../appearanceActions';
   import { guardThemeEditor, openThemeEditor, themeEditor } from '../../themeEditor.svelte';
-  import { DEFAULT_INTERFACE_FONT, INTERFACE_FONT_OPTIONS, applyInterfaceFont } from '../../interfaceFont';
+  import { DEFAULT_INTERFACE_FONT, INTERFACE_FONT_OPTIONS, applyInterfaceFont, normalizeInterfaceFont } from '../../interfaceFont';
+  import { invoke } from '../../tauri';
   import AccentSwatches from './AccentSwatches.svelte';
   import ThemePreview from './ThemePreview.svelte';
 
@@ -188,14 +189,22 @@
     applyInterfaceFont(document.documentElement, font);
     try {
       await saveSetting('interface_font', font);
-      // A refresh that started before the save committed may have read the old value; the saved choice wins.
-      appStore.interfaceFontChangeVersion++;
-      appStore.interfaceFont = font;
     } catch (err) {
       console.error('save interface_font failed:', err);
       appStore.interfaceFont = previous;
       applyInterfaceFont(document.documentElement, previous);
       error = 'Could not save the font. Your previous font was restored.';
+      fontSaving = false;
+      return;
+    }
+    try {
+      // Reads that started before the commit may hold the old value, and an agent may have written since,
+      // so settle on what is stored now.
+      const version = ++appStore.interfaceFontChangeVersion;
+      const stored = normalizeInterfaceFont(await invoke('get_setting', { key: 'interface_font' }));
+      if (version === appStore.interfaceFontChangeVersion) appStore.interfaceFont = stored;
+    } catch (err) {
+      console.error('read interface_font after save failed:', err);
     } finally {
       fontSaving = false;
     }
